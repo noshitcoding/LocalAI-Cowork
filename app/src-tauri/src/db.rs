@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result as SqlResult, params};
+use rusqlite::{Connection, Result as SqlResult, params, params_from_iter};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -898,6 +898,42 @@ impl Database {
             params![id, content],
         )?;
         Ok(())
+    }
+
+    pub fn delete_messages(&self, ids: &[String]) -> SqlResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let thread_query = format!(
+            "SELECT DISTINCT thread_id FROM chat_messages WHERE id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&thread_query)?;
+        let thread_rows = stmt.query_map(params_from_iter(ids.iter()), |row| row.get::<_, String>(0))?;
+        let thread_ids: Vec<String> = thread_rows.collect::<SqlResult<Vec<_>>>()?;
+        drop(stmt);
+
+        let delete_query = format!(
+            "DELETE FROM chat_messages WHERE id IN ({})",
+            placeholders
+        );
+        let deleted = conn.execute(&delete_query, params_from_iter(ids.iter()))?;
+
+        for thread_id in thread_ids {
+            conn.execute(
+                "UPDATE chat_threads SET updated_at = datetime('now') WHERE id = ?1",
+                params![thread_id],
+            )?;
+        }
+
+        Ok(deleted)
     }
 
     // -- Tasks --
@@ -2810,7 +2846,7 @@ impl Database {
                 config_json = excluded.config_json,
                 enabled = excluded.enabled,
                 updated_at = datetime('now')",
-            params![id, name, tool_type, config_json, enabled as i32],
+            params![id, tool_type, name, config_json, enabled as i32],
         )?;
         Ok(())
     }

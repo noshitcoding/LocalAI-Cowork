@@ -12,6 +12,11 @@ vi.mock('@tauri-apps/api/core', () => ({
 describe('InsightsPanel', () => {
   beforeEach(() => {
     invokeMock.mockReset()
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+      writable: true,
+    })
     useInsightsStore.setState({
       events: [],
       summary: null,

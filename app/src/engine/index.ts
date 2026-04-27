@@ -244,3 +244,13 @@ export type {
   SessionRecord,
   SessionSummary,
 } from './services/sessionPersistence'
+
+export {
+  // Computer Use
+  runComputerUseAppTest,
+} from './services/computerUseService'
+export type {
+  ComputerUseActionLog,
+  ComputerUseRunOptions,
+  ComputerUseRunResult,
+} from './services/computerUseService'

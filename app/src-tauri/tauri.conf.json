@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "https://localhost:5173",
     "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist",
     "beforeBuildCommand": "npm run build"
   },
   "app": {

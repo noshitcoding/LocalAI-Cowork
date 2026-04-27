@@ -24,21 +24,50 @@ pub struct BackupEntry {
     pub modified_at: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryCreateResponse {
+    pub path: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathMutationResponse {
+    pub source_path: String,
+    pub destination_path: String,
+    pub item_kind: String,
+    pub created_parent: bool,
+    pub replaced_existing: bool,
+}
+
 fn canonicalize_for_policy(path: &Path) -> Result<PathBuf, String> {
     if path.exists() {
         return path.canonicalize().map_err(|err| err.to_string());
     }
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| "path has no parent directory".to_string())?;
-    let parent_canonical = parent.canonicalize().map_err(|err| err.to_string())?;
+    let mut missing_segments: Vec<PathBuf> = Vec::new();
+    let mut existing_ancestor = path;
 
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "path has no file name".to_string())?;
+    while !existing_ancestor.exists() {
+        let file_name = existing_ancestor
+            .file_name()
+            .ok_or_else(|| "path has no existing ancestor".to_string())?;
+        missing_segments.push(PathBuf::from(file_name));
+        existing_ancestor = existing_ancestor
+            .parent()
+            .ok_or_else(|| "path has no parent directory".to_string())?;
+    }
 
-    Ok(parent_canonical.join(file_name))
+    let mut canonical = existing_ancestor
+        .canonicalize()
+        .map_err(|err| err.to_string())?;
+
+    for segment in missing_segments.iter().rev() {
+        canonical.push(segment);
+    }
+
+    Ok(canonical)
 }
 
 pub fn ensure_path_allowed(path: &Path, allowed_folders: &[String]) -> Result<PathBuf, String> {
@@ -161,6 +190,164 @@ pub fn delete_file(canonical_target: &Path, confirm_token: &str) -> Result<(), S
     fs::remove_file(canonical_target).map_err(|err| err.to_string())
 }
 
+pub fn create_directory(canonical_target: &Path) -> Result<DirectoryCreateResponse, String> {
+    if canonical_target.exists() {
+        if !canonical_target.is_dir() {
+            return Err("target exists and is not a directory".to_string());
+        }
+
+        return Ok(DirectoryCreateResponse {
+            path: canonical_target.display().to_string(),
+            created: false,
+        });
+    }
+
+    fs::create_dir_all(canonical_target).map_err(|err| err.to_string())?;
+
+    Ok(DirectoryCreateResponse {
+        path: canonical_target.display().to_string(),
+        created: true,
+    })
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    if path.is_dir() {
+        fs::remove_dir_all(path).map_err(|err| err.to_string())?;
+    } else {
+        fs::remove_file(path).map_err(|err| err.to_string())?;
+    }
+
+    Ok(true)
+}
+
+fn copy_directory_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|err| err.to_string())?;
+
+    for entry in fs::read_dir(source).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|err| err.to_string())?;
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+            continue;
+        }
+
+        if let Some(parent) = destination_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+
+        fs::copy(&source_path, &destination_path).map_err(|err| err.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub fn copy_path(
+    canonical_source: &Path,
+    canonical_destination: &Path,
+    overwrite: bool,
+) -> Result<PathMutationResponse, String> {
+    if !canonical_source.exists() {
+        return Err("source path does not exist".to_string());
+    }
+
+    let created_parent = match canonical_destination.parent() {
+        Some(parent) if !parent.exists() => {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            true
+        }
+        Some(_) => false,
+        None => false,
+    };
+
+    if canonical_destination.exists() && !overwrite {
+        return Err("destination already exists".to_string());
+    }
+
+    let replaced_existing = if overwrite {
+        remove_path_if_exists(canonical_destination)?
+    } else {
+        false
+    };
+
+    let item_kind = if canonical_source.is_dir() {
+        copy_directory_recursive(canonical_source, canonical_destination)?;
+        "directory"
+    } else {
+        fs::copy(canonical_source, canonical_destination).map_err(|err| err.to_string())?;
+        "file"
+    };
+
+    Ok(PathMutationResponse {
+        source_path: canonical_source.display().to_string(),
+        destination_path: canonical_destination.display().to_string(),
+        item_kind: item_kind.to_string(),
+        created_parent,
+        replaced_existing,
+    })
+}
+
+pub fn move_path(
+    canonical_source: &Path,
+    canonical_destination: &Path,
+    overwrite: bool,
+) -> Result<PathMutationResponse, String> {
+    if !canonical_source.exists() {
+        return Err("source path does not exist".to_string());
+    }
+
+    let created_parent = match canonical_destination.parent() {
+        Some(parent) if !parent.exists() => {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+            true
+        }
+        Some(_) => false,
+        None => false,
+    };
+
+    if canonical_destination.exists() && !overwrite {
+        return Err("destination already exists".to_string());
+    }
+
+    let replaced_existing = if overwrite {
+        remove_path_if_exists(canonical_destination)?
+    } else {
+        false
+    };
+
+    let item_kind = if canonical_source.is_dir() {
+        "directory"
+    } else {
+        "file"
+    };
+
+    match fs::rename(canonical_source, canonical_destination) {
+        Ok(_) => {}
+        Err(_) if canonical_source.is_dir() => {
+            copy_directory_recursive(canonical_source, canonical_destination)?;
+            fs::remove_dir_all(canonical_source).map_err(|err| err.to_string())?;
+        }
+        Err(_) => {
+            fs::copy(canonical_source, canonical_destination).map_err(|err| err.to_string())?;
+            fs::remove_file(canonical_source).map_err(|err| err.to_string())?;
+        }
+    }
+
+    Ok(PathMutationResponse {
+        source_path: canonical_source.display().to_string(),
+        destination_path: canonical_destination.display().to_string(),
+        item_kind: item_kind.to_string(),
+        created_parent,
+        replaced_existing,
+    })
+}
+
 pub fn list_backups(app_data_dir: &Path) -> Result<Vec<BackupEntry>, String> {
     let backup_root = backup_root(app_data_dir)?;
     let mut entries = Vec::new();
@@ -225,5 +412,30 @@ pub fn restore_file_audit_details(path: &str, backup_file_name: &str) -> serde_j
     json!({
         "path": path,
         "backupFileName": backup_file_name,
+    })
+}
+
+pub fn create_directory_audit_details(path: &str, created: bool) -> serde_json::Value {
+    json!({
+        "path": path,
+        "created": created,
+    })
+}
+
+pub fn mutate_path_audit_details(
+    operation: &str,
+    source_path: &str,
+    destination_path: &str,
+    item_kind: &str,
+    created_parent: bool,
+    replaced_existing: bool,
+) -> serde_json::Value {
+    json!({
+        "operation": operation,
+        "sourcePath": source_path,
+        "destinationPath": destination_path,
+        "itemKind": item_kind,
+        "createdParent": created_parent,
+        "replacedExisting": replaced_existing,
     })
 }

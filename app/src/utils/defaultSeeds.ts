@@ -1,5 +1,5 @@
-import { invoke } from '@tauri-apps/api/core'
 import type { Personality } from '../stores/personalityStore'
+import { safeInvoke } from './safeInvoke'
 
 export type DefaultPersonalityDef = {
   id: string
@@ -104,12 +104,12 @@ Deine Aufgaben:
 
 export async function seedDefaultPersonalities(): Promise<void> {
   try {
-    const existing = await invoke<Personality[]>('personality_list')
+    const existing = await safeInvoke<Personality[]>('personality_list', undefined, [])
     const existingIds = new Set(existing.map(p => p.id))
 
     for (const def of DEFAULT_PERSONALITIES) {
       if (!existingIds.has(def.id)) {
-        await invoke('personality_upsert', {
+        await safeInvoke('personality_upsert', {
           id: def.id,
           name: def.name,
           description: def.description,
@@ -118,7 +118,7 @@ export async function seedDefaultPersonalities(): Promise<void> {
           modelOverride: null,
           icon: def.icon,
           isDefault: def.isDefault,
-        })
+        }, undefined)
       }
     }
   } catch {
@@ -186,37 +186,37 @@ export const DEFAULT_PROFILE_ENTRIES = [
 
 export async function seedDefaultMemory(): Promise<void> {
   try {
-    const existing = await invoke<Array<{ id: string }>>('memory_search', {
+    const existing = await safeInvoke<Array<{ id: string }>>('memory_search', {
       scope: 'system', category: null, keyword: null, limit: 100,
-    })
+    }, [])
     const existingIds = new Set(existing.map(e => e.id))
 
     for (const entry of DEFAULT_MEMORY_ENTRIES) {
       if (!existingIds.has(entry.id)) {
-        await invoke('memory_upsert', {
+        await safeInvoke('memory_upsert', {
           id: entry.id,
           scope: entry.scope,
           category: entry.category,
           key: entry.key,
           content: entry.content,
           confidence: entry.confidence,
-        })
+        }, undefined)
       }
     }
 
-    const profileEntries = await invoke<Array<{ key: string }>>('user_profile_list')
+    const profileEntries = await safeInvoke<Array<{ key: string }>>('user_profile_list', undefined, [])
     const existingKeys = new Set(profileEntries.map(p => p.key))
 
     for (const profile of DEFAULT_PROFILE_ENTRIES) {
       if (!existingKeys.has(profile.key)) {
         const id = `prof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        await invoke('user_profile_upsert', {
+        await safeInvoke('user_profile_upsert', {
           id,
           key: profile.key,
           value: profile.value,
           source: profile.source,
           confidence: 1.0,
-        })
+        }, undefined)
       }
     }
   } catch {

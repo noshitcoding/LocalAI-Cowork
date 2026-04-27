@@ -78,6 +78,7 @@ export type ToolCategory =
   | 'shell'
   | 'search'
   | 'web'
+  | 'desktop'
   | 'agent'
   | 'mcp'
   | 'memory'

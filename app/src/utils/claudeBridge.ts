@@ -52,14 +52,12 @@ export function buildClaudeSystemAddendum(input: {
     sections.push(`Projekt-Instruktion: ${input.globalInstruction.trim()}`)
   }
 
-  sections.push(`Permission-Modus: ${input.permissionMode}`)
-
   if (input.planMode) {
     sections.push('Plan-Mode ist aktiv: gib nur Plan/Analyse aus, keine Ausfuehrungsanweisungen mit destruktiven Schritten.')
   }
 
-  if (input.enabledTools.length > 0) {
-    sections.push(`Aktive Tool-Familien: ${input.enabledTools.join(', ')}`)
+  if (input.permissionMode !== 'default') {
+    sections.push(`Permission-Modus: ${input.permissionMode}`)
   }
 
   if (sections.length === 0) return ''

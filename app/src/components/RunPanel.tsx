@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { useEngineStore } from '../stores/engineStore'
+import { safeInvoke } from '../utils/safeInvoke'
 
 type EngineRunRow = {
   id: string
@@ -60,7 +60,7 @@ export default function RunPanel() {
     setLoading(true)
     setError(null)
     try {
-      const rows = await invoke<EngineRunRow[] | null>('engine_run_list', { limit: 100 })
+      const rows = await safeInvoke<EngineRunRow[] | null>('engine_run_list', { limit: 100 }, [])
       const safeRows = Array.isArray(rows) ? rows : []
       setRuns(safeRows)
       const nextSelected = selectedRun && safeRows.some((row) => row.id === selectedRun)
@@ -76,10 +76,10 @@ export default function RunPanel() {
 
   const refreshCheckpoints = async (runId: string) => {
     try {
-      const rows = await invoke<EngineRunCheckpointRow[] | null>('engine_run_checkpoint_list', {
+      const rows = await safeInvoke<EngineRunCheckpointRow[] | null>('engine_run_checkpoint_list', {
         runId,
         limit: 20,
-      })
+      }, [])
       setCheckpoints(Array.isArray(rows) ? rows : [])
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -88,7 +88,7 @@ export default function RunPanel() {
 
   const refreshSandbox = async (runId: string) => {
     try {
-      const row = await invoke<WorkerSandboxRow | null>('worker_sandbox_get_for_run', { runId })
+      const row = await safeInvoke<WorkerSandboxRow | null>('worker_sandbox_get_for_run', { runId }, null)
       setSandbox(row ?? null)
     } catch {
       setSandbox(null)
@@ -115,11 +115,11 @@ export default function RunPanel() {
     try {
       let nextSelectedRun = runId
       if (action === 'cancel') {
-        await invoke('engine_run_cancel', { id: runId })
+        await safeInvoke('engine_run_cancel', { id: runId }, null)
       } else if (action === 'resume') {
-        await invoke('engine_run_resume', { id: runId })
+        await safeInvoke('engine_run_resume', { id: runId }, null)
       } else {
-        nextSelectedRun = await invoke<string>('engine_run_retry', { id: runId })
+        nextSelectedRun = await safeInvoke<string>('engine_run_retry', { id: runId })
       }
       await refreshRuns()
       setSelectedRun(nextSelectedRun)

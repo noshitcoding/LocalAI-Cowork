@@ -1,8 +1,9 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -54,6 +55,17 @@ pub struct McpCallResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpRuntimeServerStatus {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub pid: Option<u32>,
+    pub started_at: String,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum McpError {
     #[error("invalid command")]
@@ -66,22 +78,361 @@ pub enum McpError {
     Timeout,
 }
 
+struct RuntimeMcpServer {
+    name: String,
+    command: String,
+    args: Vec<String>,
+    child: Child,
+    stdin: ChildStdin,
+    stdout_rx: mpsc::Receiver<String>,
+    next_id: i64,
+    started_at: String,
+    last_error: Option<String>,
+}
+
+impl RuntimeMcpServer {
+    fn status(&self) -> McpRuntimeServerStatus {
+        McpRuntimeServerStatus {
+            name: self.name.clone(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            pid: Some(self.child.id()),
+            started_at: self.started_at.clone(),
+            last_error: self.last_error.clone(),
+        }
+    }
+
+    fn next_request_id(&mut self) -> i64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+}
+
+static MCP_RUNTIME_SERVERS: OnceLock<Mutex<HashMap<String, RuntimeMcpServer>>> = OnceLock::new();
+
+fn runtime_registry() -> &'static Mutex<HashMap<String, RuntimeMcpServer>> {
+    MCP_RUNTIME_SERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn spawn_process(
+    command_name: &str,
+    args: &[String],
+    env: &HashMap<String, String>,
+) -> Result<Child, McpError> {
+    let mut command = Command::new(command_name.trim());
+    command
+        .args(args.iter().map(String::as_str))
+        .envs(env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    command
+        .spawn()
+        .map_err(|error| McpError::SpawnFailed(error.to_string()))
+}
+
+fn spawn_runtime_server(req: &McpServerRequest) -> Result<RuntimeMcpServer, McpError> {
+    let mut child = spawn_process(&req.command, &req.args, &req.env)?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| McpError::IoFailed("missing stdin pipe".to_string()))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| McpError::IoFailed("missing stdout pipe".to_string()))?;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    Ok(RuntimeMcpServer {
+        name: req.name.clone(),
+        command: req.command.clone(),
+        args: req.args.clone(),
+        child,
+        stdin,
+        stdout_rx: rx,
+        next_id: 1,
+        started_at: Utc::now().to_rfc3339(),
+        last_error: None,
+    })
+}
+
+fn runtime_send_rpc(
+    server: &mut RuntimeMcpServer,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, McpError> {
+    let request_id = server.next_request_id();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params,
+    });
+
+    writeln!(server.stdin, "{}", payload).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    server
+        .stdin
+        .flush()
+        .map_err(|error| McpError::IoFailed(error.to_string()))?;
+
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let wait_for = remaining.min(Duration::from_millis(400));
+
+        match server.stdout_rx.recv_timeout(wait_for) {
+            Ok(line) => {
+                let value: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(parsed) => parsed,
+                    Err(_) => continue,
+                };
+
+                if value.get("id").and_then(|entry| entry.as_i64()) != Some(request_id) {
+                    continue;
+                }
+
+                if let Some(error) = value.get("error") {
+                    let message = error
+                        .get("message")
+                        .and_then(|entry| entry.as_str())
+                        .unwrap_or("unknown MCP error")
+                        .to_string();
+                    return Err(McpError::IoFailed(message));
+                }
+
+                return Ok(value
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => return Err(McpError::IoFailed("MCP process output closed".to_string())),
+        }
+    }
+
+    Err(McpError::Timeout)
+}
+
+fn runtime_send_initialized_notification(server: &mut RuntimeMcpServer) -> Result<(), McpError> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {},
+    });
+
+    writeln!(server.stdin, "{}", payload).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    server
+        .stdin
+        .flush()
+        .map_err(|error| McpError::IoFailed(error.to_string()))
+}
+
+fn runtime_initialize(server: &mut RuntimeMcpServer) -> Result<(), McpError> {
+    let _ = runtime_send_rpc(
+        server,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "clientInfo": {
+                "name": "Open_Cowork",
+                "version": "0.1.0"
+            },
+            "capabilities": {}
+        }),
+        Duration::from_secs(8),
+    )?;
+
+    let _ = runtime_send_initialized_notification(server);
+
+    let _ = runtime_send_rpc(
+        server,
+        "tools/list",
+        serde_json::json!({}),
+        Duration::from_secs(8),
+    )?;
+
+    Ok(())
+}
+
+fn runtime_shutdown_server(server: &mut RuntimeMcpServer) {
+    let _ = server.child.kill();
+    let _ = server.child.wait();
+}
+
+fn parse_tools_from_result(result: &serde_json::Value) -> Vec<McpTool> {
+    let mut tools = Vec::new();
+    if let Some(items) = result.get("tools").and_then(|entry| entry.as_array()) {
+        for item in items {
+            tools.push(McpTool {
+                name: item
+                    .get("name")
+                    .and_then(|entry| entry.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                description: item
+                    .get("description")
+                    .and_then(|entry| entry.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+    }
+    tools
+}
+
+fn format_call_result(result: &serde_json::Value) -> String {
+    if let Some(content) = result.get("content").and_then(|entry| entry.as_array()) {
+        let combined = content
+            .iter()
+            .filter_map(|entry| entry.get("text").and_then(|text| text.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !combined.is_empty() {
+            return combined;
+        }
+    }
+
+    serde_json::to_string_pretty(result).unwrap_or_default()
+}
+
+pub fn runtime_has_server(name: &str) -> bool {
+    runtime_registry()
+        .lock()
+        .map(|servers| servers.contains_key(name))
+        .unwrap_or(false)
+}
+
+pub fn runtime_list_servers() -> Result<Vec<McpRuntimeServerStatus>, McpError> {
+    let servers = runtime_registry()
+        .lock()
+        .map_err(|_| McpError::IoFailed("runtime registry lock poisoned".to_string()))?;
+    Ok(servers.values().map(RuntimeMcpServer::status).collect())
+}
+
+pub fn runtime_start_server(req: McpServerRequest) -> Result<McpRuntimeServerStatus, McpError> {
+    if req.command.trim().is_empty() {
+        return Err(McpError::InvalidCommand);
+    }
+
+    let mut servers = runtime_registry()
+        .lock()
+        .map_err(|_| McpError::IoFailed("runtime registry lock poisoned".to_string()))?;
+
+    if let Some(existing) = servers.get(&req.name) {
+        return Ok(existing.status());
+    }
+
+    let mut server = spawn_runtime_server(&req)?;
+    if let Err(error) = runtime_initialize(&mut server) {
+        server.last_error = Some(error.to_string());
+        runtime_shutdown_server(&mut server);
+        return Err(error);
+    }
+
+    let status = server.status();
+    servers.insert(req.name, server);
+    Ok(status)
+}
+
+pub fn runtime_stop_server(name: &str) -> Result<bool, McpError> {
+    let mut servers = runtime_registry()
+        .lock()
+        .map_err(|_| McpError::IoFailed("runtime registry lock poisoned".to_string()))?;
+
+    let Some(mut server) = servers.remove(name) else {
+        return Ok(false);
+    };
+
+    runtime_shutdown_server(&mut server);
+    Ok(true)
+}
+
+pub fn runtime_restart_server(req: McpServerRequest) -> Result<McpRuntimeServerStatus, McpError> {
+    let _ = runtime_stop_server(&req.name)?;
+    runtime_start_server(req)
+}
+
+pub fn runtime_probe_server(name: &str) -> Result<McpProbeResponse, McpError> {
+    let mut servers = runtime_registry()
+        .lock()
+        .map_err(|_| McpError::IoFailed("runtime registry lock poisoned".to_string()))?;
+
+    let server = servers
+        .get_mut(name)
+        .ok_or_else(|| McpError::SpawnFailed(format!("runtime server not started: {}", name)))?;
+
+    let result = runtime_send_rpc(
+        server,
+        "tools/list",
+        serde_json::json!({}),
+        Duration::from_secs(8),
+    )?;
+
+    Ok(McpProbeResponse {
+        server_name: server.name.clone(),
+        protocol_version: Some("2024-11-05".to_string()),
+        server_info: Some(format!(
+            "runtime pid={} command={} {}",
+            server.child.id(),
+            server.command,
+            server.args.join(" ")
+        )),
+        tools: parse_tools_from_result(&result),
+    })
+}
+
+pub fn runtime_call_tool(
+    name: &str,
+    tool_name: &str,
+    tool_args: HashMap<String, serde_json::Value>,
+) -> Result<McpCallResponse, McpError> {
+    let mut servers = runtime_registry()
+        .lock()
+        .map_err(|_| McpError::IoFailed("runtime registry lock poisoned".to_string()))?;
+
+    let server = servers
+        .get_mut(name)
+        .ok_or_else(|| McpError::SpawnFailed(format!("runtime server not started: {}", name)))?;
+
+    let result = runtime_send_rpc(
+        server,
+        "tools/call",
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": tool_args,
+        }),
+        Duration::from_secs(15),
+    )?;
+
+    Ok(McpCallResponse {
+        server_name: name.to_string(),
+        tool_name: tool_name.to_string(),
+        success: true,
+        result: format_call_result(&result),
+        error: None,
+    })
+}
+
 pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError> {
     if req.command.trim().is_empty() {
         return Err(McpError::InvalidCommand);
     }
 
-    let mut command = Command::new(req.command.trim());
-    command
-        .args(req.args.iter().map(String::as_str))
-        .envs(req.env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
-    let mut child = command
-        .spawn()
-        .map_err(|e| McpError::SpawnFailed(e.to_string()))?;
+    let mut child = spawn_process(&req.command, &req.args, &req.env)?;
 
     let mut stdin = child
         .stdin
@@ -114,9 +465,9 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
         "params": {}
     });
 
-    writeln!(stdin, "{}", init).map_err(|e| McpError::IoFailed(e.to_string()))?;
-    writeln!(stdin, "{}", list_tools).map_err(|e| McpError::IoFailed(e.to_string()))?;
-    stdin.flush().map_err(|e| McpError::IoFailed(e.to_string()))?;
+    writeln!(stdin, "{}", init).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    writeln!(stdin, "{}", list_tools).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    stdin.flush().map_err(|error| McpError::IoFailed(error.to_string()))?;
 
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -144,7 +495,7 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
         match rx.recv_timeout(wait_for) {
             Ok(line) => {
                 let value: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
+                    Ok(parsed) => parsed,
                     Err(_) => continue,
                 };
 
@@ -152,18 +503,21 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
                     have_init = true;
                     protocol_version = value
                         .get("result")
-                        .and_then(|r| r.get("protocolVersion"))
-                        .and_then(|s| s.as_str())
+                        .and_then(|result| result.get("protocolVersion"))
+                        .and_then(|entry| entry.as_str())
                         .map(ToString::to_string);
 
                     server_info = value
                         .get("result")
-                        .and_then(|r| r.get("serverInfo"))
+                        .and_then(|result| result.get("serverInfo"))
                         .map(|info| {
-                            let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let name = info
+                                .get("name")
+                                .and_then(|entry| entry.as_str())
+                                .unwrap_or("unknown");
                             let version = info
                                 .get("version")
-                                .and_then(|v| v.as_str())
+                                .and_then(|entry| entry.as_str())
                                 .unwrap_or("unknown");
                             format!("{} {}", name, version)
                         });
@@ -173,18 +527,18 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
                     have_tools = true;
                     if let Some(array) = value
                         .get("result")
-                        .and_then(|r| r.get("tools"))
-                        .and_then(|t| t.as_array())
+                        .and_then(|result| result.get("tools"))
+                        .and_then(|entry| entry.as_array())
                     {
                         for tool in array {
                             let name = tool
                                 .get("name")
-                                .and_then(|n| n.as_str())
+                                .and_then(|entry| entry.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
                             let description = tool
                                 .get("description")
-                                .and_then(|d| d.as_str())
+                                .and_then(|entry| entry.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             tools.push(McpTool { name, description });
@@ -216,30 +570,22 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
     })
 }
 
-/// Spawn an MCP server, initialize, call a tool, and return the result.
 pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
     if req.command.trim().is_empty() {
         return Err(McpError::InvalidCommand);
     }
 
-    let mut command = Command::new(req.command.trim());
-    command
-        .args(req.args.iter().map(String::as_str))
-        .envs(req.env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let mut child = spawn_process(&req.command, &req.args, &req.env)?;
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| McpError::SpawnFailed(e.to_string()))?;
-
-    let mut stdin = child.stdin.take()
+    let mut stdin = child
+        .stdin
+        .take()
         .ok_or_else(|| McpError::IoFailed("missing stdin".to_string()))?;
-    let stdout = child.stdout.take()
+    let stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| McpError::IoFailed("missing stdout".to_string()))?;
 
-    // 1) initialize
     let init = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -251,7 +597,6 @@ pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
         }
     });
 
-    // 2) tools/call
     let tool_call = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -262,9 +607,9 @@ pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
         }
     });
 
-    writeln!(stdin, "{}", init).map_err(|e| McpError::IoFailed(e.to_string()))?;
-    writeln!(stdin, "{}", tool_call).map_err(|e| McpError::IoFailed(e.to_string()))?;
-    stdin.flush().map_err(|e| McpError::IoFailed(e.to_string()))?;
+    writeln!(stdin, "{}", init).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    writeln!(stdin, "{}", tool_call).map_err(|error| McpError::IoFailed(error.to_string()))?;
+    stdin.flush().map_err(|error| McpError::IoFailed(error.to_string()))?;
 
     let (tx, rx) = mpsc::channel::<String>();
     std::thread::spawn(move || {
@@ -290,7 +635,7 @@ pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
         match rx.recv_timeout(wait_for) {
             Ok(line) => {
                 let value: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(v) => v,
+                    Ok(parsed) => parsed,
                     Err(_) => continue,
                 };
 
@@ -300,19 +645,19 @@ pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
 
                 if value.get("id").and_then(|id| id.as_i64()) == Some(2) {
                     have_result = true;
-                    if let Some(err) = value.get("error") {
+                    if let Some(error) = value.get("error") {
                         error_text = Some(
-                            err.get("message")
-                                .and_then(|m| m.as_str())
+                            error
+                                .get("message")
+                                .and_then(|entry| entry.as_str())
                                 .unwrap_or("unknown error")
                                 .to_string(),
                         );
                     } else if let Some(result) = value.get("result") {
-                        // MCP tools/call result has "content" array
-                        if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+                        if let Some(content) = result.get("content").and_then(|entry| entry.as_array()) {
                             let texts: Vec<&str> = content
                                 .iter()
-                                .filter_map(|entry| entry.get("text").and_then(|t| t.as_str()))
+                                .filter_map(|entry| entry.get("text").and_then(|text| text.as_str()))
                                 .collect();
                             result_text = texts.join("\n");
                         } else {

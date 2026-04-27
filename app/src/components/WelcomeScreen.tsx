@@ -1,12 +1,12 @@
 import { useRef, useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useConfigStore } from '../stores/configStore'
 import { useUiStore } from '../stores/uiStore'
 import { useChatStore } from '../stores/chatStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useLogStore } from '../stores/logStore'
+import { useCoworkStore, type ClaudePermissionMode } from '../stores/coworkStore'
 import type { WorkingPathKind } from '../stores/uiStore'
 import type { TaskStep } from '../stores/taskStore'
 import {
@@ -16,9 +16,53 @@ import {
   type ChatAttachment,
 } from '../utils/chatAttachments'
 import { buildAttachmentPromptContext } from '../utils/attachmentPromptContext'
-import { buildModelDebugContent, extractThinkingContent, sanitizeAssistantContent } from '../utils/messageDisplay'
-import { streamChatTurn } from '../utils/ollamaStreaming'
+import { resolveAssistantPresentation } from '../utils/messageDisplay'
+import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFromToolResult, type WebSearchSource } from '../utils/webSearchSources'
 import { writeAuditEvent } from '../utils/audit'
+import { safeInvoke } from '../utils/safeInvoke'
+import { useEngineStore } from '../stores/engineStore'
+
+type EnginePermissionMode = 'default' | 'plan' | 'bypass' | 'strict'
+
+const CLAUDE_TO_ENGINE_PERMISSION_MODE: Record<ClaudePermissionMode, EnginePermissionMode> = {
+  default: 'default',
+  acceptEdits: 'strict',
+  bypassPermissions: 'bypass',
+  dontAsk: 'bypass',
+  plan: 'plan',
+}
+
+function getParentDirectory(path: string): string {
+  const normalized = path.trim()
+  const lastSeparatorIndex = Math.max(normalized.lastIndexOf('\\'), normalized.lastIndexOf('/'))
+  if (lastSeparatorIndex < 0) return '.'
+  if (lastSeparatorIndex === 0) return normalized.slice(0, 1)
+  if (lastSeparatorIndex === 2 && /^[a-zA-Z]:[\\/]/.test(normalized)) {
+    return normalized.slice(0, 3)
+  }
+  return normalized.slice(0, lastSeparatorIndex)
+}
+
+function getEffectiveWelcomeCwd(
+  attachments: ChatAttachment[],
+  fallbackPath: string | null,
+): string {
+  for (const attachment of attachments) {
+    const normalized = attachment.path.trim()
+    if (normalized && attachment.kind === 'folder') {
+      return normalized
+    }
+  }
+
+  for (const attachment of attachments) {
+    const normalized = attachment.path.trim()
+    if (normalized && attachment.kind === 'file') {
+      return getParentDirectory(normalized)
+    }
+  }
+
+  return fallbackPath?.trim() || '.'
+}
 
 const QUICK_ACTIONS = [
   { icon: '📄', title: 'Datei erstellen', prompt: 'Erstelle eine neue Datei' },
@@ -40,23 +84,41 @@ export default function WelcomeScreen() {
   const ollama = useConfigStore((s) => s.ollama)
   const verboseMode = useConfigStore((s) => s.preferences.verboseMode)
   const superVerboseAuditLogging = useConfigStore((s) => s.preferences.superVerboseAuditLogging)
+  const autoPilotAllTools = useConfigStore((s) => s.preferences.autoPilotAllTools)
   const availableModels = useConfigStore((s) => s.availableModels)
   const setOllama = useConfigStore((s) => s.setOllama)
   const setAvailableModels = useConfigStore((s) => s.setAvailableModels)
   const selectableModels = Array.isArray(availableModels) ? availableModels : []
+  const claudePermissionMode = useCoworkStore((s) => s.claudePermissionMode)
+  const engineSendMessage = useEngineStore((s) => s.sendMessage)
+  const setEngineConfig = useEngineStore((s) => s.setConfig)
+  const resolveEngineApproval = useEngineStore((s) => s.resolveApproval)
 
   const { workingFolder, workingPathKind, setWorkingPath } = useUiStore()
-  const { addThread, setActiveThread, addMessage, updateMessage } = useChatStore()
+  const {
+    addThread,
+    setActiveThread,
+    addMessage,
+    updateMessage,
+    setPendingApproval,
+    clearApproval,
+    setBusy: setChatBusy,
+    setError: setChatError,
+  } = useChatStore()
   const { createTask, setTaskSteps, updateTaskStatus } = useTaskStore()
   const addLog = useLogStore((s) => s.addLog)
 
   useEffect(() => {
+    setEngineConfig({ permissionMode: CLAUDE_TO_ENGINE_PERMISSION_MODE[claudePermissionMode] })
+  }, [claudePermissionMode, setEngineConfig])
+
+  useEffect(() => {
     const fetchModels = async () => {
       try {
-        const health = await invoke<{
+        const health = await safeInvoke<{
           ok: boolean
           models: string[]
-        }>('ollama_health_check', { config: ollama })
+        }>('ollama_health_check', { config: ollama }, { ok: false, models: [] })
         const models = Array.isArray(health.models) ? health.models : []
         if (health.ok && models.length > 0) {
           setAvailableModels(models)
@@ -139,7 +201,10 @@ export default function WelcomeScreen() {
     if (!text || busy) return
 
     setBusy(true)
+    setChatBusy(true)
     setError(null)
+    setChatError(null)
+    clearApproval()
 
     const pathAttachment: ChatAttachment[] = useFolder && workingFolder
       ? [{ path: workingFolder, kind: workingPathKind === 'file' ? 'file' : 'folder' }]
@@ -174,6 +239,10 @@ export default function WelcomeScreen() {
     if (inputRef.current) inputRef.current.value = ''
     setAttachments([])
     setAttachmentNotice(null)
+    const effectiveTimeoutMs = Math.max(ollama.timeoutMs, 600000)
+    if (effectiveTimeoutMs !== ollama.timeoutMs) {
+      setOllama({ timeoutMs: effectiveTimeoutMs })
+    }
 
     let assistantMessageId: string | null = null
 
@@ -186,7 +255,7 @@ export default function WelcomeScreen() {
         details: {
           endpoint: ollama.baseUrl,
           model: ollama.model,
-          timeoutMs: ollama.timeoutMs,
+          timeoutMs: effectiveTimeoutMs,
           promptChars: promptWithAttachments.length,
           parsedAttachments: attachmentBuild.parsedFiles,
           failedAttachments: attachmentBuild.failedFiles.length,
@@ -213,6 +282,12 @@ export default function WelcomeScreen() {
         })
       }
       let rawAssistantMessage = ''
+      let rawThinkingMessage = ''
+      let engineErrorMessage = ''
+      let approvalSummary = ''
+      let approvalTaskCreated = false
+      let webSearchSources: WebSearchSource[] = []
+      const usedToolNames = new Set<string>()
       const createdAssistantMessageId = addMessage(threadId, {
         role: 'assistant',
         content: '',
@@ -221,29 +296,150 @@ export default function WelcomeScreen() {
       })
       assistantMessageId = createdAssistantMessageId
 
-      const response = await streamChatTurn(
-        {
-          prompt: promptWithAttachments,
-          history: [],
-          config: ollama,
-        },
-        (chunk) => {
-          rawAssistantMessage += chunk
-          updateMessage(threadId, createdAssistantMessageId, {
-            content: sanitizeAssistantContent(rawAssistantMessage, verboseMode),
-            thinkingContent: extractThinkingContent(rawAssistantMessage),
-          })
-        },
-      )
+      const cwd = getEffectiveWelcomeCwd(mergedForSend.next, workingFolder)
 
-      const proposedPlan = Array.isArray(response.proposedPlan) ? response.proposedPlan : []
-      const requiresApproval = Boolean(response.requiresApproval)
+      await engineSendMessage(promptWithAttachments, cwd, (event) => {
+        switch (event.type) {
+          case 'text_delta': {
+            rawAssistantMessage += event.text
+            const presentation = resolveAssistantPresentation(rawAssistantMessage, {
+              verboseMode,
+              thinkingContent: rawThinkingMessage,
+            })
+            updateMessage(threadId, createdAssistantMessageId, {
+              content: presentation.content,
+              thinkingContent: presentation.thinkingContent,
+            })
+            break
+          }
+          case 'thinking_delta':
+            rawThinkingMessage += event.thinking
+            updateMessage(threadId, createdAssistantMessageId, {
+              thinkingContent: rawThinkingMessage,
+            })
+            break
+          case 'assistant_message': {
+            const blocks = Array.isArray(event.message.content) ? event.message.content : []
+            const textFromEvent = blocks
+              .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+              .map((block) => block.text)
+              .join('\n')
+              .trim()
+            const thinkingFromEvent = blocks
+              .filter((block): block is { type: 'thinking'; thinking: string } => block.type === 'thinking')
+              .map((block) => block.thinking)
+              .join('\n\n')
+              .trim()
 
-      const visibleAssistantMessage = sanitizeAssistantContent(response.assistantMessage, verboseMode)
+            if (!rawAssistantMessage && textFromEvent) {
+              rawAssistantMessage = textFromEvent
+            }
+            if (!rawThinkingMessage && thinkingFromEvent) {
+              rawThinkingMessage = thinkingFromEvent
+            }
+
+            const presentation = resolveAssistantPresentation(rawAssistantMessage, {
+              verboseMode,
+              thinkingContent: rawThinkingMessage,
+            })
+            updateMessage(threadId, createdAssistantMessageId, {
+              content: presentation.content,
+              thinkingContent: presentation.thinkingContent,
+            })
+            break
+          }
+          case 'approval_required': {
+            approvalSummary = `${event.request.toolName}: ${event.request.description}`
+            if (autoPilotAllTools) {
+              resolveEngineApproval({ allowed: true, reason: 'autoPilotAllTools' })
+              addLog({
+                level: 'info',
+                area: 'llm',
+                message: `Freigabe automatisch erteilt: ${event.request.toolName}`,
+                details: {
+                  reason: 'autoPilotAllTools',
+                  request: event.request,
+                },
+              })
+              break
+            }
+
+            setPendingApproval([approvalSummary])
+            if (!approvalTaskCreated) {
+              const taskId = createTask(text, text.slice(0, 60), threadId)
+              const steps: TaskStep[] = [{
+                id: `${taskId}-step-0`,
+                index: 0,
+                title: approvalSummary,
+                state: 'pending',
+                requiresApproval: true,
+                riskLevel: event.request.riskLevel,
+                output: null,
+              }]
+              setTaskSteps(taskId, steps)
+              updateTaskStatus(taskId, 'waiting_approval')
+              approvalTaskCreated = true
+            }
+
+            addLog({
+              level: 'warn',
+              area: 'llm',
+              message: `Freigabe erforderlich: ${event.request.toolName}`,
+              details: event.request,
+            })
+            break
+          }
+          case 'tool_use_start':
+            usedToolNames.add(event.toolName)
+            addLog({
+              level: 'info',
+              area: 'llm',
+              message: `Tool gestartet: ${event.toolName}`,
+              details: { toolName: event.toolName, input: event.input },
+            })
+            break
+          case 'tool_use_complete':
+            usedToolNames.add(event.toolName)
+            if (event.toolName === 'WebSearch') {
+              webSearchSources = mergeWebSearchSources(
+                webSearchSources,
+                parseWebSearchSourcesFromToolResult(event.result),
+              )
+            }
+            addLog({
+              level: 'info',
+              area: 'llm',
+              message: `Tool fertig: ${event.toolName}`,
+              details: { toolName: event.toolName, result: event.result.slice(0, 500) },
+            })
+            break
+          case 'error':
+            engineErrorMessage = event.error
+            addLog({ level: 'error', area: 'llm', message: event.error })
+            break
+        }
+      }, {
+        threadId,
+        messages: [],
+      })
+
+      const fallbackText = engineErrorMessage
+        ? `LLM-Anfrage fehlgeschlagen: ${engineErrorMessage}\n\nPruefe unter Einstellungen den Ollama-Endpoint, das Modell und den Timeout.`
+        : approvalSummary
+          ? `Freigabe erforderlich: ${approvalSummary}`
+          : usedToolNames.size > 0
+            ? `Die Engine hat Tools verwendet (${Array.from(usedToolNames).join(', ')}), aber keinen sichtbaren Abschlusstext geliefert.`
+            : 'Das Modell hat keine sichtbare Antwort geliefert. Bitte erneut versuchen oder Modell/Prompt pruefen.'
+      const presentation = resolveAssistantPresentation(rawAssistantMessage, {
+        verboseMode,
+        thinkingContent: rawThinkingMessage,
+        fallbackText,
+      })
+      const finalContent = appendWebSearchSources(presentation.content, webSearchSources)
       updateMessage(threadId, createdAssistantMessageId, {
-        content: visibleAssistantMessage,
-        debugContent: buildModelDebugContent(response.assistantMessage, visibleAssistantMessage),
-        thinkingContent: extractThinkingContent(response.assistantMessage),
+        content: finalContent,
+        debugContent: presentation.debugContent,
+        thinkingContent: presentation.thinkingContent,
         streaming: false,
       }, {
         persist: true,
@@ -253,10 +449,12 @@ export default function WelcomeScreen() {
         area: 'llm',
         message: 'LLM-Anfrage erfolgreich',
         details: {
-          endpoint: response.endpoint,
-          model: response.model,
+          endpoint: ollama.baseUrl,
+          model: ollama.model,
+          cwd,
           durationMs: Date.now() - started,
-          responseChars: response.assistantMessage.length,
+          responseChars: rawAssistantMessage.length,
+          usedTools: Array.from(usedToolNames),
         },
       })
       if (superVerboseAuditLogging) {
@@ -265,32 +463,19 @@ export default function WelcomeScreen() {
           threadId,
           prompt: text,
           promptWithAttachments,
-          assistantRawResponse: response.assistantMessage,
-          assistantVisibleResponse: visibleAssistantMessage,
-          endpoint: response.endpoint,
-          model: response.model,
-          requiresApproval,
-          proposedPlan,
+          assistantRawResponse: rawAssistantMessage,
+          assistantVisibleResponse: presentation.content,
+          endpoint: ollama.baseUrl,
+          model: ollama.model,
+          approvalSummary,
+          cwd,
+          usedTools: Array.from(usedToolNames),
         })
-      }
-
-      if (requiresApproval) {
-        const taskId = createTask(text, text.slice(0, 60), threadId)
-        const steps: TaskStep[] = proposedPlan.map((title, i) => ({
-          id: `${taskId}-step-${i}`,
-          index: i,
-          title,
-          state: 'pending',
-          requiresApproval: true,
-          riskLevel: 'medium',
-          output: null,
-        }))
-        setTaskSteps(taskId, steps)
-        updateTaskStatus(taskId, 'waiting_approval')
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
+      setChatError(message)
       addLog({
         level: 'error',
         area: 'llm',
@@ -298,7 +483,7 @@ export default function WelcomeScreen() {
         details: {
           endpoint: ollama.baseUrl,
           model: ollama.model,
-          timeoutMs: ollama.timeoutMs,
+          timeoutMs: effectiveTimeoutMs,
           error: message,
           source: 'welcome',
         },
@@ -325,6 +510,7 @@ export default function WelcomeScreen() {
       }
     } finally {
       setBusy(false)
+      setChatBusy(false)
     }
   }
 

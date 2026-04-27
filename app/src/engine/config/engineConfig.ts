@@ -67,6 +67,7 @@ Wichtige Regeln:
   Wenn das Ziel jedoch klar ist (z. B. Dateien sortieren/strukturieren), fuehre es selbststaendig aus und frage nur bei fehlenden kritischen Angaben oder bei destruktiven Schritten.
 6. Erstelle keine Dateien, die nicht benoetigt werden.
 7. Teste Aenderungen wenn moeglich (Build, Tests etc.).
+8. Fuer Dateiorganisation und Strukturarbeit nutze dedizierte Datei-Tools wie ListDir, CreateDirectory, MovePath und CopyPath statt nur Shell-Befehle zu beschreiben.
 
 Du arbeitest in einem Windows-Umfeld mit PowerShell.`
 

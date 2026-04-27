@@ -1,11 +1,12 @@
 import { Suspense, lazy, useEffect } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { useUiStore } from './stores/uiStore'
 import { useChatStore } from './stores/chatStore'
 import { useTaskStore } from './stores/taskStore'
 import { useLogStore } from './stores/logStore'
 import { useConfigStore } from './stores/configStore'
+import { useCoworkStore } from './stores/coworkStore'
 import { writeAuditEvent } from './utils/audit'
 import { seedDefaultPersonalities, seedDefaultMemory } from './utils/defaultSeeds'
 import { startScheduledWorker, stopScheduledWorker } from './engine/scheduledWorker'
@@ -14,7 +15,6 @@ import './App.css'
 const WelcomeScreen = lazy(() => import('./components/WelcomeScreen'))
 const CoworkView = lazy(() => import('./components/CoworkView'))
 const SettingsView = lazy(() => import('./components/SettingsView'))
-const FeaturesView = lazy(() => import('./components/FeaturesView'))
 
 function AppRoutes() {
   const activeThreadId = useChatStore((s) => s.activeThreadId)
@@ -29,7 +29,6 @@ function AppRoutes() {
               <SettingsView />
             </div>
           } />
-          <Route path="features" element={<FeaturesView />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
@@ -44,11 +43,15 @@ function App() {
   const setTheme = useUiStore((s) => s.setTheme)
   const preferences = useConfigStore((s) => s.preferences)
   const addLog = useLogStore((s) => s.addLog)
+  const loadScheduledTasks = useCoworkStore((s) => s.loadScheduledTasks)
+  const loadScheduledRuns = useCoworkStore((s) => s.loadScheduledRuns)
 
   useEffect(() => {
     const startedAt = performance.now()
     loadChatFromDb()
     loadTasksFromDb()
+    void loadScheduledTasks()
+    void loadScheduledRuns(20)
     seedDefaultPersonalities().catch(() => {})
     seedDefaultMemory().catch(() => {})
     addLog({
@@ -63,7 +66,7 @@ function App() {
     // Start scheduled tasks worker
     startScheduledWorker()
     return () => stopScheduledWorker()
-  }, [addLog, loadChatFromDb, loadTasksFromDb])
+  }, [addLog, loadChatFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -85,9 +88,9 @@ function App() {
   }, [preferences.syncThemeWithSystem, setTheme])
 
   return (
-    <BrowserRouter>
+    <MemoryRouter>
       <AppRoutes />
-    </BrowserRouter>
+    </MemoryRouter>
   )
 }
 

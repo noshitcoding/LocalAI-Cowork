@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { invoke } from '@tauri-apps/api/core'
+import { safeInvoke } from '../utils/safeInvoke'
 
 export type Personality = {
   id: string
@@ -38,7 +38,7 @@ export const usePersonalityStore = create<PersonalityState>()((set) => ({
   loadPersonalities: async () => {
     set({ loading: true, error: null })
     try {
-      const personalities = await invoke<Personality[]>('personality_list')
+      const personalities = await safeInvoke<Personality[]>('personality_list', undefined, [])
       set({ personalities, loading: false })
       const def = personalities.find((p) => p.is_default)
       if (def) set({ activeId: def.id })
@@ -49,7 +49,7 @@ export const usePersonalityStore = create<PersonalityState>()((set) => ({
 
   upsertPersonality: async (p) => {
     try {
-      await invoke('personality_upsert', {
+      await safeInvoke('personality_upsert', {
         id: p.id,
         name: p.name,
         description: p.description,
@@ -58,7 +58,7 @@ export const usePersonalityStore = create<PersonalityState>()((set) => ({
         modelOverride: p.modelOverride ?? null,
         icon: p.icon ?? null,
         isDefault: p.isDefault ?? false,
-      })
+      }, undefined)
     } catch (e) {
       set({ error: String(e) })
     }
@@ -66,7 +66,7 @@ export const usePersonalityStore = create<PersonalityState>()((set) => ({
 
   deletePersonality: async (id) => {
     try {
-      await invoke('personality_delete', { id })
+      await safeInvoke('personality_delete', { id }, undefined)
       set((s) => ({
         personalities: s.personalities.filter((p) => p.id !== id),
         activeId: s.activeId === id ? null : s.activeId,

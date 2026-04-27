@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { invoke } from '@tauri-apps/api/core'
 import { useUiStore } from './uiStore'
 import { useConfigStore } from './configStore'
 import { useChatStore } from './chatStore'
@@ -11,6 +10,8 @@ import { useProcessStore } from './processStore'
 import { useTerminalStore } from './terminalStore'
 import { useTaskStore } from './taskStore'
 import { useCrewStore } from './crewStore'
+import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
+import { parseScheduledTaskInput } from '../utils/schedulerUtils'
 
 export type SlashCommandCategory =
   | 'navigation'
@@ -35,6 +36,14 @@ export type SlashCommand = {
   description: string
   category: SlashCommandCategory
   execute: (args?: string) => void | Promise<void>
+}
+
+export function getSlashCommandSuggestions(commands: SlashCommand[], input: string): SlashCommand[] {
+  const trimmed = input.trimStart().toLowerCase()
+  if (!trimmed.startsWith('/')) return []
+
+  const partial = trimmed.split(/\s+/, 1)[0]
+  return commands.filter((command) => command.command.toLowerCase().startsWith(partial))
 }
 
 type CommandRegistryState = {
@@ -104,7 +113,7 @@ function buildAllCommands(): SlashCommand[] {
       id: 'add-dir', command: '/add-dir', label: 'Ordner hinzufuegen', description: 'Neuen Arbeitsordner zur Allowlist hinzufuegen',
       category: 'workspace', execute: async (args) => {
         if (args?.trim()) {
-          await invoke('fs_add_allowed_folder', { path: args.trim() }).catch(() => {})
+          await safeInvokeVoid('fs_add_allowed_folder', { path: args.trim() })
         }
       },
     },
@@ -135,7 +144,7 @@ function buildAllCommands(): SlashCommand[] {
     {
       id: 'init', command: '/init', label: 'Projekt initialisieren', description: 'Initialisiert ein neues Open_Cowork Projekt im aktuellen Ordner',
       category: 'workspace', execute: async () => {
-        await invoke('audit_event', { area: 'project', action: 'init', details: 'Projekt-Init gestartet' }).catch(() => {})
+        await safeInvokeVoid('audit_event', { area: 'project', action: 'init', details: 'Projekt-Init gestartet' })
         const store = useChatStore.getState()
         if (store.activeThreadId) {
           store.addMessage(store.activeThreadId, {
@@ -154,7 +163,7 @@ function buildAllCommands(): SlashCommand[] {
         if (threadId) {
           const thread = store.threads.find(t => t.id === threadId)
           if (thread) {
-            invoke('db_save_thread', { id: threadId, title: args.trim(), createdAt: new Date(thread.createdAt).toISOString() }).catch(() => {})
+            void safeInvokeVoid('db_save_thread', { id: threadId, title: args.trim(), createdAt: new Date(thread.createdAt).toISOString() })
           }
         }
       },
@@ -301,7 +310,7 @@ function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (!cs.activeThreadId) return
         try {
-          const health = await invoke<{ status: string }>('ollama_health_check', { config: useConfigStore.getState().ollama })
+          const health = await safeInvoke<{ status: string }>('ollama_health_check', { config: useConfigStore.getState().ollama })
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
             content: `System-Diagnose:\n- Ollama: ${health.status}\n- DB: aktiv\n- MCP: konfiguriert\n- Audit: aktiv`,
@@ -415,13 +424,13 @@ function buildAllCommands(): SlashCommand[] {
       category: 'session', execute: (args) => {
         const count = Number.parseInt(args ?? '1', 10) || 1
         const cs = useChatStore.getState()
-        const active = cs.threads.find(t => t.id === cs.activeThreadId)
-        if (active && cs.activeThreadId) {
-          // Can't directly set messages, but signal the rewind
-          void active.messages.slice(0, -count)
+        if (cs.activeThreadId) {
+          const removed = cs.removeLastMessagePairs(cs.activeThreadId, count)
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
-            content: `Letzte ${count} Nachricht(en) logisch zurueckgespult.`,
+            content: removed.pairsRemoved > 0
+              ? `Zurueckgespult: ${removed.pairsRemoved} Nachrichtenpaar(e) entfernt.`
+              : 'Keine passenden Nachrichten zum Zurueckspulen gefunden.',
             timestamp: Date.now(),
           })
         }
@@ -715,13 +724,18 @@ function buildAllCommands(): SlashCommand[] {
     // ===== Session Management =====
     {
       id: 'schedule', command: '/schedule', label: 'Zeitplan', description: 'Aufgabe zeitlich planen',
-      category: 'session', execute: (args) => {
+      category: 'session', execute: async (args) => {
         if (args?.trim()) {
-          const parts = args.split(' ')
-          const cron = parts.slice(0, 1).join(' ')
-          const prompt = parts.slice(1).join(' ')
-          useCoworkStore.getState().upsertScheduledTask({
-            id: uid(), name: prompt.slice(0, 40), prompt, cronLike: cron, active: true, lastRunAt: null,
+          const parsed = parseScheduledTaskInput(args)
+          if (!parsed) return
+          await useCoworkStore.getState().upsertScheduledTask({
+            id: uid(),
+            name: parsed.prompt.slice(0, 40),
+            prompt: parsed.prompt,
+            cronLike: parsed.scheduleExpr,
+            active: true,
+            lastRunAt: null,
+            nextRunAt: null,
           })
         }
       },
@@ -746,9 +760,9 @@ function buildAllCommands(): SlashCommand[] {
     {
       id: 'feedback', command: '/feedback', label: 'Feedback', description: 'Feedback zur aktuellen Antwort geben',
       category: 'session', execute: (args) => {
-        invoke('audit_event', {
+        void safeInvokeVoid('audit_event', {
           area: 'feedback', action: 'user_feedback', details: args ?? 'Kein Kommentar',
-        }).catch(() => {})
+        })
       },
     },
     {

@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { usePipelineStore } from '../stores/pipelineStore'
+import { useConfigStore } from '../stores/configStore'
 
 type ActiveTab = 'pipelines' | 'gateway'
 
 export default function PipelinePanel() {
   const {
-    pipelines, toolGateway, loading, error,
+    pipelines, toolGateway, loading, error, executing, lastResult,
     loadPipelines, upsertPipeline, deletePipeline,
-    loadToolGateway, upsertToolGateway, deleteToolGateway,
+    loadToolGateway, upsertToolGateway, deleteToolGateway, executePipeline,
   } = usePipelineStore()
+  const ollama = useConfigStore((s) => s.ollama)
 
   const [tab, setTab] = useState<ActiveTab>('pipelines')
 
@@ -99,9 +101,33 @@ export default function PipelinePanel() {
                       {p.steps_json}
                     </div>
                   </div>
-                  <button type="button" className="btn-sm" onClick={() => deletePipeline(p.id)} style={{ color: 'var(--danger)' }}>✕</button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button type="button" className="btn-sm" onClick={() => void executePipeline(p.id, ollama.baseUrl, ollama.model)} disabled={executing === p.id}>
+                      {executing === p.id ? 'Laeuft...' : 'Start'}
+                    </button>
+                    <button type="button" className="btn-sm" onClick={() => deletePipeline(p.id)} style={{ color: 'var(--danger)' }}>✕</button>
+                  </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {lastResult && (
+            <div className="card" style={{ marginTop: 12 }}>
+              <strong>Letzte Ausfuehrung: {lastResult.pipelineId}</strong>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>Status: {lastResult.status}</div>
+              {lastResult.error && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 4 }}>{lastResult.error}</div>}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                {lastResult.stepResults.map((step) => (
+                  <div key={`${step.step}-${step.tool}`} style={{ borderBottom: '1px solid var(--border-color)', paddingBottom: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                      <strong>Schritt {step.step}: {step.tool}</strong>
+                      <span>{step.success ? 'ok' : 'fehler'}</span>
+                    </div>
+                    <pre style={{ whiteSpace: 'pre-wrap', marginTop: 6, fontSize: 11 }}>{step.result.slice(0, 320)}</pre>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </>

@@ -74,6 +74,68 @@ export function buildModelDebugContent(rawContent: string, visibleContent: strin
   return rawWithoutThinking !== visibleContent ? rawWithoutThinking : undefined
 }
 
+const OLLAMA_REQUEST_PREVIEW_MARKER = '[OLLAMA REQUEST PREVIEW]'
+
+export function splitPromptDebugContent(debugContent: string | undefined): {
+  promptDebug?: string
+  ollamaRequestPreview?: string
+} {
+  const normalized = (debugContent || '').trim()
+  if (!normalized) return {}
+
+  const markerIndex = normalized.indexOf(OLLAMA_REQUEST_PREVIEW_MARKER)
+  if (markerIndex < 0) {
+    return { promptDebug: normalized }
+  }
+
+  const promptDebug = normalized.slice(0, markerIndex).trim()
+  const ollamaRequestPreview = normalized
+    .slice(markerIndex + OLLAMA_REQUEST_PREVIEW_MARKER.length)
+    .trim()
+
+  return {
+    promptDebug: promptDebug || undefined,
+    ollamaRequestPreview: ollamaRequestPreview || undefined,
+  }
+}
+
+export function resolveDisplayedThinkingContent(
+  messageThinkingContent: string | undefined,
+  liveThinkingContent: string | undefined,
+  options?: { streaming?: boolean; preferLive?: boolean },
+): string | undefined {
+  const messageThinking = (messageThinkingContent || '').trim()
+  const liveThinking = (liveThinkingContent || '').trim()
+
+  if (!options?.streaming || !options.preferLive || !liveThinking) {
+    return messageThinking || undefined
+  }
+
+  if (!messageThinking || liveThinking.length >= messageThinking.length) {
+    return liveThinking
+  }
+
+  return messageThinking
+}
+
+export function resolveDisplayedAssistantContent(
+  content: string,
+  thinkingContent: string | undefined,
+): string {
+  const normalizedContent = content.trim()
+  const normalizedThinking = (thinkingContent || '').trim()
+
+  if (!normalizedContent) {
+    return ''
+  }
+
+  if (normalizedThinking && normalizedContent === normalizedThinking) {
+    return ''
+  }
+
+  return content
+}
+
 type AssistantPresentationOptions = {
   verboseMode: boolean
   fallbackText?: string

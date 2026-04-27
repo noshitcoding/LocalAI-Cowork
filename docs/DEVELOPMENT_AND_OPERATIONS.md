@@ -5,16 +5,14 @@
 ```powershell
 cd app
 npm install
-npm run tauri dev
+npm run tauri build
 ```
 
 ## Build
 
 ```powershell
 cd app
-npm run build
-cd src-tauri
-cargo check
+npm run tauri build
 ```
 
 ## Tests
@@ -37,6 +35,10 @@ Desktop Smoke:
 
 - [DESKTOP_SMOKE_TEST.md](DESKTOP_SMOKE_TEST.md)
 
+Desktop-Steuerung und Computer Use:
+
+- [DESKTOP_CONTROL_AND_COMPUTER_USE.md](DESKTOP_CONTROL_AND_COMPUTER_USE.md)
+
 ## CI-Gates (aktueller Stand)
 
 - Frontend Build muss erfolgreich sein
@@ -48,14 +50,18 @@ Desktop Smoke:
 
 ## Funktionstest: Cowork Chat
 
-1. App starten (`npm run tauri dev`)
-2. Health-Check gegen Ollama ausfuehren
-3. Im Bereich "Cowork Chat" eine Aufgabe senden
-4. Antwort und ggf. Freigabehinweis pruefen
-5. Bei Freigabehinweis "Plan freigeben" ausloesen
+1. EXE bauen (`npm run tauri build`)
+2. Die gebaute Desktop-App aus `app/src-tauri/target/release/bundle/` starten
+3. Health-Check gegen Ollama ausfuehren
+4. Im Bereich "Cowork Chat" eine Aufgabe senden
+5. Antwort und ggf. Freigabehinweis pruefen
+6. Bei Freigabehinweis "Plan freigeben" ausloesen
 
 Vollstaendige Desktop-Checkliste:
 - [DESKTOP_SMOKE_TEST.md](DESKTOP_SMOKE_TEST.md)
+
+Technische Einordnung der Desktop-Steuerungswege:
+- [DESKTOP_CONTROL_AND_COMPUTER_USE.md](DESKTOP_CONTROL_AND_COMPUTER_USE.md)
 
 ## Funktionstest: MCP Probe
 
@@ -95,7 +101,7 @@ Testschritte:
 
 ## Runbook: Startprobleme
 
-## Fall A: `npm run tauri dev` startet nicht
+## Fall A: `npm run tauri build` erzeugt keine EXE
 
 - Node/NPM Versionen pruefen
 - Rust Toolchain pruefen (`rustc -V`, `cargo -V`)
@@ -109,7 +115,7 @@ Testschritte:
 
 ## Fall C: Build in CI rot
 
-- `npm run build` lokal reproduzieren
+- `npm run tauri build` lokal reproduzieren
 - `npm run test:ci` lokal reproduzieren
 - `cargo test` in `app/src-tauri` reproduzieren
 

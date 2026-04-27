@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { safeInvoke } from '../utils/safeInvoke'
 
 type RuntimeInstructionRow = {
   id: string
@@ -32,9 +32,9 @@ export default function RuntimeInstructionsPanel() {
     setLoading(true)
     setError(null)
     try {
-      const rows = await invoke<RuntimeInstructionRow[] | null>('runtime_instruction_list', {
+      const rows = await safeInvoke<RuntimeInstructionRow[] | null>('runtime_instruction_list', {
         enabledOnly: false,
-      })
+      }, [])
       setItems(Array.isArray(rows) ? rows : [])
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -51,7 +51,7 @@ export default function RuntimeInstructionsPanel() {
     if (!form.title.trim() || !form.content.trim()) return
     setError(null)
     try {
-      await invoke('runtime_instruction_upsert', {
+      await safeInvoke('runtime_instruction_upsert', {
         request: {
           id: randomId(),
           title: form.title.trim(),
@@ -61,7 +61,7 @@ export default function RuntimeInstructionsPanel() {
           priority: Number(form.priority) || 100,
           enabled: true,
         },
-      })
+      }, undefined)
       setForm({ title: '', scopeType: 'global', scopeRef: '', content: '', priority: '100' })
       await loadItems()
     } catch (err) {
@@ -71,7 +71,7 @@ export default function RuntimeInstructionsPanel() {
 
   const handleDelete = async (id: string) => {
     try {
-      await invoke('runtime_instruction_delete', { id })
+      await safeInvoke('runtime_instruction_delete', { id }, undefined)
       await loadItems()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

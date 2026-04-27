@@ -10,7 +10,9 @@ import TerminalPanel from './TerminalPanel'
 import PersonalitySelector from './PersonalitySelector'
 import SessionSearchPanel from './SessionSearchPanel'
 import PipelinePanel from './PipelinePanel'
-import ModelSwitcher from './ModelSwitcher'
+import SchedulerPanel from './SchedulerPanel'
+import CrewPanel from './CrewPanel'
+import ConnectorPanel from './ConnectorPanel'
 import McpView from './McpView'
 import RunPanel from './RunPanel'
 import RuntimeInstructionsPanel from './RuntimeInstructionsPanel'
@@ -71,7 +73,16 @@ type CategoryKey = (typeof CATEGORIES)[number]['key']
 /* ── Main Component ─────────────────────────── */
 
 export default function SettingsView() {
-  const { ollama, setOllama, preferences, setPreference, availableModels, setAvailableModels } = useConfigStore()
+  const {
+    ollama,
+    setOllama,
+    openAIComputerUse,
+    setOpenAIComputerUse,
+    preferences,
+    setPreference,
+    availableModels,
+    setAvailableModels,
+  } = useConfigStore()
   const engineConfig = useEngineStore((s) => s.config)
   const setEngineConfig = useEngineStore((s) => s.setConfig)
   const checkOllamaStatus = useEngineStore((s) => s.checkOllamaStatus)
@@ -228,7 +239,76 @@ export default function SettingsView() {
               <Toggle label="Stream-Antworten automatisch speichern" hint="Ollama-Antworten werden waehrend des Streamings gesichert" {...pref('ollamaStreamAutosave')} />
             </Section>
 
-            <ModelSwitcher />
+            <Section title="OpenAI Computer Use" icon="🖱️">
+              <div className="grid">
+                <label>
+                  API Key
+                  <input
+                    type="password"
+                    value={openAIComputerUse.apiKey}
+                    onChange={(e) => setOpenAIComputerUse({ apiKey: e.target.value })}
+                    placeholder="sk-..."
+                    style={{ fontFamily: 'monospace' }}
+                  />
+                </label>
+                <label>
+                  Base URL
+                  <input
+                    value={openAIComputerUse.baseUrl}
+                    onChange={(e) => setOpenAIComputerUse({ baseUrl: e.target.value })}
+                    placeholder="https://api.openai.com/v1"
+                    style={{ fontFamily: 'monospace' }}
+                  />
+                </label>
+                <label>
+                  Modell
+                  <input
+                    value={openAIComputerUse.model}
+                    onChange={(e) => setOpenAIComputerUse({ model: e.target.value })}
+                    placeholder="computer-use-preview"
+                    style={{ fontFamily: 'monospace' }}
+                  />
+                </label>
+                <label>
+                  Max Steps
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={openAIComputerUse.maxSteps}
+                    onChange={(e) => setOpenAIComputerUse({ maxSteps: parseNumberInput(e.target.value, openAIComputerUse.maxSteps) })}
+                  />
+                </label>
+                <label>
+                  Action Delay (ms)
+                  <input
+                    type="number"
+                    min={0}
+                    max={10000}
+                    step={50}
+                    value={openAIComputerUse.actionDelayMs}
+                    onChange={(e) => setOpenAIComputerUse({ actionDelayMs: parseNumberInput(e.target.value, openAIComputerUse.actionDelayMs) })}
+                  />
+                </label>
+                <label>
+                  Launch Delay (ms)
+                  <input
+                    type="number"
+                    min={0}
+                    max={30000}
+                    step={100}
+                    value={openAIComputerUse.launchDelayMs}
+                    onChange={(e) => setOpenAIComputerUse({ launchDelayMs: parseNumberInput(e.target.value, openAIComputerUse.launchDelayMs) })}
+                  />
+                </label>
+              </div>
+              <Toggle
+                label="Safety Checks automatisch bestaetigen"
+                hint="Nur fuer kontrollierte lokale Testumgebungen. Sonst Human-in-the-loop beibehalten."
+                checked={openAIComputerUse.autoAcknowledgeSafetyChecks}
+                onChange={(value) => setOpenAIComputerUse({ autoAcknowledgeSafetyChecks: value })}
+              />
+            </Section>
             <PersonalitySelector />
           </div>
         )}
@@ -289,6 +369,8 @@ export default function SettingsView() {
 
             <SkillPanel />
             <PipelinePanel />
+            <SchedulerPanel />
+            <CrewPanel />
           </div>
         )}
 
@@ -433,6 +515,8 @@ export default function SettingsView() {
                 </label>
               </div>
             </Section>
+
+            <ConnectorPanel />
 
             <Section title="Ueber Open_Cowork" icon="✦">
               <div className="card">

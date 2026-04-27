@@ -112,4 +112,87 @@ describe('MCPTool compatibility', () => {
       }),
     )
   })
+
+  it('converts screenshot_for_display payload into attachment message', async () => {
+    const { registerAllBuiltinTools, getAllTools } = await import('./registry')
+    registerAllBuiltinTools()
+
+    invokeMock.mockResolvedValue({
+      serverName: 'test-mcp',
+      toolName: 'screenshot_for_display',
+      success: true,
+      result: JSON.stringify({
+        success: true,
+        reused: false,
+        displayIndex: 0,
+        displayInfo: {
+          width: 1280,
+          height: 720,
+          coordinateOverlay: true,
+          coordinateGrid: {
+            minorStepPx: 50,
+            majorStepPx: 100,
+            origin: 'top-left',
+            coordinateSpace: 'display',
+          },
+        },
+        coordinateOverlay: true,
+        imageDataUrl: 'data:image/png;base64,QUJD',
+      }),
+      error: null,
+    })
+
+    const tool = getAllTools().find((entry) => entry.name === 'MCPTool')
+    expect(tool).toBeTruthy()
+
+    const result = await tool!.call(
+      {
+        server_name: 'test-mcp',
+        tool_name: 'screenshot_for_display',
+        arguments: {},
+      },
+      { runId: 'run-3' } as never,
+    )
+
+    expect(typeof result.data).toBe('string')
+    expect(result.data).not.toContain('imageDataUrl')
+    expect(result.data).toContain('Koordinatenhinweis')
+    expect(result.data).toContain('50px')
+    expect(result.newMessages).toBeTruthy()
+    expect(result.newMessages?.[0]).toMatchObject({
+      type: 'attachment',
+      attachmentType: 'tool_result',
+    })
+  })
+
+  it('captures desktop screenshots with the annotated screenshot command', async () => {
+    const { registerAllBuiltinTools, getAllTools } = await import('./registry')
+    registerAllBuiltinTools()
+
+    invokeMock.mockResolvedValue({
+      dataUrl: 'data:image/png;base64,QUJD',
+      width: 1280,
+      height: 720,
+      x: 0,
+      y: 0,
+      primary: true,
+      deviceName: '\\\\.\\DISPLAY1',
+      coordinateOverlay: true,
+      imageWidth: 1280,
+      imageHeight: 720,
+      scaleFactor: 1,
+    })
+
+    const tool = getAllTools().find((entry) => entry.name === 'DesktopScreenshot')
+    expect(tool).toBeTruthy()
+
+    const result = await tool!.call({}, { runId: 'run-4' } as never)
+
+    expect(invokeMock).toHaveBeenCalledWith('desktop_capture_primary_annotated_screenshot')
+    expect(result.data).toContain('Koordinatenraster')
+    expect(result.newMessages?.[0]).toMatchObject({
+      type: 'attachment',
+      attachmentType: 'tool_result',
+    })
+  })
 })

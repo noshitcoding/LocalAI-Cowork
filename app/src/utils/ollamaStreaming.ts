@@ -44,7 +44,7 @@ type OllamaStreamLine = {
 
 const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434'
 const DEFAULT_OLLAMA_MODEL = 'gpt-oss:20b'
-const DEFAULT_OLLAMA_TIMEOUT_MS = 200000
+const DEFAULT_OLLAMA_TIMEOUT_MS = 600000
 
 const RISKY_PHRASES = [
   'rm -rf',

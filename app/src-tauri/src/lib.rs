@@ -18,8 +18,22 @@ mod worker_sandbox;
 use claude_code_bridge::ClaudeCodeBridge;
 use db::Database;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use mcp::{call_tool, probe_server, McpCallRequest, McpError, McpServerRequest};
-use reqwest::StatusCode;
+use mcp::{
+  call_tool,
+  probe_server,
+  runtime_call_tool,
+  runtime_has_server,
+  runtime_list_servers,
+  runtime_probe_server,
+  runtime_restart_server,
+  runtime_start_server,
+  runtime_stop_server,
+  McpCallRequest,
+  McpError,
+  McpRuntimeServerStatus,
+  McpServerRequest,
+};
+use reqwest::{Method, StatusCode};
 use ollama::{
   chat_turn as chat_turn_internal,
   chat_turn_stream as chat_turn_stream_internal,
@@ -27,25 +41,30 @@ use ollama::{
   generate_plan as generate_plan_internal,
   ChatMessage,
   ChatStreamChunkPayload,
+  ChatToolDef,
   OllamaConfig,
   OllamaError,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
+use url::Url;
 
 const LOCAL_DOCS_MCP_COMMAND: &str = "open-cowork-docs-mcp";
 const LOCAL_SCREENSHOT_MCP_COMMAND: &str = "open-cowork-screenshot-mcp";
+const SCREENSHOT_DATA_URL_PREFIX: &str = "data:image/png;base64,";
+const SCREENSHOT_REUSE_WINDOW_MS: i64 = 20_000;
 const POLICY_FLAG_STRICT: &str = "strictPolicyEnforcement";
 const POLICY_FLAG_TOOL_DISPATCHER: &str = "allowToolDispatcher";
 const POLICY_FLAG_MCP: &str = "allowMcpToolCalls";
@@ -58,6 +77,43 @@ const POLICY_FLAG_WEB_SEARCH: &str = "allowWebSearch";
 #[derive(Default)]
 struct WatchRegistry {
   watchers: Mutex<HashMap<String, RecommendedWatcher>>,
+}
+
+#[derive(Default)]
+struct CrewExecutionRegistry {
+  canceled: Mutex<HashSet<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenshotDisplayRegion {
+  x: i32,
+  y: i32,
+  width: i32,
+  height: i32,
+}
+
+#[derive(Debug, Clone)]
+struct ScreenshotCacheEntry {
+  display_index: i64,
+  region_key: String,
+  path: String,
+  mime_type: String,
+  base64_image: String,
+  captured_at_ms: i64,
+  display_info: Value,
+}
+
+#[derive(Debug, Default)]
+struct ScreenshotCacheState {
+  last_entry: Option<ScreenshotCacheEntry>,
+  request_counts: HashMap<String, u32>,
+}
+
+static SCREENSHOT_CACHE: OnceLock<Mutex<ScreenshotCacheState>> = OnceLock::new();
+
+fn screenshot_cache() -> &'static Mutex<ScreenshotCacheState> {
+  SCREENSHOT_CACHE.get_or_init(|| Mutex::new(ScreenshotCacheState::default()))
 }
 
 // -- Request/Response types -------------------------------------------------
@@ -76,6 +132,7 @@ struct ChatTurnRequest {
   history: Vec<ChatMessage>,
   config: Option<OllamaConfig>,
   stream_id: Option<String>,
+  tools: Option<Vec<ChatToolDef>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,10 +183,127 @@ struct ExecCommandResponse {
   stdout: String,
   stderr: String,
   exit_code: Option<i32>,
+  current_cwd: Option<String>,
   timed_out: bool,
   duration_ms: u64,
   attempts: u32,
   normalized_status: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopLaunchRequest {
+  path: String,
+  args: Option<Vec<String>>,
+  cwd: Option<String>,
+  initial_delay_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopWindowRequest {
+  title: Option<String>,
+  process_name: Option<String>,
+  process_id: Option<u32>,
+  exact_match: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopClickRequest {
+  x: i32,
+  y: i32,
+  button: Option<String>,
+  double_click: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopMoveMouseRequest {
+  x: i32,
+  y: i32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopTypeRequest {
+  text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopKeypressRequest {
+  keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopScrollRequest {
+  x: Option<i32>,
+  y: Option<i32>,
+  scroll_y: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopWindowInfo {
+  title: String,
+  process_id: u32,
+  process_name: String,
+  handle: String,
+  x: i32,
+  y: i32,
+  width: i32,
+  height: i32,
+  is_foreground: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopDisplayInfo {
+  primary: bool,
+  x: i32,
+  y: i32,
+  width: i32,
+  height: i32,
+  device_name: String,
+  #[serde(default)]
+  scale_factor: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopLaunchResponse {
+  pid: u32,
+  path: String,
+  args: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopActionResponse {
+  ok: bool,
+  action: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DesktopScreenshotResponse {
+  data_url: String,
+  width: i32,
+  height: i32,
+  x: i32,
+  y: i32,
+  primary: bool,
+  device_name: String,
+  #[serde(default)]
+  scale_factor: Option<f64>,
+  #[serde(default)]
+  image_width: Option<i32>,
+  #[serde(default)]
+  image_height: Option<i32>,
+  #[serde(default)]
+  coordinate_overlay: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -261,6 +435,24 @@ struct PolicyEvaluateResponse {
   reason: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorReachabilityRequest {
+  key: String,
+  label: Option<String>,
+  api_key: Option<String>,
+  webhook_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorReachabilityResponse {
+  reachable: bool,
+  status: Option<u16>,
+  message: String,
+  checked_at: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadRow {
@@ -277,6 +469,12 @@ struct MessageRow {
   role: String,
   content: String,
   timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletedMessagesResponse {
+  deleted_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,6 +624,517 @@ struct ScheduledRunRow {
   error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineExecuteRequest {
+  id: String,
+  config: Option<OllamaConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineStepDefinition {
+  tool: Option<String>,
+  prompt: Option<String>,
+  args: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineExecutionStepResult {
+  step: i32,
+  tool: String,
+  result: String,
+  success: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PipelineExecutionResponse {
+  pipeline_id: String,
+  status: String,
+  step_results: Vec<PipelineExecutionStepResult>,
+  error: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CrewExecuteAgentRequest {
+  id: String,
+  name: String,
+  role: String,
+  goal: String,
+  backstory: String,
+  personality_id: Option<String>,
+  model_override: Option<String>,
+  tools: Vec<String>,
+  allow_delegation: bool,
+  verbose: bool,
+  max_iterations: i32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CrewExecuteTaskRequest {
+  id: String,
+  description: String,
+  expected_output: String,
+  agent_id: String,
+  context: Vec<String>,
+  dependencies: Vec<String>,
+  async_execution: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CrewExecuteRequest {
+  id: String,
+  name: String,
+  description: String,
+  process: String,
+  manager_agent_id: Option<String>,
+  verbose: bool,
+  max_rpm: i32,
+  agents: Vec<CrewExecuteAgentRequest>,
+  tasks: Vec<CrewExecuteTaskRequest>,
+  config: Option<OllamaConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewStopRequest {
+  crew_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewExecutionLogRow {
+  id: String,
+  crew_id: String,
+  agent_id: String,
+  task_id: String,
+  action: String,
+  result: String,
+  timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewTaskExecutionRow {
+  task_id: String,
+  agent_id: String,
+  status: String,
+  output: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewExecutionResponse {
+  crew_id: String,
+  status: String,
+  task_results: Vec<CrewTaskExecutionRow>,
+  logs: Vec<CrewExecutionLogRow>,
+  error: Option<String>,
+}
+
+fn value_to_step_text(value: &Value) -> String {
+  match value {
+    Value::Null => String::new(),
+    Value::String(text) => text.clone(),
+    _ => serde_json::to_string(value).unwrap_or_else(|_| String::new()),
+  }
+}
+
+fn find_gateway_context(tool_name: &str, gateways: &[db::ToolGatewayRow]) -> Option<String> {
+  gateways
+    .iter()
+    .find(|entry| {
+      entry.enabled
+        && (entry.name.eq_ignore_ascii_case(tool_name) || entry.tool_type.eq_ignore_ascii_case(tool_name))
+    })
+    .map(|entry| format!(
+      "Tool-Gateway: {} ({})\nKonfiguration: {}",
+      entry.name,
+      entry.tool_type,
+      entry.config_json
+    ))
+}
+
+async fn execute_pipeline_web_fetch(url: &str) -> Result<String, String> {
+  let requested_url = url.trim();
+  if requested_url.is_empty() {
+    return Err("web_fetch benoetigt eine URL".to_string());
+  }
+
+  let client = reqwest::Client::builder()
+    .timeout(Duration::from_secs(30))
+    .build()
+    .map_err(|err| err.to_string())?;
+  let response = client
+    .get(requested_url)
+    .send()
+    .await
+    .map_err(|err| err.to_string())?;
+  let status = response.status();
+  let body = response.text().await.map_err(|err| err.to_string())?;
+  let title = extract_html_title(&body).unwrap_or_else(|| "(ohne Titel)".to_string());
+  let stripped = strip_html_like_content(&body);
+  let content: String = stripped.trim().chars().take(4_000).collect();
+
+  Ok(format!("URL: {}\nStatus: {}\nTitel: {}\n\n{}", requested_url, status.as_u16(), title, content))
+}
+
+async fn execute_pipeline_web_search(query: &str) -> Result<String, String> {
+  let trimmed = query.trim();
+  if trimmed.is_empty() {
+    return Err("web_search benoetigt eine Suchanfrage".to_string());
+  }
+
+  let encoded_query = url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>();
+  let search_url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+  let client = reqwest::Client::builder()
+    .timeout(Duration::from_secs(30))
+    .build()
+    .map_err(|err| err.to_string())?;
+  let body = client
+    .get(&search_url)
+    .send()
+    .await
+    .map_err(|err| err.to_string())?
+    .text()
+    .await
+    .map_err(|err| err.to_string())?;
+  let results = parse_duckduckgo_results(&body, 5);
+
+  Ok(results
+    .iter()
+    .enumerate()
+    .map(|(index, item)| {
+      let snippet = if item.snippet.is_empty() {
+        String::new()
+      } else {
+        format!("\n{}", item.snippet)
+      };
+      format!("{}. {}\n{}{}", index + 1, item.title, item.url, snippet)
+    })
+    .collect::<Vec<_>>()
+    .join("\n\n"))
+}
+
+async fn execute_pipeline_llm_step(
+  config: Option<OllamaConfig>,
+  tool_name: &str,
+  prompt: &str,
+  previous_context: &str,
+  gateway_context: Option<String>,
+) -> Result<String, String> {
+  let full_prompt = [
+    if previous_context.trim().is_empty() {
+      None
+    } else {
+      Some(format!("Bisheriger Pipeline-Kontext:\n{}", previous_context))
+    },
+    gateway_context,
+    Some(format!("Tool: {}\nAufgabe:\n{}", tool_name, prompt)),
+  ]
+  .into_iter()
+  .flatten()
+  .collect::<Vec<_>>()
+  .join("\n\n");
+
+  if tool_name.eq_ignore_ascii_case("plan") || tool_name.eq_ignore_ascii_case("planner") {
+    return generate_plan_internal(config, full_prompt)
+      .await
+      .map(|response| response.raw_response)
+      .map_err(map_ollama_error);
+  }
+
+  chat_turn_internal(config, full_prompt, vec![], vec![])
+    .await
+    .map(|response| response.assistant_message)
+    .map_err(map_ollama_error)
+}
+
+fn build_crew_system_prompt(request: &CrewExecuteRequest, agent: &CrewExecuteAgentRequest) -> String {
+  let manager_hint = request.manager_agent_id.as_ref().map_or(String::new(), |manager_id| {
+    if manager_id == &agent.id {
+      "Du bist zusaetzlich der koordinierende Manager-Agent dieser Crew.".to_string()
+    } else {
+      format!("Der koordinierende Manager-Agent hat die ID {}.", manager_id)
+    }
+  });
+
+  format!(
+    "Du arbeitest als Agent in der Crew \"{}\".\nBeschreibung: {}\nProzess: {}\n{}\n\nAgent:\n- Name: {}\n- Rolle: {}\n- Ziel: {}\n- Hintergrund: {}\n- Tools: {}\n- Delegation erlaubt: {}\n- Verbose: {}\n- Max Iterationen: {}\n- Max RPM der Crew: {}\n\nLiefere eine direkte, umsetzbare Antwort auf Deutsch.",
+    request.name,
+    request.description,
+    request.process,
+    manager_hint,
+    agent.name,
+    agent.role,
+    agent.goal,
+    agent.backstory,
+    agent.tools.join(", "),
+    agent.allow_delegation,
+    agent.verbose,
+    agent.max_iterations,
+    request.max_rpm,
+  )
+}
+
+fn is_crew_canceled(registry: &CrewExecutionRegistry, crew_id: &str) -> bool {
+  registry
+    .canceled
+    .lock()
+    .map(|canceled| canceled.contains(crew_id))
+    .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn pipeline_execute(
+  state: tauri::State<'_, Arc<Database>>,
+  request: PipelineExecuteRequest,
+) -> Result<PipelineExecutionResponse, String> {
+  let pipeline = state
+    .list_rpc_pipelines()
+    .map_err(|err| err.to_string())?
+    .into_iter()
+    .find(|entry| entry.id == request.id)
+    .ok_or_else(|| format!("Pipeline {} nicht gefunden", request.id))?;
+
+  let steps: Vec<PipelineStepDefinition> = serde_json::from_str(&pipeline.steps_json)
+    .map_err(|err| format!("Ungueltige Steps-JSON: {}", err))?;
+  let gateways = state.list_tool_gateway_entries().unwrap_or_default();
+  let mut step_results = Vec::with_capacity(steps.len());
+  let mut previous_context = String::new();
+
+  for (index, step) in steps.iter().enumerate() {
+    let tool_name = step.tool.clone().unwrap_or_else(|| "ollama".to_string());
+    let args_text = step.args.as_ref().map(value_to_step_text).unwrap_or_default();
+    let prompt = step
+      .prompt
+      .clone()
+      .filter(|value| !value.trim().is_empty())
+      .unwrap_or_else(|| {
+        if args_text.trim().is_empty() {
+          format!("Pipeline-Schritt {} ohne Eingabetext", index + 1)
+        } else {
+          args_text.clone()
+        }
+      });
+
+    let execution = match tool_name.as_str() {
+      "web_fetch" => execute_pipeline_web_fetch(if args_text.trim().is_empty() { &prompt } else { &args_text }).await,
+      "web_search" => execute_pipeline_web_search(if args_text.trim().is_empty() { &prompt } else { &args_text }).await,
+      _ => {
+        let context = if pipeline.zero_context {
+          String::new()
+        } else {
+          previous_context.clone()
+        };
+        execute_pipeline_llm_step(
+          request.config.clone(),
+          &tool_name,
+          &prompt,
+          &context,
+          find_gateway_context(&tool_name, &gateways),
+        )
+        .await
+      }
+    };
+
+    match execution {
+      Ok(result) => {
+        if !pipeline.zero_context {
+          previous_context.push_str(&format!("[{}] {}\n\n", tool_name, result));
+        }
+        step_results.push(PipelineExecutionStepResult {
+          step: (index + 1) as i32,
+          tool: tool_name,
+          result,
+          success: true,
+        });
+      }
+      Err(error) => {
+        step_results.push(PipelineExecutionStepResult {
+          step: (index + 1) as i32,
+          tool: tool_name,
+          result: error.clone(),
+          success: false,
+        });
+
+        return Ok(PipelineExecutionResponse {
+          pipeline_id: pipeline.id,
+          status: "failed".to_string(),
+          step_results,
+          error: Some(error),
+        });
+      }
+    }
+  }
+
+  Ok(PipelineExecutionResponse {
+    pipeline_id: pipeline.id,
+    status: "completed".to_string(),
+    step_results,
+    error: None,
+  })
+}
+
+#[tauri::command]
+async fn crew_execute(
+  registry: tauri::State<'_, CrewExecutionRegistry>,
+  request: CrewExecuteRequest,
+) -> Result<CrewExecutionResponse, String> {
+  if request.tasks.is_empty() {
+    return Err("Crew enthaelt keine Tasks".to_string());
+  }
+
+  if let Ok(mut canceled) = registry.canceled.lock() {
+    canceled.remove(&request.id);
+  }
+
+  let mut task_outputs: HashMap<String, String> = HashMap::new();
+  let mut task_results = Vec::with_capacity(request.tasks.len());
+  let mut logs = Vec::new();
+  let mut overall_status = "completed".to_string();
+  let mut overall_error: Option<String> = None;
+
+  for task in &request.tasks {
+    if is_crew_canceled(&registry, &request.id) {
+      overall_status = "canceled".to_string();
+      overall_error = Some("Crew-Ausfuehrung abgebrochen".to_string());
+      break;
+    }
+
+    let Some(agent) = request.agents.iter().find(|entry| entry.id == task.agent_id) else {
+      let error = format!("Agent {} fuer Task {} nicht gefunden", task.agent_id, task.id);
+      task_results.push(CrewTaskExecutionRow {
+        task_id: task.id.clone(),
+        agent_id: task.agent_id.clone(),
+        status: "failed".to_string(),
+        output: Some(error.clone()),
+      });
+      overall_status = "failed".to_string();
+      overall_error = Some(error);
+      continue;
+    };
+
+    logs.push(CrewExecutionLogRow {
+      id: uuid::Uuid::new_v4().to_string(),
+      crew_id: request.id.clone(),
+      agent_id: agent.id.clone(),
+      task_id: task.id.clone(),
+      action: format!("Task gestartet: {}", task.description.chars().take(80).collect::<String>()),
+      result: format!("Agent: {}", agent.name),
+      timestamp: chrono::Utc::now().timestamp_millis(),
+    });
+
+    let mut history = vec![ChatMessage {
+      role: "system".to_string(),
+      content: build_crew_system_prompt(&request, agent),
+    }];
+
+    for context_line in &task.context {
+      if !context_line.trim().is_empty() {
+        history.push(ChatMessage {
+          role: "context".to_string(),
+          content: context_line.clone(),
+        });
+      }
+    }
+
+    for dependency in &task.dependencies {
+      if let Some(output) = task_outputs.get(dependency) {
+        history.push(ChatMessage {
+          role: "dependency".to_string(),
+          content: format!("Ergebnis aus {}:\n{}", dependency, output),
+        });
+      }
+    }
+
+    let prompt = format!(
+      "Crew: {}\nTask-ID: {}\nBeschreibung: {}\nErwartetes Ergebnis: {}\nAsynchrone Ausfuehrung erlaubt: {}\n\nLiefere das Task-Ergebnis direkt.",
+      request.name,
+      task.id,
+      task.description,
+      if task.expected_output.trim().is_empty() { "(nicht angegeben)" } else { &task.expected_output },
+      task.async_execution,
+    );
+
+    let mut task_config = request.config.clone();
+    if let Some(model_override) = agent.model_override.clone() {
+      let mut config = task_config.unwrap_or_default();
+      config.model = model_override;
+      task_config = Some(config);
+    }
+
+    match chat_turn_internal(task_config, prompt, history, vec![]).await {
+      Ok(response) => {
+        let output = response.assistant_message;
+        task_outputs.insert(task.id.clone(), output.clone());
+        task_results.push(CrewTaskExecutionRow {
+          task_id: task.id.clone(),
+          agent_id: agent.id.clone(),
+          status: "completed".to_string(),
+          output: Some(output.clone()),
+        });
+        logs.push(CrewExecutionLogRow {
+          id: uuid::Uuid::new_v4().to_string(),
+          crew_id: request.id.clone(),
+          agent_id: agent.id.clone(),
+          task_id: task.id.clone(),
+          action: "Task abgeschlossen".to_string(),
+          result: output.chars().take(200).collect(),
+          timestamp: chrono::Utc::now().timestamp_millis(),
+        });
+      }
+      Err(error) => {
+        let error_text = map_ollama_error(error);
+        task_results.push(CrewTaskExecutionRow {
+          task_id: task.id.clone(),
+          agent_id: agent.id.clone(),
+          status: "failed".to_string(),
+          output: Some(error_text.clone()),
+        });
+        logs.push(CrewExecutionLogRow {
+          id: uuid::Uuid::new_v4().to_string(),
+          crew_id: request.id.clone(),
+          agent_id: agent.id.clone(),
+          task_id: task.id.clone(),
+          action: "Task fehlgeschlagen".to_string(),
+          result: error_text.chars().take(200).collect(),
+          timestamp: chrono::Utc::now().timestamp_millis(),
+        });
+        overall_status = "failed".to_string();
+        overall_error = Some(error_text);
+      }
+    }
+  }
+
+  if let Ok(mut canceled) = registry.canceled.lock() {
+    canceled.remove(&request.id);
+  }
+
+  Ok(CrewExecutionResponse {
+    crew_id: request.id,
+    status: overall_status,
+    task_results,
+    logs,
+    error: overall_error,
+  })
+}
+
+#[tauri::command]
+fn crew_stop(
+  registry: tauri::State<'_, CrewExecutionRegistry>,
+  request: CrewStopRequest,
+) -> Result<(), String> {
+  let mut canceled = registry.canceled.lock().map_err(|_| "Crew-Registry gesperrt".to_string())?;
+  canceled.insert(request.crew_id);
+  Ok(())
+}
+
 // -- Ollama commands --------------------------------------------------------
 
 #[tauri::command]
@@ -442,7 +1151,12 @@ async fn generate_plan(request: PlanRequest) -> Result<ollama::PlanResponse, Str
 
 #[tauri::command]
 async fn chat_turn(request: ChatTurnRequest) -> Result<ollama::ChatTurnResponse, String> {
-  chat_turn_internal(request.config, request.prompt, request.history)
+  chat_turn_internal(
+    request.config,
+    request.prompt,
+    request.history,
+    request.tools.unwrap_or_default(),
+  )
     .await
     .map_err(map_ollama_error)
 }
@@ -459,6 +1173,7 @@ async fn chat_turn_stream(app: tauri::AppHandle, request: ChatTurnRequest) -> Re
     request.config,
     request.prompt,
     request.history,
+    request.tools.unwrap_or_default(),
     move |payload: ChatStreamChunkPayload| {
       app_for_emit
         .emit("ollama-chat-chunk", payload)
@@ -577,6 +1292,10 @@ fn local_screenshot_mcp_probe(name: String) -> mcp::McpProbeResponse {
         name: "capture_screenshot".to_string(),
         description: "Capture screenshots for all connected screens (always all screens). Optional arg: outputDir".to_string(),
       },
+      mcp::McpTool {
+        name: "screenshot_for_display".to_string(),
+        description: "Capture a screenshot for direct UI display. Returns image data + display metadata and an in-image coordinate grid (50px minor, 100px major) for reliable local display coordinates. Supports short-term reuse cache. Args: displayIndex/display_index, region, reason, forceRefresh/force_refresh.".to_string(),
+      },
     ],
   }
 }
@@ -601,6 +1320,7 @@ fn run_powershell_script(script: &str) -> Result<String, String> {
       .args([
         "-NoProfile",
         "-NonInteractive",
+        "-STA",
         "-ExecutionPolicy",
         policy,
         "-Command",
@@ -619,7 +1339,583 @@ fn run_powershell_script(script: &str) -> Result<String, String> {
     last_error = format!("policy={} details={}", policy, details);
   }
 
-  Err(format!("powershell screenshot command failed: {}", last_error))
+  Err(format!("powershell command failed: {}", last_error))
+}
+
+fn run_powershell_json_script<T: DeserializeOwned>(script: &str) -> Result<T, String> {
+  let output = run_powershell_script(script)?;
+  serde_json::from_str::<T>(&output).map_err(|err| format!("invalid powershell json: {}", err))
+}
+
+fn ensure_windows_desktop_support() -> Result<(), String> {
+  if cfg!(target_os = "windows") {
+    Ok(())
+  } else {
+    Err("desktop automation is currently supported only on Windows".to_string())
+  }
+}
+
+fn desktop_powershell_prelude() -> &'static str {
+  r#"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName Microsoft.VisualBasic
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class OpenCoworkDesktop {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+  [DllImport("user32.dll")]
+  public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
+  [DllImport("user32.dll")]
+  public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")]
+  public static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")]
+  public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")]
+  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")]
+  public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
+  [DllImport("user32.dll")]
+  public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")]
+  public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+  public static string ReadWindowText(IntPtr hWnd) {
+    int size = GetWindowTextLength(hWnd);
+    var buffer = new StringBuilder(size + 1);
+    GetWindowText(hWnd, buffer, buffer.Capacity);
+    return buffer.ToString();
+  }
+}
+"@
+
+try {
+  [void][OpenCoworkDesktop]::SetProcessDpiAwarenessContext([IntPtr]::new(-4))
+} catch {
+  try {
+    [void][OpenCoworkDesktop]::SetProcessDPIAware()
+  } catch {
+    # Best effort only. Desktop automation can continue without this on older systems.
+  }
+}
+
+function ConvertTo-OpenCoworkWindow {
+  param([IntPtr]$Handle)
+
+  if (-not [OpenCoworkDesktop]::IsWindowVisible($Handle)) { return $null }
+
+  $title = [OpenCoworkDesktop]::ReadWindowText($Handle)
+  if ([string]::IsNullOrWhiteSpace($title)) { return $null }
+
+  $rect = New-Object OpenCoworkDesktop+RECT
+  [void][OpenCoworkDesktop]::GetWindowRect($Handle, [ref]$rect)
+  $width = $rect.Right - $rect.Left
+  $height = $rect.Bottom - $rect.Top
+  if ($width -le 0 -or $height -le 0) { return $null }
+
+  $processId = 0
+  [void][OpenCoworkDesktop]::GetWindowThreadProcessId($Handle, [ref]$processId)
+  if ($processId -le 0) { return $null }
+
+  try {
+    $process = Get-Process -Id $processId -ErrorAction Stop
+  } catch {
+    return $null
+  }
+
+  return [PSCustomObject]@{
+    title = $title
+    processId = [int]$processId
+    processName = $process.ProcessName
+    handle = ('0x{0:X}' -f $Handle.ToInt64())
+    handleValue = $Handle.ToInt64()
+    x = $rect.Left
+    y = $rect.Top
+    width = $width
+    height = $height
+    isForeground = ($Handle -eq [OpenCoworkDesktop]::GetForegroundWindow())
+  }
+}
+
+function Get-OpenCoworkWindows {
+  $items = New-Object System.Collections.Generic.List[object]
+  $callback = [OpenCoworkDesktop+EnumWindowsProc]{
+    param([IntPtr]$hWnd, [IntPtr]$lParam)
+    $window = ConvertTo-OpenCoworkWindow -Handle $hWnd
+    if ($null -ne $window) {
+      [void]$items.Add($window)
+    }
+    return $true
+  }
+  [void][OpenCoworkDesktop]::EnumWindows($callback, [IntPtr]::Zero)
+  return $items
+}
+
+function Test-OpenCoworkWindowMatch {
+  param(
+    $Window,
+    [string]$Title,
+    [string]$ProcessName,
+    [Nullable[int]]$ProcessId,
+    [bool]$ExactMatch
+  )
+
+  if ($ProcessId.HasValue -and $Window.processId -ne $ProcessId.Value) { return $false }
+
+  if (-not [string]::IsNullOrWhiteSpace($ProcessName)) {
+    $candidate = $Window.processName.ToLowerInvariant()
+    $expected = $ProcessName.ToLowerInvariant()
+    if ($ExactMatch) {
+      if ($candidate -ne $expected) { return $false }
+    } elseif (-not $candidate.Contains($expected)) {
+      return $false
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($Title)) {
+    $candidate = $Window.title.ToLowerInvariant()
+    $expected = $Title.ToLowerInvariant()
+    if ($ExactMatch) {
+      if ($candidate -ne $expected) { return $false }
+    } elseif (-not $candidate.Contains($expected)) {
+      return $false
+    }
+  }
+
+  return $true
+}
+"#
+}
+
+fn desktop_coordinate_overlay_powershell() -> &'static str {
+  r#"
+$minorPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(65, 0, 122, 204), [single]1)
+$majorPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(150, 255, 92, 0), [single]1)
+$labelBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(235, 255, 255, 255))
+$labelBgBrush = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(185, 0, 0, 0))
+$font = [System.Drawing.Font]::new('Consolas', [single]10, [System.Drawing.FontStyle]::Bold)
+
+for ($gx = 0; $gx -le $captureWidth; $gx += 50) {
+  $pen = if (($gx % 100) -eq 0) { $majorPen } else { $minorPen }
+  $graphics.DrawLine($pen, $gx, 0, $gx, $captureHeight)
+  if (($gx % 100) -eq 0) {
+    $label = 'x=' + $gx
+    $graphics.FillRectangle($labelBgBrush, $gx + 2, 2, 56, 16)
+    $graphics.DrawString($label, $font, $labelBrush, $gx + 4, 2)
+  }
+}
+
+for ($gy = 0; $gy -le $captureHeight; $gy += 50) {
+  $pen = if (($gy % 100) -eq 0) { $majorPen } else { $minorPen }
+  $graphics.DrawLine($pen, 0, $gy, $captureWidth, $gy)
+  if (($gy % 100) -eq 0) {
+    $label = 'y=' + $gy
+    $graphics.FillRectangle($labelBgBrush, 2, $gy + 2, 56, 16)
+    $graphics.DrawString($label, $font, $labelBrush, 4, $gy + 2)
+  }
+}
+
+$font.Dispose()
+$labelBgBrush.Dispose()
+$labelBrush.Dispose()
+$majorPen.Dispose()
+$minorPen.Dispose()
+"#
+}
+
+fn desktop_capture_primary_display_with_overlay(coordinate_overlay: bool) -> Result<DesktopScreenshotResponse, String> {
+  ensure_windows_desktop_support()?;
+  let overlay_script = if coordinate_overlay {
+    desktop_coordinate_overlay_powershell()
+  } else {
+    ""
+  };
+  let script = format!(
+    r#"
+{}
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen
+$bounds = $screen.Bounds
+$captureWidth = $bounds.Width
+$captureHeight = $bounds.Height
+$bitmap = New-Object System.Drawing.Bitmap $captureWidth, $captureHeight
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bounds.Size)
+{overlay_script}
+$stream = New-Object System.IO.MemoryStream
+$bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+$bytes = $stream.ToArray()
+$scaleFactor = 1
+try {{
+  $scaleFactor = [double]($graphics.DpiX / 96.0)
+  if ($scaleFactor -le 0) {{ $scaleFactor = 1 }}
+}} catch {{
+  $scaleFactor = 1
+}}
+$graphics.Dispose()
+$bitmap.Dispose()
+$stream.Dispose()
+[PSCustomObject]@{{
+  dataUrl = 'data:image/png;base64,' + [System.Convert]::ToBase64String($bytes)
+  width = $bounds.Width
+  height = $bounds.Height
+  x = $bounds.X
+  y = $bounds.Y
+  primary = $true
+  deviceName = $screen.DeviceName
+  scaleFactor = [double]$scaleFactor
+  imageWidth = $captureWidth
+  imageHeight = $captureHeight
+  coordinateOverlay = {coordinate_overlay}
+}} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    overlay_script = overlay_script,
+    coordinate_overlay = if coordinate_overlay { "$true" } else { "$false" },
+  );
+
+  run_powershell_json_script::<DesktopScreenshotResponse>(&script)
+}
+
+fn desktop_capture_primary_display() -> Result<DesktopScreenshotResponse, String> {
+  desktop_capture_primary_display_with_overlay(false)
+}
+
+fn desktop_list_windows_internal() -> Result<Vec<DesktopWindowInfo>, String> {
+  ensure_windows_desktop_support()?;
+  let script = format!(
+    r#"
+{}
+Get-OpenCoworkWindows | Select-Object title, processId, processName, handle, x, y, width, height, isForeground | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude()
+  );
+
+  run_powershell_json_script::<Vec<DesktopWindowInfo>>(&script)
+}
+
+fn desktop_match_window(request: &DesktopWindowRequest) -> Result<DesktopWindowInfo, String> {
+  ensure_windows_desktop_support()?;
+  let title = escape_powershell_single_quoted(request.title.as_deref().unwrap_or(""));
+  let process_name = escape_powershell_single_quoted(request.process_name.as_deref().unwrap_or(""));
+  let process_id = request
+    .process_id
+    .map(|value| value.to_string())
+    .unwrap_or_else(|| "$null".to_string());
+  let exact_match = if request.exact_match.unwrap_or(false) { "$true" } else { "$false" };
+  let script = format!(
+    r#"
+{}
+$title = '{title}'
+$processName = '{process_name}'
+$processId = {process_id}
+$exactMatch = {exact_match}
+$match = Get-OpenCoworkWindows |
+  Where-Object {{ Test-OpenCoworkWindowMatch $_ $title $processName $processId $exactMatch }} |
+  Select-Object -First 1
+if ($null -eq $match) {{
+  throw 'desktop window not found'
+}}
+$match | Select-Object title, processId, processName, handle, x, y, width, height, isForeground | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    title = title,
+    process_name = process_name,
+    process_id = process_id,
+    exact_match = exact_match,
+  );
+
+  run_powershell_json_script::<DesktopWindowInfo>(&script)
+}
+
+fn screenshot_region_key(region: Option<&ScreenshotDisplayRegion>) -> String {
+  if let Some(value) = region {
+    return format!("{},{},{},{}", value.x, value.y, value.width, value.height);
+  }
+  "full".to_string()
+}
+
+fn parse_i64_tool_arg(tool_args: &HashMap<String, Value>, camel: &str, snake: &str) -> Option<i64> {
+  tool_args
+    .get(camel)
+    .and_then(|value| value.as_i64())
+    .or_else(|| tool_args.get(snake).and_then(|value| value.as_i64()))
+}
+
+fn parse_bool_tool_arg(tool_args: &HashMap<String, Value>, camel: &str, snake: &str) -> Option<bool> {
+  tool_args
+    .get(camel)
+    .and_then(|value| value.as_bool())
+    .or_else(|| tool_args.get(snake).and_then(|value| value.as_bool()))
+}
+
+fn parse_string_tool_arg<'a>(tool_args: &'a HashMap<String, Value>, camel: &str, snake: &str) -> Option<&'a str> {
+  tool_args
+    .get(camel)
+    .and_then(|value| value.as_str())
+    .or_else(|| tool_args.get(snake).and_then(|value| value.as_str()))
+}
+
+fn parse_screenshot_region(tool_args: &HashMap<String, Value>) -> Result<Option<ScreenshotDisplayRegion>, String> {
+  let Some(raw_region) = tool_args.get("region") else {
+    return Ok(None);
+  };
+
+  serde_json::from_value::<ScreenshotDisplayRegion>(raw_region.clone())
+    .map(Some)
+    .map_err(|err| format!("invalid region payload: {}", err))
+}
+
+fn capture_screenshot_for_display_payload(
+  app: &tauri::AppHandle,
+  display_index: i64,
+  region: Option<&ScreenshotDisplayRegion>,
+  reason: Option<&str>,
+  force_refresh: bool,
+) -> Result<Value, String> {
+  let region_key = screenshot_region_key(region);
+  let request_key = format!("{}:{}", display_index, region_key);
+
+  let (request_count, reusable_entry) = {
+    let mut guard = screenshot_cache()
+      .lock()
+      .map_err(|_| "screenshot cache lock poisoned".to_string())?;
+    let counter = guard.request_counts.entry(request_key).or_insert(0);
+    *counter += 1;
+    let request_count = *counter;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let last_entry = guard.last_entry.clone();
+
+    let reusable = if force_refresh {
+      None
+    } else {
+      last_entry.and_then(|entry| {
+        if entry.display_index != display_index {
+          return None;
+        }
+        if entry.region_key != region_key {
+          return None;
+        }
+        if now_ms - entry.captured_at_ms > SCREENSHOT_REUSE_WINDOW_MS {
+          return None;
+        }
+        Some(entry)
+      })
+    };
+
+    (request_count, reusable)
+  };
+
+  if let Some(entry) = reusable_entry {
+    let mut payload = serde_json::json!({
+      "success": true,
+      "reused": true,
+      "path": entry.path,
+      "displayIndex": entry.display_index,
+      "displayInfo": entry.display_info,
+      "duplicateCallCount": request_count,
+      "timestamp": chrono::Utc::now().to_rfc3339(),
+      "mimeType": entry.mime_type,
+      "imageDataUrl": format!("{}{}", SCREENSHOT_DATA_URL_PREFIX, entry.base64_image),
+    });
+
+    if request_count > 1 {
+      payload["nextStepHint"] = Value::String(
+        "Screenshot wurde bereits vor kurzem aufgenommen. Nutze dieses Bild weiter, es sei denn ein Refresh ist explizit erforderlich."
+          .to_string(),
+      );
+    }
+
+    if let Some(reason_text) = reason {
+      payload["reason"] = Value::String(reason_text.to_string());
+    }
+    if let Some(region_value) = region {
+      payload["region"] = serde_json::to_value(region_value).unwrap_or(Value::Null);
+    }
+
+    return Ok(payload);
+  }
+
+  #[derive(Debug, Deserialize)]
+  #[serde(rename_all = "camelCase")]
+  struct RawScreenshotForDisplay {
+    data_url: String,
+    path: String,
+    display_index: i64,
+    primary: bool,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    device_name: String,
+    #[serde(default)]
+    scale_factor: Option<f64>,
+  }
+
+  let mut output_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+  output_dir.push("screenshots");
+  fs::create_dir_all(&output_dir).map_err(|err| err.to_string())?;
+
+  let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+  let screenshot_path = output_dir.join(format!("screenshot-display-{}-{}.png", display_index, timestamp));
+  let escaped_path = escape_powershell_single_quoted(&screenshot_path.display().to_string());
+
+  let region_script = if let Some(value) = region {
+    format!(
+      "\n$captureX = $bounds.X + {x}\n$captureY = $bounds.Y + {y}\n$captureWidth = {width}\n$captureHeight = {height}\nif ($captureWidth -le 0 -or $captureHeight -le 0) {{ throw 'region width/height must be positive' }}\nif ($captureX -lt $bounds.X -or $captureY -lt $bounds.Y -or ($captureX + $captureWidth) -gt ($bounds.X + $bounds.Width) -or ($captureY + $captureHeight) -gt ($bounds.Y + $bounds.Height)) {{ throw 'region is outside selected display bounds' }}\n",
+      x = value.x,
+      y = value.y,
+      width = value.width,
+      height = value.height,
+    )
+  } else {
+    "\n$captureX = $bounds.X\n$captureY = $bounds.Y\n$captureWidth = $bounds.Width\n$captureHeight = $bounds.Height\n".to_string()
+  };
+
+  let script = format!(
+    r#"
+{prelude}
+$displayIndex = {display_index}
+$screens = [System.Windows.Forms.Screen]::AllScreens
+if ($displayIndex -lt 0 -or $displayIndex -ge $screens.Length) {{
+  throw ('display_index out of range: ' + $displayIndex)
+}}
+$screen = $screens[$displayIndex]
+$bounds = $screen.Bounds
+{region_script}
+
+$bitmap = New-Object System.Drawing.Bitmap $captureWidth, $captureHeight
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($captureX, $captureY, 0, 0, [System.Drawing.Size]::new($captureWidth, $captureHeight))
+{overlay_script}
+$savePath = '{escaped_path}'
+$bitmap.Save($savePath, [System.Drawing.Imaging.ImageFormat]::Png)
+
+$stream = New-Object System.IO.MemoryStream
+$bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+$bytes = $stream.ToArray()
+$scaleFactor = 1
+try {{
+  $scaleFactor = [double]($graphics.DpiX / 96.0)
+  if ($scaleFactor -le 0) {{ $scaleFactor = 1 }}
+}} catch {{
+  $scaleFactor = 1
+}}
+
+$graphics.Dispose()
+$bitmap.Dispose()
+$stream.Dispose()
+
+[PSCustomObject]@{{
+  dataUrl = 'data:image/png;base64,' + [System.Convert]::ToBase64String($bytes)
+  path = $savePath
+  displayIndex = [int]$displayIndex
+  primary = $screen.Primary
+  x = [int]$captureX
+  y = [int]$captureY
+  width = [int]$captureWidth
+  height = [int]$captureHeight
+  deviceName = $screen.DeviceName
+  scaleFactor = [double]$scaleFactor
+}} | ConvertTo-Json -Compress
+"#,
+    prelude = desktop_powershell_prelude(),
+    display_index = display_index,
+    region_script = region_script,
+    escaped_path = escaped_path,
+    overlay_script = desktop_coordinate_overlay_powershell(),
+  );
+
+  let captured = run_powershell_json_script::<RawScreenshotForDisplay>(&script)?;
+  let base64_image = captured
+    .data_url
+    .strip_prefix(SCREENSHOT_DATA_URL_PREFIX)
+    .ok_or_else(|| "unexpected screenshot payload format".to_string())?
+    .to_string();
+  let captured_at_ms = chrono::Utc::now().timestamp_millis();
+  let display_info = serde_json::json!({
+    "primary": captured.primary,
+    "x": captured.x,
+    "y": captured.y,
+    "width": captured.width,
+    "height": captured.height,
+    "deviceName": captured.device_name,
+    "scaleFactor": captured.scale_factor.unwrap_or(1.0),
+    "imageWidth": captured.width,
+    "imageHeight": captured.height,
+    "coordinateOverlay": true,
+    "coordinateGrid": {
+      "minorStepPx": 50,
+      "majorStepPx": 100,
+      "origin": "top-left",
+      "coordinateSpace": "display"
+    },
+  });
+
+  {
+    let mut guard = screenshot_cache()
+      .lock()
+      .map_err(|_| "screenshot cache lock poisoned".to_string())?;
+    guard.last_entry = Some(ScreenshotCacheEntry {
+      display_index: captured.display_index,
+      region_key: region_key.clone(),
+      path: captured.path.clone(),
+      mime_type: "image/png".to_string(),
+      base64_image: base64_image.clone(),
+      captured_at_ms,
+      display_info: display_info.clone(),
+    });
+  }
+
+  let mut payload = serde_json::json!({
+    "success": true,
+    "reused": false,
+    "path": captured.path,
+    "displayIndex": captured.display_index,
+    "displayInfo": display_info,
+    "duplicateCallCount": request_count,
+    "timestamp": chrono::Utc::now().to_rfc3339(),
+    "mimeType": "image/png",
+    "coordinateOverlay": true,
+    "coordinateGrid": {
+      "minorStepPx": 50,
+      "majorStepPx": 100,
+      "origin": "top-left",
+      "coordinateSpace": "display"
+    },
+    "imageDataUrl": format!("{}{}", SCREENSHOT_DATA_URL_PREFIX, base64_image),
+  });
+
+  if force_refresh {
+    payload["forceRefresh"] = Value::Bool(true);
+  }
+  if let Some(reason_text) = reason {
+    payload["reason"] = Value::String(reason_text.to_string());
+  }
+  if let Some(region_value) = region {
+    payload["region"] = serde_json::to_value(region_value).unwrap_or(Value::Null);
+  }
+
+  Ok(payload)
 }
 
 fn local_screenshot_mcp_call(
@@ -631,12 +1927,13 @@ fn local_screenshot_mcp_call(
   }
 
   let tool_name = request.tool_name.clone();
-  let output = match tool_name.as_str() {
+  let result_payload = match tool_name.as_str() {
     "list_screens" => {
-      let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
-  [PSCustomObject]@{
+      let script = format!(
+        r#"
+{}
+[System.Windows.Forms.Screen]::AllScreens | ForEach-Object {{
+  [PSCustomObject]@{{
     index = [array]::IndexOf([System.Windows.Forms.Screen]::AllScreens, $_)
     primary = $_.Primary
     x = $_.Bounds.X
@@ -644,11 +1941,14 @@ Add-Type -AssemblyName System.Windows.Forms
     width = $_.Bounds.Width
     height = $_.Bounds.Height
     deviceName = $_.DeviceName
-  }
-} | ConvertTo-Json -Compress
-"#;
+  }}
+}} | ConvertTo-Json -Compress
+"#,
+        desktop_powershell_prelude(),
+      );
 
-      run_powershell_script(script)?
+      let output = run_powershell_script(&script)?;
+      serde_json::from_str::<Value>(&output).unwrap_or(Value::String(output))
     }
     "capture_screenshot" => {
       let output_dir = if let Some(dir) = request.tool_args.get("outputDir").and_then(|value| value.as_str()) {
@@ -666,8 +1966,7 @@ Add-Type -AssemblyName System.Windows.Forms
 
       let script = format!(
         r#"
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+{}
 $dir = '{escaped_dir}'
 $ts = '{escaped_timestamp}'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -694,28 +1993,300 @@ for ($i = 0; $i -lt $screens.Length; $i++) {{
   }}
 }}
 [PSCustomObject]@{{ allScreens = $true; forcedAllScreens = $true; outputDir = $dir; screenshots = $result }} | ConvertTo-Json -Compress
-"#
+"#,
+        desktop_powershell_prelude(),
       );
 
-      run_powershell_script(&script)?
+      let output = run_powershell_script(&script)?;
+      serde_json::from_str::<Value>(&output).unwrap_or(Value::String(output))
+    }
+    "screenshot_for_display" => {
+      let display_index = parse_i64_tool_arg(&request.tool_args, "displayIndex", "display_index").unwrap_or(0);
+      let reason = parse_string_tool_arg(&request.tool_args, "reason", "reason");
+      // User selected aggressive auto-refresh: default to true unless explicitly disabled.
+      let force_refresh = parse_bool_tool_arg(&request.tool_args, "forceRefresh", "force_refresh").unwrap_or(true);
+      let region = parse_screenshot_region(&request.tool_args)?;
+
+      capture_screenshot_for_display_payload(
+        app,
+        display_index,
+        region.as_ref(),
+        reason,
+        force_refresh,
+      )?
     }
     _ => {
       return Err(format!("unsupported screenshot MCP tool: {}", tool_name));
     }
   };
 
-  let pretty_result = serde_json::from_str::<Value>(&output)
-    .ok()
-    .and_then(|value| serde_json::to_string_pretty(&value).ok())
-    .unwrap_or(output);
+  let formatted_result = if tool_name == "screenshot_for_display" {
+    serde_json::to_string(&result_payload).unwrap_or_else(|_| "{}".to_string())
+  } else {
+    serde_json::to_string_pretty(&result_payload).unwrap_or_else(|_| result_payload.to_string())
+  };
 
   Ok(mcp::McpCallResponse {
     server_name: request.name,
     tool_name,
     success: true,
-    result: pretty_result,
+    result: formatted_result,
     error: None,
   })
+}
+
+#[tauri::command]
+async fn desktop_primary_display() -> Result<DesktopDisplayInfo, String> {
+  let screenshot = desktop_capture_primary_display()?;
+  Ok(DesktopDisplayInfo {
+    primary: screenshot.primary,
+    x: screenshot.x,
+    y: screenshot.y,
+    width: screenshot.width,
+    height: screenshot.height,
+    device_name: screenshot.device_name,
+    scale_factor: screenshot.scale_factor,
+  })
+}
+
+#[tauri::command]
+async fn desktop_capture_primary_screenshot() -> Result<DesktopScreenshotResponse, String> {
+  desktop_capture_primary_display()
+}
+
+#[tauri::command]
+async fn desktop_capture_primary_annotated_screenshot() -> Result<DesktopScreenshotResponse, String> {
+  desktop_capture_primary_display_with_overlay(true)
+}
+
+#[tauri::command]
+async fn desktop_list_windows() -> Result<Vec<DesktopWindowInfo>, String> {
+  desktop_list_windows_internal()
+}
+
+#[tauri::command]
+async fn desktop_focus_window(request: DesktopWindowRequest) -> Result<DesktopWindowInfo, String> {
+  let matched = desktop_match_window(&request)?;
+  let handle_value = matched.handle.trim_start_matches("0x");
+  let script = format!(
+    r#"
+{}
+$handle = [IntPtr]::new([Int64]::Parse('{handle_value}', [System.Globalization.NumberStyles]::HexNumber))
+[void][OpenCoworkDesktop]::ShowWindow($handle, 5)
+Start-Sleep -Milliseconds 120
+[void][Microsoft.VisualBasic.Interaction]::AppActivate({process_id})
+Start-Sleep -Milliseconds 120
+[void][OpenCoworkDesktop]::SetForegroundWindow($handle)
+Start-Sleep -Milliseconds 150
+$window = ConvertTo-OpenCoworkWindow -Handle $handle
+if ($null -eq $window) {{
+  throw 'desktop window disappeared after focus'
+}}
+$window | Select-Object title, processId, processName, handle, x, y, width, height, isForeground | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    handle_value = handle_value,
+    process_id = matched.process_id,
+  );
+
+  run_powershell_json_script::<DesktopWindowInfo>(&script)
+}
+
+#[tauri::command]
+async fn desktop_launch_app(request: DesktopLaunchRequest) -> Result<DesktopLaunchResponse, String> {
+  ensure_windows_desktop_support()?;
+  let args = request.args.unwrap_or_default();
+  let mut command = Command::new(&request.path);
+  if !args.is_empty() {
+    command.args(&args);
+  }
+  if let Some(cwd) = request.cwd.as_ref().filter(|value| !value.trim().is_empty()) {
+    command.current_dir(cwd);
+  }
+
+  let child = command
+    .spawn()
+    .map_err(|err| format!("failed to launch desktop app: {}", err))?;
+
+  let delay_ms = request.initial_delay_ms.unwrap_or(1500);
+  if delay_ms > 0 {
+    thread::sleep(Duration::from_millis(delay_ms));
+  }
+
+  Ok(DesktopLaunchResponse {
+    pid: child.id(),
+    path: request.path,
+    args,
+  })
+}
+
+#[tauri::command]
+async fn desktop_click(request: DesktopClickRequest) -> Result<DesktopActionResponse, String> {
+  ensure_windows_desktop_support()?;
+  let button = request.button.unwrap_or_else(|| "left".to_string()).to_lowercase();
+  let (down_flag, up_flag) = match button.as_str() {
+    "right" => ("0x0008", "0x0010"),
+    _ => ("0x0002", "0x0004"),
+  };
+  let iterations = if request.double_click.unwrap_or(false) { 2 } else { 1 };
+  let script = format!(
+    r#"
+{}
+[void][OpenCoworkDesktop]::SetCursorPos({x}, {y})
+Start-Sleep -Milliseconds 60
+for ($i = 0; $i -lt {iterations}; $i++) {{
+  [OpenCoworkDesktop]::mouse_event({down_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 25
+  [OpenCoworkDesktop]::mouse_event({up_flag}, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 90
+}}
+[PSCustomObject]@{{ ok = $true; action = 'click' }} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    x = request.x,
+    y = request.y,
+    iterations = iterations,
+    down_flag = down_flag,
+    up_flag = up_flag,
+  );
+
+  run_powershell_json_script::<DesktopActionResponse>(&script)
+}
+
+#[tauri::command]
+async fn desktop_move_mouse(request: DesktopMoveMouseRequest) -> Result<DesktopActionResponse, String> {
+  ensure_windows_desktop_support()?;
+  let script = format!(
+    r#"
+{}
+[void][OpenCoworkDesktop]::SetCursorPos({x}, {y})
+[PSCustomObject]@{{ ok = $true; action = 'move_mouse' }} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    x = request.x,
+    y = request.y,
+  );
+
+  run_powershell_json_script::<DesktopActionResponse>(&script)
+}
+
+#[tauri::command]
+async fn desktop_type_text(request: DesktopTypeRequest) -> Result<DesktopActionResponse, String> {
+  ensure_windows_desktop_support()?;
+  let text = escape_powershell_single_quoted(&request.text);
+  let script = format!(
+    r#"
+{}
+$text = '{text}'
+Set-Clipboard -Value $text
+Start-Sleep -Milliseconds 80
+[System.Windows.Forms.SendKeys]::SendWait('^v')
+Start-Sleep -Milliseconds 120
+[PSCustomObject]@{{ ok = $true; action = 'type_text' }} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    text = text,
+  );
+
+  run_powershell_json_script::<DesktopActionResponse>(&script)
+}
+
+#[tauri::command]
+async fn desktop_keypress(request: DesktopKeypressRequest) -> Result<DesktopActionResponse, String> {
+  ensure_windows_desktop_support()?;
+  let keys_json = serde_json::to_string(&request.keys).map_err(|err| err.to_string())?;
+  let keys_json = escape_powershell_single_quoted(&keys_json);
+  let script = format!(
+    r#"
+{}
+$keys = ConvertFrom-Json '{keys_json}'
+$modifierMap = @{{
+  'CTRL' = '^'
+  'CONTROL' = '^'
+  'ALT' = '%'
+  'SHIFT' = '+'
+}}
+$keyMap = @{{
+  'ENTER' = '{{ENTER}}'
+  'TAB' = '{{TAB}}'
+  'ESC' = '{{ESC}}'
+  'ESCAPE' = '{{ESC}}'
+  'UP' = '{{UP}}'
+  'DOWN' = '{{DOWN}}'
+  'LEFT' = '{{LEFT}}'
+  'RIGHT' = '{{RIGHT}}'
+  'BACKSPACE' = '{{BACKSPACE}}'
+  'DELETE' = '{{DELETE}}'
+  'HOME' = '{{HOME}}'
+  'END' = '{{END}}'
+  'PAGEUP' = '{{PGUP}}'
+  'PAGEDOWN' = '{{PGDN}}'
+  'SPACE' = ' '
+  'F1' = '{{F1}}'
+  'F2' = '{{F2}}'
+  'F3' = '{{F3}}'
+  'F4' = '{{F4}}'
+  'F5' = '{{F5}}'
+  'F6' = '{{F6}}'
+  'F7' = '{{F7}}'
+  'F8' = '{{F8}}'
+  'F9' = '{{F9}}'
+  'F10' = '{{F10}}'
+  'F11' = '{{F11}}'
+  'F12' = '{{F12}}'
+}}
+$modifiers = ''
+$resolved = @()
+foreach ($rawKey in $keys) {{
+  $upperKey = [string]$rawKey
+  $upperKey = $upperKey.ToUpperInvariant()
+  if ($modifierMap.ContainsKey($upperKey)) {{
+    $modifiers += $modifierMap[$upperKey]
+  }} elseif ($keyMap.ContainsKey($upperKey)) {{
+    $resolved += $keyMap[$upperKey]
+  }} elseif ($upperKey.Length -eq 1) {{
+    $resolved += $upperKey
+  }} else {{
+    $resolved += ('{{' + $upperKey + '}}')
+  }}
+}}
+if ($resolved.Count -eq 0) {{
+  throw 'desktop_keypress requires at least one non-modifier key'
+}}
+foreach ($entry in $resolved) {{
+  [System.Windows.Forms.SendKeys]::SendWait($modifiers + $entry)
+  Start-Sleep -Milliseconds 70
+}}
+[PSCustomObject]@{{ ok = $true; action = 'keypress' }} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    keys_json = keys_json,
+  );
+
+  run_powershell_json_script::<DesktopActionResponse>(&script)
+}
+
+#[tauri::command]
+async fn desktop_scroll(request: DesktopScrollRequest) -> Result<DesktopActionResponse, String> {
+  ensure_windows_desktop_support()?;
+  let maybe_move = match (request.x, request.y) {
+    (Some(x), Some(y)) => format!("[void][OpenCoworkDesktop]::SetCursorPos({}, {})", x, y),
+    _ => String::new(),
+  };
+  let script = format!(
+    r#"
+{}
+{maybe_move}
+Start-Sleep -Milliseconds 60
+[OpenCoworkDesktop]::mouse_event(0x0800, 0, 0, [uint32]([int]{scroll_y}), [UIntPtr]::Zero)
+[PSCustomObject]@{{ ok = $true; action = 'scroll' }} | ConvertTo-Json -Compress
+"#,
+    desktop_powershell_prelude(),
+    maybe_move = maybe_move,
+    scroll_y = request.scroll_y,
+  );
+
+  run_powershell_json_script::<DesktopActionResponse>(&script)
 }
 
 fn local_docs_mcp_call(
@@ -801,6 +2372,26 @@ fn local_docs_mcp_call(
 }
 
 #[tauri::command]
+async fn mcp_runtime_start(request: McpServerRequest) -> Result<McpRuntimeServerStatus, String> {
+  runtime_start_server(request).map_err(map_mcp_error)
+}
+
+#[tauri::command]
+async fn mcp_runtime_stop(name: String) -> Result<bool, String> {
+  runtime_stop_server(&name).map_err(map_mcp_error)
+}
+
+#[tauri::command]
+async fn mcp_runtime_restart(request: McpServerRequest) -> Result<McpRuntimeServerStatus, String> {
+  runtime_restart_server(request).map_err(map_mcp_error)
+}
+
+#[tauri::command]
+async fn mcp_runtime_list() -> Result<Vec<McpRuntimeServerStatus>, String> {
+  runtime_list_servers().map_err(map_mcp_error)
+}
+
+#[tauri::command]
 async fn mcp_probe(request: McpServerRequest) -> Result<mcp::McpProbeResponse, String> {
   if request.command.trim() == LOCAL_DOCS_MCP_COMMAND {
     return Ok(local_docs_mcp_probe(request.name));
@@ -808,6 +2399,10 @@ async fn mcp_probe(request: McpServerRequest) -> Result<mcp::McpProbeResponse, S
 
   if request.command.trim() == LOCAL_SCREENSHOT_MCP_COMMAND {
     return Ok(local_screenshot_mcp_probe(request.name));
+  }
+
+  if runtime_has_server(&request.name) {
+    return runtime_probe_server(&request.name).map_err(map_mcp_error);
   }
 
   probe_server(request).map_err(map_mcp_error)
@@ -837,6 +2432,11 @@ async fn mcp_call_tool(
 
   if request.command.trim() == LOCAL_SCREENSHOT_MCP_COMMAND {
     return local_screenshot_mcp_call(request, &app);
+  }
+
+  if runtime_has_server(&request.name) {
+    return runtime_call_tool(&request.name, &request.tool_name, request.tool_args.clone())
+      .map_err(map_mcp_error);
   }
 
   call_tool(request).map_err(map_mcp_error)
@@ -997,7 +2597,14 @@ fn exec_command(
   let retry_backoff_ms = request.retry_backoff_ms.unwrap_or(1_000).clamp(100, 30_000);
   let start = Instant::now();
   let effective_cwd = ensure_run_cwd(&state, request.run_id.as_deref(), request.cwd.as_deref())?;
-  let (shell_override, env_vars) = resolve_exec_runtime(
+  enforce_shell_command_guard(
+    &state,
+    request.run_id.as_deref(),
+    command_text,
+    effective_cwd.as_deref(),
+  )?;
+
+  let (shell_override, env_vars, runtime_mode) = resolve_exec_runtime(
     &state,
     request.backend_id.as_deref(),
     request.run_id.as_deref(),
@@ -1007,6 +2614,7 @@ fn exec_command(
     stdout: String::new(),
     stderr: String::new(),
     exit_code: None,
+    current_cwd: effective_cwd.clone(),
     timed_out: false,
     duration_ms: 0,
     attempts: 0,
@@ -1023,6 +2631,7 @@ fn exec_command(
       effective_cwd.as_deref(),
       timeout_ms,
       shell_override.as_deref(),
+      runtime_mode.as_deref(),
       &env_vars,
     ) {
       Ok(response) => {
@@ -1118,6 +2727,15 @@ fn db_save_message(state: tauri::State<'_, Arc<Database>>, id: String, thread_id
 #[tauri::command]
 fn db_update_message_content(state: tauri::State<'_, Arc<Database>>, id: String, content: String) -> Result<(), String> {
   state.update_message_content(&id, &content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_delete_messages(
+  state: tauri::State<'_, Arc<Database>>,
+  ids: Vec<String>,
+) -> Result<DeletedMessagesResponse, String> {
+  let deleted_count = state.delete_messages(&ids).map_err(|e| e.to_string())?;
+  Ok(DeletedMessagesResponse { deleted_count })
 }
 
 #[tauri::command]
@@ -1516,6 +3134,77 @@ fn fs_write_text_file(
     response.bytes_written,
   );
   let _ = audit::append_audit_event(app_data_dir, "file_safety", "write_text_file", Some(details));
+
+  Ok(response)
+}
+
+#[tauri::command]
+fn fs_create_directory(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, Arc<Database>>,
+  path: String,
+  run_id: Option<String>,
+) -> Result<file_safety::DirectoryCreateResponse, String> {
+  let canonical_target = ensure_run_file_access(&state, run_id.as_deref(), &path, true)?;
+  let response = file_safety::create_directory(&canonical_target)?;
+
+  let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+  let details = file_safety::create_directory_audit_details(&response.path, response.created);
+  let _ = audit::append_audit_event(app_data_dir, "file_safety", "create_directory", Some(details));
+
+  Ok(response)
+}
+
+#[tauri::command]
+fn fs_move_path(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, Arc<Database>>,
+  source_path: String,
+  destination_path: String,
+  overwrite: bool,
+  run_id: Option<String>,
+) -> Result<file_safety::PathMutationResponse, String> {
+  let canonical_source = ensure_run_file_access(&state, run_id.as_deref(), &source_path, true)?;
+  let canonical_destination = ensure_run_file_access(&state, run_id.as_deref(), &destination_path, true)?;
+  let response = file_safety::move_path(&canonical_source, &canonical_destination, overwrite)?;
+
+  let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+  let details = file_safety::mutate_path_audit_details(
+    "move",
+    &response.source_path,
+    &response.destination_path,
+    &response.item_kind,
+    response.created_parent,
+    response.replaced_existing,
+  );
+  let _ = audit::append_audit_event(app_data_dir, "file_safety", "move_path", Some(details));
+
+  Ok(response)
+}
+
+#[tauri::command]
+fn fs_copy_path(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, Arc<Database>>,
+  source_path: String,
+  destination_path: String,
+  overwrite: bool,
+  run_id: Option<String>,
+) -> Result<file_safety::PathMutationResponse, String> {
+  let canonical_source = ensure_run_file_access(&state, run_id.as_deref(), &source_path, false)?;
+  let canonical_destination = ensure_run_file_access(&state, run_id.as_deref(), &destination_path, true)?;
+  let response = file_safety::copy_path(&canonical_source, &canonical_destination, overwrite)?;
+
+  let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+  let details = file_safety::mutate_path_audit_details(
+    "copy",
+    &response.source_path,
+    &response.destination_path,
+    &response.item_kind,
+    response.created_parent,
+    response.replaced_existing,
+  );
+  let _ = audit::append_audit_event(app_data_dir, "file_safety", "copy_path", Some(details));
 
   Ok(response)
 }
@@ -2051,6 +3740,46 @@ fn fs_generate_pro_outputs(
   Ok(response)
 }
 
+#[tauri::command]
+fn fs_generate_office_workflow(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, Arc<Database>>,
+  request: cowork_features::OfficeWorkflowRequest,
+  run_id: Option<String>,
+) -> Result<cowork_features::OfficeWorkflowResponse, String> {
+  let mut normalized_request = request;
+
+  let output_path = ensure_run_file_access(
+    &state,
+    run_id.as_deref(),
+    &normalized_request.output_path,
+    true,
+  )?;
+  normalized_request.output_path = output_path.display().to_string();
+
+  if let Some(template_path) = normalized_request.template_path.clone() {
+    let canonical_template = ensure_run_file_access(
+      &state,
+      run_id.as_deref(),
+      template_path.as_str(),
+      false,
+    )?;
+    normalized_request.template_path = Some(canonical_template.display().to_string());
+  }
+
+  let response = cowork_features::generate_office_workflow(normalized_request)?;
+  let app_data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+  let details = serde_json::json!({
+    "format": response.format,
+    "mode": response.mode,
+    "generatedArtifacts": response.generated.len(),
+    "placeholdersApplied": response.placeholders_applied,
+  });
+  let _ = audit::append_audit_event(app_data_dir, "artifact_pipeline", "generate_office_workflow", Some(details));
+
+  Ok(response)
+}
+
 fn map_scheduled_task_row(
   row: (String, String, String, String, bool, Option<String>, Option<String>, String, String),
 ) -> ScheduledTaskRow {
@@ -2277,6 +4006,109 @@ fn scheduler_list_runs(
         })
         .collect()
     })
+}
+
+#[tauri::command]
+fn export_save_text_file(
+  app: tauri::AppHandle,
+  path: String,
+  content: String,
+) -> Result<(), String> {
+  let target_path = PathBuf::from(&path);
+  if let Some(parent) = target_path.parent() {
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+  }
+  fs::write(&target_path, content.as_bytes()).map_err(|err| err.to_string())?;
+
+  if let Ok(app_data_dir) = app.path().app_data_dir() {
+    let details = serde_json::json!({
+      "path": path,
+      "bytes": content.len(),
+    });
+    let _ = audit::append_audit_event(app_data_dir, "export", "save_text_file", Some(details));
+  }
+
+  Ok(())
+}
+
+async fn probe_connector_method(
+  client: &reqwest::Client,
+  url: &str,
+  method: Method,
+  api_key: Option<&str>,
+) -> Result<StatusCode, String> {
+  let mut request = client
+    .request(method, url)
+    .header("User-Agent", "Open-Cowork/1.0");
+
+  if let Some(key) = api_key.filter(|value| !value.trim().is_empty()) {
+    request = request.header("Authorization", format!("Bearer {}", key.trim()));
+  }
+
+  request
+    .send()
+    .await
+    .map(|response| response.status())
+    .map_err(|error| error.to_string())
+}
+
+fn interpret_connector_status(status: StatusCode) -> (bool, String) {
+  if status.is_success() {
+    return (true, format!("Endpoint antwortet erfolgreich ({})", status));
+  }
+
+  match status.as_u16() {
+    401 | 403 => (true, format!("Endpoint erreichbar, aber Authentifizierung erforderlich ({})", status)),
+    405 => (true, format!("Endpoint erreichbar, verlangt aber eine andere HTTP-Methode ({})", status)),
+    404 => (false, format!("Endpoint nicht gefunden ({})", status)),
+    _ if status.is_server_error() => (false, format!("Endpoint antwortet mit Serverfehler ({})", status)),
+    _ => (true, format!("Endpoint erreichbar, antwortet mit Status {}", status)),
+  }
+}
+
+#[tauri::command]
+async fn connector_test_reachability(
+  app: tauri::AppHandle,
+  request: ConnectorReachabilityRequest,
+) -> Result<ConnectorReachabilityResponse, String> {
+  let url = request
+    .webhook_url
+    .clone()
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| "webhookUrl ist erforderlich".to_string())?;
+
+  let parsed_url = Url::parse(url.trim()).map_err(|error| format!("ungueltige URL: {}", error))?;
+  let client = reqwest::Client::builder()
+    .timeout(Duration::from_secs(12))
+    .build()
+    .map_err(|error| error.to_string())?;
+
+  let api_key = request.api_key.as_deref();
+  let status = match probe_connector_method(&client, parsed_url.as_str(), Method::HEAD, api_key).await {
+    Ok(status) => status,
+    Err(_) => probe_connector_method(&client, parsed_url.as_str(), Method::GET, api_key).await?,
+  };
+
+  let (reachable, message) = interpret_connector_status(status);
+  let checked_at = chrono::Utc::now().to_rfc3339();
+
+  if let Ok(app_data_dir) = app.path().app_data_dir() {
+    let details = serde_json::json!({
+      "key": request.key,
+      "label": request.label,
+      "url": parsed_url.as_str(),
+      "status": status.as_u16(),
+      "reachable": reachable,
+    });
+    let _ = audit::append_audit_event(app_data_dir, "connector", "reachability_test", Some(details));
+  }
+
+  Ok(ConnectorReachabilityResponse {
+    reachable,
+    status: Some(status.as_u16()),
+    message,
+    checked_at,
+  })
 }
 
 #[tauri::command]
@@ -2570,9 +4402,20 @@ fn worker_sandbox_create(
   state: tauri::State<'_, Arc<Database>>,
   request: WorkerSandboxCreateRequest,
 ) -> Result<db::WorkerSandboxRow, String> {
-  let mode = request.mode.unwrap_or_else(|| "workspace_copy".to_string());
-  if mode != "workspace_copy" {
-    return Err(format!("sandbox mode '{}' wird noch nicht unterstuetzt", mode));
+  let mode = request
+    .mode
+    .as_deref()
+    .unwrap_or("workspace_copy")
+    .trim()
+    .to_lowercase();
+  if mode != "workspace_copy" && mode != "native" && mode != "wsl" {
+    return Err(format!(
+      "sandbox mode '{}' wird nicht unterstuetzt (erlaubt: workspace_copy, native, wsl)",
+      mode
+    ));
+  }
+  if mode == "wsl" && !cfg!(target_os = "windows") {
+    return Err("sandbox mode 'wsl' ist nur unter Windows verfuegbar".to_string());
   }
 
   let source_cwd = PathBuf::from(&request.source_cwd)
@@ -2594,7 +4437,19 @@ fn worker_sandbox_create(
     terminal_backends::ensure_default_local_backend(&state)?
   };
 
-  let workspace = worker_sandbox::prepare_workspace_snapshot(&app_data_dir, &request.id, &source_cwd)?;
+  let workspace = if mode == "native" {
+    let sandbox_root = worker_sandbox::sandbox_root(&app_data_dir, &request.id);
+    fs::create_dir_all(&sandbox_root).map_err(|err| err.to_string())?;
+    worker_sandbox::WorkspacePrepareResult {
+      sandbox_root: sandbox_root.display().to_string(),
+      workspace_root: source_cwd.display().to_string(),
+      copied_files: 0,
+      skipped_files: 0,
+      skipped_dirs: Vec::new(),
+    }
+  } else {
+    worker_sandbox::prepare_workspace_snapshot(&app_data_dir, &request.id, &source_cwd)?
+  };
   let allowed_roots_json = serde_json::to_string(&vec![workspace.workspace_root.clone()])
     .map_err(|err| err.to_string())?;
   let read_only_roots_json = if request.allow_file_write.unwrap_or(true) {
@@ -2607,6 +4462,8 @@ fn worker_sandbox_create(
     "copiedFiles": workspace.copied_files,
     "skippedFiles": workspace.skipped_files,
     "skippedDirs": workspace.skipped_dirs,
+    "mode": mode,
+    "workspaceStrategy": if mode == "native" { "in_place" } else { "snapshot_copy" },
     "sourceCwd": source_cwd.display().to_string(),
     "sandboxRoot": workspace.sandbox_root,
     "requestedMetadata": request.metadata_json,
@@ -2911,6 +4768,192 @@ fn ensure_run_cwd(
   Ok(Some(canonical.display().to_string()))
 }
 
+fn resolve_shell_allowed_roots(
+  state: &Arc<Database>,
+  run_id: Option<&str>,
+) -> Result<Vec<String>, String> {
+  if let Some(sandbox) = load_run_sandbox(state, run_id)? {
+    return parse_json_string_array(&sandbox.allowed_roots_json);
+  }
+  state.list_allowed_folders().map_err(|err| err.to_string())
+}
+
+fn split_shell_tokens(command: &str) -> Vec<String> {
+  let mut tokens = Vec::new();
+  let mut current = String::new();
+  let mut quote: Option<char> = None;
+
+  for ch in command.chars() {
+    if let Some(active_quote) = quote {
+      current.push(ch);
+      if ch == active_quote {
+        quote = None;
+      }
+      continue;
+    }
+
+    if ch == '"' || ch == '\'' {
+      quote = Some(ch);
+      current.push(ch);
+      continue;
+    }
+
+    if ch.is_whitespace() || ch == ';' || ch == '|' || ch == '&' {
+      if !current.trim().is_empty() {
+        tokens.push(current.clone());
+      }
+      current.clear();
+      continue;
+    }
+
+    current.push(ch);
+  }
+
+  if !current.trim().is_empty() {
+    tokens.push(current);
+  }
+
+  tokens
+}
+
+fn is_windows_drive_path(value: &str) -> bool {
+  let bytes = value.as_bytes();
+  bytes.len() >= 3
+    && bytes[0].is_ascii_alphabetic()
+    && bytes[1] == b':'
+    && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+fn is_absolute_path_candidate(value: &str) -> bool {
+  value.starts_with("\\\\") || value.starts_with('/') || is_windows_drive_path(value)
+}
+
+fn normalize_path_token(token: &str) -> String {
+  token
+    .trim()
+    .trim_matches('"')
+    .trim_matches('\'')
+    .trim_matches('`')
+    .trim_matches('(')
+    .trim_matches(')')
+    .trim_matches('{')
+    .trim_matches('}')
+    .trim_matches('[')
+    .trim_matches(']')
+    .trim_matches(',')
+    .to_string()
+}
+
+fn extract_absolute_path_candidates(command: &str) -> Vec<String> {
+  let mut paths = Vec::new();
+
+  for token in split_shell_tokens(command) {
+    let mut candidate = normalize_path_token(&token);
+    if let Some(eq_idx) = candidate.find('=') {
+      let rhs = normalize_path_token(&candidate[eq_idx + 1..]);
+      if !rhs.is_empty() {
+        candidate = rhs;
+      }
+    }
+
+    if candidate.is_empty() || !is_absolute_path_candidate(&candidate) {
+      continue;
+    }
+
+    if !paths.iter().any(|existing| existing == &candidate) {
+      paths.push(candidate);
+    }
+  }
+
+  paths
+}
+
+fn command_contains_path_traversal(command: &str) -> bool {
+  if command.contains("../") || command.contains("..\\") {
+    return true;
+  }
+
+  for token in split_shell_tokens(command) {
+    let normalized = normalize_path_token(&token).replace('\\', "/");
+    if normalized == ".."
+      || normalized.starts_with("../")
+      || normalized.ends_with("/..")
+      || normalized.contains("/../")
+    {
+      return true;
+    }
+  }
+
+  false
+}
+
+fn detect_dangerous_shell_pattern(command: &str) -> Option<&'static str> {
+  let lower = command.to_lowercase();
+  let compact = lower.replace('\n', " ");
+
+  if (compact.contains("curl") || compact.contains("wget"))
+    && compact.contains('|')
+    && (compact.contains("| bash")
+      || compact.contains("|sh")
+      || compact.contains("| sh")
+      || compact.contains("| pwsh")
+      || compact.contains("| powershell"))
+  {
+    return Some("remote script piping ist blockiert");
+  }
+
+  if compact.contains("rm -rf /")
+    || compact.contains("rm -fr /")
+    || compact.contains("rm -rf ~")
+    || compact.contains("mkfs")
+    || compact.contains(" dd if=")
+    || compact.starts_with("dd if=")
+    || compact.contains("> /dev/")
+    || compact.contains("format c:")
+    || compact.contains("del /s")
+    || compact.contains("rmdir /s")
+    || compact.contains("set-executionpolicy")
+    || (compact.contains("powershell") && compact.contains("-enc"))
+  {
+    return Some("potenziell destruktives shell-muster erkannt");
+  }
+
+  None
+}
+
+fn enforce_shell_command_guard(
+  state: &Arc<Database>,
+  run_id: Option<&str>,
+  command_text: &str,
+  effective_cwd: Option<&str>,
+) -> Result<(), String> {
+  let allowed_roots = resolve_shell_allowed_roots(state, run_id)?;
+
+  if let Some(cwd) = effective_cwd {
+    file_safety::ensure_path_allowed(Path::new(cwd), &allowed_roots)
+      .map_err(|_| format!("working directory liegt ausserhalb erlaubter roots: {}", cwd))?;
+  }
+
+  if command_contains_path_traversal(command_text) {
+    return Err("command blockiert: path traversal (..) ist nicht erlaubt".to_string());
+  }
+
+  for path_candidate in extract_absolute_path_candidates(command_text) {
+    if file_safety::ensure_path_allowed(Path::new(&path_candidate), &allowed_roots).is_err() {
+      return Err(format!(
+        "command blockiert: absoluter pfad ausserhalb erlaubter roots: {}",
+        path_candidate
+      ));
+    }
+  }
+
+  if let Some(reason) = detect_dangerous_shell_pattern(command_text) {
+    return Err(format!("command blockiert: {}", reason));
+  }
+
+  Ok(())
+}
+
 fn parse_env_vars_json(env_json: Option<&str>) -> Result<HashMap<String, String>, String> {
   match env_json {
     Some(text) if !text.trim().is_empty() => {
@@ -3088,13 +5131,76 @@ fn emit_exec_chunk(app: &tauri::AppHandle, stream_id: Option<&str>, channel: &st
   }
 }
 
+const EXEC_CURRENT_CWD_MARKER: &str = "__OPEN_COWORK_CURRENT_CWD__=";
+
+fn build_exec_command_text(command_text: &str, force_posix_shell: bool) -> String {
+  if cfg!(target_os = "windows") && !force_posix_shell {
+    format!(
+      "{command_text}; $openCoworkExit = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output ('{marker}' + (Get-Location).Path); exit $openCoworkExit",
+      marker = EXEC_CURRENT_CWD_MARKER,
+    )
+  } else {
+    format!(
+      "{command_text}; open_cowork_exit=$?; printf '%s%s\\n' '{marker}' \"$PWD\"; exit $open_cowork_exit",
+      marker = EXEC_CURRENT_CWD_MARKER,
+    )
+  }
+}
+
+fn windows_path_to_wsl(path: &str) -> Option<String> {
+  let normalized = path.replace('\\', "/");
+  let bytes = normalized.as_bytes();
+  if bytes.len() >= 3
+    && bytes[0].is_ascii_alphabetic()
+    && bytes[1] == b':'
+    && bytes[2] == b'/'
+  {
+    let drive = normalized[0..1].to_lowercase();
+    let remainder = normalized[3..].trim_start_matches('/');
+    if remainder.is_empty() {
+      return Some(format!("/mnt/{}", drive));
+    }
+    return Some(format!("/mnt/{}/{}", drive, remainder));
+  }
+
+  if normalized.starts_with('/') {
+    return Some(normalized);
+  }
+
+  None
+}
+
+fn escape_bash_single_quotes(input: &str) -> String {
+  input.replace('\'', "'\"'\"'")
+}
+
+fn extract_current_cwd_from_stdout(stdout: &str) -> (String, Option<String>) {
+  let mut cleaned_lines = Vec::new();
+  let mut current_cwd: Option<String> = None;
+
+  for line in stdout.lines() {
+    if let Some(value) = line.strip_prefix(EXEC_CURRENT_CWD_MARKER) {
+      let normalized = value.trim();
+      if !normalized.is_empty() {
+        current_cwd = Some(normalized.to_string());
+      }
+      continue;
+    }
+
+    cleaned_lines.push(line);
+  }
+
+  (cleaned_lines.join("\n"), current_cwd)
+}
+
 fn resolve_exec_runtime(
   state: &Arc<Database>,
   backend_id: Option<&str>,
   run_id: Option<&str>,
-) -> Result<(Option<String>, HashMap<String, String>), String> {
+) -> Result<(Option<String>, HashMap<String, String>, Option<String>), String> {
   let mut shell_override: Option<String> = None;
   let mut env_vars: HashMap<String, String> = HashMap::new();
+  let mut runtime_mode: Option<String> = None;
 
   if let Some(active_run_id) = run_id {
     if let Some(sandbox) = load_run_sandbox(state, Some(active_run_id))? {
@@ -3102,6 +5208,7 @@ fn resolve_exec_runtime(
       env_vars.extend(parse_env_vars_json(sandbox.env_json.as_deref())?);
       env_vars.insert("OPEN_COWORK_SANDBOX_ID".to_string(), sandbox.id.clone());
       env_vars.insert("OPEN_COWORK_RUN_ID".to_string(), sandbox.run_id.clone());
+      runtime_mode = Some(sandbox.mode.clone());
     }
   }
 
@@ -3136,7 +5243,17 @@ fn resolve_exec_runtime(
     }
   }
 
-  Ok((shell_override, env_vars))
+  if cfg!(target_os = "windows")
+    && runtime_mode
+      .as_deref()
+      .map(|mode| mode.eq_ignore_ascii_case("wsl"))
+      .unwrap_or(false)
+    && shell_override.is_none()
+  {
+    shell_override = Some("wsl".to_string());
+  }
+
+  Ok((shell_override, env_vars, runtime_mode))
 }
 
 fn run_command_once(
@@ -3146,26 +5263,65 @@ fn run_command_once(
   cwd: Option<&str>,
   timeout_ms: u64,
   shell_override: Option<&str>,
+  runtime_mode: Option<&str>,
   env_vars: &HashMap<String, String>,
 ) -> Result<ExecCommandResponse, String> {
-  let shell = shell_override.unwrap_or(if cfg!(target_os = "windows") {
-    "powershell"
+  let is_wsl_mode = cfg!(target_os = "windows")
+    && (runtime_mode
+      .map(|mode| mode.eq_ignore_ascii_case("wsl"))
+      .unwrap_or(false)
+      || shell_override
+        .map(|shell| shell.eq_ignore_ascii_case("wsl") || shell.eq_ignore_ascii_case("wsl.exe"))
+        .unwrap_or(false));
+
+  let shell = if is_wsl_mode {
+    "wsl"
   } else {
-    "sh"
-  });
+    shell_override.unwrap_or(if cfg!(target_os = "windows") {
+      "powershell"
+    } else {
+      "sh"
+    })
+  };
+
+  let wrapped_command_text = build_exec_command_text(command_text, is_wsl_mode);
 
   let mut command = if cfg!(target_os = "windows") {
-    let mut cmd = Command::new(shell);
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", command_text]);
-    cmd
+    if is_wsl_mode {
+      let mut cmd = Command::new(shell);
+      let wrapped_for_wsl = if let Some(dir) = cwd.and_then(windows_path_to_wsl) {
+        format!(
+          "cd '{}' && {}",
+          escape_bash_single_quotes(&dir),
+          wrapped_command_text
+        )
+      } else {
+        wrapped_command_text.clone()
+      };
+      cmd.args(["-e", "bash", "-lc", wrapped_for_wsl.as_str()]);
+      cmd
+    } else {
+      let mut cmd = Command::new(shell);
+      let shell_lower = shell.to_ascii_lowercase();
+      if shell_lower.contains("powershell") || shell_lower.ends_with("pwsh") || shell_lower.ends_with("pwsh.exe") {
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", wrapped_command_text.as_str()]);
+      } else if shell_lower.ends_with("cmd") || shell_lower.ends_with("cmd.exe") {
+        cmd.args(["/C", wrapped_command_text.as_str()]);
+      } else {
+        cmd.args(["-c", wrapped_command_text.as_str()]);
+      }
+      cmd
+    }
   } else {
     let mut cmd = Command::new(shell);
-    cmd.args(["-c", command_text]);
+    cmd.args(["-c", wrapped_command_text.as_str()]);
     cmd
   };
 
-  if let Some(dir) = cwd {
-    command.current_dir(dir);
+  if !is_wsl_mode {
+    if let Some(dir) = cwd {
+      command.current_dir(dir);
+    }
   }
 
   for (key, value) in env_vars {
@@ -3230,6 +5386,7 @@ fn run_command_once(
 
   let stdout_text = stdout_handle.join().unwrap_or_default();
   let stderr_text = stderr_handle.join().unwrap_or_default();
+  let (stdout_text, extracted_cwd) = extract_current_cwd_from_stdout(&stdout_text);
   let exit_code = exit_status.and_then(|status| status.code());
   let normalized_status = if timed_out {
     "timed_out"
@@ -3247,6 +5404,7 @@ fn run_command_once(
     stdout: stdout_text,
     stderr: stderr_text,
     exit_code,
+    current_cwd: extracted_cwd.or_else(|| cwd.map(|value| value.to_string())),
     timed_out,
     duration_ms: wait_started.elapsed().as_millis() as u64,
     attempts: 1,
@@ -3875,6 +6033,7 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_notification::init())
+    .plugin(tauri_plugin_opener::init())
     .plugin(
       tauri_plugin_log::Builder::default()
         .level(log::LevelFilter::Info)
@@ -3919,6 +6078,7 @@ pub fn run() {
       start_scheduler_worker(app.handle().clone(), shared_database.clone());
       app.manage(shared_database);
       app.manage(WatchRegistry::default());
+      app.manage(CrewExecutionRegistry::default());
       app.manage(ClaudeCodeBridge::new());
       configure_pdfium_search_paths(app.handle());
 
@@ -3937,6 +6097,21 @@ pub fn run() {
       claude_code_send_stream,
       claude_code_list_commands,
       claude_code_list_tools,
+      desktop_primary_display,
+      desktop_capture_primary_screenshot,
+      desktop_capture_primary_annotated_screenshot,
+      desktop_list_windows,
+      desktop_focus_window,
+      desktop_launch_app,
+      desktop_click,
+      desktop_move_mouse,
+      desktop_type_text,
+      desktop_keypress,
+      desktop_scroll,
+      mcp_runtime_start,
+      mcp_runtime_stop,
+      mcp_runtime_restart,
+      mcp_runtime_list,
       mcp_probe,
       mcp_call_tool,
       web_fetch_url,
@@ -3947,6 +6122,7 @@ pub fn run() {
       db_delete_thread,
       db_save_message,
       db_update_message_content,
+      db_delete_messages,
       db_list_messages,
       db_save_task,
       db_update_task_status,
@@ -3962,6 +6138,9 @@ pub fn run() {
       fs_import_attachment,
       fs_collect_attachment_metadata,
       fs_write_text_file,
+      fs_create_directory,
+      fs_move_path,
+      fs_copy_path,
       fs_delete_file,
       fs_list_backups,
       fs_restore_backup,
@@ -3977,12 +6156,14 @@ pub fn run() {
       fs_list_artifact_exports,
       task_run_sub_agents,
       fs_generate_pro_outputs,
+      fs_generate_office_workflow,
       scheduler_upsert_task,
       scheduler_list_tasks,
       scheduler_delete_task,
       scheduler_set_task_active,
       scheduler_run_task_now,
       scheduler_list_runs,
+      export_save_text_file,
       policy_get,
       policy_set,
       policy_evaluate,
@@ -4056,6 +6237,9 @@ pub fn run() {
       pipeline_upsert,
       pipeline_list,
       pipeline_delete,
+      pipeline_execute,
+      crew_execute,
+      crew_stop,
       // Memory providers
       memory_provider_upsert,
       memory_provider_list,
@@ -4064,6 +6248,7 @@ pub fn run() {
       tool_gateway_upsert,
       tool_gateway_list,
       tool_gateway_delete,
+      connector_test_reachability,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

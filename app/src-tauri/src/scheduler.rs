@@ -38,6 +38,40 @@ fn parse_weekday(value: &str) -> Option<Weekday> {
     }
 }
 
+fn parse_interval_duration(value: &str) -> Result<Option<Duration>, String> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    let (amount_raw, unit_raw) = if parts.len() >= 2 {
+        (parts[0], parts[1])
+    } else {
+        let split_index = value
+            .find(|ch: char| !ch.is_ascii_digit())
+            .ok_or_else(|| "invalid interval expression".to_string())?;
+        value.split_at(split_index)
+    };
+
+    let amount = amount_raw.trim().parse::<i64>().map_err(|_| "invalid interval value")?;
+    if amount < 1 {
+        return Err("interval value must be at least 1".to_string());
+    }
+
+    let unit = unit_raw.trim();
+    match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => {
+            if amount > 1440 {
+                return Err("minute interval must be between 1 and 1440".to_string());
+            }
+            Ok(Some(Duration::minutes(amount)))
+        }
+        "h" | "hr" | "hrs" | "hour" | "hours" | "std" | "stunde" | "stunden" => {
+            if amount > 168 {
+                return Err("hour interval must be between 1 and 168".to_string());
+            }
+            Ok(Some(Duration::hours(amount)))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn next_daily(now: DateTime<Utc>, hour: u32, minute: u32) -> DateTime<Utc> {
     let candidate = now
         .with_hour(hour)
@@ -82,22 +116,14 @@ pub fn next_run_from_expression(expr: &str, now: DateTime<Utc>) -> Result<DateTi
     let normalized = normalize(expr);
 
     if let Some(rest) = normalized.strip_prefix("every ") {
-        if let Some(minutes_raw) = rest.strip_suffix(" min") {
-            let minutes = minutes_raw.trim().parse::<i64>().map_err(|_| "invalid minute interval")?;
-            if minutes < 1 || minutes > 1440 {
-                return Err("minute interval must be between 1 and 1440".to_string());
-            }
-            return Ok(now + Duration::minutes(minutes));
+        if let Some(duration) = parse_interval_duration(rest)? {
+            return Ok(now + duration);
         }
     }
 
     if let Some(rest) = normalized.strip_prefix("alle ") {
-        if let Some(minutes_raw) = rest.strip_suffix(" min") {
-            let minutes = minutes_raw.trim().parse::<i64>().map_err(|_| "invalid minute interval")?;
-            if minutes < 1 || minutes > 1440 {
-                return Err("minute interval must be between 1 and 1440".to_string());
-            }
-            return Ok(now + Duration::minutes(minutes));
+        if let Some(duration) = parse_interval_duration(rest)? {
+            return Ok(now + duration);
         }
     }
 
@@ -138,5 +164,12 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-04-16T09:00:00Z").unwrap().with_timezone(&Utc);
         let next = next_run_from_expression("montag 08:00", now).unwrap();
         assert_eq!(next.weekday(), Weekday::Mon);
+    }
+
+    #[test]
+    fn parses_hourly_expression() {
+        let now = DateTime::parse_from_rfc3339("2026-04-16T09:00:00Z").unwrap().with_timezone(&Utc);
+        let next = next_run_from_expression("every 1h", now).unwrap();
+        assert_eq!(next.to_rfc3339(), "2026-04-16T10:00:00+00:00");
     }
 }

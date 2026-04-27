@@ -1,8 +1,9 @@
 use crate::artifact_pipeline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use zip::write::FileOptions;
@@ -56,6 +57,40 @@ pub struct ProOutputResponse {
     pub columns: usize,
     pub numeric_columns: usize,
     pub totals: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeWorkflowRequest {
+    pub format: String,
+    pub output_path: String,
+    pub mode: Option<String>,
+    pub template_path: Option<String>,
+    #[serde(default)]
+    pub transforms: HashMap<String, String>,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub paragraphs: Vec<String>,
+    #[serde(default)]
+    pub bullets: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeWorkflowArtifact {
+    pub path: String,
+    pub generator: String,
+    pub format: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfficeWorkflowResponse {
+    pub format: String,
+    pub mode: String,
+    pub placeholders_applied: usize,
+    pub generated: Vec<OfficeWorkflowArtifact>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +212,263 @@ pub fn generate_pro_outputs(request: ProOutputRequest, csv_path: &Path, output_d
         numeric_columns: totals.len(),
         totals,
     })
+}
+
+pub fn generate_office_workflow(mut request: OfficeWorkflowRequest) -> Result<OfficeWorkflowResponse, String> {
+    let format = request.format.trim().to_lowercase();
+    if format != "docx" && format != "pptx" {
+        return Err("unsupported office format (allowed: docx, pptx)".to_string());
+    }
+
+    let mode = request
+        .mode
+        .as_deref()
+        .unwrap_or("parallel")
+        .trim()
+        .to_lowercase();
+    if mode != "parallel" && mode != "native" && mode != "template" {
+        return Err("unsupported workflow mode (allowed: parallel, native, template)".to_string());
+    }
+
+    let output_path = PathBuf::from(&request.output_path);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    if let Some(title) = request.title.clone() {
+        request.transforms.entry("title".to_string()).or_insert(title);
+    }
+    if !request.paragraphs.is_empty() {
+        request
+            .transforms
+            .entry("paragraphs".to_string())
+            .or_insert(request.paragraphs.join("\n"));
+    }
+    if !request.bullets.is_empty() {
+        let bullet_text = request
+            .bullets
+            .iter()
+            .map(|value| format!("- {}", value))
+            .collect::<Vec<_>>()
+            .join("\n");
+        request
+            .transforms
+            .entry("bullets".to_string())
+            .or_insert(bullet_text);
+    }
+    request
+        .transforms
+        .entry("generated_at".to_string())
+        .or_insert_with(|| chrono::Utc::now().to_rfc3339());
+
+    let mut generated = Vec::new();
+    let mut warnings = Vec::new();
+    let mut placeholders_applied = 0usize;
+
+    if mode != "template" {
+        let headers = build_workflow_headers(&request);
+        let totals = build_workflow_totals(&request.transforms);
+        let row_count = request.paragraphs.len().max(request.bullets.len()).max(1);
+
+        if format == "docx" {
+            write_docx(&output_path, &headers, row_count, &totals)?;
+        } else {
+            write_pptx(&output_path, row_count, headers.len().max(1), &totals)?;
+        }
+
+        generated.push(OfficeWorkflowArtifact {
+            path: output_path.display().to_string(),
+            generator: "native".to_string(),
+            format: format.clone(),
+        });
+    }
+
+    if mode != "native" {
+        let template_path = request
+            .template_path
+            .as_deref()
+            .ok_or_else(|| "templatePath ist fuer mode=template oder mode=parallel erforderlich".to_string())?;
+        let template_output = if mode == "template" {
+            output_path.clone()
+        } else {
+            derive_parallel_template_path(&output_path)
+        };
+
+        let replacements = apply_office_template_transform(
+            Path::new(template_path),
+            template_output.as_path(),
+            &format,
+            &request.transforms,
+        )?;
+        placeholders_applied += replacements;
+
+        if replacements == 0 {
+            warnings.push(
+                "Keine Template-Platzhalter ersetzt (erwartetes Muster: {{key}}).".to_string(),
+            );
+        }
+
+        generated.push(OfficeWorkflowArtifact {
+            path: template_output.display().to_string(),
+            generator: "template".to_string(),
+            format: format.clone(),
+        });
+    }
+
+    Ok(OfficeWorkflowResponse {
+        format,
+        mode,
+        placeholders_applied,
+        generated,
+        warnings,
+    })
+}
+
+fn build_workflow_headers(request: &OfficeWorkflowRequest) -> Vec<String> {
+    let mut headers = Vec::new();
+
+    if let Some(title) = request.title.as_ref() {
+        let trimmed = title.trim();
+        if !trimmed.is_empty() {
+            headers.push(trimmed.to_string());
+        }
+    }
+
+    for paragraph in request.paragraphs.iter().take(4) {
+        let trimmed = paragraph.trim();
+        if !trimmed.is_empty() {
+            headers.push(trimmed.to_string());
+        }
+    }
+
+    for bullet in request.bullets.iter().take(4) {
+        let trimmed = bullet.trim();
+        if !trimmed.is_empty() {
+            headers.push(format!("Bullet: {}", trimmed));
+        }
+    }
+
+    if headers.is_empty() {
+        headers.push("Office Workflow Output".to_string());
+    }
+
+    headers
+}
+
+fn build_workflow_totals(transforms: &HashMap<String, String>) -> Vec<(String, f64)> {
+    let mut totals = Vec::new();
+    for (key, value) in transforms {
+        let normalized = value.trim().replace(',', ".");
+        if let Ok(parsed) = normalized.parse::<f64>() {
+            totals.push((key.clone(), parsed));
+        }
+    }
+    totals
+}
+
+fn derive_parallel_template_path(output_path: &Path) -> PathBuf {
+    let parent = output_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("office")
+        .to_string();
+    let extension = output_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("docx");
+
+    parent.join(format!("{}_template.{}", stem, extension))
+}
+
+fn should_transform_entry(format: &str, entry_name: &str) -> bool {
+    if format == "docx" {
+        return entry_name.starts_with("word/") && entry_name.ends_with(".xml");
+    }
+    if format == "pptx" {
+        return entry_name.starts_with("ppt/") && entry_name.ends_with(".xml");
+    }
+    false
+}
+
+fn replace_template_tokens(content: &str, transforms: &HashMap<String, String>) -> (String, usize) {
+    let mut output = content.to_string();
+    let mut replaced = 0usize;
+
+    for (key, value) in transforms {
+        let compact_token = format!("{{{{{}}}}}", key);
+        let spaced_token = format!("{{{{ {} }}}}", key);
+
+        let compact_count = output.matches(&compact_token).count();
+        if compact_count > 0 {
+            output = output.replace(&compact_token, value);
+            replaced += compact_count;
+        }
+
+        let spaced_count = output.matches(&spaced_token).count();
+        if spaced_count > 0 {
+            output = output.replace(&spaced_token, value);
+            replaced += spaced_count;
+        }
+    }
+
+    (output, replaced)
+}
+
+fn apply_office_template_transform(
+    template_path: &Path,
+    output_path: &Path,
+    format: &str,
+    transforms: &HashMap<String, String>,
+) -> Result<usize, String> {
+    if !template_path.exists() {
+        return Err(format!("template file not found: {}", template_path.display()));
+    }
+
+    let template_file = fs::File::open(template_path).map_err(|err| err.to_string())?;
+    let mut archive = zip::ZipArchive::new(template_file).map_err(|err| err.to_string())?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let output_file = fs::File::create(output_path).map_err(|err| err.to_string())?;
+    let mut writer = zip::ZipWriter::new(output_file);
+    let options: FileOptions<'_, ()> = FileOptions::default();
+
+    let mut replaced = 0usize;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|err| err.to_string())?;
+        let entry_name = entry.name().to_string();
+
+        if entry.is_dir() {
+            continue;
+        }
+
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|err| err.to_string())?;
+
+        if should_transform_entry(format, &entry_name) {
+            if let Ok(text) = String::from_utf8(bytes.clone()) {
+                let (next, replaced_count) = replace_template_tokens(&text, transforms);
+                if replaced_count > 0 {
+                    replaced += replaced_count;
+                    bytes = next.into_bytes();
+                }
+            }
+        }
+
+        writer
+            .start_file(entry_name, options)
+            .map_err(|err| err.to_string())?;
+        writer.write_all(&bytes).map_err(|err| err.to_string())?;
+    }
+
+    writer.finish().map_err(|err| err.to_string())?;
+    Ok(replaced)
 }
 
 pub fn export_artifact_version_native(

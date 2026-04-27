@@ -1,9 +1,11 @@
-import { invoke } from '@tauri-apps/api/core'
 import {
   formatAttachmentContext,
+  getAttachmentDisplayName,
   getPathName,
+  isImageAttachment,
   type ChatAttachment,
 } from './chatAttachments'
+import { safeInvoke, safeInvokeVoid } from './safeInvoke'
 
 type ImportedAttachmentResponse = {
   originalPath: string
@@ -75,7 +77,7 @@ async function allowFolderAttachments(attachments: ChatAttachment[]): Promise<vo
   }
 
   for (const root of roots.values()) {
-    await invoke('fs_add_allowed_folder', { path: root })
+    await safeInvokeVoid('fs_add_allowed_folder', { path: root })
   }
 }
 
@@ -153,9 +155,22 @@ export async function buildAttachmentPromptContext(
   attachments: ChatAttachment[],
   retrievalQuery: string,
 ): Promise<AttachmentPromptBuildResult> {
-  const baseContext = formatAttachmentContext(attachments)
-  const fileAttachments = attachments.filter((item) => item.kind === 'file')
-  const folderAttachments = attachments.filter((item) => item.kind === 'folder')
+  const imageAttachments = attachments.filter((item) => item.kind === 'file' && isImageAttachment(item))
+  const contextualAttachments = attachments.filter((item) => item.kind === 'folder' || !isImageAttachment(item))
+  const baseSections: string[] = []
+  const pathContext = formatAttachmentContext(contextualAttachments)
+  if (pathContext) {
+    baseSections.push(pathContext)
+  }
+  if (imageAttachments.length > 0) {
+    baseSections.push([
+      `Bild-Anhaenge (${imageAttachments.length}):`,
+      ...imageAttachments.map((item, index) => `${index + 1}. Bild: ${getAttachmentDisplayName(item)}`),
+    ].join('\n'))
+  }
+  const baseContext = baseSections.join('\n\n')
+  const fileAttachments = contextualAttachments.filter((item) => item.kind === 'file')
+  const folderAttachments = contextualAttachments.filter((item) => item.kind === 'folder')
   const queryTerms = extractQueryTerms(retrievalQuery)
   const normalizedQuery = retrievalQuery.toLowerCase()
   const wantsFullFileList = /alle\s+datei|vollstaendig(e|en)?\s+dateiliste|list(e)?\s+mit\s+allen\s+dateien|all\s+files|full\s+file\s+list/.test(normalizedQuery)
@@ -185,12 +200,12 @@ export async function buildAttachmentPromptContext(
 
   for (const item of fileAttachments) {
     try {
-      const imported = await invoke<ImportedAttachmentResponse>('fs_import_attachment', {
+      const imported = await safeInvoke<ImportedAttachmentResponse>('fs_import_attachment', {
         path: item.path,
       })
       importedFiles.set(item.path, imported)
 
-      const metadata = await invoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
+      const metadata = await safeInvoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
         path: imported.importedPath,
         maxEntries: 1,
       })
@@ -221,7 +236,7 @@ export async function buildAttachmentPromptContext(
 
   for (const folder of folderAttachments) {
     try {
-      const metadata = await invoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
+      const metadata = await safeInvoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
         path: folder.path,
         maxEntries: wantsFullFileList ? 50_000 : FOLDER_METADATA_LIMIT,
       })
@@ -230,7 +245,7 @@ export async function buildAttachmentPromptContext(
       )
 
       if (wantsFullFileList && metadata.files.length > 0) {
-        metadataLines.push(...metadata.files.map((entry) => `  - ${entry.path}`))
+        metadataLines.push(...metadata.files.map((entry: FsAttachmentMetadataEntry) => `  - ${entry.path}`))
       }
 
       for (const entry of metadata.files) {
@@ -309,7 +324,7 @@ export async function buildAttachmentPromptContext(
     try {
       if (directCandidate) {
         // Full text for directly attached files (PDFs, docs, etc.)
-        const fullRead = await invoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
+        const fullRead = await safeInvoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
           path: candidate.readPath,
           maxChars: DIRECT_FILE_FULL_READ_LIMIT,
         })
@@ -320,7 +335,7 @@ export async function buildAttachmentPromptContext(
         }
       } else {
         // Snippet-based retrieval for folder candidates
-        const pass1 = await invoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
+        const pass1 = await safeInvoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
           path: candidate.readPath,
           maxChars: ATTACHMENT_TEXT_PASS_1,
         })
@@ -329,7 +344,7 @@ export async function buildAttachmentPromptContext(
         let snippets = collectSnippets(pass1.text, queryTerms, RETRIEVAL_SNIPPETS_PER_FILE)
 
         if (snippets.length === 0 && pass1.truncated) {
-          const pass2 = await invoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
+          const pass2 = await safeInvoke<ExtractTextLimitedResponse>('fs_extract_text_limited', {
             path: candidate.readPath,
             maxChars: ATTACHMENT_TEXT_PASS_2,
           })

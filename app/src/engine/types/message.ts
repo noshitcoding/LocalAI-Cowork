@@ -121,7 +121,11 @@ export type MCPProgress = { type: 'mcp_progress'; serverName: string; progress: 
 export type WebSearchProgress = { type: 'web_search_progress'; query: string; results: number }
 export type SkillToolProgress = { type: 'skill_progress'; skillName: string; output: string }
 export type TaskOutputProgress = { type: 'task_output_progress'; taskId: string; output: string }
-export type FileProgress = { type: 'file_progress'; path: string; operation: 'read' | 'write' | 'edit' }
+export type FileProgress = {
+  type: 'file_progress'
+  path: string
+  operation: 'read' | 'write' | 'edit' | 'create_dir' | 'move' | 'copy' | 'delete' | 'rename'
+}
 
 export type ToolProgressData =
   | BashProgress

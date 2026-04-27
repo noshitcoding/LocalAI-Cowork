@@ -1,130 +1,68 @@
-# Fehlende Features im Code (Gap-Liste)
+MCP-Lifecycle
 
-Stand: 2026-04-16
-Basis: WINDOWS_DESKTOP_APP_ANFORDERUNGEN.md, TRACEABILITY_MATRIX.md, aktueller Code in app/src und app/src-tauri/src.
+MCP-Server starten, stoppen, neustarten, Health prüfen, Auto-Reconnect, Logs anzeigen.
+Transportarten: stdio, später SSE und HTTP.
+Parallele Multi-Provider-Nutzung
 
-## Update: Produktions-Slice 2026-04-16 (Cowork Core Features)
+Mehrere Modellanbieter gleichzeitig konfigurierbar.
+Beispiele: Ollama lokal plus eigener OpenAI-kompatibler Endpoint plus optional Anthropic/OpenRouter.
+Pro Chat/Task soll ein Provider/Modell wählbar sein.
+Zentrales Tool-/Trace-Panel
 
-Die folgenden Cowork-Features sind jetzt umgesetzt:
+Tool Calls, Inputs, Outputs, Laufzeit, Fehler, Approval, Retry und Status in einer Ansicht.
+Direkt in der Cowork-Ansicht sichtbar.
+Skill-Dateien mit Hot-Reload
 
-- Sub-Agent Batch-Lauf mit konfigurierbarer Parallelitaet fuer Dateianalyse (Backend-Command + Task-Integration im UI)
-- Pro-Output Pipeline aus CSV mit nativen Exporten nach XLSX, DOCX, PPTX und PDF
-- Global Instructions und Folder Instructions als persistente Produktkonfiguration
-- Connector-Verwaltung (Slack, Google Drive, Notion, Figma, Gmail, Claude in Chrome)
-- Plugin- und Skill-Verwaltung inklusive einfacher Slash-Command-Definitionen
-- Geplante Aufgaben mit Aktivierungsstatus und manueller Sofort-Ausfuehrung
+Skills aus Dateien erkennen.
+Frontmatter/Metadaten auslesen.
+Änderungen ohne App-Neustart übernehmen.
+Skill-/Plugin-Katalog
 
-Hinweis:
+Installierte, verfügbare und eigene Erweiterungen anzeigen.
+Status, Beschreibung, Slash-Command, Berechtigungen, Installieren, Aktivieren und Testen.
+Plugin-Lifecycle
 
-- Die Connector-, Plugin- und Scheduler-Funktionen sind als lokale Produktbasis umgesetzt (persistente Konfiguration + Steuer-UI). Externe Connector-Ausfuehrungen und echter Cron-Worker sind naechster Ausbau.
+Plugins installieren, aktivieren/deaktivieren, aktualisieren, entfernen.
+Berechtigungen und Versionen prüfen.
+Erweiterte Office-Skills
 
-## Update: Produktions-Slice 2026-04-16 (bereits umgesetzt)
+DOCX/PPTX/XLSX nicht nur exportieren, sondern mit Templates, Preview, Bearbeitungsworkflow und Qualitätscheck erstellen/ändern.
+Memory-Learning-Loop
 
-Die folgenden Punkte wurden im Rahmen dieses Umsetzungs-Slices bereits produktionsnah umgesetzt:
+Nach Aufgaben Vorschläge machen:
+„als Präferenz merken“
+„als Skill speichern“
+„nicht wieder fragen“
+„aus Ablauf Vorlage erstellen“
+Settings Basic/Advanced
 
-- Light/Dark Theme als persistentes Produktfeature (UI-Store + CSS Theme Tokens)
-- Keyboard-first Bedienung mit globalen Shortcuts (Ctrl/Cmd+K, Ctrl+1/2, Ctrl+B, Ctrl+Shift+L)
-- Command-Palette fuer zentrale App-Aktionen
-- Persistente Wiederherstellung zentraler UI-Session-States (Mode/Sidebar/Theme)
-- Persistenter Window-State (Position/Size/Maximized) fuer Desktop-Starts
-- Windows Desktop Notifications via Tauri Notification Plugin
-- Append-only Audit-Event-Logging (JSONL in App-Data) als Compliance-Basis
-- Startup-Metrik-Logging (App-Startdauer) als Einstieg in Performance-Monitoring
+Häufige Optionen sichtbar halten.
+Technische Spezialoptionen einklappen.
+Keine Einstellungen entfernen, nur besser strukturieren.
+Command Palette Upgrade
 
-Hinweis zur Build-Validierung:
+Settings-Suche.
+Letzte Aktionen.
+Skill-Commands.
+Tastenkürzel.
+Direkte Ausführung zentraler Aktionen.
+Multi-Agent-Orchestrierung
 
-- Frontend Build und Tests sind erfolgreich.
-- Rust-Compile konnte lokal nicht ausgefuehrt werden, da `cargo` in der aktuellen Umgebung nicht verfuegbar ist.
+Mehrere spezialisierte Agenten/Subagents parallel.
+Rollen z. B. Recherche, Code, Review, Office-Erstellung, Analyse.
+Globale Suche
 
-## Update: Produktions-Slice 2026-04-16 (File-Safety-Fortsetzung)
+Suche über Threads, Messages, Tasks, Runs, Artefakte, Skills, Settings und Logs.
+Artefakt- und Diff-Preview
 
-Die folgenden File-Safety-Funktionen sind nun als produktionsnaher Kern umgesetzt:
+Dateien, Tabellen, Markdown, Office-Outputs, Tool-Ergebnisse und Änderungen direkt in der UI prüfen.
+Vollständige Sprachumschaltung
 
-- Persistente Allowlist fuer freigegebene Ordner (DB-gestuetzt)
-- Harte Backend-Zugriffskontrolle: Dateioperationen nur innerhalb freigegebener Ordner
-- Sicheres Schreiben von Textdateien mit Diff-Output als Standard-Ergebnis
-- Optionales Backup beim Schreiben (App-Data Backup-Verzeichnis)
-- Explizite Delete-Bestaetigung per Confirm-Token auf Backend-Ebene
-- Audit-Events fuer Write/Delete im append-only Audit-Log
-- Einstellungen-UI zur Verwaltung freigegebener Ordner und Ausfuehrung sicherer Dateioperationen
+Deutsch/Englisch sauber über i18n-Struktur.
+Gemischte UI-Texte langfristig entfernen. 
 
-Hinweis:
 
-- Dateiwatching, breite Format-Pipeline und Restore-Workflow fuer Backups folgen als naechster Ausbau.
-
-## Update: Produktions-Slice 2026-04-16 (Backup-Restore + Dateiwatching)
-
-Die folgenden Erweiterungen sind nun umgesetzt:
-
-- Backup-Verzeichnis-Index mit auflistbaren Backup-Artefakten
-- Restore-Workflow: Backup nach Zielpfad wiederherstellen (inkl. Policy-Pruefung und Audit)
-- Dateiwatching mit `notify` im Backend auf freigegebenen Pfaden (Start/Stop/List)
-- Live-Watch-Events als Frontend-Feed in den Einstellungen
-- Audit-Events fuer Restore und Watch-Ereignisse
-
-Hinweis:
-
-- Breite Format-Pipeline (PDF/Office/Bilder/ipynb Parsing) folgt im naechsten Schritt.
-
-## Update: Produktions-Slice 2026-04-16 (Format-Pipeline Grundausbau)
-
-Die folgenden Pipeline-Bausteine sind jetzt umgesetzt:
-
-- Backend-Artefaktparser mit Policy-Gating auf freigegebenen Ordnern
-- Parsing fuer Text, CSV, JSON, XML, HTML, ipynb inkl. strukturierter Vorschau
-- Parsing fuer Rasterbilder (Dimensionen) und SVG-Vorschau
-- Basis-Parsing fuer PDF (Seitenmarker-Metadaten) und Office OpenXML (DOCX/XLSX/PPTX Vorschau)
-- Einheitliches Artefakt-Response-Format (Summary, Preview, Metadata)
-- Audit-Event fuer Artefakt-Parsing
-- Einstellungen-UI fuer Dateiauswahl und Artefaktanalyse
-
-Hinweis:
-
-- Fuer tiefe semantische Extraktion aus PDF/Office (z. B. Layout-treue Inhalte, Tabellenstrukturen, OCR) ist ein weiterer Ausbau vorgesehen.
-
-## Update: Produktions-Slice 2026-04-16 (Versionierte Artefakte je Run)
-
-Die folgenden Artefakt-Versionierungsfunktionen sind nun umgesetzt:
-
-- Persistente `artifact_versions` Tabelle in SQLite (inkl. Migration auf Schema-Version 3)
-- Backend-Kommando zum Speichern einer Artefakt-Version mit optionaler `run_id` und optionalem Label
-- Speicherung strukturierter Parse-Daten (Format, Summary, Preview, Metadata, Zeitstempel)
-- Backend-Kommando zum Auflisten der letzten Artefakt-Versionen (limitierbar)
-- Audit-Event `save_artifact_version` fuer Compliance/Nachvollziehbarkeit
-- Settings-UI fuer optionale Run-ID/Label und aktives Speichern von Artefakt-Versionen
-- Sichtbare Historie der zuletzt gespeicherten Artefakt-Versionen in der Settings-Ansicht
-
-Hinweis:
-
-- Exportfunktionen (PDF/DOCX/XLSX/PPTX) und dedizierte Download-/Ablage-Workflows folgen als naechster Ausbau.
-
-## Update: Produktions-Slice 2026-04-16 (Export- und Ablage-Workflow)
-
-Die folgenden Export-/Ablage-Funktionen sind nun umgesetzt:
-
-- Persistente `artifact_exports` Tabelle in SQLite (Migration auf Schema-Version 4)
-- Backend-Exportkommando fuer gespeicherte Artefakt-Versionen in den Formaten `json`, `md`, `txt`, `pdf`, `docx`, `xlsx`, `pptx`
-- Policy-Gating auch fuer Export-Zielordner (nur freigegebene Ordner)
-- Persistente Export-Historie inkl. Zielpfad, Format, Groesse und Zeitstempel
-- Audit-Event `export_artifact_version` fuer Compliance-Nachvollziehbarkeit
-- Settings-UI fuer Exportzielwahl, Zielformat-Auswahl und direkte Export-Ausfuehrung
-- Sichtbare Export-Historie in der Settings-Ansicht
-
-Hinweis:
-
-- Native Endformat-Exporte (PDF/DOCX/XLSX/PPTX) sind als produktionsnaher Basispfad umgesetzt; Layout-/Template-Fidelity bleibt ein weiterer Ausbau.
-
-## Bereits im Code vorhanden (Kurzabgleich)
-
-Diese Punkte sind erkennbar implementiert und werden daher nicht als fehlend gelistet:
-
-- Chat mit Thread-Verlauf und SQLite-Persistenz
-- Ollama Health-Check, Plan-Generierung, Chat-Turn
-- Plan/Freigabe-Grundfluss inkl. Schrittstatus
-- MCP Probe und MCP Tool-Call via JSON-RPC (stdio)
-- Grundlegendes Task- und Step-Modell mit Persistenz
-- UI mit Cowork-Ansicht, linker/rechter Sidebar, Tabs
-
+Crew aI produktiv mit Konfigurations UI und allen Features einabauen Lasse das Modell Subagents startenmit einem Subagents mcp(oder das mit Crew AI kominieren. in den eisntellunge soll amn anhacken können, welches Modell welcher Suagent bzw crew nutzt und einzelne crew mitglieder aktivieren und deaktivieren könnenPlane diese Features
 ## Fehlende Features nach Anforderungsbereichen
 
 ## 1) Plattform und Windows-Basis (Kapitel 7.1, IDs 1-25)

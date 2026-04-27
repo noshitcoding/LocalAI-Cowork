@@ -5,6 +5,7 @@ import { useUiStore } from '../stores/uiStore'
 import { useConfigStore } from '../stores/configStore'
 import LeftSidebar from './LeftSidebar'
 import CommandPalette from './CommandPalette'
+import RightSidebar from './RightSidebar'
 
 export default function Layout() {
   const { t } = useTranslation()
@@ -12,7 +13,9 @@ export default function Layout() {
   
   const {
     leftSidebarOpen,
+    rightSidebarOpen,
     toggleLeftSidebar,
+    toggleRightSidebar,
     toggleTheme,
     setCommandPaletteOpen,
     commandPaletteOpen,
@@ -53,11 +56,6 @@ export default function Layout() {
         navigate('/settings')
       }
 
-      if (event.key === '3') {
-        event.preventDefault()
-        navigate('/features')
-      }
-
       if (event.shiftKey && event.key.toLowerCase() === 'l') {
         event.preventDefault()
         toggleTheme()
@@ -94,12 +92,12 @@ export default function Layout() {
           <NavLink to="/settings" className={({isActive}) => `top-tab${isActive ? ' active' : ''}`}>
             {t('Settings')}
           </NavLink>
-          <NavLink to="/features" className={({isActive}) => `top-tab${isActive ? ' active' : ''}`}>
-            {t('Features')}
-          </NavLink>
         </div>
 
         <div className="top-bar-actions">
+          <button type="button" className="btn-toggle-sidebar" onClick={toggleRightSidebar} title="Rechte Sidebar">
+            ☷
+          </button>
           <button type="button" className="btn-toggle-sidebar" onClick={toggleTheme} title="Theme (Ctrl+Shift+L)">
             🌗
           </button>
@@ -118,6 +116,10 @@ export default function Layout() {
         <div className="main-content">
           <Outlet />
         </div>
+
+        {rightSidebarOpen && !focusMode && (
+          <RightSidebar />
+        )}
       </div>
 
       <CommandPalette />
@@ -134,7 +136,6 @@ export default function Layout() {
                 { label: 'Command Palette', keys: 'Ctrl+K' },
                 { label: 'Arbeitsbereich', keys: 'Ctrl+1' },
                 { label: 'Einstellungen', keys: 'Ctrl+2' },
-                { label: 'Features', keys: 'Ctrl+3' },
                 { label: 'Sidebar ein-/ausblenden', keys: 'Ctrl+Shift+B' },
                 { label: 'Theme wechseln', keys: 'Ctrl+Shift+L' },
                 { label: 'Shortcuts anzeigen', keys: 'Ctrl+Shift+?' },

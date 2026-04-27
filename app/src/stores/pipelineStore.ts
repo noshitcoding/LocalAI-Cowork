@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { safeInvoke } from '../utils/safeInvoke'
+import type { OllamaConfig } from '../stores/configStore'
 
 export type RpcPipeline = {
   id: string
@@ -26,6 +27,13 @@ export type PipelineExecutionResult = {
   status: 'completed' | 'failed' | 'running'
   stepResults: Array<{ step: number; tool: string; result: string; success: boolean }>
   error?: string
+}
+
+type BackendPipelineExecutionResult = {
+  pipelineId: string
+  status: string
+  stepResults: Array<{ step: number; tool: string; result: string; success: boolean }>
+  error?: string | null
 }
 
 type PipelineState = {
@@ -99,6 +107,7 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
         stepsJson: p.stepsJson,
         zeroContext: p.zeroContext ?? false,
       }, undefined)
+      await get().loadPipelines()
     } catch {
       // Fallback: save locally
       const local = getLocalPipelines()
@@ -145,6 +154,7 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
         configJson: t.configJson,
         enabled: t.enabled ?? true,
       }, undefined)
+      await get().loadToolGateway()
     } catch {
       const local = getLocalGateway()
       const full: ToolGatewayEntry = {
@@ -171,6 +181,7 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
   },
 
   executePipeline: async (id, ollamaUrl, model) => {
+    const executeLocally = async (): Promise<PipelineExecutionResult> => {
     const pipeline = get().pipelines.find(p => p.id === id)
     if (!pipeline) {
       const result: PipelineExecutionResult = {
@@ -237,5 +248,42 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
 
     set({ executing: null, lastResult: result })
     return result
+    }
+
+    set({ executing: id, error: null })
+
+    try {
+      let config: OllamaConfig = {
+        baseUrl: ollamaUrl,
+        model,
+        timeoutMs: 200_000,
+        contextWindow: 128_000,
+        temperature: 0.1,
+      }
+      try {
+        const { useConfigStore } = await import('./configStore')
+        config = useConfigStore.getState().ollama
+      } catch {
+        // keep passed values as fallback
+      }
+
+      const response = await safeInvoke<BackendPipelineExecutionResult>('pipeline_execute', {
+        request: {
+          id,
+          config,
+        },
+      })
+
+      const result: PipelineExecutionResult = {
+        pipelineId: response.pipelineId,
+        status: response.status === 'completed' ? 'completed' : response.status === 'running' ? 'running' : 'failed',
+        stepResults: response.stepResults,
+        error: response.error ?? undefined,
+      }
+      set({ executing: null, lastResult: result })
+      return result
+    } catch {
+      return executeLocally()
+    }
   },
 }))

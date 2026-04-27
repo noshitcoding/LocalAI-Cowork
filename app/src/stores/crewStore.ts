@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { safeInvoke } from '../utils/safeInvoke'
 
 export type AgentRole = 'researcher' | 'writer' | 'reviewer' | 'planner' | 'executor' | 'analyst' | 'custom'
 
@@ -52,6 +53,14 @@ export type CrewExecutionLog = {
   action: string
   result: string
   timestamp: number
+}
+
+type ChatTurnResponse = {
+  assistantMessage: string
+  endpoint: string
+  model: string
+  requiresApproval: boolean
+  proposedPlan: string[]
 }
 
 type CrewState = {
@@ -163,6 +172,47 @@ const DEFAULT_AGENTS: CrewAgent[] = [
   },
 ]
 
+const canceledCrewIds = new Set<string>()
+
+function createExecutionLog(crewId: string, agentId: string, taskId: string, action: string, result: string): CrewExecutionLog {
+  return {
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    crewId,
+    agentId,
+    taskId,
+    action,
+    result,
+    timestamp: Date.now(),
+  }
+}
+
+function buildAgentSystemPrompt(crew: Crew, agent: CrewAgent): string {
+  return [
+    `Du bist der Agent "${agent.name}" in der Crew "${crew.name}".`,
+    `Rolle: ${agent.role}.`,
+    `Ziel: ${agent.goal || 'kein Ziel angegeben'}.`,
+    `Hintergrund: ${agent.backstory || 'kein Hintergrund angegeben'}.`,
+    `Delegation erlaubt: ${agent.allowDelegation ? 'ja' : 'nein'}.`,
+    `Maximale Iterationen: ${agent.maxIterations}.`,
+    'Arbeite praezise, liefere nur das Ergebnis der aktuellen Aufgabe und nutze vorhandenen Kontext aus frueheren Tasks.',
+  ].join('\n')
+}
+
+function buildTaskPrompt(crew: Crew, task: CrewTask, contextBlocks: string[]): string {
+  const contextSection = contextBlocks.length > 0
+    ? `\n\nKontext:\n${contextBlocks.map((entry, index) => `${index + 1}. ${entry}`).join('\n')}`
+    : ''
+
+  return [
+    `Crew: ${crew.name}`,
+    `Task-ID: ${task.id}`,
+    `Beschreibung: ${task.description}`,
+    `Erwartetes Ergebnis: ${task.expectedOutput || '(nicht angegeben)'}`,
+    `Asynchrone Ausfuehrung: ${task.asyncExecution ? 'ja' : 'nein'}`,
+    'Liefere direkt die finale Ausgabe fuer diese Aufgabe.',
+  ].join('\n') + contextSection
+}
+
 export const useCrewStore = create<CrewState>()(
   persist(
     (set, get) => ({
@@ -260,17 +310,16 @@ export const useCrewStore = create<CrewState>()(
         const crew = state.crews.find(c => c.id === crewId)
         if (!crew || crew.tasks.length === 0) return
 
-        // Get Ollama config
-        let ollamaUrl = 'http://192.168.178.82:11434'
-        let ollamaModel = 'gpt-oss:20b'
+        canceledCrewIds.delete(crewId)
+
+        let config = undefined
         try {
           const configStore = await import('./configStore')
-          const config = configStore.useConfigStore.getState()
-          ollamaUrl = config.ollama.baseUrl
-          ollamaModel = config.ollama.model
-        } catch { /* use defaults */ }
+          config = configStore.useConfigStore.getState().ollama
+        } catch {
+          // use backend defaults
+        }
 
-        // Mark crew as running
         set(s => ({
           crews: s.crews.map(c =>
             c.id === crewId
@@ -288,115 +337,177 @@ export const useCrewStore = create<CrewState>()(
           ),
         }))
 
-        const addLog = get().addLog
-        const taskResults: string[] = []
+        get().addLog(createExecutionLog(
+          crewId,
+          crew.managerAgentId ?? crew.agents[0]?.id ?? 'crew-manager',
+          crew.tasks[0]?.id ?? 'crew-start',
+          'Crew gestartet',
+          `${crew.tasks.length} Task(s) werden sequenziell ausgefuehrt.`,
+        ))
 
-        for (let i = 0; i < crew.tasks.length; i++) {
-          const currentCrew = get().crews.find(c => c.id === crewId)
-          if (!currentCrew || currentCrew.status !== 'running') break
+        const taskOutputs = new Map<string, string>()
+        let finalStatus: Crew['status'] = 'completed'
 
-          const task = crew.tasks[i]
-          const agent = crew.agents.find(a => a.id === task.agentId)
+        try {
+          for (const task of crew.tasks) {
+            if (canceledCrewIds.has(crewId)) {
+              finalStatus = 'idle'
+              get().addLog(createExecutionLog(
+                crewId,
+                task.agentId,
+                task.id,
+                'Crew gestoppt',
+                'Ausfuehrung vor dem naechsten Task abgebrochen.',
+              ))
+              break
+            }
 
-          // Mark current task as running
-          get().updateTask(crewId, task.id, { status: 'running' })
+            const agent = crew.agents.find(entry => entry.id === task.agentId) ?? state.agents.find(entry => entry.id === task.agentId)
+            if (!agent) {
+              const errorMessage = `Agent ${task.agentId} fuer Task ${task.id} nicht gefunden.`
+              finalStatus = 'failed'
+              set(s => ({
+                crews: s.crews.map(c =>
+                  c.id === crewId
+                    ? {
+                        ...c,
+                        status: 'failed',
+                        tasks: c.tasks.map(entry => entry.id === task.id ? { ...entry, status: 'failed', output: errorMessage } : entry),
+                        updatedAt: Date.now(),
+                      }
+                    : c
+                ),
+              }))
+              get().addLog(createExecutionLog(crewId, task.agentId, task.id, 'Task fehlgeschlagen', errorMessage))
+              break
+            }
 
-          addLog({
-            id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            crewId,
-            agentId: task.agentId,
-            taskId: task.id,
-            action: `Task gestartet: ${task.description.slice(0, 60)}`,
-            result: `Agent: ${agent?.name ?? 'Unbekannt'}`,
-            timestamp: Date.now(),
-          })
+            set(s => ({
+              crews: s.crews.map(c =>
+                c.id === crewId
+                  ? {
+                      ...c,
+                      tasks: c.tasks.map(entry =>
+                        entry.id === task.id
+                          ? { ...entry, status: 'running', output: null }
+                          : entry.status === 'running'
+                            ? { ...entry, status: 'pending' }
+                            : entry
+                      ),
+                      updatedAt: Date.now(),
+                    }
+                  : c
+              ),
+            }))
 
-          try {
-            // Build system prompt from agent definition
-            const systemPrompt = agent
-              ? `Du bist "${agent.name}", Rolle: ${agent.role}.\nDein Ziel: ${agent.goal}\nHintergrund: ${agent.backstory}\nVerfuegbare Tools: ${agent.tools.join(', ')}\nMax Iterationen: ${agent.maxIterations}`
-              : 'Du bist ein hilfreicher Assistent.'
+            get().addLog(createExecutionLog(
+              crewId,
+              agent.id,
+              task.id,
+              'Task gestartet',
+              `${agent.name} bearbeitet: ${task.description}`,
+            ))
 
-            // Build task prompt with context from previous tasks
-            const previousContext = taskResults.length > 0
-              ? `\n\nErgebnisse vorheriger Schritte:\n${taskResults.map((r, idx) => `--- Schritt ${idx + 1} ---\n${r}`).join('\n')}`
-              : ''
+            const contextBlocks = [
+              ...task.context.filter(entry => entry.trim().length > 0),
+              ...task.dependencies
+                .map((dependencyId) => taskOutputs.get(dependencyId))
+                .filter((entry): entry is string => Boolean(entry))
+                .map((entry) => `Abhaengigkeitsergebnis:\n${entry}`),
+              ...crew.tasks
+                .map((entry) => ({ entry, output: taskOutputs.get(entry.id) }))
+                .filter(({ entry, output }) => entry.id !== task.id && Boolean(output))
+                .map(({ entry, output }) => `Vorheriger Task ${entry.description}:\n${output}`),
+            ]
 
-            const taskPrompt = `Aufgabe: ${task.description}${task.expectedOutput ? `\nErwartetes Ergebnis: ${task.expectedOutput}` : ''}${previousContext}`
-
-            const response = await fetch(`${ollamaUrl}/api/chat`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                model: agent?.modelOverride ?? ollamaModel,
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: taskPrompt },
+            const response = await safeInvoke<ChatTurnResponse>('chat_turn', {
+              request: {
+                prompt: buildTaskPrompt(crew, task, contextBlocks),
+                history: [
+                  { role: 'system', content: buildAgentSystemPrompt(crew, agent) },
+                  ...contextBlocks.map((entry) => ({ role: 'context', content: entry })),
                 ],
-                stream: false,
-              }),
+                config: agent.modelOverride ? { ...(config ?? {}), model: agent.modelOverride } : config,
+              },
             })
 
-            if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`)
+            const output = response.assistantMessage.trim()
+            taskOutputs.set(task.id, output)
 
-            const data = await response.json() as { message?: { content?: string } }
-            const output = data.message?.content ?? '(keine Antwort)'
+            set(s => ({
+              crews: s.crews.map(c =>
+                c.id === crewId
+                  ? {
+                      ...c,
+                      tasks: c.tasks.map(entry => entry.id === task.id ? { ...entry, status: 'completed', output } : entry),
+                      updatedAt: Date.now(),
+                    }
+                  : c
+              ),
+            }))
 
-            taskResults.push(output)
-            get().updateTask(crewId, task.id, { status: 'completed', output })
-
-            addLog({
-              id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            get().addLog(createExecutionLog(
               crewId,
-              agentId: task.agentId,
-              taskId: task.id,
-              action: 'Task abgeschlossen',
-              result: output.slice(0, 200),
-              timestamp: Date.now(),
-            })
-          } catch (e) {
-            get().updateTask(crewId, task.id, { status: 'failed', output: String(e) })
-            taskResults.push(`FEHLER: ${e}`)
-
-            addLog({
-              id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              crewId,
-              agentId: task.agentId,
-              taskId: task.id,
-              action: 'Task fehlgeschlagen',
-              result: String(e).slice(0, 200),
-              timestamp: Date.now(),
-            })
+              agent.id,
+              task.id,
+              'Task abgeschlossen',
+              output.slice(0, 1200),
+            ))
           }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          finalStatus = 'failed'
+          set(s => ({
+            crews: s.crews.map(c =>
+              c.id === crewId
+                ? { ...c, status: 'failed' as const, updatedAt: Date.now() }
+                : c
+            ),
+            executionLogs: [
+              {
+                id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                crewId,
+                agentId: crew.managerAgentId ?? crew.agents[0]?.id ?? 'unknown',
+                taskId: crew.tasks[0]?.id ?? 'unknown',
+                action: 'Crew-Ausfuehrung fehlgeschlagen',
+                result: message,
+                timestamp: Date.now(),
+              },
+              ...s.executionLogs,
+            ].slice(0, 500),
+          }))
         }
 
-        // Mark crew as completed
-        const finalCrew = get().crews.find(c => c.id === crewId)
-        const hasFailed = finalCrew?.tasks.some(t => t.status === 'failed')
-        set(s => ({
-          crews: s.crews.map(c =>
-            c.id === crewId
-              ? { ...c, status: (hasFailed ? 'failed' : 'completed') as Crew['status'], updatedAt: Date.now() }
-              : c
-          ),
-        }))
-      },
+        canceledCrewIds.delete(crewId)
 
-      stopCrew: (crewId) => {
         set(s => ({
           crews: s.crews.map(c =>
             c.id === crewId
               ? {
                   ...c,
-                  status: 'idle' as const,
-                  tasks: c.tasks.map(t =>
-                    t.status === 'running' ? { ...t, status: 'failed' as const, output: 'Abgebrochen' } : t
+                  status: finalStatus,
+                  tasks: c.tasks.map(task =>
+                    finalStatus === 'idle' && task.status === 'running'
+                      ? { ...task, status: 'failed', output: task.output ?? 'Abgebrochen' }
+                      : task
                   ),
                   updatedAt: Date.now(),
                 }
               : c
           ),
         }))
+      },
+
+      stopCrew: async (crewId) => {
+        canceledCrewIds.add(crewId)
+        const crew = get().crews.find(entry => entry.id === crewId)
+        get().addLog(createExecutionLog(
+          crewId,
+          crew?.managerAgentId ?? crew?.agents[0]?.id ?? 'crew-manager',
+          crew?.tasks.find(task => task.status === 'running')?.id ?? 'crew-stop',
+          'Stop angefordert',
+          'Die Crew wird nach dem laufenden Request beendet.',
+        ))
       },
 
       addLog: (log) =>

@@ -1,6 +1,7 @@
-import { invoke } from '@tauri-apps/api/core'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { safeInvoke } from '../utils/safeInvoke'
+import { parseBackendDate } from '../utils/schedulerUtils'
 
 export type FolderInstruction = {
   id: string
@@ -8,13 +9,20 @@ export type FolderInstruction = {
   instruction: string
 }
 
-export type ConnectorKey = 'chrome'
+export type ConnectorKey = 'chrome' | 'slack' | 'drive' | 'webhook'
+
+export type ConnectorTestStatus = 'idle' | 'testing' | 'success' | 'error'
 
 export type ConnectorConfig = {
   key: ConnectorKey
   label: string
   enabled: boolean
   note: string
+  apiKey?: string
+  webhookUrl?: string
+  lastTestStatus?: ConnectorTestStatus
+  lastTestMessage?: string
+  lastTestAt?: number | null
 }
 
 export type PluginSkill = {
@@ -41,6 +49,17 @@ export type ScheduledTask = {
   cronLike: string
   active: boolean
   lastRunAt: number | null
+  nextRunAt: number | null
+}
+
+export type ScheduledTaskRun = {
+  id: string
+  taskId: string
+  status: string
+  startedAt: number
+  finishedAt: number | null
+  result: string | null
+  error: string | null
 }
 
 export type ClaudePermissionMode =
@@ -74,12 +93,20 @@ type PolicySyncRequest = {
   denyRules: string[]
 }
 
+type BackendConnectorTestResponse = {
+  reachable: boolean
+  status: number | null
+  message: string
+  checkedAt: string
+}
+
 type CoworkState = {
   globalInstruction: string
   folderInstructions: FolderInstruction[]
   connectors: ConnectorConfig[]
   plugins: Plugin[]
   scheduledTasks: ScheduledTask[]
+  scheduledRuns: ScheduledTaskRun[]
   claudePlanMode: boolean
   claudePermissionMode: ClaudePermissionMode
   claudeToolPreset: ClaudeToolPreset
@@ -92,14 +119,19 @@ type CoworkState = {
   removeFolderInstruction: (id: string) => void
   toggleConnector: (key: ConnectorKey, enabled: boolean) => void
   setConnectorNote: (key: ConnectorKey, note: string) => void
+  updateConnectorConfig: (key: ConnectorKey, patch: Partial<ConnectorConfig>) => void
+  testConnector: (key: ConnectorKey) => Promise<void>
   upsertPlugin: (plugin: Plugin) => void
   togglePlugin: (id: string, enabled: boolean) => void
   removePlugin: (id: string) => void
   installPluginExamples: () => void
-  upsertScheduledTask: (task: ScheduledTask) => void
-  toggleScheduledTask: (id: string, active: boolean) => void
-  markScheduledTaskRun: (id: string, at: number) => void
-  removeScheduledTask: (id: string) => void
+  loadScheduledTasks: () => Promise<void>
+  loadScheduledRuns: (limit?: number) => Promise<void>
+  upsertScheduledTask: (task: ScheduledTask) => Promise<void>
+  toggleScheduledTask: (id: string, active: boolean) => Promise<void>
+  markScheduledTaskRun: (id: string, at: number) => Promise<void>
+  runScheduledTaskNow: (id: string) => Promise<void>
+  removeScheduledTask: (id: string) => Promise<void>
   setClaudePlanMode: (enabled: boolean) => void
   setClaudePermissionMode: (mode: ClaudePermissionMode) => void
   setClaudeToolPreset: (preset: ClaudeToolPreset) => void
@@ -111,13 +143,19 @@ type CoworkState = {
 }
 
 const DEFAULT_CONNECTORS: ConnectorConfig[] = [
-  { key: 'chrome', label: 'Claude in Chrome', enabled: false, note: '' },
+  { key: 'chrome', label: 'Claude in Chrome', enabled: false, note: '', lastTestStatus: 'idle', lastTestAt: null },
+  { key: 'slack', label: 'Slack', enabled: false, note: '', webhookUrl: '', apiKey: '', lastTestStatus: 'idle', lastTestAt: null },
+  { key: 'drive', label: 'Google Drive', enabled: false, note: '', webhookUrl: '', apiKey: '', lastTestStatus: 'idle', lastTestAt: null },
+  { key: 'webhook', label: 'Custom Webhook', enabled: false, note: '', webhookUrl: '', apiKey: '', lastTestStatus: 'idle', lastTestAt: null },
 ]
 
 const CLAUDE_TOOL_CAPABILITIES: ClaudeToolCapability[] = [
   { id: 'bash', label: 'Bash / PowerShell', description: 'Shell-Befehle ausfuehren' },
   { id: 'read_file', label: 'Dateien lesen', description: 'Workspace-Dateien einlesen' },
   { id: 'edit_file', label: 'Dateien bearbeiten', description: 'Dateien gezielt aendern' },
+  { id: 'create_directory', label: 'Ordner erstellen', description: 'Verzeichnisse sicher anlegen' },
+  { id: 'move_path', label: 'Dateien verschieben', description: 'Dateien und Ordner verschieben/umbenennen' },
+  { id: 'copy_path', label: 'Dateien kopieren', description: 'Dateien und Ordner kopieren' },
   { id: 'glob', label: 'Dateisuche', description: 'Dateien per Pattern finden' },
   { id: 'grep', label: 'Textsuche', description: 'Regex-/String-Suche ueber Dateien' },
   { id: 'web_fetch', label: 'Web Fetch', description: 'Inhalte einer URL laden' },
@@ -157,6 +195,50 @@ function hasTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
+type BackendScheduledTaskRow = {
+  id: string
+  name: string
+  prompt: string
+  scheduleExpr: string
+  active: boolean
+  lastRunAt: string | null
+  nextRunAt: string | null
+}
+
+type BackendScheduledRunRow = {
+  id: string
+  taskId: string
+  status: string
+  startedAt: string
+  finishedAt: string | null
+  result: string | null
+  error: string | null
+}
+
+function mapScheduledTaskRow(row: BackendScheduledTaskRow): ScheduledTask {
+  return {
+    id: row.id,
+    name: row.name,
+    prompt: row.prompt,
+    cronLike: row.scheduleExpr,
+    active: row.active,
+    lastRunAt: parseBackendDate(row.lastRunAt),
+    nextRunAt: parseBackendDate(row.nextRunAt),
+  }
+}
+
+function mapScheduledRunRow(row: BackendScheduledRunRow): ScheduledTaskRun {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    status: row.status,
+    startedAt: parseBackendDate(row.startedAt) ?? Date.now(),
+    finishedAt: parseBackendDate(row.finishedAt),
+    result: row.result,
+    error: row.error,
+  }
+}
+
 function normalizePolicyDenyRules(denyRules: string[]): string[] {
   return denyRules
     .map((rule) => rule.trim())
@@ -191,7 +273,7 @@ async function flushQueuedPolicySync(): Promise<void> {
   policySyncInFlight = true
 
   try {
-    await invoke('policy_set', { request })
+    await safeInvoke('policy_set', { request }, undefined)
     lastSyncedPolicyKey = requestKey
   } catch (error) {
     if (!queuedPolicySyncKey) {
@@ -304,17 +386,20 @@ function mergeConnectors(items: ConnectorConfig[] | undefined): ConnectorConfig[
   return DEFAULT_CONNECTORS.map((base) => ({
     ...base,
     ...(byKey.get(base.key) ?? {}),
+    lastTestStatus: byKey.get(base.key)?.lastTestStatus ?? base.lastTestStatus ?? 'idle',
+    lastTestAt: byKey.get(base.key)?.lastTestAt ?? base.lastTestAt ?? null,
   }))
 }
 
 export const useCoworkStore = create<CoworkState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       globalInstruction: '',
       folderInstructions: [],
       connectors: DEFAULT_CONNECTORS,
       plugins: [],
       scheduledTasks: [],
+      scheduledRuns: [],
       claudePlanMode: false,
       claudePermissionMode: 'default',
       claudeToolPreset: 'default',
@@ -349,6 +434,65 @@ export const useCoworkStore = create<CoworkState>()(
             connector.key === key ? { ...connector, note } : connector
           ),
         })),
+      updateConnectorConfig: (key, patch) =>
+        set((state) => ({
+          connectors: state.connectors.map((connector) =>
+            connector.key === key ? { ...connector, ...patch } : connector
+          ),
+        })),
+      testConnector: async (key) => {
+        const connector = get().connectors.find((entry) => entry.key === key)
+        if (!connector) return
+
+        set((state) => ({
+          connectors: state.connectors.map((entry) =>
+            entry.key === key
+              ? {
+                  ...entry,
+                  lastTestStatus: 'testing',
+                  lastTestMessage: 'Verbindung wird geprueft...',
+                }
+              : entry
+          ),
+        }))
+
+        try {
+          const response = await safeInvoke<BackendConnectorTestResponse>('connector_test_reachability', {
+            request: {
+              key: connector.key,
+              label: connector.label,
+              apiKey: connector.apiKey ?? null,
+              webhookUrl: connector.webhookUrl ?? null,
+            },
+          })
+
+          set((state) => ({
+            connectors: state.connectors.map((entry) =>
+              entry.key === key
+                ? {
+                    ...entry,
+                    lastTestStatus: response.reachable ? 'success' : 'error',
+                    lastTestMessage: response.status ? `${response.message} [HTTP ${response.status}]` : response.message,
+                    lastTestAt: parseBackendDate(response.checkedAt) ?? Date.now(),
+                  }
+                : entry
+            ),
+          }))
+        } catch (error) {
+          set((state) => ({
+            connectors: state.connectors.map((entry) =>
+              entry.key === key
+                ? {
+                    ...entry,
+                    lastTestStatus: 'error',
+                    lastTestMessage: error instanceof Error ? error.message : String(error),
+                    lastTestAt: Date.now(),
+                  }
+                : entry
+            ),
+          }))
+        }
+      },
       upsertPlugin: (plugin) =>
         set((state) => {
           const hasPlugin = state.plugins.some((entry) => entry.id === plugin.id)
@@ -380,31 +524,87 @@ export const useCoworkStore = create<CoworkState>()(
             plugins: Array.from(existing.values()),
           }
         }),
-      upsertScheduledTask: (task) =>
+      loadScheduledTasks: async () => {
+        const local = get().scheduledTasks
+        const rows = await safeInvoke<BackendScheduledTaskRow[]>('scheduler_list_tasks', undefined, local.map((task) => ({
+          id: task.id,
+          name: task.name,
+          prompt: task.prompt,
+          scheduleExpr: task.cronLike,
+          active: task.active,
+          lastRunAt: task.lastRunAt ? new Date(task.lastRunAt).toISOString() : null,
+          nextRunAt: task.nextRunAt ? new Date(task.nextRunAt).toISOString() : null,
+        })))
+        set({ scheduledTasks: rows.map(mapScheduledTaskRow) })
+      },
+      loadScheduledRuns: async (limit = 20) => {
+        const rows = await safeInvoke<BackendScheduledRunRow[]>('scheduler_list_runs', { limit }, [])
+        set({ scheduledRuns: rows.map(mapScheduledRunRow) })
+      },
+      upsertScheduledTask: async (task) => {
+        const row = await safeInvoke<BackendScheduledTaskRow>('scheduler_upsert_task', {
+          request: {
+            id: task.id,
+            name: task.name,
+            prompt: task.prompt,
+            scheduleExpr: task.cronLike,
+            active: task.active,
+          },
+        }, {
+          id: task.id,
+          name: task.name,
+          prompt: task.prompt,
+          scheduleExpr: task.cronLike,
+          active: task.active,
+          lastRunAt: task.lastRunAt ? new Date(task.lastRunAt).toISOString() : null,
+          nextRunAt: task.nextRunAt ? new Date(task.nextRunAt).toISOString() : null,
+        })
+        const mapped = mapScheduledTaskRow(row)
         set((state) => {
-          const hasTask = state.scheduledTasks.some((entry) => entry.id === task.id)
+          const hasTask = state.scheduledTasks.some((entry) => entry.id === mapped.id)
           return {
             scheduledTasks: hasTask
-              ? state.scheduledTasks.map((entry) => (entry.id === task.id ? task : entry))
-              : [task, ...state.scheduledTasks],
+              ? state.scheduledTasks.map((entry) => (entry.id === mapped.id ? mapped : entry))
+              : [mapped, ...state.scheduledTasks],
           }
-        }),
-      toggleScheduledTask: (id, active) =>
+        })
+        await get().loadScheduledRuns()
+      },
+      toggleScheduledTask: async (id, active) => {
+        const row = await safeInvoke<BackendScheduledTaskRow>('scheduler_set_task_active', {
+          request: { id, active },
+        }, {
+          id,
+          name: get().scheduledTasks.find((task) => task.id === id)?.name ?? id,
+          prompt: get().scheduledTasks.find((task) => task.id === id)?.prompt ?? '',
+          scheduleExpr: get().scheduledTasks.find((task) => task.id === id)?.cronLike ?? '',
+          active,
+          lastRunAt: get().scheduledTasks.find((task) => task.id === id)?.lastRunAt
+            ? new Date(get().scheduledTasks.find((task) => task.id === id)!.lastRunAt!).toISOString()
+            : null,
+          nextRunAt: get().scheduledTasks.find((task) => task.id === id)?.nextRunAt
+            ? new Date(get().scheduledTasks.find((task) => task.id === id)!.nextRunAt!).toISOString()
+            : null,
+        })
+        const mapped = mapScheduledTaskRow(row)
         set((state) => ({
-          scheduledTasks: state.scheduledTasks.map((task) =>
-            task.id === id ? { ...task, active } : task
-          ),
-        })),
-      markScheduledTaskRun: (id, at) =>
-        set((state) => ({
-          scheduledTasks: state.scheduledTasks.map((task) =>
-            task.id === id ? { ...task, lastRunAt: at } : task
-          ),
-        })),
-      removeScheduledTask: (id) =>
+          scheduledTasks: state.scheduledTasks.map((task) => task.id === id ? mapped : task),
+        }))
+      },
+      markScheduledTaskRun: async (id, _at) => {
+        await get().runScheduledTaskNow(id)
+      },
+      runScheduledTaskNow: async (id) => {
+        await safeInvoke('scheduler_run_task_now', { id }, undefined)
+        await Promise.all([get().loadScheduledTasks(), get().loadScheduledRuns()])
+      },
+      removeScheduledTask: async (id) => {
+        await safeInvoke('scheduler_delete_task', { id }, undefined)
         set((state) => ({
           scheduledTasks: state.scheduledTasks.filter((task) => task.id !== id),
-        })),
+          scheduledRuns: state.scheduledRuns.filter((run) => run.taskId !== id),
+        }))
+      },
       setClaudePlanMode: (enabled) => set({ claudePlanMode: enabled }),
       setClaudePermissionMode: (mode) => set({ claudePermissionMode: mode }),
       setClaudeToolPreset: (preset) =>
@@ -490,6 +690,7 @@ export const useCoworkStore = create<CoworkState>()(
           connectors: mergeConnectors(state.connectors),
           plugins: normalizePlugins(state.plugins),
           scheduledTasks: Array.isArray(state.scheduledTasks) ? state.scheduledTasks : [],
+          scheduledRuns: Array.isArray(state.scheduledRuns) ? state.scheduledRuns : [],
           claudeTools: CLAUDE_TOOL_CAPABILITIES,
           enabledClaudeToolIds: normalizedTools.length > 0 ? normalizedTools : DEFAULT_ENABLED_CLAUDE_TOOLS,
           toolDenyRules: Array.isArray(state.toolDenyRules) ? state.toolDenyRules : [],

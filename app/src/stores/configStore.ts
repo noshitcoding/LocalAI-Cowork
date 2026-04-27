@@ -9,6 +9,16 @@ export type OllamaConfig = {
   temperature: number
 }
 
+export type OpenAIComputerUseConfig = {
+  apiKey: string
+  baseUrl: string
+  model: string
+  maxSteps: number
+  actionDelayMs: number
+  launchDelayMs: number
+  autoAcknowledgeSafetyChecks: boolean
+}
+
 export type McpServerConfig = {
   name: string
   command: string
@@ -56,12 +66,14 @@ export type AppPreferences = {
 
 type ConfigState = {
   ollama: OllamaConfig
+  openAIComputerUse: OpenAIComputerUseConfig
   preferences: AppPreferences
   mcpServer: McpServerConfig
   mcpServers: McpServerConfig[]
   activeMcpServerName: string
   availableModels: string[]
   setOllama: (patch: Partial<OllamaConfig>) => void
+  setOpenAIComputerUse: (patch: Partial<OpenAIComputerUseConfig>) => void
   setPreference: <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => void
   setPreferences: (patch: Partial<AppPreferences>) => void
   setMcpServer: (patch: Partial<McpServerConfig>) => void
@@ -75,9 +87,19 @@ type ConfigState = {
 const DEFAULT_OLLAMA: OllamaConfig = {
   baseUrl: 'http://192.168.178.82:11434',
   model: 'gpt-oss:20b',
-  timeoutMs: 200000,
+  timeoutMs: 600000,
   contextWindow: 128000,
   temperature: 0.1,
+}
+
+const DEFAULT_OPENAI_COMPUTER_USE: OpenAIComputerUseConfig = {
+  apiKey: '',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'computer-use-preview',
+  maxSteps: 40,
+  actionDelayMs: 900,
+  launchDelayMs: 2000,
+  autoAcknowledgeSafetyChecks: false,
 }
 
 const DEFAULT_PREFERENCES: AppPreferences = {
@@ -185,6 +207,7 @@ export const useConfigStore = create<ConfigState>()(
   persist(
     (set) => ({
       ollama: DEFAULT_OLLAMA,
+      openAIComputerUse: DEFAULT_OPENAI_COMPUTER_USE,
       preferences: DEFAULT_PREFERENCES,
       mcpServer: DEFAULT_MCP,
       mcpServers: [DEFAULT_MCP],
@@ -192,6 +215,10 @@ export const useConfigStore = create<ConfigState>()(
       availableModels: [],
       setOllama: (patch) =>
         set((state) => ({ ollama: { ...state.ollama, ...patch } })),
+      setOpenAIComputerUse: (patch) =>
+        set((state) => ({
+          openAIComputerUse: { ...state.openAIComputerUse, ...patch },
+        })),
       setPreference: (key, value) =>
         set((state) => ({
           preferences: {
@@ -291,6 +318,11 @@ export const useConfigStore = create<ConfigState>()(
           ollama: {
             ...DEFAULT_OLLAMA,
             ...(state.ollama ?? {}),
+            timeoutMs: Math.max(DEFAULT_OLLAMA.timeoutMs, state.ollama?.timeoutMs ?? DEFAULT_OLLAMA.timeoutMs),
+          },
+          openAIComputerUse: {
+            ...DEFAULT_OPENAI_COMPUTER_USE,
+            ...(state.openAIComputerUse ?? {}),
           },
           preferences: {
             ...DEFAULT_PREFERENCES,

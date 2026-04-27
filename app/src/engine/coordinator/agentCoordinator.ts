@@ -2,10 +2,10 @@
 // Mirrors: claude-code-main/src/coordinator/ + agent system
 // Orchestrates sub-agents — each agent is a QueryEngine instance with its own config
 
-import { invoke } from '@tauri-apps/api/core'
 import type { Message, AgentDefinition } from '../types'
 import { extractTextContent, generateUUID } from '../types'
 import { QueryEngine, type EngineConfig, type EngineEvent } from '../core/queryEngine'
+import { safeInvoke, safeInvokeVoid } from '../../utils/safeInvoke'
 
 // ── Agent Instance ─────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ export class AgentCoordinator {
     const childRunId = generateUUID()
     const sandboxId = generateUUID()
 
-    void invoke('engine_run_create', {
+    void safeInvokeVoid('engine_run_create', {
       request: {
         id: childRunId,
         parentRunId: this.baseConfig.runId,
@@ -65,7 +65,7 @@ export class AgentCoordinator {
           agentType: definition.type,
         }),
       },
-    }).catch(() => {})
+    })
 
     const contextMessages: Message[] = parentMessages
       ? parentMessages.slice(-5)
@@ -73,7 +73,7 @@ export class AgentCoordinator {
 
     let sandboxWorkspace = this.baseConfig.cwd
     try {
-      const sandbox = await invoke<{ id: string; workspaceRoot: string }>('worker_sandbox_create', {
+      const sandbox = await safeInvoke<{ id: string; workspaceRoot: string }>('worker_sandbox_create', {
         request: {
           id: sandboxId,
           runId: childRunId,
@@ -93,7 +93,7 @@ export class AgentCoordinator {
         },
       })
       sandboxWorkspace = sandbox.workspaceRoot
-      void invoke('engine_run_update', {
+      void safeInvokeVoid('engine_run_update', {
         request: {
           id: childRunId,
           phase: 'sandbox_ready',
@@ -104,17 +104,17 @@ export class AgentCoordinator {
             isolated: true,
           }),
         },
-      }).catch(() => {})
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      void invoke('engine_run_update', {
+      void safeInvokeVoid('engine_run_update', {
         request: {
           id: childRunId,
           status: 'failed',
           phase: 'sandbox_error',
           error: message,
         },
-      }).catch(() => {})
+      })
       yield {
         type: 'error',
         error: `Sandbox fuer Agent "${definition.name}" konnte nicht erstellt werden: ${message}`,
@@ -167,13 +167,13 @@ export class AgentCoordinator {
         yield { ...event, agentId }
 
         if (event.type === 'tool_use_start') {
-          void invoke('engine_run_update', {
+          void safeInvokeVoid('engine_run_update', {
             request: {
               id: childRunId,
               phase: `tool:${event.toolName}`,
               metadataJson: JSON.stringify({ toolName: event.toolName, input: event.input }),
             },
-          }).catch(() => {})
+          })
         }
 
         if (event.type === 'done') {
@@ -190,7 +190,7 @@ export class AgentCoordinator {
               .map(b => b.text)
               .join('\n')
           }
-          void invoke('engine_run_update', {
+          void safeInvokeVoid('engine_run_update', {
             request: {
               id: childRunId,
               status: 'completed',
@@ -202,8 +202,8 @@ export class AgentCoordinator {
                 messageCount: event.messages.length,
               }),
             },
-          }).catch(() => {})
-          void invoke('worker_sandbox_update', {
+            })
+            void safeInvokeVoid('worker_sandbox_update', {
             request: {
               id: sandboxId,
               status: 'completed',
@@ -212,22 +212,22 @@ export class AgentCoordinator {
                 completedAt: new Date().toISOString(),
               }),
             },
-          }).catch(() => {})
+          })
         }
 
         if (event.type === 'error') {
           instance.status = 'failed'
           instance.error = event.error
           instance.completedAt = Date.now()
-          void invoke('engine_run_update', {
+          void safeInvokeVoid('engine_run_update', {
             request: {
               id: childRunId,
               status: 'failed',
               phase: 'error',
               error: event.error,
             },
-          }).catch(() => {})
-          void invoke('worker_sandbox_update', {
+          })
+          void safeInvokeVoid('worker_sandbox_update', {
             request: {
               id: sandboxId,
               status: 'failed',
@@ -236,11 +236,11 @@ export class AgentCoordinator {
                 error: event.error,
               }),
             },
-          }).catch(() => {})
+          })
         }
 
         if (event.type === 'assistant_message') {
-          void invoke('engine_run_checkpoint_add', {
+          void safeInvokeVoid('engine_run_checkpoint_add', {
             request: {
               runId: childRunId,
               label: `subagent-turn-${Date.now()}`,
@@ -249,22 +249,22 @@ export class AgentCoordinator {
                 text: extractTextContent(event.message).slice(0, 4000),
               }),
             },
-          }).catch(() => {})
+          })
         }
       }
     } catch (err) {
       instance.status = 'failed'
       instance.error = err instanceof Error ? err.message : String(err)
       instance.completedAt = Date.now()
-      void invoke('engine_run_update', {
+      void safeInvokeVoid('engine_run_update', {
         request: {
           id: childRunId,
           status: 'failed',
           phase: 'error',
           error: instance.error,
         },
-      }).catch(() => {})
-      void invoke('worker_sandbox_update', {
+      })
+      void safeInvokeVoid('worker_sandbox_update', {
         request: {
           id: sandboxId,
           status: 'failed',
@@ -273,7 +273,7 @@ export class AgentCoordinator {
             error: instance.error,
           }),
         },
-      }).catch(() => {})
+      })
       yield {
         type: 'error',
         error: `Agent "${definition.name}" fehlgeschlagen: ${instance.error}`,
@@ -293,23 +293,23 @@ export class AgentCoordinator {
       instance.error = 'Abgebrochen'
       instance.completedAt = Date.now()
       if (instance.childRunId) {
-        void invoke('engine_run_update', {
+        void safeInvokeVoid('engine_run_update', {
           request: {
             id: instance.childRunId,
             status: 'canceled',
             phase: 'canceled',
             error: 'Abgebrochen',
           },
-        }).catch(() => {})
+        })
       }
       if (instance.sandboxId) {
-        void invoke('worker_sandbox_update', {
+        void safeInvokeVoid('worker_sandbox_update', {
           request: {
             id: instance.sandboxId,
             status: 'canceled',
             metadataJson: JSON.stringify({ error: 'Abgebrochen' }),
           },
-        }).catch(() => {})
+        })
       }
     }
   }

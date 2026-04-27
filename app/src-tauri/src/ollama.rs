@@ -7,7 +7,7 @@ use url::Url;
 
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://192.168.178.82:11434";
 const DEFAULT_MODEL: &str = "llama3.1:8b";
-const DEFAULT_TIMEOUT_MS: u64 = 200_000;
+const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +61,48 @@ struct GenerateStreamResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChatToolFunctionDef {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChatToolDef {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: ChatToolFunctionDef,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct OllamaToolFunctionCall {
+    pub name: String,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct OllamaToolCall {
+    pub function: OllamaToolFunctionCall,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatApiMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatApiResponse {
+    message: Option<ChatApiAssistantMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatApiAssistantMessage {
+    content: Option<String>,
+    tool_calls: Option<Vec<OllamaToolCall>>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OllamaHealthResponse {
@@ -97,6 +139,7 @@ pub struct ChatTurnResponse {
     pub assistant_message: String,
     pub requires_approval: bool,
     pub proposed_plan: Vec<String>,
+    pub tool_calls: Vec<OllamaToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,8 +353,14 @@ pub async fn chat_turn(
     config: Option<OllamaConfig>,
     prompt: String,
     history: Vec<ChatMessage>,
+    tools: Vec<ChatToolDef>,
 ) -> Result<ChatTurnResponse, OllamaError> {
     let config = normalize_config(config)?;
+
+    if !tools.is_empty() {
+        return chat_turn_with_tools(config, prompt, history, tools).await;
+    }
+
     let client = build_http_client(config.timeout_ms)?;
 
     let generate_url = format!("{}/api/generate", config.base_url);
@@ -380,7 +429,12 @@ pub async fn chat_turn(
         generate_payload.response.len()
     );
 
-    Ok(build_chat_turn_response(config, prompt, generate_payload.response))
+    Ok(build_chat_turn_response(
+        config,
+        prompt,
+        generate_payload.response,
+        vec![],
+    ))
 }
 
 pub async fn chat_turn_stream<F>(
@@ -388,11 +442,16 @@ pub async fn chat_turn_stream<F>(
     config: Option<OllamaConfig>,
     prompt: String,
     history: Vec<ChatMessage>,
+    tools: Vec<ChatToolDef>,
     mut on_chunk: F,
 ) -> Result<ChatTurnResponse, OllamaError>
 where
     F: FnMut(ChatStreamChunkPayload) -> Result<(), OllamaError>,
 {
+    if !tools.is_empty() {
+        return chat_turn(config, prompt, history, tools).await;
+    }
+
     let config = normalize_config(config)?;
     let client = build_http_client(config.timeout_ms)?;
     let generate_url = format!("{}/api/generate", config.base_url);
@@ -453,7 +512,7 @@ where
                     config.model,
                     stream_error
                 );
-                return chat_turn(Some(config.clone()), prompt.clone(), history.clone()).await;
+                return chat_turn(Some(config.clone()), prompt.clone(), history.clone(), vec![]).await;
             }
         };
         let text = String::from_utf8_lossy(&bytes);
@@ -478,7 +537,7 @@ where
             config.model,
             started.elapsed().as_millis()
         );
-        return chat_turn(Some(config.clone()), prompt, history).await;
+        return chat_turn(Some(config.clone()), prompt, history, vec![]).await;
     }
 
     log::info!(
@@ -489,7 +548,105 @@ where
         assistant_message.len()
     );
 
-    Ok(build_chat_turn_response(config, prompt, assistant_message))
+    Ok(build_chat_turn_response(config, prompt, assistant_message, vec![]))
+}
+
+async fn chat_turn_with_tools(
+    config: OllamaConfig,
+    prompt: String,
+    history: Vec<ChatMessage>,
+    tools: Vec<ChatToolDef>,
+) -> Result<ChatTurnResponse, OllamaError> {
+    let client = build_http_client(config.timeout_ms)?;
+    let chat_url = format!("{}/api/chat", config.base_url);
+    let messages = build_chat_messages(&prompt, &history);
+
+    let payload = serde_json::json!({
+        "model": config.model,
+        "messages": messages,
+        "stream": false,
+        "tools": tools,
+        "options": {
+            "temperature": 0.25
+        }
+    });
+
+    let started = Instant::now();
+    log::info!(
+        "ollama chat_turn tools start endpoint={} model={} timeoutMs={} historyItems={} toolCount={} promptChars={}",
+        config.base_url,
+        config.model,
+        config.timeout_ms,
+        history.len(),
+        payload
+            .get("tools")
+            .and_then(|value| value.as_array())
+            .map(|value| value.len())
+            .unwrap_or(0),
+        prompt.len()
+    );
+
+    let response = client
+        .post(&chat_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| request_error("/api/chat", &config, error))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(OllamaError::RequestFailed(format!(
+            "Ollama returned status {} for /api/chat{}",
+            status,
+            if body.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", body.trim())
+            }
+        )));
+    }
+
+    let chat_payload: ChatApiResponse = response
+        .json()
+        .await
+        .map_err(|error| OllamaError::ParseFailed(error.to_string()))?;
+
+    let assistant_message = chat_payload
+        .message
+        .as_ref()
+        .and_then(|message| message.content.clone())
+        .unwrap_or_default();
+    let tool_calls = chat_payload
+        .message
+        .and_then(|message| message.tool_calls)
+        .unwrap_or_default();
+
+    if assistant_message.trim().is_empty() && tool_calls.is_empty() {
+        log::warn!(
+            "ollama chat_turn tools empty endpoint={} model={} elapsedMs={}",
+            config.base_url,
+            config.model,
+            started.elapsed().as_millis()
+        );
+        return Err(empty_response_error("/api/chat", &config));
+    }
+
+    log::info!(
+        "ollama chat_turn tools success endpoint={} model={} elapsedMs={} chars={} toolCalls={}",
+        config.base_url,
+        config.model,
+        started.elapsed().as_millis(),
+        assistant_message.len(),
+        tool_calls.len()
+    );
+
+    Ok(build_chat_turn_response(
+        config,
+        prompt,
+        assistant_message,
+        tool_calls,
+    ))
 }
 
 fn handle_stream_line<F>(
@@ -553,6 +710,26 @@ fn build_chat_prompt(prompt: &str, history: &[ChatMessage]) -> String {
     )
 }
 
+fn build_chat_messages(prompt: &str, history: &[ChatMessage]) -> Vec<ChatApiMessage> {
+    let mut messages = history
+        .iter()
+        .rev()
+        .take(8)
+        .rev()
+        .map(|msg| ChatApiMessage {
+            role: msg.role.clone(),
+            content: msg.content.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    messages.push(ChatApiMessage {
+        role: "user".to_string(),
+        content: prompt.to_string(),
+    });
+
+    messages
+}
+
 fn detect_risky_action(text: &str) -> bool {
     let normalized = text.to_lowercase();
     let dangerous_phrases = [
@@ -586,6 +763,7 @@ fn build_chat_turn_response(
     config: OllamaConfig,
     prompt: String,
     assistant_message: String,
+    tool_calls: Vec<OllamaToolCall>,
 ) -> ChatTurnResponse {
     let requires_approval =
         detect_risky_action(&prompt) || detect_risky_action(&assistant_message);
@@ -608,6 +786,7 @@ fn build_chat_turn_response(
         assistant_message,
         requires_approval,
         proposed_plan,
+        tool_calls,
     }
 }
 
@@ -635,7 +814,8 @@ fn parse_steps(raw: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_steps;
+    use super::{build_chat_turn_response, parse_steps, OllamaConfig, OllamaToolCall, OllamaToolFunctionCall};
+    use serde_json::{Map, Value};
 
     #[test]
     fn parse_steps_extracts_numbered_lines() {
@@ -658,5 +838,32 @@ mod tests {
         let parsed = parse_steps(raw);
 
         assert_eq!(parsed, vec!["Freitext ohne Zeilenumbrueche".to_string()]);
+    }
+
+    #[test]
+    fn build_chat_turn_response_preserves_tool_calls() {
+        let mut arguments = Map::new();
+        arguments.insert("file_path".to_string(), Value::String("C:\\workspace\\README.md".to_string()));
+
+        let response = build_chat_turn_response(
+            OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                model: "qwen3.6:35b".to_string(),
+                timeout_ms: 1_000,
+            },
+            "Lies README.md".to_string(),
+            String::new(),
+            vec![OllamaToolCall {
+                function: OllamaToolFunctionCall {
+                    name: "Read".to_string(),
+                    arguments,
+                },
+            }],
+        );
+
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].function.name, "Read");
+        assert_eq!(response.assistant_message, "");
+        assert!(!response.requires_approval);
     }
 }

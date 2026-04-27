@@ -1,7 +1,7 @@
-import { useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import type { McpServerConfig } from '../stores/configStore'
+import { safeInvoke } from '../utils/safeInvoke'
 
 type McpTool = {
   name: string
@@ -21,6 +21,15 @@ type McpCallResponse = {
   success: boolean
   result: string
   error: string | null
+}
+
+type McpRuntimeServerStatus = {
+  name: string
+  command: string
+  args: string[]
+  pid: number | null
+  startedAt: string
+  lastError: string | null
 }
 
 const SCREENSHOT_MCP_COMMAND = 'open-cowork-screenshot-mcp'
@@ -120,7 +129,18 @@ export default function McpView() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [status, setStatus] = useState<'unknown' | 'online' | 'offline'>('unknown')
+  const [runtimeServers, setRuntimeServers] = useState<McpRuntimeServerStatus[]>([])
   const isScreenshotServer = mcpServer.command.trim().toLowerCase() === SCREENSHOT_MCP_COMMAND
+  const runtimeActive = runtimeServers.some((server) => server.name === mcpServer.name)
+
+  const refreshRuntimeServers = async () => {
+    const rows = await safeInvoke<McpRuntimeServerStatus[]>('mcp_runtime_list', undefined, [])
+    setRuntimeServers(rows)
+  }
+
+  useEffect(() => {
+    void refreshRuntimeServers()
+  }, [])
 
   const selectServer = (name: string) => {
     setActiveMcpServer(name)
@@ -141,7 +161,7 @@ export default function McpView() {
     try {
       const env = currentEnv()
       setMcpServer({ env })
-      const response = await invoke<McpProbeResponse>('mcp_probe', {
+      const response = await safeInvoke<McpProbeResponse>('mcp_probe', {
         request: {
           name: mcpServer.name,
           command: mcpServer.command,
@@ -163,6 +183,69 @@ export default function McpView() {
     }
   }
 
+  const handleRuntimeStart = async () => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const env = currentEnv()
+      setMcpServer({ env })
+      await safeInvoke<McpRuntimeServerStatus>('mcp_runtime_start', {
+        request: {
+          name: mcpServer.name,
+          command: mcpServer.command,
+          args: splitArgs(mcpServer.args),
+          env,
+        },
+      })
+      await refreshRuntimeServers()
+      setNotice(`Runtime-Server gestartet: ${mcpServer.name}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRuntimeStop = async () => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const stopped = await safeInvoke<boolean>('mcp_runtime_stop', { name: mcpServer.name }, false)
+      await refreshRuntimeServers()
+      setNotice(stopped ? `Runtime-Server gestoppt: ${mcpServer.name}` : `Runtime-Server war nicht aktiv: ${mcpServer.name}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleRuntimeRestart = async () => {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const env = currentEnv()
+      setMcpServer({ env })
+      await safeInvoke<McpRuntimeServerStatus>('mcp_runtime_restart', {
+        request: {
+          name: mcpServer.name,
+          command: mcpServer.command,
+          args: splitArgs(mcpServer.args),
+          env,
+        },
+      })
+      await refreshRuntimeServers()
+      setNotice(`Runtime-Server neugestartet: ${mcpServer.name}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleToolCall = async () => {
     if (!selectedTool) return
     setBusy(true)
@@ -173,7 +256,7 @@ export default function McpView() {
       const env = currentEnv()
       setMcpServer({ env })
 
-      const response = await invoke<McpCallResponse>('mcp_call_tool', {
+      const response = await safeInvoke<McpCallResponse>('mcp_call_tool', {
         request: {
           name: mcpServer.name,
           command: mcpServer.command,
@@ -199,7 +282,7 @@ export default function McpView() {
       const env = currentEnv()
       setMcpServer({ env })
 
-      const response = await invoke<McpCallResponse>('mcp_call_tool', {
+      const response = await safeInvoke<McpCallResponse>('mcp_call_tool', {
         request: {
           name: mcpServer.name,
           command: mcpServer.command,
@@ -308,6 +391,45 @@ export default function McpView() {
             Server löschen
           </button>
         </div>
+
+        <div className="actions" style={{ marginTop: 10 }}>
+          <button type="button" disabled={busy || runtimeActive} onClick={handleRuntimeStart}>
+            {runtimeActive ? 'Runtime aktiv' : '▶ Runtime starten'}
+          </button>
+          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeStop}>
+            ■ Runtime stoppen
+          </button>
+          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeRestart}>
+            ↻ Runtime neu starten
+          </button>
+          <button type="button" className="btn-secondary" disabled={busy} onClick={() => void refreshRuntimeServers()}>
+            Runtime aktualisieren
+          </button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h2>🧠 Runtime-Server ({runtimeServers.length})</h2>
+        {runtimeServers.length === 0 ? (
+          <p className="hint-text">Aktuell sind keine persistenten MCP-Server gestartet.</p>
+        ) : (
+          <ul className="tool-list">
+            {runtimeServers.map((server) => (
+              <li key={server.name} className="tool-item">
+                <strong>{server.name}</strong>
+                <span style={{ marginLeft: 8, fontSize: 12 }}>
+                  pid={server.pid ?? '—'} · gestartet {new Date(server.startedAt).toLocaleString('de-DE')}
+                </span>
+                <div style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 4 }}>
+                  {server.command} {server.args.join(' ')}
+                </div>
+                {server.lastError && (
+                  <div className="error" style={{ marginTop: 4 }}>{server.lastError}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* ── Notices ─────────────── */}

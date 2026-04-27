@@ -6,7 +6,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useConfigStore } from '../../stores/configStore'
 import type { McpServerConfig } from '../../stores/configStore'
-import type { Tool, Tools, ToolInputSchema } from '../types'
+import { runComputerUseAppTest } from '../services/computerUseService'
+import type { AttachmentMessage, Tool, Tools, ToolInputSchema } from '../types'
 
 // ── Tool Registration ──────────────────────────────────────────────────────
 
@@ -16,6 +17,117 @@ type ExecCommandChunkPayload = {
   streamId: string
   channel: 'stdout' | 'stderr' | 'done'
   content: string
+}
+
+type ExecCommandResult = {
+  stdout: string
+  stderr: string
+  exitCode: number
+  currentCwd?: string
+}
+
+type DesktopDisplayInfo = {
+  primary: boolean
+  x: number
+  y: number
+  width: number
+  height: number
+  deviceName: string
+  scaleFactor?: number
+}
+
+type DesktopScreenshotResponse = DesktopDisplayInfo & {
+  dataUrl: string
+  imageWidth?: number
+  imageHeight?: number
+  coordinateOverlay?: boolean
+}
+
+type DesktopWindowInfo = {
+  title: string
+  processId: number
+  processName: string
+  handle: string
+  x: number
+  y: number
+  width: number
+  height: number
+  isForeground: boolean
+}
+
+type DesktopActionResponse = {
+  ok: boolean
+  action: string
+}
+
+type DesktopCoordinateSpace = 'display' | 'screen'
+
+type DesktopLaunchResponse = {
+  pid: number
+  path: string
+  args: string[]
+}
+
+function normalizeShellPath(pathValue: string): string {
+  const hasDrivePrefix = /^[a-zA-Z]:[\\/]/.test(pathValue)
+  const hasLeadingSlash = !hasDrivePrefix && pathValue.startsWith('/')
+  const normalizedSeparators = pathValue.replace(/\\/g, '/')
+  const prefix = hasDrivePrefix
+    ? normalizedSeparators.slice(0, 2)
+    : hasLeadingSlash
+      ? '/'
+      : ''
+  const remainder = normalizedSeparators.slice(prefix.length)
+  const parts: string[] = []
+
+  for (const rawPart of remainder.split('/')) {
+    const part = rawPart.trim()
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (parts.length > 0 && parts[parts.length - 1] !== '..') {
+        parts.pop()
+      } else if (!prefix) {
+        parts.push('..')
+      }
+      continue
+    }
+    parts.push(part)
+  }
+
+  if (hasDrivePrefix) {
+    const suffix = parts.join('\\')
+    return suffix ? `${prefix}\\${suffix}` : `${prefix}\\`
+  }
+
+  if (hasLeadingSlash) {
+    return `/${parts.join('/')}`.replace(/\/$/, '') || '/'
+  }
+
+  return parts.join('/')
+}
+
+function resolveShellNavigationTarget(target: string, cwd: string): string {
+  const trimmedTarget = target.trim()
+  if (!trimmedTarget) return cwd
+  if (/^[a-zA-Z]:[\\/]/.test(trimmedTarget) || trimmedTarget.startsWith('/')) {
+    return normalizeShellPath(trimmedTarget)
+  }
+  return normalizeShellPath(`${cwd.replace(/[\\/]+$/, '')}/${trimmedTarget}`)
+}
+
+function inferShellCwdFromCommand(command: string, cwd: string): string | undefined {
+  const navigationPattern = /(?:^|[;\n]\s*)(?:cd|chdir|Set-Location)\s+(?:"([^"]+)"|'([^']+)'|([^;\n]+))/gi
+  let inferredCwd: string | undefined
+  let match: RegExpExecArray | null
+
+  while ((match = navigationPattern.exec(command)) !== null) {
+    const rawTarget = match[1] ?? match[2] ?? match[3] ?? ''
+    const target = rawTarget.trim()
+    if (!target || target === '-' || target.startsWith('$')) continue
+    inferredCwd = resolveShellNavigationTarget(target, inferredCwd ?? cwd)
+  }
+
+  return inferredCwd
 }
 
 type FsAttachmentMetadataResponse = {
@@ -33,12 +145,84 @@ type FsAttachmentMetadataResponse = {
   }>
 }
 
+type FsCreateDirectoryResponse = {
+  path: string
+  created: boolean
+}
+
+type FsPathMutationResponse = {
+  sourcePath: string
+  destinationPath: string
+  itemKind: string
+  createdParent: boolean
+  replacedExisting: boolean
+}
+
 type McpCallResponse = {
   serverName: string
   toolName: string
   success: boolean
   result: string
   error: string | null
+}
+
+type McpScreenshotPayload = {
+  success?: boolean
+  reused?: boolean
+  path?: string
+  displayIndex?: number
+  displayInfo?: {
+    width?: number
+    height?: number
+    x?: number
+    y?: number
+    primary?: boolean
+    deviceName?: string
+    scaleFactor?: number
+    imageWidth?: number
+    imageHeight?: number
+    coordinateOverlay?: boolean
+    coordinateGrid?: {
+      minorStepPx?: number
+      majorStepPx?: number
+      origin?: string
+      coordinateSpace?: string
+    }
+  }
+  timestamp?: string
+  reason?: string
+  region?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  duplicateCallCount?: number
+  nextStepHint?: string
+  forceRefresh?: boolean
+  mimeType?: string
+  coordinateOverlay?: boolean
+  coordinateGrid?: {
+    minorStepPx?: number
+    majorStepPx?: number
+    origin?: string
+    coordinateSpace?: string
+  }
+  imageDataUrl?: string
+}
+
+type OfficeWorkflowArtifact = {
+  path: string
+  generator: string
+  format: string
+}
+
+type OfficeWorkflowResponse = {
+  format: string
+  mode: string
+  placeholdersApplied: number
+  generated: OfficeWorkflowArtifact[]
+  warnings: string[]
 }
 
 type LegacyMcpCallResponse = {
@@ -70,6 +254,196 @@ function createToolStreamId(): string {
 function splitCommandArgs(value: string): string[] {
   const matches = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? []
   return matches.map((part) => part.replace(/^["']|["']$/g, ''))
+}
+
+function parseBase64DataUrl(dataUrl: string): { mediaType: string; data: string } | null {
+  const match = dataUrl.trim().match(/^data:([^;]+);base64,(.+)$/s)
+  if (!match) return null
+  return {
+    mediaType: match[1],
+    data: match[2],
+  }
+}
+
+function formatDesktopScreenshotSummary(screenshot: DesktopScreenshotResponse): string {
+  const imageWidth = screenshot.imageWidth ?? screenshot.width
+  const imageHeight = screenshot.imageHeight ?? screenshot.height
+  const scaleFactor = typeof screenshot.scaleFactor === 'number' ? ` DPI-Skalierung ca. ${screenshot.scaleFactor.toFixed(2)}x.` : ''
+  const overlay = screenshot.coordinateOverlay
+    ? ' Das Bild enthaelt ein Koordinatenraster: feine Linien alle 50 px, beschriftete Hauptlinien alle 100 px.'
+    : ''
+  return `Desktop screenshot aufgenommen: Bild ${imageWidth}x${imageHeight}, Display ${screenshot.width}x${screenshot.height} auf ${screenshot.deviceName}${screenshot.primary ? ' [primary]' : ''}.${scaleFactor} Verwende fuer Klicks lokale Display-Koordinaten aus exakt diesem Bild mit Ursprung (0, 0) links oben; der virtuelle Bildschirm-Ursprung dieses Displays liegt bei (${screenshot.x}, ${screenshot.y}).${overlay}`
+}
+
+function normalizeDesktopCoordinateSpace(value: string | undefined): DesktopCoordinateSpace {
+  return value === 'screen' ? 'screen' : 'display'
+}
+
+type ResolvedDesktopPoint = {
+  requestedX: number
+  requestedY: number
+  absoluteX: number
+  absoluteY: number
+  coordinateSpace: DesktopCoordinateSpace
+  display?: DesktopDisplayInfo
+}
+
+async function resolveDesktopPoint(
+  x: number,
+  y: number,
+  coordinateSpace?: string,
+): Promise<ResolvedDesktopPoint> {
+  const requestedX = Math.round(x)
+  const requestedY = Math.round(y)
+  const normalizedCoordinateSpace = normalizeDesktopCoordinateSpace(coordinateSpace)
+
+  if (normalizedCoordinateSpace === 'screen') {
+    return {
+      requestedX,
+      requestedY,
+      absoluteX: requestedX,
+      absoluteY: requestedY,
+      coordinateSpace: normalizedCoordinateSpace,
+    }
+  }
+
+  const display = await invoke<DesktopDisplayInfo>('desktop_primary_display')
+
+  return {
+    requestedX,
+    requestedY,
+    absoluteX: requestedX + display.x,
+    absoluteY: requestedY + display.y,
+    coordinateSpace: normalizedCoordinateSpace,
+    display,
+  }
+}
+
+function describeResolvedDesktopPoint(point: ResolvedDesktopPoint): string {
+  if (point.coordinateSpace === 'screen' || !point.display) {
+    return `Bildschirmkoordinaten (${point.absoluteX}, ${point.absoluteY})`
+  }
+
+  return `Display-Koordinaten (${point.requestedX}, ${point.requestedY}) wurden mit Display-Ursprung (${point.display.x}, ${point.display.y}) zu Bildschirmkoordinaten (${point.absoluteX}, ${point.absoluteY}) umgerechnet`
+}
+
+function createDesktopScreenshotAttachment(
+  screenshot: DesktopScreenshotResponse,
+  options?: { title?: string; preface?: string },
+): AttachmentMessage | null {
+  const parsed = parseBase64DataUrl(screenshot.dataUrl)
+  if (!parsed) return null
+
+  const summary = formatDesktopScreenshotSummary(screenshot)
+  const text = options?.preface ? `${options.preface}\n${summary}` : summary
+
+  return {
+    type: 'attachment',
+    uuid: createToolStreamId(),
+    title: options?.title ?? `Desktop Screenshot ${screenshot.width}x${screenshot.height}`,
+    attachmentType: 'tool_result',
+    timestamp: Date.now(),
+    content: [
+      {
+        type: 'text',
+        text,
+      },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: parsed.mediaType,
+          data: parsed.data,
+        },
+      },
+    ],
+  }
+}
+
+function parseMcpScreenshotPayload(message: string): McpScreenshotPayload | null {
+  try {
+    const parsed = JSON.parse(message)
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed as McpScreenshotPayload
+  } catch {
+    return null
+  }
+}
+
+function createMcpScreenshotAttachment(
+  toolName: string,
+  message: string,
+): { attachment: AttachmentMessage; textSummary: string } | null {
+  if (toolName !== 'screenshot_for_display') {
+    return null
+  }
+
+  const payload = parseMcpScreenshotPayload(message)
+  if (!payload?.imageDataUrl) {
+    return null
+  }
+
+  const parsedDataUrl = parseBase64DataUrl(payload.imageDataUrl)
+  if (!parsedDataUrl) {
+    return null
+  }
+
+  const safePayload: Record<string, unknown> = {
+    ...payload,
+    imageDataUrl: undefined,
+  }
+  delete safePayload.imageDataUrl
+
+  const width = payload.displayInfo?.width
+  const height = payload.displayInfo?.height
+  const reused = payload.reused === true
+  const title = width && height
+    ? `MCP Screenshot ${width}x${height}${reused ? ' (reused)' : ''}`
+    : `MCP Screenshot${reused ? ' (reused)' : ''}`
+
+  const overlayEnabled = payload.coordinateOverlay === true || payload.displayInfo?.coordinateOverlay === true
+  const grid = payload.coordinateGrid ?? payload.displayInfo?.coordinateGrid
+  const coordinateGuide = overlayEnabled
+    ? `Koordinatenhinweis: Das angehaengte Screenshot-Bild enthaelt ein Raster in lokalen Display-Koordinaten mit Ursprung (0, 0) links oben. Feine Linien: ${grid?.minorStepPx ?? 50}px, beschriftete Hauptlinien: ${grid?.majorStepPx ?? 100}px. Nutze diese Bildkoordinaten direkt fuer DesktopClick/DesktopMoveMouse mit coordinate_space="display".`
+    : 'Koordinatenhinweis: Nutze lokale Display-Koordinaten aus dem angehaengten Screenshot-Bild direkt fuer DesktopClick/DesktopMoveMouse mit coordinate_space="display".'
+  const textSummary = `${coordinateGuide}\n${JSON.stringify(safePayload, null, 2)}`
+
+  return {
+    attachment: {
+      type: 'attachment',
+      uuid: createToolStreamId(),
+      title,
+      attachmentType: 'tool_result',
+      timestamp: Date.now(),
+      content: [
+        {
+          type: 'text',
+          text: textSummary,
+        },
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: parsedDataUrl.mediaType,
+            data: parsedDataUrl.data,
+          },
+        },
+      ],
+    },
+    textSummary,
+  }
+}
+
+async function captureDesktopVerificationAttachment(actionLabel: string): Promise<AttachmentMessage | null> {
+  try {
+    const screenshot = await invoke<DesktopScreenshotResponse>('desktop_capture_primary_annotated_screenshot')
+    return createDesktopScreenshotAttachment(screenshot, {
+      title: `Desktop Verification: ${actionLabel}`,
+      preface: `Verifikation nach Aktion: ${actionLabel}`,
+    })
+  } catch {
+    return null
+  }
 }
 
 function findMcpServerConfig(serverName: string): McpServerConfig | null {
@@ -181,6 +555,128 @@ const fileWriteTool: Tool<{ file_path: string; content: string; create_backup?: 
 
 // ── FileEditTool ───────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/FileEditTool/
+
+const createDirectoryTool: Tool<{ path: string }> = {
+  name: 'CreateDirectory',
+  aliases: ['create_directory', 'mkdir', 'make_dir', 'MakeDirectoryTool'],
+  description: 'Erstellt ein Verzeichnis inklusive fehlender Zwischenordner.',
+  category: 'filesystem',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Pfad zum zu erstellenden Verzeichnis' },
+    },
+    required: ['path'],
+  },
+  isReadOnly: () => false,
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  async call(input, context, onProgress) {
+    const fullPath = resolvePath(input.path, context.cwd)
+    onProgress?.({
+      toolUseID: '',
+      data: {
+        type: 'file_progress',
+        path: fullPath,
+        operation: 'create_dir',
+      },
+    })
+    const result = await invoke<FsCreateDirectoryResponse>('fs_create_directory', {
+      path: fullPath,
+      runId: context.runId,
+    })
+    return { data: result.created ? `Verzeichnis erstellt: ${result.path}` : `Verzeichnis existiert bereits: ${result.path}` }
+  },
+}
+
+const movePathTool: Tool<{ source_path: string; destination_path: string; overwrite?: boolean }> = {
+  name: 'MovePath',
+  aliases: ['move_path', 'move_file', 'move_directory', 'rename_path', 'MovePathTool'],
+  description: 'Verschiebt oder benennt eine Datei oder einen Ordner um.',
+  category: 'filesystem',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      source_path: { type: 'string', description: 'Ausgangspfad der Datei oder des Ordners' },
+      destination_path: { type: 'string', description: 'Zielpfad nach dem Verschieben' },
+      overwrite: { type: 'boolean', description: 'Bestehendes Ziel ueberschreiben (Standard: false)' },
+    },
+    required: ['source_path', 'destination_path'],
+  },
+  isReadOnly: () => false,
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  async call(input, context, onProgress) {
+    const sourcePath = resolvePath(input.source_path, context.cwd)
+    const destinationPath = resolvePath(input.destination_path, context.cwd)
+    onProgress?.({
+      toolUseID: '',
+      data: {
+        type: 'file_progress',
+        path: `${sourcePath} -> ${destinationPath}`,
+        operation: 'move',
+      },
+    })
+    const result = await invoke<FsPathMutationResponse>('fs_move_path', {
+      sourcePath,
+      destinationPath,
+      overwrite: input.overwrite ?? false,
+      runId: context.runId,
+    })
+    const notes = [
+      `${result.itemKind} verschoben: ${result.sourcePath} -> ${result.destinationPath}`,
+      result.createdParent ? 'Zielordner wurde automatisch erstellt.' : '',
+      result.replacedExisting ? 'Bestehendes Ziel wurde ersetzt.' : '',
+    ].filter(Boolean)
+    return { data: notes.join('\n') }
+  },
+}
+
+const copyPathTool: Tool<{ source_path: string; destination_path: string; overwrite?: boolean }> = {
+  name: 'CopyPath',
+  aliases: ['copy_path', 'copy_file', 'copy_directory', 'CopyPathTool'],
+  description: 'Kopiert eine Datei oder einen Ordner an einen neuen Pfad.',
+  category: 'filesystem',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      source_path: { type: 'string', description: 'Quelle der Datei oder des Ordners' },
+      destination_path: { type: 'string', description: 'Zielpfad fuer die Kopie' },
+      overwrite: { type: 'boolean', description: 'Bestehendes Ziel ueberschreiben (Standard: false)' },
+    },
+    required: ['source_path', 'destination_path'],
+  },
+  isReadOnly: () => false,
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  async call(input, context, onProgress) {
+    const sourcePath = resolvePath(input.source_path, context.cwd)
+    const destinationPath = resolvePath(input.destination_path, context.cwd)
+    onProgress?.({
+      toolUseID: '',
+      data: {
+        type: 'file_progress',
+        path: `${sourcePath} -> ${destinationPath}`,
+        operation: 'copy',
+      },
+    })
+    const result = await invoke<FsPathMutationResponse>('fs_copy_path', {
+      sourcePath,
+      destinationPath,
+      overwrite: input.overwrite ?? false,
+      runId: context.runId,
+    })
+    const notes = [
+      `${result.itemKind} kopiert: ${result.sourcePath} -> ${result.destinationPath}`,
+      result.createdParent ? 'Zielordner wurde automatisch erstellt.' : '',
+      result.replacedExisting ? 'Bestehendes Ziel wurde ersetzt.' : '',
+    ].filter(Boolean)
+    return { data: notes.join('\n') }
+  },
+}
 
 const fileEditTool: Tool<{ file_path: string; old_string: string; new_string: string }> = {
   name: 'Edit',
@@ -350,13 +846,26 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
         unlisten = null
       }
 
-      const result = await invoke<{ stdout: string; stderr: string; exitCode: number }>('exec_command', {
+      const result = await invoke<ExecCommandResult>('exec_command', {
         command: input.command,
         cwd: context.cwd,
         timeoutMs: input.timeout ?? 30000,
         streamId,
         runId: context.runId,
       })
+      const resolvedCurrentCwd = result.currentCwd ?? inferShellCwdFromCommand(input.command, context.cwd)
+      if (resolvedCurrentCwd && resolvedCurrentCwd !== context.cwd) {
+        context.setAppState((prev) => ({ ...prev, cwd: resolvedCurrentCwd }))
+        if (onProgress) {
+          onProgress({
+            toolUseID: '',
+            data: {
+              type: 'bash_progress',
+              output: `cwd: ${resolvedCurrentCwd}`,
+            },
+          })
+        }
+      }
       if (onProgress) {
         onProgress({
           toolUseID: '',
@@ -367,9 +876,13 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
           },
         })
       }
+      const shouldMirrorCwdToStdout = /\b(?:pwd|Get-Location)\b/i.test(input.command)
+      const effectiveStdout = result.stdout || (shouldMirrorCwdToStdout && resolvedCurrentCwd ? resolvedCurrentCwd : '')
+
       const output = [
-        result.stdout ? `stdout:\n${result.stdout}` : '',
+        effectiveStdout ? `stdout:\n${effectiveStdout}` : '',
         result.stderr ? `stderr:\n${result.stderr}` : '',
+        resolvedCurrentCwd ? `current cwd: ${resolvedCurrentCwd}` : '',
         `exit code: ${result.exitCode}`,
       ].filter(Boolean).join('\n\n')
       return { data: output }
@@ -508,16 +1021,29 @@ const mcpTool: Tool<{ server_name: string; tool_name: string; arguments: Record<
       }
     }
 
+    const toToolResult = (normalized: { ok: boolean; message: string }) => {
+      if (!normalized.ok) {
+        return { data: `MCP Fehler: ${normalized.message}` }
+      }
+
+      const screenshotAttachment = createMcpScreenshotAttachment(input.tool_name, normalized.message)
+      if (screenshotAttachment) {
+        return {
+          data: screenshotAttachment.textSummary,
+          newMessages: [screenshotAttachment.attachment],
+        }
+      }
+
+      return { data: normalized.message }
+    }
+
     try {
       const primary = await invoke<McpCallResponse | LegacyMcpCallResponse>('mcp_call_tool', {
         request: requestPayload,
         runId: context.runId,
       })
       const normalized = normalizeResponse(primary)
-      if (!normalized.ok) {
-        return { data: `MCP Fehler: ${normalized.message}` }
-      }
-      return { data: normalized.message }
+      return toToolResult(normalized)
     } catch {
       // Backward-compat fallback for alternate envelope contracts.
       const fallback = await invoke<McpCallResponse | LegacyMcpCallResponse>('mcp_call_tool', {
@@ -528,16 +1054,382 @@ const mcpTool: Tool<{ server_name: string; tool_name: string; arguments: Record<
         runId: context.runId,
       })
       const normalized = normalizeResponse(fallback)
-      if (!normalized.ok) {
-        return { data: `MCP Fehler: ${normalized.message}` }
-      }
-      return { data: normalized.message }
+      return toToolResult(normalized)
+    }
+  },
+}
+
+const desktopScreenshotTool: Tool<Record<string, never>> = {
+  name: 'DesktopScreenshot',
+  aliases: ['desktop_screenshot', 'capture_desktop_screenshot'],
+  description: 'Nimmt einen Screenshot des Primaerdisplays mit Koordinatenraster auf und haengt das Bild fuer visuelle Analyse an die Unterhaltung an. Nutze dieses Tool vor Maus- oder Tastaturaktionen.',
+  category: 'desktop',
+  riskLevel: 'low',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => false,
+  async call() {
+    const screenshot = await invoke<DesktopScreenshotResponse>('desktop_capture_primary_annotated_screenshot')
+    const attachment = createDesktopScreenshotAttachment(screenshot)
+    return {
+      data: `${formatDesktopScreenshotSummary(screenshot)} ${attachment ? 'Das Bild wurde als Attachment fuer visuelle Analyse angehaengt.' : 'Das Bild konnte nicht als Attachment angehaengt werden.'}`,
+      newMessages: attachment ? [attachment] : undefined,
+    }
+  },
+}
+
+const desktopPrimaryDisplayTool: Tool<Record<string, never>> = {
+  name: 'DesktopPrimaryDisplay',
+  aliases: ['desktop_primary_display', 'get_desktop_primary_display'],
+  description: 'Liest Geometrie und Ursprung des Primaerdisplays aus. Hilfreich fuer Koordinaten bei Mausaktionen.',
+  category: 'desktop',
+  riskLevel: 'low',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  async call() {
+    const display = await invoke<DesktopDisplayInfo>('desktop_primary_display')
+    return { data: JSON.stringify(display, null, 2) }
+  },
+}
+
+const desktopListWindowsTool: Tool<Record<string, never>> = {
+  name: 'DesktopListWindows',
+  aliases: ['desktop_list_windows', 'list_desktop_windows'],
+  description: 'Listet sichtbare Desktop-Fenster mit Titel, Prozess und Bounds auf. Nutze dies, um Ziel-Fenster fuer Fokus oder Interaktionen zu finden.',
+  category: 'desktop',
+  riskLevel: 'low',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  async call() {
+    const windows = await invoke<DesktopWindowInfo[]>('desktop_list_windows')
+    if (windows.length === 0) {
+      return { data: 'Keine sichtbaren Desktop-Fenster gefunden.' }
+    }
+    return { data: JSON.stringify(windows, null, 2) }
+  },
+}
+
+const desktopFocusWindowTool: Tool<{ title?: string; process_name?: string; process_id?: number; exact_match?: boolean }> = {
+  name: 'DesktopFocusWindow',
+  aliases: ['desktop_focus_window', 'focus_desktop_window'],
+  description: 'Bringt ein Desktop-Fenster in den Vordergrund. Gib mindestens title, process_name oder process_id an.',
+  category: 'desktop',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Fenstertitel oder Teilstring' },
+      process_name: { type: 'string', description: 'Optionaler Prozessname' },
+      process_id: { type: 'number', description: 'Optionale Prozess-ID' },
+      exact_match: { type: 'boolean', description: 'Exakten Match statt Teilstring verwenden' },
+    },
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    if (!input.title?.trim() && !input.process_name?.trim() && typeof input.process_id !== 'number') {
+      return { data: 'Fehler: title, process_name oder process_id ist erforderlich.' }
+    }
+
+    const windowInfo = await invoke<DesktopWindowInfo>('desktop_focus_window', {
+      request: {
+        title: input.title?.trim() || undefined,
+        processName: input.process_name?.trim() || undefined,
+        processId: input.process_id,
+        exactMatch: Boolean(input.exact_match),
+      },
+    })
+
+    const verification = await captureDesktopVerificationAttachment(`Fensterfokus fuer ${windowInfo.title || input.process_name || input.process_id || 'Ziel'} angefordert`)
+
+    return {
+      data: `${JSON.stringify(windowInfo, null, 2)}\nFokus-Anfrage wurde gesendet. ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du Erfolg behauptest.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
+    }
+  },
+}
+
+const desktopLaunchAppTool: Tool<{ app_path: string; args?: string[]; cwd?: string; initial_delay_ms?: number }> = {
+  name: 'DesktopLaunchApp',
+  aliases: ['desktop_launch_app', 'launch_desktop_app'],
+  description: 'Startet eine Windows-Desktop-App lokal. Nutze dies, um eine Zielanwendung vor Screenshot- oder UI-Aktionen zu oeffnen.',
+  category: 'desktop',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      app_path: { type: 'string', description: 'Pfad zur auszufuehrenden .exe oder Anwendung' },
+      args: { type: 'array', description: 'Optionale Startargumente' },
+      cwd: { type: 'string', description: 'Optionales Arbeitsverzeichnis' },
+      initial_delay_ms: { type: 'number', description: 'Optionales Delay nach dem Start' },
+    },
+    required: ['app_path'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const launch = await invoke<DesktopLaunchResponse>('desktop_launch_app', {
+      request: {
+        path: input.app_path,
+        args: input.args ?? [],
+        cwd: input.cwd?.trim() || undefined,
+        initialDelayMs: input.initial_delay_ms,
+      },
+    })
+
+    const verification = await captureDesktopVerificationAttachment(`App-Start fuer ${launch.path}`)
+
+    return {
+      data: `${JSON.stringify(launch, null, 2)}\nStart-Anfrage wurde gesendet. ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du Folgezustaende beschreibst.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
+    }
+  },
+}
+
+const desktopMoveMouseTool: Tool<{ x: number; y: number; coordinate_space?: DesktopCoordinateSpace }> = {
+  name: 'DesktopMoveMouse',
+  aliases: ['desktop_move_mouse', 'move_desktop_mouse'],
+  description: 'Bewegt den Mauszeiger. Standard: x/y sind Koordinaten relativ zum aktuellen DesktopScreenshot des Primaerdisplays. Mit coordinate_space="screen" kannst du stattdessen absolute virtuelle Bildschirmkoordinaten angeben.',
+  category: 'desktop',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      x: { type: 'number', description: 'X-Koordinate im Screenshot des Primaerdisplays oder absolute X-Koordinate bei coordinate_space="screen"' },
+      y: { type: 'number', description: 'Y-Koordinate im Screenshot des Primaerdisplays oder absolute Y-Koordinate bei coordinate_space="screen"' },
+      coordinate_space: { type: 'string', description: 'Optional: "display" (Standard, relativ zum Screenshot) oder "screen" (absolut im virtuellen Desktop)', enum: ['display', 'screen'] },
+    },
+    required: ['x', 'y'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const point = await resolveDesktopPoint(input.x, input.y, input.coordinate_space)
+    const result = await invoke<DesktopActionResponse>('desktop_move_mouse', {
+      request: {
+        x: point.absoluteX,
+        y: point.absoluteY,
+      },
+    })
+
+    return { data: `${JSON.stringify(result, null, 2)}\nMausbewegung gesendet: ${describeResolvedDesktopPoint(point)}.` }
+  },
+}
+
+const desktopClickTool: Tool<{ x: number; y: number; button?: 'left' | 'right'; double_click?: boolean; coordinate_space?: DesktopCoordinateSpace }> = {
+  name: 'DesktopClick',
+  aliases: ['desktop_click', 'click_desktop'],
+  description: 'Klickt an einer Position auf dem Primaerdisplay. Standard: x/y sind Koordinaten relativ zum aktuellen DesktopScreenshot. Mit coordinate_space="screen" kannst du absolute virtuelle Bildschirmkoordinaten angeben.',
+  category: 'desktop',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      x: { type: 'number', description: 'X-Koordinate im Screenshot des Primaerdisplays oder absolute X-Koordinate bei coordinate_space="screen"' },
+      y: { type: 'number', description: 'Y-Koordinate im Screenshot des Primaerdisplays oder absolute Y-Koordinate bei coordinate_space="screen"' },
+      button: { type: 'string', description: 'Maustaste', enum: ['left', 'right'] },
+      double_click: { type: 'boolean', description: 'Doppelklick statt Einfachklick' },
+      coordinate_space: { type: 'string', description: 'Optional: "display" (Standard, relativ zum Screenshot) oder "screen" (absolut im virtuellen Desktop)', enum: ['display', 'screen'] },
+    },
+    required: ['x', 'y'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const point = await resolveDesktopPoint(input.x, input.y, input.coordinate_space)
+    const result = await invoke<DesktopActionResponse>('desktop_click', {
+      request: {
+        x: point.absoluteX,
+        y: point.absoluteY,
+        button: input.button ?? 'left',
+        doubleClick: Boolean(input.double_click),
+      },
+    })
+
+    const actionLabel = `Klick bei (${point.absoluteX}, ${point.absoluteY})${input.double_click ? ' als Doppelklick' : ''}`
+    const verification = await captureDesktopVerificationAttachment(actionLabel)
+
+    return {
+      data: `${JSON.stringify(result, null, 2)}\nKlick-Anfrage wurde an ${input.button ?? 'left'} gesendet: ${describeResolvedDesktopPoint(point)}.${input.double_click ? ' Doppelklick aktiv.' : ''} ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du behauptest, dass ein Button wirklich getroffen wurde.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
+    }
+  },
+}
+
+const desktopTypeTextTool: Tool<{ text: string }> = {
+  name: 'DesktopTypeText',
+  aliases: ['desktop_type_text', 'type_desktop_text'],
+  description: 'Gibt Text in das aktuell fokussierte Windows-Fenster ein. Verwendet Zwischenablage-Einfuegen fuer robuste Eingabe.',
+  category: 'desktop',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'Einzugebender Text' },
+    },
+    required: ['text'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const result = await invoke<DesktopActionResponse>('desktop_type_text', {
+      request: {
+        text: input.text,
+      },
+    })
+
+    const verification = await captureDesktopVerificationAttachment(`Texteingabe mit ${input.text.length} Zeichen`)
+
+    return {
+      data: `${JSON.stringify(result, null, 2)}\nTexteingabe wurde gesendet (${input.text.length} Zeichen). ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du eine erfolgreiche Eingabe beschreibst.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
+    }
+  },
+}
+
+const desktopKeypressTool: Tool<{ keys: string[] }> = {
+  name: 'DesktopKeypress',
+  aliases: ['desktop_keypress', 'press_desktop_keys'],
+  description: 'Sendet Tasten oder Tastenkombinationen an das aktuell fokussierte Fenster, z. B. ["CTRL", "L"] oder ["ENTER"].',
+  category: 'desktop',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      keys: { type: 'array', description: 'Array von Tasten oder Modifiern' },
+    },
+    required: ['keys'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const result = await invoke<DesktopActionResponse>('desktop_keypress', {
+      request: {
+        keys: input.keys,
+      },
+    })
+
+    const verification = await captureDesktopVerificationAttachment(`Tastendruck ${input.keys.join(' + ')}`)
+
+    return {
+      data: `${JSON.stringify(result, null, 2)}\nTastendruck wurde gesendet: ${input.keys.join(' + ')}. ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du einen UI-Erfolg behauptest.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
+    }
+  },
+}
+
+const desktopScrollTool: Tool<{ scroll_y: number; x?: number; y?: number; coordinate_space?: DesktopCoordinateSpace }> = {
+  name: 'DesktopScroll',
+  aliases: ['desktop_scroll', 'scroll_desktop'],
+  description: 'Scrollt im aktuell fokussierten Fenster oder optional an einer Position auf dem Primaerdisplay. Standard: x/y sind relativ zum Screenshot des Primaerdisplays. Mit coordinate_space="screen" kannst du absolute virtuelle Bildschirmkoordinaten angeben.',
+  category: 'desktop',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      scroll_y: { type: 'number', description: 'Vertikaler Scrollwert; positiv nach oben, negativ nach unten' },
+      x: { type: 'number', description: 'Optionale X-Koordinate fuer den Mausfokus im Screenshot oder absolut bei coordinate_space="screen"' },
+      y: { type: 'number', description: 'Optionale Y-Koordinate fuer den Mausfokus im Screenshot oder absolut bei coordinate_space="screen"' },
+      coordinate_space: { type: 'string', description: 'Optional: "display" (Standard, relativ zum Screenshot) oder "screen" (absolut im virtuellen Desktop)', enum: ['display', 'screen'] },
+    },
+    required: ['scroll_y'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const point = typeof input.x === 'number' && typeof input.y === 'number'
+      ? await resolveDesktopPoint(input.x, input.y, input.coordinate_space)
+      : undefined
+
+    const result = await invoke<DesktopActionResponse>('desktop_scroll', {
+      request: {
+        x: point?.absoluteX ?? (typeof input.x === 'number' ? Math.round(input.x) : undefined),
+        y: point?.absoluteY ?? (typeof input.y === 'number' ? Math.round(input.y) : undefined),
+        scrollY: Math.round(input.scroll_y),
+      },
+    })
+
+    const verification = await captureDesktopVerificationAttachment(`Scrollen mit Delta ${Math.round(input.scroll_y)}`)
+
+    return {
+      data: `${JSON.stringify(result, null, 2)}\nScroll-Anfrage wurde gesendet (Delta ${Math.round(input.scroll_y)}).${point ? ` Mausfokus: ${describeResolvedDesktopPoint(point)}.` : ''} ${verification ? 'Ein aktueller Verifikations-Screenshot wurde angehaengt. Pruefe ihn, bevor du das Ergebnis beschreibst.' : 'Automatische Verifikation nicht verfuegbar; nutze DesktopScreenshot zur Kontrolle.'}`,
+      newMessages: verification ? [verification] : undefined,
     }
   },
 }
 
 // ── AgentTool ──────────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/AgentTool/
+
+const computerUseAppTestTool: Tool<{
+  goal: string
+  app_path?: string
+  app_args?: string[]
+  cwd?: string
+  window_title?: string
+  process_name?: string
+  process_id?: number
+  exact_match?: boolean
+  max_steps?: number
+  action_delay_ms?: number
+  launch_delay_ms?: number
+  auto_acknowledge_safety_checks?: boolean
+}> = {
+  name: 'ComputerUseAppTest',
+  aliases: ['computer_use_app_test', 'desktop_ui_test', 'DesktopUITest'],
+  description: 'Startet und testet eine Windows-Desktop-App mit OpenAI computer-use-preview, Screenshots und nativer UI-Steuerung.',
+  category: 'desktop',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: 'Welche Funktionen oder Workflows in der App geprueft werden sollen' },
+      app_path: { type: 'string', description: 'Optionaler Pfad zur exe, die gestartet werden soll' },
+      app_args: { type: 'array', description: 'Optionale Startargumente fuer die App' },
+      cwd: { type: 'string', description: 'Optionales Arbeitsverzeichnis fuer den Prozessstart' },
+      window_title: { type: 'string', description: 'Fenstertitel oder Teilstring zum Fokussieren des Testfensters' },
+      process_name: { type: 'string', description: 'Optionaler Prozessname der Ziel-App' },
+      process_id: { type: 'number', description: 'Optionaler Prozess-ID-Filter fuer das Ziel-Fenster' },
+      exact_match: { type: 'boolean', description: 'Fenster-/Prozessabgleich exakt statt per Teilstring' },
+      max_steps: { type: 'number', description: 'Maximale Anzahl an Computer-Use-Aktionen' },
+      action_delay_ms: { type: 'number', description: 'Wartezeit nach jeder UI-Aktion vor dem naechsten Screenshot' },
+      launch_delay_ms: { type: 'number', description: 'Wartezeit nach dem Start der App vor der ersten Interaktion' },
+      auto_acknowledge_safety_checks: { type: 'boolean', description: 'OpenAI Safety Checks automatisch bestaetigen (nur in kontrollierten Testumgebungen)' },
+    },
+    required: ['goal'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const result = await runComputerUseAppTest({
+      goal: input.goal,
+      appPath: input.app_path,
+      appArgs: input.app_args,
+      cwd: input.cwd,
+      windowTitle: input.window_title,
+      processName: input.process_name,
+      processId: input.process_id,
+      exactMatch: input.exact_match,
+      maxSteps: input.max_steps,
+      actionDelayMs: input.action_delay_ms,
+      launchDelayMs: input.launch_delay_ms,
+      autoAcknowledgeSafetyChecks: input.auto_acknowledge_safety_checks,
+    })
+
+    return { data: JSON.stringify(result, null, 2) }
+  },
+}
 
 const agentTool: Tool<{ agent_name: string; prompt: string }> = {
   name: 'Agent',
@@ -781,11 +1673,62 @@ const skillTool: Tool<{ skill_name: string; input: string }> = {
 
 // ── ListDirTool ────────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/LSListDirTool/
+// Uses native fs_collect_attachment_metadata IPC instead of PowerShell.
+
+const officeWorkflowTool: Tool<{
+  format: 'docx' | 'pptx'
+  output_path: string
+  mode?: 'parallel' | 'native' | 'template'
+  template_path?: string
+  transforms?: Record<string, string>
+  title?: string
+  paragraphs?: string[]
+  bullets?: string[]
+}> = {
+  name: 'OfficeWorkflowTool',
+  aliases: ['office_workflow', 'generate_office_workflow', 'docx_template_workflow', 'pptx_template_workflow'],
+  description: 'Erzeugt DOCX/PPTX mit nativer Generierung und optionalem Template-Transform (Modi: parallel, native, template).',
+  category: 'filesystem',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      format: { type: 'string', description: 'Zielformat', enum: ['docx', 'pptx'] },
+      output_path: { type: 'string', description: 'Zieldatei fuer native/template Ausgabe' },
+      mode: { type: 'string', description: 'Workflow-Modus', enum: ['parallel', 'native', 'template'], default: 'parallel' },
+      template_path: { type: 'string', description: 'Optionales Template fuer Placeholder-Transform' },
+      transforms: { type: 'object', description: 'Schluessel/Wert-Map fuer {{placeholder}} Ersetzung' },
+      title: { type: 'string', description: 'Optionaler Titel fuer native Ausgabe und Transform-Defaults' },
+      paragraphs: { type: 'object', description: 'Optionale Abschnitte fuer native Ausgabe' },
+      bullets: { type: 'object', description: 'Optionale Bullet-Liste fuer native Ausgabe' },
+    },
+    required: ['format', 'output_path'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input, context) {
+    const response = await invoke<OfficeWorkflowResponse>('fs_generate_office_workflow', {
+      request: {
+        format: input.format,
+        outputPath: resolvePath(input.output_path, context.cwd),
+        mode: input.mode,
+        templatePath: input.template_path ? resolvePath(input.template_path, context.cwd) : undefined,
+        transforms: input.transforms ?? {},
+        title: input.title,
+        paragraphs: input.paragraphs ?? [],
+        bullets: input.bullets ?? [],
+      },
+      runId: context.runId,
+    })
+
+    return { data: JSON.stringify(response, null, 2) }
+  },
+}
 
 const listDirTool: Tool<{ path: string; recursive?: boolean; max_depth?: number; max_entries?: number }> = {
   name: 'ListDir',
-  aliases: ['list_directory', 'ls', 'ListDirTool'],
-  description: 'Listet den Inhalt eines Verzeichnisses auf, mit optionaler Rekursion.',
+  aliases: ['list_directory', 'ls', 'ListDirTool', 'list_dir', 'dir'],
+  description: 'Listet den Inhalt eines Verzeichnisses auf. Zeigt Dateien mit Groesse und Typ.',
   category: 'filesystem',
   riskLevel: 'low',
   inputSchema: {
@@ -794,7 +1737,7 @@ const listDirTool: Tool<{ path: string; recursive?: boolean; max_depth?: number;
       path: { type: 'string', description: 'Pfad zum Verzeichnis' },
       recursive: { type: 'boolean', description: 'Rekursiv auflisten (Standard: false)' },
       max_depth: { type: 'number', description: 'Maximale Tiefe bei Rekursion (Standard: 3)' },
-      max_entries: { type: 'number', description: 'Optional: maximale Anzahl Eintraege (Standard: unbegrenzt)' },
+      max_entries: { type: 'number', description: 'Optional: maximale Anzahl Eintraege (Standard: 200)' },
     },
     required: ['path'],
   },
@@ -803,20 +1746,31 @@ const listDirTool: Tool<{ path: string; recursive?: boolean; max_depth?: number;
   async call(input, context) {
     const targetPath = resolvePath(input.path, context.cwd)
     try {
-      const maxEntriesClause = input.max_entries && Number.isFinite(input.max_entries)
-        ? ` | Select-Object -First ${Math.max(1, Math.floor(input.max_entries))}`
-        : ''
-      const cmd = input.recursive
-        ? `Get-ChildItem -Path "${targetPath}" -Recurse -Depth ${input.max_depth ?? 3}${maxEntriesClause} | ForEach-Object { $_.FullName.Replace("${targetPath}\\", "") + $(if($_.PSIsContainer){"/"}) }`
-        : `Get-ChildItem -Path "${targetPath}" | ForEach-Object { $_.Name + $(if($_.PSIsContainer){"/"}) }`
-      const result = await invoke<{ stdout: string; stderr: string; exitCode: number }>('exec_command', {
-        command: cmd,
-        cwd: context.cwd,
+      const maxEntries = input.max_entries ?? 200
+      const result = await invoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
+        path: targetPath,
+        maxEntries,
         runId: context.runId,
       })
-      return { data: result.stdout || 'Verzeichnis ist leer.' }
-    } catch {
-      return { data: `Fehler beim Auflisten von "${input.path}".` }
+
+      if (result.files.length === 0) {
+        return { data: 'Verzeichnis ist leer.' }
+      }
+
+      const basePath = result.rootPath.replace(/\\/g, '/')
+      const lines = result.files.map((file) => {
+        const relativePath = file.path.replace(/\\/g, '/').replace(basePath + '/', '').replace(basePath, '')
+        const displayPath = relativePath || file.fileName
+        const sizeKb = (file.sizeBytes / 1024).toFixed(1)
+        const lang = file.language ? ` [${file.language}]` : ''
+        const ext = file.extension ? `.${file.extension}` : ''
+        return `${displayPath} (${sizeKb} KB${ext}${lang})`
+      })
+
+      const header = `Verzeichnis: ${result.rootPath} (${result.totalFiles} Dateien${result.truncated ? ', gekuerzt' : ''})`
+      return { data: `${header}\n${lines.join('\n')}` }
+    } catch (err) {
+      return { data: `Fehler beim Auflisten von "${input.path}": ${err instanceof Error ? err.message : String(err)}` }
     }
   },
 }
@@ -958,6 +1912,160 @@ const fileAppendTool: Tool<{ file_path: string; content: string }> = {
   },
 }
 
+// ── DeleteFileTool ─────────────────────────────────────────────────────────
+// Löscht eine Datei mit Sicherheitsbestätigung
+
+const deleteFileTool: Tool<{ file_path: string; confirm: boolean }> = {
+  name: 'DeleteFile',
+  aliases: ['delete_file', 'remove_file', 'rm', 'DeleteFileTool'],
+  description: 'Loescht eine Datei. confirm muss auf true gesetzt werden, um die Loeschung zu bestaetigen.',
+  category: 'filesystem',
+  riskLevel: 'high',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file_path: { type: 'string', description: 'Pfad zur zu loeschenden Datei' },
+      confirm: { type: 'boolean', description: 'Muss true sein, um die Loeschung zu bestaetigen' },
+    },
+    required: ['file_path', 'confirm'],
+  },
+  isReadOnly: () => false,
+  isDestructive: () => true,
+  isConcurrencySafe: () => false,
+  async call(input, context, onProgress) {
+    if (!input.confirm) {
+      return { data: 'Fehler: confirm muss auf true gesetzt werden, um die Datei zu loeschen.' }
+    }
+    const fullPath = resolvePath(input.file_path, context.cwd)
+    onProgress?.({
+      toolUseID: '',
+      data: {
+        type: 'file_progress',
+        path: fullPath,
+        operation: 'delete',
+      },
+    })
+    try {
+      await invoke('fs_delete_file', {
+        path: fullPath,
+        confirmToken: 'DELETE',
+      })
+      return { data: `Datei geloescht: ${input.file_path}` }
+    } catch (err) {
+      return { data: `Fehler beim Loeschen: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  },
+}
+
+// ── FileInfoTool ───────────────────────────────────────────────────────────
+// Zeigt Metadaten einer Datei an
+
+const fileInfoTool: Tool<{ path: string }> = {
+  name: 'FileInfo',
+  aliases: ['file_info', 'stat', 'FileInfoTool', 'file_metadata'],
+  description: 'Zeigt Metadaten einer Datei: Groesse, Format, Sprache, Extension.',
+  category: 'filesystem',
+  riskLevel: 'low',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Pfad zur Datei oder zum Verzeichnis' },
+    },
+    required: ['path'],
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  async call(input, context) {
+    const fullPath = resolvePath(input.path, context.cwd)
+    try {
+      const result = await invoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
+        path: fullPath,
+        maxEntries: 1,
+        runId: context.runId,
+      })
+
+      if (result.rootKind === 'file' && result.files.length > 0) {
+        const file = result.files[0]
+        const sizeKb = (file.sizeBytes / 1024).toFixed(1)
+        const sizeMb = (file.sizeBytes / (1024 * 1024)).toFixed(2)
+        const lines = [
+          `Datei: ${file.fileName}`,
+          `Pfad: ${file.path}`,
+          `Groesse: ${sizeKb} KB (${sizeMb} MB, ${file.sizeBytes} Bytes)`,
+          file.extension ? `Extension: .${file.extension}` : null,
+          file.language ? `Sprache: ${file.language}` : null,
+        ].filter(Boolean)
+        return { data: lines.join('\n') }
+      }
+
+      if (result.rootKind === 'folder') {
+        return {
+          data: [
+            `Verzeichnis: ${result.rootPath}`,
+            `Dateien insgesamt: ${result.totalFiles}`,
+            `Dateien angezeigt: ${result.returnedFiles}`,
+            result.truncated ? 'Anzeige gekuerzt.' : null,
+          ].filter(Boolean).join('\n'),
+        }
+      }
+
+      return { data: `Pfad nicht gefunden: ${input.path}` }
+    } catch (err) {
+      return { data: `Fehler: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  },
+}
+
+// ── RenameFileTool ─────────────────────────────────────────────────────────
+// Benennt eine Datei oder einen Ordner um (Wrapper um fs_move_path)
+
+const renameFileTool: Tool<{ path: string; new_name: string }> = {
+  name: 'RenameFile',
+  aliases: ['rename_file', 'rename', 'RenameFileTool'],
+  description: 'Benennt eine Datei oder einen Ordner um. Nur der Name aendert sich, der Speicherort bleibt gleich.',
+  category: 'filesystem',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Pfad zur umzubenennenden Datei oder zum Ordner' },
+      new_name: { type: 'string', description: 'Neuer Dateiname (ohne Pfad, nur der Name)' },
+    },
+    required: ['path', 'new_name'],
+  },
+  isReadOnly: () => false,
+  isDestructive: () => false,
+  isConcurrencySafe: () => false,
+  async call(input, context, onProgress) {
+    const fullPath = resolvePath(input.path, context.cwd)
+    // Build destination: same parent directory + new name
+    const pathParts = fullPath.replace(/\\/g, '/').split('/')
+    pathParts[pathParts.length - 1] = input.new_name
+    const destinationPath = pathParts.join('/')
+
+    onProgress?.({
+      toolUseID: '',
+      data: {
+        type: 'file_progress',
+        path: `${fullPath} -> ${destinationPath}`,
+        operation: 'rename',
+      },
+    })
+
+    try {
+      const result = await invoke<FsPathMutationResponse>('fs_move_path', {
+        sourcePath: fullPath,
+        destinationPath,
+        overwrite: false,
+        runId: context.runId,
+      })
+      return { data: `${result.itemKind} umbenannt: ${input.path} -> ${input.new_name}` }
+    } catch (err) {
+      return { data: `Fehler beim Umbenennen: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  },
+}
+
 // ── ThinkTool ──────────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/ThinkTool/
 
@@ -990,6 +2098,9 @@ export function registerAllBuiltinTools(): void {
   const tools = [
     fileReadTool,
     fileWriteTool,
+    createDirectoryTool,
+    movePathTool,
+    copyPathTool,
     fileEditTool,
     globTool,
     grepTool,
@@ -997,6 +2108,17 @@ export function registerAllBuiltinTools(): void {
     webFetchTool,
     webSearchTool,
     mcpTool,
+    desktopScreenshotTool,
+    desktopPrimaryDisplayTool,
+    desktopListWindowsTool,
+    desktopFocusWindowTool,
+    desktopLaunchAppTool,
+    desktopMoveMouseTool,
+    desktopClickTool,
+    desktopTypeTextTool,
+    desktopKeypressTool,
+    desktopScrollTool,
+    computerUseAppTestTool,
     agentTool,
     askUserTool,
     taskCreateTool,
@@ -1007,10 +2129,15 @@ export function registerAllBuiltinTools(): void {
     enterPlanTool,
     exitPlanTool,
     skillTool,
-    // New tools ported from Claude Code
+    // Filesystem tools
+    officeWorkflowTool,
     listDirTool,
     multiEditTool,
     fileAppendTool,
+    deleteFileTool,
+    fileInfoTool,
+    renameFileTool,
+    // Utility tools
     thinkTool,
   ]
   for (const tool of tools) {
@@ -1020,11 +2147,12 @@ export function registerAllBuiltinTools(): void {
 
 // ── Get Anthropic Tool Definitions ─────────────────────────────────────────
 
-export function getToolDefinitions(): Array<{ name: string; description: string; input_schema: ToolInputSchema }> {
+export function getToolDefinitions(): Array<{ name: string; description: string; input_schema: ToolInputSchema; aliases?: string[] }> {
   return getEnabledTools().map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.inputSchema,
+    aliases: t.aliases,
   }))
 }
 

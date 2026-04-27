@@ -32,22 +32,17 @@ Open_Cowork ist eine Windows-Desktop-Anwendung (Tauri + React + Rust) fuer agent
 
 ## Schnellstart
 
-1. Frontend + Tauri starten:
+1. Desktop-EXE bauen:
 
 ```powershell
 cd app
 npm install
-npm run tauri dev
+npm run tauri build
 ```
 
-2. Produktivbuild erzeugen:
+2. Build-Artefakte finden:
 
-```powershell
-cd app
-npm run build
-cd src-tauri
-cargo check
-```
+`app/src-tauri/target/release/bundle/`
 
 ## Tests
 
@@ -85,6 +80,7 @@ Toolname im MCP-Server: `search_web`
 - `docs/OLLAMA_CONFIGURATION.md`
 - `docs/DEVELOPMENT_AND_OPERATIONS.md`
 - `docs/DESKTOP_SMOKE_TEST.md`
+- `docs/DESKTOP_CONTROL_AND_COMPUTER_USE.md`
 
 ## Plugin-Skill Beispiele (in der App enthalten)
 
@@ -99,7 +95,7 @@ Alle Skills sind anpassbar (Beschreibung, Slash-Befehl, Prompt-Template, Run-Mod
 ## Hinweis zum Scope
 
 Dieses Repository ist auf iterative Umsetzung ausgelegt. Der aktuelle Stand deckt ab:
-- Desktop-Host mit 4-View-Layout und Router
+- Desktop-Host nur als Tauri-EXE ohne separaten Web-Port
 - Chat + Planung mit Ollama-Integration
 - SQLite-Persistenz fuer Threads, Tasks, Steps
 - MCP-Server Probing und Tool-Ausfuehrung
