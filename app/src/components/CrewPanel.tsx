@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
 import { useCrewStore, type AgentRole, type CrewExternalProviderConfig, type CrewOutputMode, type CrewProcess, type CrewProviderKind } from '../stores/crewStore'
+import CrewRuntimePanel from './crew/CrewRuntimePanel'
 import { safeInvoke } from '../utils/safeInvoke'
 
 const ROLE_OPTIONS: AgentRole[] = ['researcher', 'writer', 'reviewer', 'planner', 'executor', 'analyst', 'custom']
@@ -661,6 +662,7 @@ export default function CrewPanel() {
 
   return (
     <div className="panel">
+      <CrewRuntimePanel />
       {/* Header */}
       <div className="crew-header">
         <div className="crew-header-title">

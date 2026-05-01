@@ -2,6 +2,7 @@ mod artifact_pipeline;
 mod audit;
 mod claude_code_bridge;
 mod cowork_features;
+mod crew_python_bridge;
 mod db;
 mod file_safety;
 mod file_watch;
@@ -16,6 +17,12 @@ mod terminal_backends;
 mod worker_sandbox;
 
 use claude_code_bridge::ClaudeCodeBridge;
+use crew_python_bridge::{
+  crew_runtime_bootstrap,
+  crew_runtime_status,
+  crew_runtime_validate_definition,
+  CrewPythonBridge,
+};
 use db::Database;
 use futures_util::future::join_all;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -8832,6 +8839,7 @@ pub fn run() {
       app.manage(shared_database);
       app.manage(WatchRegistry::default());
       app.manage(CrewExecutionRegistry::default());
+      app.manage(CrewPythonBridge::default());
       app.manage(ClaudeCodeBridge::new());
       configure_pdfium_search_paths(app.handle());
 
@@ -8999,6 +9007,9 @@ pub fn run() {
       pipeline_execute,
       crew_execute,
       crew_stop,
+      crew_runtime_status,
+      crew_runtime_bootstrap,
+      crew_runtime_validate_definition,
       // Memory providers
       memory_provider_upsert,
       memory_provider_list,
