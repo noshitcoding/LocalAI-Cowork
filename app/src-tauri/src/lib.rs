@@ -2937,6 +2937,63 @@ fn sanitize_crew_request_snapshot(request: &CrewExecuteRequest) -> CrewExecuteRe
   snapshot
 }
 
+fn replay_provider_config_needs_restore(config: Option<&CrewExternalProviderConfigRequest>) -> bool {
+  config
+    .map(|entry| entry.api_key.trim().is_empty() || entry.api_key.trim() == "***redacted***")
+    .unwrap_or(true)
+}
+
+fn extract_replay_provider_config(value: Option<&Value>) -> Option<CrewExternalProviderConfigRequest> {
+  let profile = value?;
+  if !profile.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+    return None;
+  }
+
+  Some(CrewExternalProviderConfigRequest {
+    base_url: profile.get("baseUrl").and_then(Value::as_str).unwrap_or_default().to_string(),
+    model: profile.get("model").and_then(Value::as_str).unwrap_or_default().to_string(),
+    api_key: profile.get("apiKey").and_then(Value::as_str).unwrap_or_default().to_string(),
+    timeout_ms: profile.get("timeoutMs").and_then(Value::as_u64).unwrap_or(600000),
+  })
+}
+
+fn restore_replay_provider_configs(
+  database: &Arc<Database>,
+  request: &mut CrewExecuteRequest,
+) {
+  let needs_openai = replay_provider_config_needs_restore(request.provider_configs.open_ai_compatible.as_ref());
+  let needs_openrouter = replay_provider_config_needs_restore(request.provider_configs.open_router.as_ref());
+
+  if !needs_openai && !needs_openrouter {
+    return;
+  }
+
+  let latest_definition = database
+    .list_crew_definition_versions(&request.id)
+    .ok()
+    .and_then(|versions| versions.into_iter().next());
+  let Some(definition) = latest_definition else {
+    return;
+  };
+
+  let Ok(definition_json) = serde_json::from_str::<Value>(&definition.definition_json) else {
+    return;
+  };
+  let provider_profiles = definition_json.get("providerProfiles");
+
+  if needs_openai {
+    if let Some(config) = extract_replay_provider_config(provider_profiles.and_then(|profiles| profiles.get("openAICompatible"))) {
+      request.provider_configs.open_ai_compatible = Some(config);
+    }
+  }
+
+  if needs_openrouter {
+    if let Some(config) = extract_replay_provider_config(provider_profiles.and_then(|profiles| profiles.get("openRouter"))) {
+      request.provider_configs.open_router = Some(config);
+    }
+  }
+}
+
 fn ensure_crew_run_is_approved(
   database: &Arc<Database>,
   crew_id: &str,
@@ -3709,10 +3766,13 @@ async fn crew_execute(
 #[tauri::command]
 fn crew_stop(
   registry: tauri::State<'_, CrewExecutionRegistry>,
+  bridge: tauri::State<'_, CrewPythonBridge>,
   request: CrewStopRequest,
 ) -> Result<(), String> {
   let mut canceled = registry.canceled.lock().map_err(|_| "Crew-Registry gesperrt".to_string())?;
-  canceled.insert(request.crew_id);
+  let crew_id = request.crew_id;
+  canceled.insert(crew_id.clone());
+  let _ = bridge.stop_active_run(&crew_id)?;
   Ok(())
 }
 
@@ -3763,6 +3823,24 @@ fn crew_run_snapshot_get(
       .map_err(|err| err.to_string()),
     None => Ok(None),
   }
+}
+
+#[tauri::command]
+async fn crew_run_replay(
+  state: tauri::State<'_, Arc<Database>>,
+  app: tauri::AppHandle,
+  registry: tauri::State<'_, CrewExecutionRegistry>,
+  bridge: tauri::State<'_, CrewPythonBridge>,
+  run_id: String,
+) -> Result<CrewExecutionResponse, String> {
+  let snapshot_json = state
+    .get_crew_run_snapshot(&run_id)
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("Kein Crew-Snapshot fuer Run {} vorhanden", run_id))?;
+
+  let mut request = serde_json::from_str::<CrewExecuteRequest>(&snapshot_json).map_err(|error| error.to_string())?;
+  restore_replay_provider_configs(state.inner(), &mut request);
+  execute_crew_request(&app, state.inner(), &registry, bridge.inner(), request).await
 }
 
 #[tauri::command]
@@ -9324,6 +9402,7 @@ pub fn run() {
       crew_run_events_list,
       crew_run_logs_list,
       crew_run_snapshot_get,
+      crew_run_replay,
       export_save_text_file,
       policy_get,
       policy_set,

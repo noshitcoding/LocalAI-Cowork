@@ -32,6 +32,12 @@ type CrewRunEventRow = {
   createdAt: string
 }
 
+type CrewExecutionResponse = {
+  crewId: string
+  status: string
+  error: string | null
+}
+
 type Props = {
   activeCrewId: string
 }
@@ -48,6 +54,11 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
   const [logs, setLogs] = useState<CrewExecutionLogRow[]>([])
   const [events, setEvents] = useState<CrewRunEventRow[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [refreshToken, setRefreshToken] = useState(0)
+  const [replaying, setReplaying] = useState(false)
+  const [replayMessage, setReplayMessage] = useState<string | null>(null)
+
+  const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null
 
   useEffect(() => {
     let cancelled = false
@@ -65,7 +76,7 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
     return () => {
       cancelled = true
     }
-  }, [activeCrewId])
+  }, [activeCrewId, refreshToken])
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -91,16 +102,43 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
     return () => {
       cancelled = true
     }
-  }, [selectedRunId])
+  }, [selectedRunId, refreshToken])
+
+  const handleReplaySelectedRun = async () => {
+    if (!selectedRunId) {
+      return
+    }
+
+    setReplaying(true)
+    setReplayMessage(null)
+    setError(null)
+
+    try {
+      const response = await safeInvoke<CrewExecutionResponse>('crew_run_replay', { runId: selectedRunId }, undefined)
+      setReplayMessage(response.error ?? `Replay abgeschlossen: ${response.status}`)
+      setSelectedRunId(null)
+      setRefreshToken((value) => value + 1)
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value))
+    } finally {
+      setReplaying(false)
+    }
+  }
 
   return (
     <div className="card" style={{ display: 'grid', gap: 12 }}>
-      <div>
-        <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>History</div>
-        <strong style={{ fontSize: 16 }}>Crew-Runs & Events</strong>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>History</div>
+          <strong style={{ fontSize: 16 }}>Crew-Runs & Events</strong>
+        </div>
+        <button type="button" className="btn-sm" disabled={!selectedRunId || replaying} onClick={() => void handleReplaySelectedRun()}>
+          {replaying ? 'Replay laeuft…' : 'Ausgewaehlten Run replayen'}
+        </button>
       </div>
 
       {error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+      {replayMessage && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{replayMessage}</div>}
 
       {runs.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine gespeicherten Runs fuer diese Crew.</div>
@@ -125,6 +163,21 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
           </div>
 
           <div style={{ display: 'grid', gap: 10 }}>
+            {selectedRun && (
+              <div style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <strong style={{ fontSize: 13 }}>{selectedRun.crewName}</strong>
+                  <span style={{ fontSize: 11, color: selectedRun.status === 'completed' ? 'var(--success)' : selectedRun.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{selectedRun.status}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  Start: {formatTimestamp(selectedRun.startedAt)} · Ende: {formatTimestamp(selectedRun.finishedAt)}
+                </div>
+                {selectedRun.error && (
+                  <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 4 }}>{selectedRun.error}</div>
+                )}
+              </div>
+            )}
+
             <div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Events</div>
               <div style={{ maxHeight: 150, overflowY: 'auto', display: 'grid', gap: 8 }}>
