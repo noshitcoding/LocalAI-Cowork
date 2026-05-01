@@ -195,7 +195,7 @@ pub fn generate_pro_outputs(request: ProOutputRequest, csv_path: &Path, output_d
 
     write_xlsx(&xlsx_path, &headers, &rows, &totals)?;
     write_docx(&docx_path, &headers, rows.len(), &totals)?;
-    write_pptx(&pptx_path, rows.len(), headers.len(), &totals)?;
+    write_pptx_report(&pptx_path, rows.len(), headers.len(), &totals)?;
     write_simple_pdf(&pdf_path, "Cowork Ergebnisreport", rows.len(), headers.len(), &totals)?;
 
     Ok(ProOutputResponse {
@@ -273,7 +273,7 @@ pub fn generate_office_workflow(mut request: OfficeWorkflowRequest) -> Result<Of
         if format == "docx" {
             write_docx(&output_path, &headers, row_count, &totals)?;
         } else {
-            write_pptx(&output_path, row_count, headers.len().max(1), &totals)?;
+            write_pptx(&output_path, request.title.as_deref(), &request.paragraphs, &request.bullets)?;
         }
 
         generated.push(OfficeWorkflowArtifact {
@@ -487,7 +487,7 @@ pub fn export_artifact_version_native(
             doc_headers.push(format!("Summary: {}", input.summary));
             write_docx(target_path, &doc_headers, field_rows.len(), &totals)
         }
-        "pptx" => write_pptx(target_path, field_rows.len(), headers.len(), &totals),
+        "pptx" => write_pptx_report(target_path, field_rows.len(), headers.len(), &totals),
         "pdf" => {
             let title = format!(
                 "Artefakt Export {} ({})",
@@ -738,7 +738,7 @@ fn write_docx(path: &Path, headers: &[String], row_count: usize, totals: &[(Stri
     Ok(())
 }
 
-fn write_pptx(path: &Path, row_count: usize, col_count: usize, totals: &[(String, f64)]) -> Result<(), String> {
+fn write_pptx_report(path: &Path, row_count: usize, col_count: usize, totals: &[(String, f64)]) -> Result<(), String> {
     let file = fs::File::create(path).map_err(|err| err.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
     let options: FileOptions<'_, ()> = FileOptions::default();
@@ -810,6 +810,173 @@ fn write_pptx(path: &Path, row_count: usize, col_count: usize, totals: &[(String
     zip.start_file("ppt/slides/_rels/slide1.xml.rels", options).map_err(|err| err.to_string())?;
     zip.write_all(br#"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>"#).map_err(|err| err.to_string())?;
+
+    zip.finish().map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn write_pptx(
+    path: &Path,
+    title: Option<&str>,
+    paragraphs: &[String],
+    bullets: &[String],
+) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|err| err.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options: FileOptions<'_, ()> = FileOptions::default();
+
+    // Build slides: each paragraph becomes one slide (first line = title, rest = body)
+    let mut slides: Vec<(String, String)> = Vec::new();
+
+    if let Some(t) = title {
+        let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            slides.push((trimmed.to_string(), String::new()));
+        }
+    }
+
+    for para in paragraphs {
+        let lines: Vec<&str> = para.lines().collect();
+        if lines.is_empty() {
+            continue;
+        }
+        let slide_title = lines[0].trim().to_string();
+        let slide_body = lines[1..].join("\n").trim().to_string();
+        slides.push((slide_title, slide_body));
+    }
+
+    for bullet in bullets {
+        let trimmed = bullet.trim();
+        if !trimmed.is_empty() {
+            slides.push((String::from("Bullet"), trimmed.to_string()));
+        }
+    }
+
+    if slides.is_empty() {
+        slides.push(("Office Workflow Output".to_string(), String::new()));
+    }
+
+    let slide_count = slides.len();
+
+    // [Content_Types].xml
+    zip.start_file("[Content_Types].xml", options).map_err(|err| err.to_string())?;
+    let mut content_types = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>"#);
+    for i in 1..=slide_count {
+        content_types.push_str(&format!(
+            r#"<Override PartName="/ppt/slides/slide{}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#,
+            i
+        ));
+    }
+    content_types.push_str("</Types>");
+    zip.write_all(content_types.as_bytes()).map_err(|err| err.to_string())?;
+
+    // _rels/.rels
+    zip.add_directory("_rels", options).map_err(|err| err.to_string())?;
+    zip.start_file("_rels/.rels", options).map_err(|err| err.to_string())?;
+    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#).map_err(|err| err.to_string())?;
+
+    // ppt directories
+    zip.add_directory("ppt", options).map_err(|err| err.to_string())?;
+    zip.add_directory("ppt/_rels", options).map_err(|err| err.to_string())?;
+    zip.add_directory("ppt/slides", options).map_err(|err| err.to_string())?;
+    zip.add_directory("ppt/slides/_rels", options).map_err(|err| err.to_string())?;
+
+    // ppt/presentation.xml
+    zip.start_file("ppt/presentation.xml", options).map_err(|err| err.to_string())?;
+    let mut presentation = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst>"#);
+    for i in 1..=slide_count {
+        presentation.push_str(&format!(r#"<p:sldId id="{}" r:id="rId{}"/>"#, 255 + i, i));
+    }
+    presentation.push_str(r#"</p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>
+  <p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>"#);
+    zip.write_all(presentation.as_bytes()).map_err(|err| err.to_string())?;
+
+    // ppt/_rels/presentation.xml.rels
+    zip.start_file("ppt/_rels/presentation.xml.rels", options).map_err(|err| err.to_string())?;
+    let mut pres_rels = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#);
+    for i in 1..=slide_count {
+        pres_rels.push_str(&format!(
+            r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{}.xml"/>"#,
+            i, i
+        ));
+    }
+    pres_rels.push_str("</Relationships>");
+    zip.write_all(pres_rels.as_bytes()).map_err(|err| err.to_string())?;
+
+    // Generate each slide
+    for (idx, (slide_title, slide_body)) in slides.iter().enumerate() {
+        let slide_num = idx + 1;
+
+        zip.start_file(&format!("ppt/slides/slide{}.xml", slide_num), options).map_err(|err| err.to_string())?;
+
+        let mut tx_body = String::new();
+        if !slide_title.is_empty() {
+            tx_body.push_str(&format!(
+                r#"<a:p><a:pPr algn="ctr"/><a:r><a:rPr b="1" sz="2400"/><a:t>{}</a:t></a:r></a:p>"#,
+                xml_escape(slide_title)
+            ));
+        }
+        if !slide_body.is_empty() {
+            for line in slide_body.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                // Strip common bullet prefixes for cleaner XML text
+                let cleaned = if trimmed.starts_with("• ") || trimmed.starts_with("- ") || trimmed.starts_with("– ") {
+                    &trimmed[2..]
+                } else if trimmed.starts_with("•") || trimmed.starts_with("-") || trimmed.starts_with("–") {
+                    &trimmed[1..]
+                } else {
+                    trimmed
+                };
+                tx_body.push_str(&format!(
+                    r#"<a:p><a:r><a:t>{}</a:t></a:r></a:p>"#,
+                    xml_escape(cleaned)
+                ));
+            }
+        }
+        if tx_body.is_empty() {
+            tx_body.push_str(r#"<a:p><a:r><a:t> </a:t></a:r></a:p>"#);
+        }
+
+        let slide_xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>
+      <p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="2" name="Title {}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+        <p:spPr/>
+        <p:txBody><a:bodyPr/><a:lstStyle/>{}</p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
+</p:sld>"#,
+            slide_num,
+            tx_body
+        );
+        zip.write_all(slide_xml.as_bytes()).map_err(|err| err.to_string())?;
+
+        zip.start_file(&format!("ppt/slides/_rels/slide{}.xml.rels", slide_num), options).map_err(|err| err.to_string())?;
+        zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>"#).map_err(|err| err.to_string())?;
+    }
 
     zip.finish().map_err(|err| err.to_string())?;
     Ok(())
@@ -898,4 +1065,51 @@ fn xml_escape(input: &str) -> String {
 
 fn pdf_escape(input: &str) -> String {
     input.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn test_write_pptx_multiple_slides() {
+        let tmp = std::env::temp_dir().join("test_ai_slides.pptx");
+        let paragraphs = vec![
+            "Slide 1: Titel\nErste Zeile\nZweite Zeile".to_string(),
+            "Slide 2: Agenda\nPunkt A\nPunkt B".to_string(),
+        ];
+        let bullets = vec!["Bullet Extra".to_string()];
+        write_pptx(&tmp, Some("Haupttitel"), &paragraphs, &bullets).unwrap();
+
+        let mut zip = zip::ZipArchive::new(fs::File::open(&tmp).unwrap()).unwrap();
+        let mut content_types = String::new();
+        zip.by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut content_types)
+            .unwrap();
+        // 3 paragraphs + 1 title + 1 bullet = 5 slides, plus presentation.xml
+        assert!(content_types.contains("slide1.xml"));
+        assert!(content_types.contains("slide2.xml"));
+        assert!(content_types.contains("slide3.xml"));
+        assert!(content_types.contains("slide4.xml"));
+        assert!(content_types.contains("slide5.xml"));
+
+        let mut slide1 = String::new();
+        zip.by_name("ppt/slides/slide1.xml")
+            .unwrap()
+            .read_to_string(&mut slide1)
+            .unwrap();
+        assert!(slide1.contains("Haupttitel"));
+
+        let mut slide2 = String::new();
+        zip.by_name("ppt/slides/slide2.xml")
+            .unwrap()
+            .read_to_string(&mut slide2)
+            .unwrap();
+        assert!(slide2.contains("Slide 1: Titel"));
+        assert!(slide2.contains("Erste Zeile"));
+
+        let _ = fs::remove_file(&tmp);
+    }
 }

@@ -2,7 +2,7 @@ import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import type { ClipboardEvent, FormEvent } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useChatStore, getActiveThread } from '../stores/chatStore'
-import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
+import type { LiveToolCall, LiveToolCallStatus, PermissionMode, PermissionConfig } from '../stores/chatStore'
 
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
@@ -348,6 +348,7 @@ export default function ChatView() {
     addMessage,
     updateMessage,
     setThreadProviderSettings,
+    setThreadPermissionConfig,
     setPendingApproval,
     clearApproval,
     setBusy,
@@ -520,9 +521,12 @@ export default function ChatView() {
       })
     }
 
-    void engineSendMessage(answerInput, cwd, (event) => {
-      switch (event.type) {
-        case 'text_delta': {
+    void engineSendMessage(
+      answerInput,
+      cwd,
+      (event) => {
+        switch (event.type) {
+          case 'text_delta': {
           rawAssistantMessage += event.text
           const presentation = resolveAssistantPresentation(rawAssistantMessage, {
             verboseMode,
@@ -1235,10 +1239,82 @@ export default function ChatView() {
     setAttachmentNotice(null)
   }
 
+  // Permission config for this thread
+  const [showPermissionConfig, setShowPermissionConfig] = useState(false)
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(activeThread?.permissionConfig?.mode || 'default')
+  const [allowedDirectories, setAllowedDirectories] = useState<string[]>(activeThread?.permissionConfig?.allowedDirectories || [])
+  const [newDirectory, setNewDirectory] = useState('')
+
+  const handleSavePermissionConfig = () => {
+    if (!activeThreadId) return
+    const config: PermissionConfig = { mode: permissionMode, allowedDirectories }
+    setThreadPermissionConfig(activeThreadId, config)
+    setShowPermissionConfig(false)
+  }
+
+  const handleAddDirectory = () => {
+    if (newDirectory.trim() && !allowedDirectories.includes(newDirectory.trim())) {
+      setAllowedDirectories([...allowedDirectories, newDirectory.trim()])
+      setNewDirectory('')
+    }
+  }
+
+  const handleRemoveDirectory = (dir: string) => {
+    setAllowedDirectories(allowedDirectories.filter(d => d !== dir))
+  }
+
   if (!activeThread) return null
 
   return (
     <div className="chat-view">
+      {/* Permission Config Panel */}
+      {showPermissionConfig && (
+        <div className="permission-config-panel">
+          <h3>Berechtigungseinstellungen für diesen Chat</h3>
+          <div className="permission-config-row">
+            <label>Modus:</label>
+            <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value as PermissionMode)}>
+              <option value="default">Standard</option>
+              <option value="plan">Plan-Modus</option>
+              <option value="bypass">Bypass (alles erlauben)</option>
+              <option value="strict">Strikt (alles fragen)</option>
+            </select>
+          </div>
+          <div className="permission-config-row">
+            <label>Erlaubte Verzeichnisse:</label>
+            <div className="directory-list">
+              {allowedDirectories.map(dir => (
+                <span key={dir} className="directory-chip">
+                  {dir}
+                  <button type="button" onClick={() => handleRemoveDirectory(dir)}>×</button>
+                </span>
+              ))}
+            </div>
+            <div className="directory-input">
+              <input
+                type="text"
+                value={newDirectory}
+                onChange={(e) => setNewDirectory(e.target.value)}
+                placeholder="Neues Verzeichnis hinzufügen"
+              />
+              <button type="button" onClick={handleAddDirectory}>Hinzufügen</button>
+            </div>
+          </div>
+          <div className="permission-config-actions">
+            <button type="button" onClick={handleSavePermissionConfig}>Speichern</button>
+            <button type="button" onClick={() => setShowPermissionConfig(false)}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="permission-config-toggle"
+        onClick={() => setShowPermissionConfig(!showPermissionConfig)}
+      >
+        🔒 Berechtigungen
+      </button>
+
       <div className="chat-log" ref={logRef}>
         {visibleMessages.map((msg, index) => {
           const content = typeof msg.content === 'string' ? msg.content : ''

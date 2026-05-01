@@ -2534,9 +2534,12 @@ export default function CoworkView() {
           workspaceDefaultPath,
         )
         appendVerboseEntry('Engine-Stream gestartet', `Arbeitsverzeichnis: ${cwd}`)
-        await engineSendMessage(engineUserInput, cwd, (event) => {
-          switch (event.type) {
-            case 'text_delta':
+        await engineSendMessage(
+          engineUserInput,
+          cwd,
+          (event) => {
+            switch (event.type) {
+              case 'text_delta':
               rawAssistantMessage += event.text
               {
                 const presentation = resolveAssistantPresentation(rawAssistantMessage, {

@@ -22,6 +22,13 @@ function toggleStringValue(values: string[], nextValue: string): string[] {
     : [...values, nextValue]
 }
 
+function agentUsesCrewDefaultProvider(
+  agent: { providerKind?: CrewProviderKind; modelOverride?: string | null },
+  crewDefaultProvider: CrewProviderKind,
+): boolean {
+  return (agent.providerKind ?? crewDefaultProvider) === crewDefaultProvider && !agent.modelOverride?.trim()
+}
+
 function resolveCrewRuntimeConfig(
   runtimeConfig: { enabled: boolean; baseUrl: string; model: string; timeoutMs: number } | undefined,
   fallbackConfig: OllamaConfig,
@@ -73,12 +80,10 @@ function buildDefaultCrewName(existingNames: string[]): string {
   return `Crew ${index}`
 }
 
-type CrewProviderHealthCheckResult = {
-  reachable: boolean
-  status: number | null
-  endpoint: string
-  message: string
-  checkedAt: string
+function getProviderKey(providerKind: CrewProviderKind): 'openAICompatible' | 'openRouter' | null {
+  if (providerKind === 'openai-compatible') return 'openAICompatible'
+  if (providerKind === 'openrouter') return 'openRouter'
+  return null
 }
 
 type CrewProviderModelsResult = {
@@ -174,9 +179,10 @@ export default function CrewPanel() {
   const claudeTools = useCoworkStore((state) => state.claudeTools)
 
   const [crewName, setCrewName] = useState('')
-  const [providerHealthChecks, setProviderHealthChecks] = useState<Record<string, { loading: boolean; result?: CrewProviderHealthCheckResult }>>({})
   const [providerModelOptions, setProviderModelOptions] = useState<Record<string, { loading: boolean; endpoint?: string; models: string[]; error?: string }>>({})
   const [pendingScrollCrewId, setPendingScrollCrewId] = useState<string | null>(null)
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ general: true, execution: false, provider: false, diagnostics: true })
+  const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({})
   const importCrewInputRef = useRef<HTMLInputElement | null>(null)
   const activeCrewDetailsRef = useRef<HTMLDivElement | null>(null)
 
@@ -243,6 +249,10 @@ export default function CrewPanel() {
   }
 
   const getCrewDefaultModelLabel = (providerKind: CrewProviderKind) => {
+    if (activeCrew?.defaultProvider === providerKind && activeCrew.defaultModel?.trim()) {
+      return activeCrew.defaultModel.trim()
+    }
+
     if (providerKind === 'ollama') {
       return resolvedActiveCrewConfig.model || ollama.model || 'nicht gesetzt'
     }
@@ -252,6 +262,17 @@ export default function CrewPanel() {
     }
 
     return resolvedActiveProviderConfigs.openRouter?.model || 'nicht gesetzt'
+  }
+
+  const getCrewDefaultModelOptions = () => {
+    if (!activeCrew) return []
+    const catalog = getProviderModelCatalog(activeCrew.defaultProvider || 'ollama')
+    const defaultModel = activeCrew.defaultModel?.trim()
+    if (!defaultModel || catalog.models.includes(defaultModel)) {
+      return catalog.models
+    }
+
+    return [defaultModel, ...catalog.models]
   }
 
   const isProviderEnabledForCrew = (providerKind: CrewProviderKind) => {
@@ -277,6 +298,29 @@ export default function CrewPanel() {
     }
 
     return [modelOverride, ...catalog.models]
+  }
+
+  const handleCrewDefaultProviderChange = (providerKind: CrewProviderKind) => {
+    if (providerKind !== 'ollama' && !isProviderEnabledForCrew(providerKind)) return
+
+    const currentDefaultProvider = activeCrew?.defaultProvider || 'ollama'
+
+    updateActiveCrew({
+      defaultProvider: providerKind,
+      defaultModel: '',
+      agents: activeCrew?.agents.map((agent) => ({
+        ...agent,
+        providerKind: agentUsesCrewDefaultProvider(agent, currentDefaultProvider) ? providerKind : agent.providerKind,
+      })),
+    })
+
+    const providerKey = getProviderKey(providerKind)
+    if (providerKey) {
+      const providerState = providerModelOptions[providerKey]
+      if (!providerState?.loading && !providerState?.models.length) {
+        void handleLoadProviderModels(providerKey)
+      }
+    }
   }
 
   const handleAgentProviderKindChange = (agentId: string, providerKind: CrewProviderKind) => {
@@ -321,7 +365,6 @@ export default function CrewPanel() {
   }
 
   useEffect(() => {
-    setProviderHealthChecks({})
     setProviderModelOptions({})
   }, [activeCrew?.id])
 
@@ -384,6 +427,8 @@ export default function CrewPanel() {
       managerReviewGuidelines: activeCrew.managerReviewGuidelines,
       shareAllTaskOutputs: activeCrew.shareAllTaskOutputs,
       sharedOutputCharLimit: activeCrew.sharedOutputCharLimit,
+      defaultProvider: activeCrew.defaultProvider,
+      defaultModel: activeCrew.defaultModel,
       providerProfiles: activeCrew.providerProfiles,
       process: activeCrew.process,
       managerAgentId: activeCrew.managerAgentId,
@@ -417,6 +462,8 @@ export default function CrewPanel() {
       managerReviewGuidelines: activeCrew.managerReviewGuidelines,
       shareAllTaskOutputs: activeCrew.shareAllTaskOutputs,
       sharedOutputCharLimit: activeCrew.sharedOutputCharLimit,
+      defaultProvider: activeCrew.defaultProvider,
+      defaultModel: activeCrew.defaultModel,
       providerProfiles: activeCrew.providerProfiles,
       process: activeCrew.process,
       managerAgentId: activeCrew.managerAgentId,
@@ -445,6 +492,8 @@ export default function CrewPanel() {
         managerReviewGuidelines?: unknown
         shareAllTaskOutputs?: unknown
         sharedOutputCharLimit?: unknown
+        defaultProvider?: unknown
+        defaultModel?: unknown
         providerProfiles?: unknown
         process?: unknown
         managerAgentId?: unknown
@@ -469,6 +518,14 @@ export default function CrewPanel() {
       if (typeof imported.managerReviewGuidelines === 'string') patch.managerReviewGuidelines = imported.managerReviewGuidelines
       if (typeof imported.shareAllTaskOutputs === 'boolean') patch.shareAllTaskOutputs = imported.shareAllTaskOutputs
       if (typeof imported.sharedOutputCharLimit === 'number') patch.sharedOutputCharLimit = imported.sharedOutputCharLimit
+      if (
+        imported.defaultProvider === 'ollama'
+        || imported.defaultProvider === 'openai-compatible'
+        || imported.defaultProvider === 'openrouter'
+      ) {
+        patch.defaultProvider = imported.defaultProvider
+      }
+      if (typeof imported.defaultModel === 'string') patch.defaultModel = imported.defaultModel
       if (
         imported.providerProfiles
         && typeof imported.providerProfiles === 'object'
@@ -531,51 +588,6 @@ export default function CrewPanel() {
     }
   }
 
-  const handleTestProviderProfile = async (providerKey: 'openAICompatible' | 'openRouter') => {
-    const config = resolvedActiveProviderConfigs[providerKey]
-    if (!config) return
-
-    setProviderHealthChecks((current) => ({
-      ...current,
-      [providerKey]: {
-        loading: true,
-        result: current[providerKey]?.result,
-      },
-    }))
-
-    try {
-      const result = await safeInvoke<CrewProviderHealthCheckResult>('crew_provider_health_check', {
-        request: {
-          providerKind: providerKey === 'openAICompatible' ? 'openai-compatible' : 'openrouter',
-          baseUrl: config.baseUrl,
-          apiKey: config.apiKey,
-        },
-      })
-
-      setProviderHealthChecks((current) => ({
-        ...current,
-        [providerKey]: {
-          loading: false,
-          result,
-        },
-      }))
-    } catch (error) {
-      setProviderHealthChecks((current) => ({
-        ...current,
-        [providerKey]: {
-          loading: false,
-          result: {
-            reachable: false,
-            status: null,
-            endpoint: config.baseUrl,
-            message: error instanceof Error ? error.message : String(error),
-            checkedAt: new Date().toISOString(),
-          },
-        },
-      }))
-    }
-  }
-
   const handleLoadProviderModels = async (providerKey: 'openAICompatible' | 'openRouter') => {
     const config = resolvedActiveProviderConfigs[providerKey]
     if (!config) return
@@ -619,630 +631,312 @@ export default function CrewPanel() {
     }
   }
 
+  const toggleSection = (key: string) => setOpenSections((s) => ({ ...s, [key]: !s[key] }))
+  const toggleAgent = (id: string) => setExpandedAgents((s) => ({ ...s, [id]: !s[id] }))
+  const roleEmoji = (role: AgentRole) => {
+    const map: Record<AgentRole, string> = { researcher: 'ðŸ”', writer: 'âœï¸', reviewer: 'ðŸ”Ž', planner: 'ðŸ“‹', executor: 'âš™ï¸', analyst: 'ðŸ“Š', custom: 'ðŸ¤–' }
+    return map[role] ?? 'ðŸ¤–'
+  }
+  const processLabel = (p: CrewProcess) => PROCESS_OPTIONS.find((o) => o.value === p)?.label ?? p
+
   return (
     <div className="panel">
-      <h2>🚀 Crew AI</h2>
+      {/* Header */}
+      <div className="crew-header">
+        <div className="crew-header-title">
+          <span className="crew-header-icon">ðŸš€</span> Crew AI
+        </div>
+      </div>
       <input ref={importCrewInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={(event) => void handleImportCrew(event)} />
 
-      <div className="card" style={{ marginBottom: 12, display: 'flex', gap: 8 }}>
+      {/* Toolbar */}
+      <div className="crew-toolbar">
         <input
-          placeholder="Neue Crew"
+          className="crew-toolbar-input"
+          placeholder="Neue Crewâ€¦"
           value={crewName}
           onChange={(event) => setCrewName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              handleCreateCrew()
-            }
-          }}
-          style={inputStyle}
+          onKeyDown={(event) => { if (event.key === 'Enter') handleCreateCrew() }}
         />
-        <button type="button" className="btn-sm" onClick={handleCreateCrew}>Crew anlegen</button>
-        <button type="button" className="btn-sm" onClick={handleDuplicateCrew} disabled={!activeCrew}>Crew duplizieren</button>
-        <button type="button" className="btn-sm" onClick={handleExportCrew} disabled={!activeCrew}>JSON exportieren</button>
-        <button type="button" className="btn-sm" onClick={() => importCrewInputRef.current?.click()}>JSON importieren</button>
+        <button type="button" className="crew-toolbar-btn" onClick={handleCreateCrew}>âž• Anlegen</button>
+        <button type="button" className="crew-toolbar-btn secondary" onClick={handleDuplicateCrew} disabled={!activeCrew}>ðŸ“‹ Duplizieren</button>
+        <button type="button" className="crew-toolbar-btn secondary" onClick={handleExportCrew} disabled={!activeCrew}>ðŸ“¤ Export</button>
+        <button type="button" className="crew-toolbar-btn secondary" onClick={() => importCrewInputRef.current?.click()}>ðŸ“¥ Import</button>
       </div>
 
       {crews.length === 0 ? (
-        <p className="panel-empty">Noch keine Crew vorhanden.</p>
+        <div className="crew-empty">
+          <div className="crew-empty-icon">ðŸš€</div>
+          <div className="crew-empty-text">Noch keine Crew vorhanden. Erstelle deine erste Crew oben.</div>
+        </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 12 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {crews.map((crew) => (
-              (() => {
-                const diagnostics = getCrewDiagnostics(crew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile)
-                return (
-                  <div
-                    key={crew.id}
-                    className="card"
-                    style={{ border: activeCrew?.id === crew.id ? '1px solid var(--accent)' : '1px solid var(--border-color)' }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                      <button type="button" className="btn-sm" onClick={() => setActiveCrew(crew.id)}>
-                        {crew.name}
-                      </button>
-                      <button type="button" className="btn-sm" onClick={() => deleteCrew(crew.id)} style={{ color: 'var(--danger)' }}>
-                        ✕
-                      </button>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                      {crew.process} · {crew.agents.filter((agent) => agent.enabled).length}/{crew.agents.length} aktiv
-                      {diagnostics.errors.length > 0 ? ` · ${diagnostics.errors.length} Blocker` : ''}
+        <div className="crew-grid">
+          {/* Left: Crew List */}
+          <div className="crew-list">
+            {crews.map((crew) => {
+              const diag = getCrewDiagnostics(crew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile)
+              const enabledCount = crew.agents.filter((a) => a.enabled).length
+              return (
+                <div key={crew.id} className={`crew-card${activeCrew?.id === crew.id ? ' active' : ''}`} onClick={() => setActiveCrew(crew.id)}>
+                  <span className={`crew-card-dot${diag.errors.length > 0 ? ' has-errors' : ''}`} />
+                  <div className="crew-card-body">
+                    <div className="crew-card-name">{crew.name}</div>
+                    <div className="crew-card-meta">
+                      <span>{processLabel(crew.process)}</span>
+                      <span>Â·</span>
+                      <span>{enabledCount}/{crew.agents.length} aktiv</span>
+                      {diag.errors.length > 0 && <><span>Â·</span><span style={{ color: 'var(--danger)' }}>{diag.errors.length} Blocker</span></>}
                     </div>
                   </div>
-                )
-              })()
-            ))}
+                  <button type="button" className="crew-card-delete" onClick={(e) => { e.stopPropagation(); deleteCrew(crew.id) }}>âœ•</button>
+                </div>
+              )
+            })}
           </div>
 
-          <div className="card" ref={activeCrewDetailsRef}>
+          {/* Right: Detail */}
+          <div className="crew-detail" ref={activeCrewDetailsRef}>
             {activeCrew ? (
               <>
-                <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 12, marginBottom: 16 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <label>
-                      Crew-Name
-                      <input value={activeCrew.name} onChange={(event) => updateActiveCrew({ name: event.target.value })} style={inputStyle} />
-                    </label>
-                    <label>
-                      Beschreibung
-                      <textarea value={activeCrew.description} onChange={(event) => updateActiveCrew({ description: event.target.value })} style={textAreaStyle} />
-                    </label>
-                    <label>
-                      Crew-Zusatzanweisungen
-                      <textarea
-                        value={activeCrew.executionGuidelines}
-                        onChange={(event) => updateActiveCrew({ executionGuidelines: event.target.value })}
-                        style={textAreaStyle}
-                        placeholder="z. B. Antworte mit Risiken, Annahmen und naechsten Schritten"
-                      />
-                    </label>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <label>
-                      Ausfuehrungsmodus
-                      <select value={activeCrew.process} onChange={(event) => updateActiveCrew({ process: event.target.value as CrewProcess })} style={inputStyle}>
-                        {PROCESS_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Manager-Agent
-                      <select value={activeCrew.managerAgentId ?? ''} onChange={(event) => updateActiveCrew({ managerAgentId: event.target.value || null })} style={inputStyle}>
-                        <option value="">Keiner</option>
-                        {activeCrew.agents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>{agent.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Max RPM
-                      <input type="number" min={1} max={600} value={activeCrew.maxRpm} onChange={(event) => updateActiveCrew({ maxRpm: Number(event.target.value) || 1 })} style={inputStyle} />
-                    </label>
-                    <label>
-                      Max parallele Tasks
-                      <input type="number" min={1} max={24} value={activeCrew.maxParallelTasks} onChange={(event) => updateActiveCrew({ maxParallelTasks: Number(event.target.value) || 1 })} style={inputStyle} />
-                    </label>
-                    <label>
-                      Retry-Versuche pro Task
-                      <input type="number" min={0} max={5} value={activeCrew.retryCount} onChange={(event) => updateActiveCrew({ retryCount: Math.max(0, Number(event.target.value) || 0) })} style={inputStyle} />
-                    </label>
-                    <label>
-                      Ausgabeformat
-                      <select
-                        value={activeCrew.outputMode}
-                        onChange={(event) => updateActiveCrew({ outputMode: event.target.value as CrewOutputMode })}
-                        style={inputStyle}
-                      >
-                        <option value="standard">Standard</option>
-                        <option value="bullet-report">Stichpunkt-Report</option>
-                        <option value="json">JSON</option>
-                      </select>
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input type="checkbox" checked={activeCrew.verbose} onChange={(event) => updateActiveCrew({ verbose: event.target.checked })} />
-                      Verbose Crew-Logging aktivieren
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input type="checkbox" checked={activeCrew.stopOnFailure} onChange={(event) => updateActiveCrew({ stopOnFailure: event.target.checked })} />
-                      Crew bei Task-Fehler sofort stoppen
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input type="checkbox" checked={activeCrew.managerReviewEnabled} onChange={(event) => updateActiveCrew({ managerReviewEnabled: event.target.checked })} />
-                      Manager-Review nach Task-Batches aktivieren
-                    </label>
-                    {activeCrew.managerReviewEnabled && (
-                      <label>
-                        Manager-Review-Anweisungen
-                        <textarea
-                          value={activeCrew.managerReviewGuidelines}
-                          onChange={(event) => updateActiveCrew({ managerReviewGuidelines: event.target.value })}
-                          style={textAreaStyle}
-                          placeholder="z. B. Beurteile Risiken strenger und eskaliere fruehzeitig"
-                        />
-                      </label>
-                    )}
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input type="checkbox" checked={activeCrew.shareAllTaskOutputs} onChange={(event) => updateActiveCrew({ shareAllTaskOutputs: event.target.checked })} />
-                      Vorherige Task-Ergebnisse global als Kontext teilen
-                    </label>
-                    <label>
-                      Zeichenlimit fuer geteilte Task-Ergebnisse
-                      <input type="number" min={0} max={50000} value={activeCrew.sharedOutputCharLimit} onChange={(event) => updateActiveCrew({ sharedOutputCharLimit: Math.max(0, Number(event.target.value) || 0) })} style={inputStyle} />
-                    </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={activeCrew.providerProfiles.openAICompatible.enabled}
-                        onChange={(event) => updateActiveCrew({
-                          providerProfiles: {
-                            ...activeCrew.providerProfiles,
-                            openAICompatible: {
-                              ...activeCrew.providerProfiles.openAICompatible,
-                              enabled: event.target.checked,
-                            },
-                          },
-                        })}
-                      />
-                      OpenAI-kompatibles Provider-Profil aktivieren
-                    </label>
-                    {activeCrew.providerProfiles.openAICompatible.enabled && (
-                      <>
-                        <label>
-                          OpenAI-kompatibler Endpoint
-                          <input
-                            value={activeCrew.providerProfiles.openAICompatible.baseUrl}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openAICompatible: {
-                                  ...activeCrew.providerProfiles.openAICompatible,
-                                  baseUrl: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                            placeholder={defaultOpenAICompatibleProfile?.baseUrl || 'https://api.openai.com/v1'}
-                          />
-                        </label>
-                        <label>
-                          OpenAI-kompatibles Modell
-                          <select
-                            value={activeCrew.providerProfiles.openAICompatible.model}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openAICompatible: {
-                                  ...activeCrew.providerProfiles.openAICompatible,
-                                  model: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                          >
-                            <option value="">Crew-Default ({getCrewDefaultModelLabel('openai-compatible')})</option>
-                            {providerModelOptions.openAICompatible?.models.map((model) => (
-                              <option key={model} value={model}>{model}</option>
-                            ))}
-                            {activeCrew.providerProfiles.openAICompatible.model && 
-                              !providerModelOptions.openAICompatible?.models.includes(activeCrew.providerProfiles.openAICompatible.model) && (
-                              <option value={activeCrew.providerProfiles.openAICompatible.model}>{activeCrew.providerProfiles.openAICompatible.model}</option>
-                            )}
+                {/* Section: Allgemein */}
+                <div className={`crew-section${openSections.general ? ' open' : ''}`}>
+                  <button type="button" className="crew-section-header" onClick={() => toggleSection('general')}>
+                    <span className="crew-section-icon">ðŸ“</span> Allgemein
+                    <span className="crew-section-chevron">â–¼</span>
+                  </button>
+                  {openSections.general && (
+                    <div className="crew-section-body">
+                      <div className="crew-form-row">
+                        <div className="crew-form-group">
+                          <span className="crew-label">Crew-Name</span>
+                          <input className="crew-input" value={activeCrew.name} onChange={(e) => updateActiveCrew({ name: e.target.value })} />
+                        </div>
+                        <div className="crew-form-group">
+                          <span className="crew-label">AusfÃ¼hrungsmodus</span>
+                          <select className="crew-select" value={activeCrew.process} onChange={(e) => updateActiveCrew({ process: e.target.value as CrewProcess })}>
+                            {PROCESS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
-                        </label>
-                        <label>
-                          OpenAI-kompatibler API-Key
-                          <input
-                            type="password"
-                            value={activeCrew.providerProfiles.openAICompatible.apiKey}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openAICompatible: {
-                                  ...activeCrew.providerProfiles.openAICompatible,
-                                  apiKey: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                            placeholder="sk-..."
-                          />
-                        </label>
-                        <label>
-                          OpenAI-kompatibler Timeout (ms)
-                          <input
-                            type="number"
-                            min={1000}
-                            max={3600000}
-                            value={activeCrew.providerProfiles.openAICompatible.timeoutMs}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openAICompatible: {
-                                  ...activeCrew.providerProfiles.openAICompatible,
-                                  timeoutMs: Math.max(1000, Number(event.target.value) || 600000),
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                          />
-                        </label>
-                        <button type="button" className="btn-sm" onClick={() => void handleTestProviderProfile('openAICompatible')}>
-                          {providerHealthChecks.openAICompatible?.loading ? 'Teste...' : 'OpenAI-Profil testen'}
-                        </button>
-                        <button type="button" className="btn-sm" onClick={() => void handleLoadProviderModels('openAICompatible')}>
-                          {providerModelOptions.openAICompatible?.loading ? 'Lade Modelle...' : 'Modelle laden'}
-                        </button>
-                        {providerHealthChecks.openAICompatible?.result && (
-                          <div style={{ fontSize: 12, color: providerHealthChecks.openAICompatible.result.reachable ? 'var(--success)' : 'var(--danger)' }}>
-                            {providerHealthChecks.openAICompatible.result.message} ({providerHealthChecks.openAICompatible.result.endpoint})
-                          </div>
-                        )}
-                        {providerModelOptions.openAICompatible?.models.length ? (
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {providerModelOptions.openAICompatible.models.length} Modell(e) geladen von {providerModelOptions.openAICompatible.endpoint}
-                          </div>
-                        ) : null}
-                        {providerModelOptions.openAICompatible?.error && (
-                          <div style={{ fontSize: 12, color: 'var(--danger)' }}>
-                            {providerModelOptions.openAICompatible.error}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={activeCrew.providerProfiles.openRouter.enabled}
-                        onChange={(event) => updateActiveCrew({
-                          providerProfiles: {
-                            ...activeCrew.providerProfiles,
-                            openRouter: {
-                              ...activeCrew.providerProfiles.openRouter,
-                              enabled: event.target.checked,
-                            },
-                          },
-                        })}
-                      />
-                      OpenRouter-Profil aktivieren
-                    </label>
-                    {activeCrew.providerProfiles.openRouter.enabled && (
-                      <>
-                        <label>
-                          OpenRouter-Endpoint
-                          <input
-                            value={activeCrew.providerProfiles.openRouter.baseUrl}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openRouter: {
-                                  ...activeCrew.providerProfiles.openRouter,
-                                  baseUrl: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                            placeholder={defaultOpenRouterProfile?.baseUrl || 'https://openrouter.ai/api/v1'}
-                          />
-                        </label>
-                        <label>
-                          OpenRouter-Modell
-                          <select
-                            value={activeCrew.providerProfiles.openRouter.model}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openRouter: {
-                                  ...activeCrew.providerProfiles.openRouter,
-                                  model: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                          >
-                            <option value="">Crew-Default ({getCrewDefaultModelLabel('openrouter')})</option>
-                            {providerModelOptions.openRouter?.models.map((model) => (
-                              <option key={model} value={model}>{model}</option>
-                            ))}
-                            {activeCrew.providerProfiles.openRouter.model && 
-                              !providerModelOptions.openRouter?.models.includes(activeCrew.providerProfiles.openRouter.model) && (
-                              <option value={activeCrew.providerProfiles.openRouter.model}>{activeCrew.providerProfiles.openRouter.model}</option>
-                            )}
-                          </select>
-                        </label>
-                        <label>
-                          OpenRouter-API-Key
-                          <input
-                            type="password"
-                            value={activeCrew.providerProfiles.openRouter.apiKey}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openRouter: {
-                                  ...activeCrew.providerProfiles.openRouter,
-                                  apiKey: event.target.value,
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                            placeholder={defaultOpenRouterProfile?.apiKey ? 'Globales Standardprofil verwenden' : 'sk-or-v1-...'}
-                          />
-                        </label>
-                        <label>
-                          OpenRouter-Timeout (ms)
-                          <input
-                            type="number"
-                            min={1000}
-                            max={3600000}
-                            value={activeCrew.providerProfiles.openRouter.timeoutMs}
-                            onChange={(event) => updateActiveCrew({
-                              providerProfiles: {
-                                ...activeCrew.providerProfiles,
-                                openRouter: {
-                                  ...activeCrew.providerProfiles.openRouter,
-                                  timeoutMs: Math.max(1000, Number(event.target.value) || 600000),
-                                },
-                              },
-                            })}
-                            style={inputStyle}
-                          />
-                        </label>
-                        <button type="button" className="btn-sm" onClick={() => void handleTestProviderProfile('openRouter')}>
-                          {providerHealthChecks.openRouter?.loading ? 'Teste...' : 'OpenRouter-Profil testen'}
-                        </button>
-                        <button type="button" className="btn-sm" onClick={() => void handleLoadProviderModels('openRouter')}>
-                          {providerModelOptions.openRouter?.loading ? 'Lade Modelle...' : 'Modelle laden'}
-                        </button>
-                        {providerHealthChecks.openRouter?.result && (
-                          <div style={{ fontSize: 12, color: providerHealthChecks.openRouter.result.reachable ? 'var(--success)' : 'var(--danger)' }}>
-                            {providerHealthChecks.openRouter.result.message} ({providerHealthChecks.openRouter.result.endpoint})
-                          </div>
-                        )}
-                        {providerModelOptions.openRouter?.models.length ? (
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                            {providerModelOptions.openRouter.models.length} Modell(e) geladen von {providerModelOptions.openRouter.endpoint}
-                          </div>
-                        ) : null}
-                        {providerModelOptions.openRouter?.error && (
-                          <div style={{ fontSize: 12, color: 'var(--danger)' }}>
-                            {providerModelOptions.openRouter.error}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <input
-                        type="checkbox"
-                        checked={activeCrew.runtimeConfig.enabled}
-                        onChange={(event) => updateActiveCrew({
-                          runtimeConfig: {
-                            ...activeCrew.runtimeConfig,
-                            enabled: event.target.checked,
-                          },
-                        })}
-                      />
-                      Crew-eigene Runtime-Konfiguration nutzen
-                    </label>
-                    {activeCrew.runtimeConfig.enabled && (
-                      <>
-                        <label>
-                          Crew-Endpoint
-                          <input
-                            value={activeCrew.runtimeConfig.baseUrl}
-                            onChange={(event) => updateActiveCrew({
-                              runtimeConfig: {
-                                ...activeCrew.runtimeConfig,
-                                baseUrl: event.target.value,
-                              },
-                            })}
-                            style={inputStyle}
-                            placeholder={ollama.baseUrl}
-                          />
-                        </label>
-                        <label>
-                          Crew-Modell
-                          <select
-                            value={activeCrew.runtimeConfig.model}
-                            onChange={(event) => updateActiveCrew({
-                              runtimeConfig: {
-                                ...activeCrew.runtimeConfig,
-                                model: event.target.value,
-                              },
-                            })}
-                            style={inputStyle}
-                          >
-                            <option value="">Globales Modell ({ollama.model})</option>
-                            {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
-                            {activeCrew.runtimeConfig.model && !availableModels.includes(activeCrew.runtimeConfig.model) && (
-                              <option value={activeCrew.runtimeConfig.model}>{activeCrew.runtimeConfig.model}</option>
-                            )}
-                          </select>
-                        </label>
-                        <label>
-                          Crew-Timeout (ms)
-                          <input
-                            type="number"
-                            min={1000}
-                            max={3600000}
-                            value={activeCrew.runtimeConfig.timeoutMs}
-                            onChange={(event) => updateActiveCrew({
-                              runtimeConfig: {
-                                ...activeCrew.runtimeConfig,
-                                timeoutMs: Number(event.target.value) || ollama.timeoutMs,
-                              },
-                            })}
-                            style={inputStyle}
-                          />
-                        </label>
-                      </>
-                    )}
-                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                      Effektive Runtime: {resolvedActiveCrewConfig.baseUrl} · {resolvedActiveCrewConfig.model} · {resolvedActiveCrewConfig.timeoutMs} ms
+                        </div>
+                      </div>
+                      <div className="crew-form-group full-width">
+                        <span className="crew-label">Beschreibung</span>
+                        <textarea className="crew-textarea" value={activeCrew.description} onChange={(e) => updateActiveCrew({ description: e.target.value })} />
+                      </div>
+                      <div className="crew-form-group full-width">
+                        <span className="crew-label">Crew-Zusatzanweisungen</span>
+                        <textarea className="crew-textarea" value={activeCrew.executionGuidelines} onChange={(e) => updateActiveCrew({ executionGuidelines: e.target.value })} placeholder="z. B. Antworte mit Risiken, Annahmen und nÃ¤chsten Schritten" />
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                <div className="card" style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <strong>Crew-Diagnostik</strong>
-                  {activeCrewDiagnostics.errors.length === 0 && activeCrewDiagnostics.warnings.length === 0 ? (
-                    <div style={{ fontSize: 12, color: 'var(--success)' }}>Keine Blocker gefunden. Crew ist startbereit.</div>
-                  ) : (
-                    <>
-                      {activeCrewDiagnostics.errors.map((entry) => (
-                        <div key={`error-${entry}`} style={{ fontSize: 12, color: 'var(--danger)' }}>Blocker: {entry}</div>
-                      ))}
-                      {activeCrewDiagnostics.warnings.map((entry) => (
-                        <div key={`warning-${entry}`} style={{ fontSize: 12, color: 'var(--text-muted)' }}>Hinweis: {entry}</div>
-                      ))}
-                    </>
                   )}
                 </div>
 
-                <div style={{ marginBottom: 16 }}>
-                  <strong style={{ display: 'block', marginBottom: 8 }}>Crew-Mitglieder</strong>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    {activeCrew.agents.map((agent) => {
-                      const providerModelCatalog = getProviderModelCatalog(agent.providerKind)
-                      const agentModelOptions = getAgentModelOptions(agent)
-                      const selectedModelOverride = agent.modelOverride?.trim() && agentModelOptions.includes(agent.modelOverride.trim())
-                        ? agent.modelOverride.trim()
-                        : ''
-
-                      return (
-                      <div key={agent.id} className="card" style={{ border: agent.enabled ? '1px solid var(--accent)' : '1px solid var(--border-color)' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.8fr 0.8fr', gap: 10, alignItems: 'start' }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            <label>
-                              Name
-                              <input value={agent.name} onChange={(event) => updateActiveCrewAgent(agent.id, { name: event.target.value })} style={inputStyle} />
-                            </label>
-                            <label>
-                              Rolle
-                              <select value={agent.role} onChange={(event) => updateActiveCrewAgent(agent.id, { role: event.target.value as AgentRole })} style={inputStyle}>
-                                {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role}</option>)}
-                              </select>
-                            </label>
-                            <label>
-                              Ziel / Prompt-Fokus
-                              <textarea value={agent.goal} onChange={(event) => updateActiveCrewAgent(agent.id, { goal: event.target.value })} style={textAreaStyle} />
-                            </label>
-                            <label>
-                              Hintergrund
-                              <textarea value={agent.backstory} onChange={(event) => updateActiveCrewAgent(agent.id, { backstory: event.target.value })} style={textAreaStyle} />
-                            </label>
-                            <label>
-                              skills.md
-                              <textarea
-                                value={agent.skillsMarkdown}
-                                onChange={(event) => updateActiveCrewAgent(agent.id, { skillsMarkdown: event.target.value })}
-                                style={textAreaStyle}
-                                placeholder="# skills.md\n- Projektkontext\n- Arbeitsstil\n- Regeln"
-                              />
-                            </label>
-                          </div>
-
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <input type="checkbox" checked={agent.enabled} onChange={(event) => updateActiveCrewAgent(agent.id, { enabled: event.target.checked })} />
-                              Aktiviert
-                            </label>
-                            <label>
-                              Provider
-                              <select value={agent.providerKind} onChange={(event) => handleAgentProviderKindChange(agent.id, event.target.value as CrewProviderKind)} style={inputStyle}>
-                                {PROVIDER_OPTIONS.map((option) => {
-                                  const isSelectable = option.value === agent.providerKind || isProviderEnabledForCrew(option.value)
-                                  return (
-                                    <option key={option.value} value={option.value} disabled={!isSelectable}>
-                                      {isSelectable ? option.label : `${option.label} (Crew-Profil aktivieren)`}
-                                    </option>
-                                  )
-                                })}
-                              </select>
-                              {agent.providerKind !== 'ollama' && !isProviderEnabledForCrew(agent.providerKind) && (
-                                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--danger)' }}>
-                                  Dieser Provider ist fuer die Crew noch nicht aktiviert. Aktiviere zuerst das passende Crew-Profil.
-                                </div>
-                              )}
-                            </label>
-                            <label>
-                              Modell
-                              <select value={selectedModelOverride} onChange={(event) => updateActiveCrewAgent(agent.id, { modelOverride: event.target.value || null })} style={inputStyle}>
-                                <option value="">Crew-Default ({getCrewDefaultModelLabel(agent.providerKind)})</option>
-                                {agentModelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
-                              </select>
-                              {agent.providerKind !== 'ollama' && providerModelCatalog.models.length === 0 && (
-                                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                                  Fuer diesen Provider sind noch keine Modelle geladen. Bis dahin bleibt nur das Crew-Default aktiv.
-                                </div>
-                              )}
-                            </label>
-                            <label>
-                              Max Iterationen
-                              <input type="number" min={1} max={100} value={agent.maxIterations} onChange={(event) => updateActiveCrewAgent(agent.id, { maxIterations: Number(event.target.value) || 1 })} style={inputStyle} />
-                            </label>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <input type="checkbox" checked={agent.allowDelegation} onChange={(event) => updateActiveCrewAgent(agent.id, { allowDelegation: event.target.checked })} />
-                              Delegation erlaubt
-                            </label>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <input type="checkbox" checked={agent.verbose} onChange={(event) => updateActiveCrewAgent(agent.id, { verbose: event.target.checked })} />
-                              Verbose Agent-Logs
-                            </label>
-                          </div>
-
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            <div>
-                              <strong style={{ display: 'block', marginBottom: 6 }}>Tools</strong>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
-                                {claudeTools.map((tool) => (
-                                  <label key={tool.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                                    <input
-                                      type="checkbox"
-                                      checked={agent.tools.includes(tool.id)}
-                                      onChange={() => updateActiveCrewAgent(agent.id, { tools: toggleStringValue(agent.tools, tool.id) })}
-                                    />
-                                    {tool.label}
-                                  </label>
-                                ))}
-                              </div>
-                            </div>
-
-                            <div>
-                              <strong style={{ display: 'block', marginBottom: 6 }}>MCP-Zugriffe</strong>
-                              {configuredMcpServers.length === 0 ? (
-                                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Keine MCP-Server konfiguriert.</div>
-                              ) : (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 140, overflowY: 'auto' }}>
-                                  {configuredMcpServers.map((server) => (
-                                    <label key={server.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                                      <input
-                                        type="checkbox"
-                                        checked={agent.mcpServerNames.includes(server.name)}
-                                        onChange={() => updateActiveCrewAgent(agent.id, { mcpServerNames: toggleStringValue(agent.mcpServerNames, server.name) })}
-                                      />
-                                      {server.name}
-                                    </label>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                {/* Section: AusfÃ¼hrung */}
+                <div className={`crew-section${openSections.execution ? ' open' : ''}`}>
+                  <button type="button" className="crew-section-header" onClick={() => toggleSection('execution')}>
+                    <span className="crew-section-icon">âš¡</span> AusfÃ¼hrung
+                    <span className="crew-section-chevron">â–¼</span>
+                  </button>
+                  {openSections.execution && (
+                    <div className="crew-section-body">
+                      <div className="crew-form-row">
+                        <div className="crew-form-group">
+                          <span className="crew-label">Manager-Agent</span>
+                          <select className="crew-select" value={activeCrew.managerAgentId ?? ''} onChange={(e) => updateActiveCrew({ managerAgentId: e.target.value || null })}>
+                            <option value="">Keiner</option>
+                            {activeCrew.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                          </select>
+                        </div>
+                        <div className="crew-form-group">
+                          <span className="crew-label">Ausgabeformat</span>
+                          <select className="crew-select" value={activeCrew.outputMode} onChange={(e) => updateActiveCrew({ outputMode: e.target.value as CrewOutputMode })}>
+                            <option value="standard">Standard</option>
+                            <option value="bullet-report">Stichpunkt-Report</option>
+                            <option value="json">JSON</option>
+                          </select>
                         </div>
                       </div>
-                      )
-                    })}
+                      <div className="crew-form-row">
+                        <div className="crew-form-group">
+                          <span className="crew-label">Max RPM</span>
+                          <input className="crew-input" type="number" min={1} max={600} value={activeCrew.maxRpm} onChange={(e) => updateActiveCrew({ maxRpm: Number(e.target.value) || 1 })} />
+                        </div>
+                        <div className="crew-form-group">
+                          <span className="crew-label">Max parallele Tasks</span>
+                          <input className="crew-input" type="number" min={1} max={24} value={activeCrew.maxParallelTasks} onChange={(e) => updateActiveCrew({ maxParallelTasks: Number(e.target.value) || 1 })} />
+                        </div>
+                      </div>
+                      <div className="crew-form-row">
+                        <div className="crew-form-group">
+                          <span className="crew-label">Retry-Versuche pro Task</span>
+                          <input className="crew-input" type="number" min={0} max={5} value={activeCrew.retryCount} onChange={(e) => updateActiveCrew({ retryCount: Math.max(0, Number(e.target.value) || 0) })} />
+                        </div>
+                        <div className="crew-form-group">
+                          <span className="crew-label">Zeichenlimit geteilte Ergebnisse</span>
+                          <input className="crew-input" type="number" min={0} max={50000} value={activeCrew.sharedOutputCharLimit} onChange={(e) => updateActiveCrew({ sharedOutputCharLimit: Math.max(0, Number(e.target.value) || 0) })} />
+                        </div>
+                      </div>
+                      <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.verbose} onChange={(e) => updateActiveCrew({ verbose: e.target.checked })} /> Verbose Crew-Logging aktivieren</label>
+                      <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.stopOnFailure} onChange={(e) => updateActiveCrew({ stopOnFailure: e.target.checked })} /> Crew bei Task-Fehler sofort stoppen</label>
+                      <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.managerReviewEnabled} onChange={(e) => updateActiveCrew({ managerReviewEnabled: e.target.checked })} /> Manager-Review nach Task-Batches aktivieren</label>
+                      {activeCrew.managerReviewEnabled && (
+                        <div className="crew-form-group">
+                          <span className="crew-label">Manager-Review-Anweisungen</span>
+                          <textarea className="crew-textarea" value={activeCrew.managerReviewGuidelines} onChange={(e) => updateActiveCrew({ managerReviewGuidelines: e.target.value })} placeholder="z. B. Beurteile Risiken strenger und eskaliere frÃ¼hzeitig" />
+                        </div>
+                      )}
+                      <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.shareAllTaskOutputs} onChange={(e) => updateActiveCrew({ shareAllTaskOutputs: e.target.checked })} /> Vorherige Task-Ergebnisse global als Kontext teilen</label>
+                    </div>
+                  )}
+                </div>
+
+                {/* Section: Provider & Modell */}
+                <div className={`crew-section${openSections.provider ? ' open' : ''}`}>
+                  <button type="button" className="crew-section-header" onClick={() => toggleSection('provider')}>
+                    <span className="crew-section-icon">ðŸ”Œ</span> Provider & Modell
+                    <span className="crew-section-chevron">â–¼</span>
+                  </button>
+                  {openSections.provider && (
+                    <div className="crew-section-body">
+                      <div className="crew-form-row">
+                        <div className="crew-form-group">
+                          <span className="crew-label">Crew-Provider</span>
+                          <select className="crew-select" value={activeCrew.defaultProvider || 'ollama'} onChange={(e) => handleCrewDefaultProviderChange(e.target.value as CrewProviderKind)}>
+                            {PROVIDER_OPTIONS.map((o) => {
+                              const ok = o.value === activeCrew.defaultProvider || isProviderEnabledForCrew(o.value)
+                              return <option key={o.value} value={o.value} disabled={!ok}>{ok ? o.label : `${o.label} (Profil aktivieren)`}</option>
+                            })}
+                          </select>
+                          <span className="crew-hint">Mitglieder mit eigenem Provider/Modell bleiben beim Umschalten unverÃ¤ndert.</span>
+                        </div>
+                        <div className="crew-form-group">
+                          <span className="crew-label">Crew-Modell</span>
+                          <select className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => updateActiveCrew({ defaultModel: e.target.value })}>
+                            <option value="">Globale Einstellungen verwenden</option>
+                            {getCrewDefaultModelOptions().map((m) => <option key={m} value={m}>{m}</option>)}
+                          </select>
+                          {activeCrew.defaultProvider !== 'ollama' && getCrewDefaultModelOptions().length === 0 && (
+                            <span className="crew-hint">FÃ¼r diesen Provider sind noch keine Modelle geladen.</span>
+                          )}
+                          <span className="crew-hint">Gilt automatisch fÃ¼r alle Mitglieder ohne eigenes Modell-Override.</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Diagnostics */}
+                <div className={`crew-section${openSections.diagnostics ? ' open' : ''}`}>
+                  <button type="button" className="crew-section-header" onClick={() => toggleSection('diagnostics')}>
+                    <span className="crew-section-icon">ðŸ©º</span> Diagnostik
+                    <span className="crew-section-chevron">â–¼</span>
+                  </button>
+                  {openSections.diagnostics && (
+                    <div className="crew-section-body">
+                      {activeCrewDiagnostics.errors.length === 0 && activeCrewDiagnostics.warnings.length === 0 ? (
+                        <div className="crew-alert success"><span className="crew-alert-icon">âœ…</span> Keine Blocker gefunden. Crew ist startbereit.</div>
+                      ) : (
+                        <>
+                          {activeCrewDiagnostics.errors.map((entry) => (
+                            <div key={`e-${entry}`} className="crew-alert error"><span className="crew-alert-icon">ðŸš«</span> {entry}</div>
+                          ))}
+                          {activeCrewDiagnostics.warnings.map((entry) => (
+                            <div key={`w-${entry}`} className="crew-alert warning"><span className="crew-alert-icon">âš ï¸</span> {entry}</div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Agents */}
+                <div className="crew-section open">
+                  <div className="crew-section-header" style={{ cursor: 'default' }}>
+                    <span className="crew-section-icon">ðŸ‘¥</span> Crew-Mitglieder ({activeCrew.agents.filter((a) => a.enabled).length}/{activeCrew.agents.length})
+                  </div>
+                  <div className="crew-section-body">
+                    <div className="crew-agents-list">
+                      {activeCrew.agents.map((agent) => {
+                        const pmc = getProviderModelCatalog(agent.providerKind)
+                        const amo = getAgentModelOptions(agent)
+                        const selModel = agent.modelOverride?.trim() && amo.includes(agent.modelOverride.trim()) ? agent.modelOverride.trim() : ''
+                        const isOpen = expandedAgents[agent.id] ?? false
+                        return (
+                          <div key={agent.id} className={`crew-agent-card${!agent.enabled ? ' disabled' : ''}${isOpen ? ' open' : ''}`}>
+                            <div className="crew-agent-header" onClick={() => toggleAgent(agent.id)}>
+                              <div className="crew-agent-avatar">{roleEmoji(agent.role)}</div>
+                              <div className="crew-agent-info">
+                                <div className="crew-agent-name">{agent.name}</div>
+                                <div className="crew-agent-role">{agent.role} Â· {agent.providerKind}</div>
+                              </div>
+                              <span className={`crew-badge ${agent.enabled ? 'active' : 'inactive'}`}>{agent.enabled ? 'Aktiv' : 'Inaktiv'}</span>
+                              <span className="crew-agent-chevron">â–¼</span>
+                            </div>
+                            {isOpen && (
+                              <div className="crew-agent-body">
+                                <div className="crew-agent-col">
+                                  <div className="crew-form-group"><span className="crew-label">Name</span><input className="crew-input" value={agent.name} onChange={(e) => updateActiveCrewAgent(agent.id, { name: e.target.value })} /></div>
+                                  <div className="crew-form-group"><span className="crew-label">Rolle</span><select className="crew-select" value={agent.role} onChange={(e) => updateActiveCrewAgent(agent.id, { role: e.target.value as AgentRole })}>{ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
+                                  <div className="crew-form-group"><span className="crew-label">Ziel / Prompt-Fokus</span><textarea className="crew-textarea" value={agent.goal} onChange={(e) => updateActiveCrewAgent(agent.id, { goal: e.target.value })} /></div>
+                                  <div className="crew-form-group"><span className="crew-label">Hintergrund</span><textarea className="crew-textarea" value={agent.backstory} onChange={(e) => updateActiveCrewAgent(agent.id, { backstory: e.target.value })} /></div>
+                                  <div className="crew-form-group"><span className="crew-label">skills.md</span><textarea className="crew-textarea" value={agent.skillsMarkdown} onChange={(e) => updateActiveCrewAgent(agent.id, { skillsMarkdown: e.target.value })} placeholder="# skills.md&#10;- Projektkontext&#10;- Arbeitsstil" /></div>
+                                </div>
+                                <div className="crew-agent-col">
+                                  <label className="crew-checkbox-label"><input type="checkbox" checked={agent.enabled} onChange={(e) => updateActiveCrewAgent(agent.id, { enabled: e.target.checked })} /> Aktiviert</label>
+                                  <div className="crew-form-group">
+                                    <span className="crew-label">Provider</span>
+                                    <select className="crew-select" value={agent.providerKind} onChange={(e) => handleAgentProviderKindChange(agent.id, e.target.value as CrewProviderKind)}>
+                                      {PROVIDER_OPTIONS.map((o) => { const ok = o.value === agent.providerKind || isProviderEnabledForCrew(o.value); return <option key={o.value} value={o.value} disabled={!ok}>{ok ? o.label : `${o.label} (aktivieren)`}</option> })}
+                                    </select>
+                                    {agent.providerKind !== 'ollama' && !isProviderEnabledForCrew(agent.providerKind) && <span className="crew-hint" style={{ color: 'var(--danger)' }}>Provider nicht aktiviert.</span>}
+                                  </div>
+                                  <div className="crew-form-group">
+                                    <span className="crew-label">Modell</span>
+                                    <select className="crew-select" value={selModel} onChange={(e) => updateActiveCrewAgent(agent.id, { modelOverride: e.target.value || null })}>
+                                      <option value="">Crew-Modell ({getCrewDefaultModelLabel(agent.providerKind)})</option>
+                                      {amo.map((m) => <option key={m} value={m}>{m}</option>)}
+                                    </select>
+                                    {agent.providerKind !== 'ollama' && pmc.models.length === 0 && <span className="crew-hint">Keine Modelle geladen.</span>}
+                                  </div>
+                                  <div className="crew-form-group"><span className="crew-label">Max Iterationen</span><input className="crew-input" type="number" min={1} max={100} value={agent.maxIterations} onChange={(e) => updateActiveCrewAgent(agent.id, { maxIterations: Number(e.target.value) || 1 })} /></div>
+                                  <label className="crew-checkbox-label"><input type="checkbox" checked={agent.allowDelegation} onChange={(e) => updateActiveCrewAgent(agent.id, { allowDelegation: e.target.checked })} /> Delegation erlaubt</label>
+                                  <label className="crew-checkbox-label"><input type="checkbox" checked={agent.verbose} onChange={(e) => updateActiveCrewAgent(agent.id, { verbose: e.target.checked })} /> Verbose Logs</label>
+                                </div>
+                                <div className="crew-agent-col">
+                                  <div className="crew-form-group">
+                                    <span className="crew-label">Tools</span>
+                                    <div className="crew-tool-list">
+                                      {claudeTools.map((tool) => (<label key={tool.id} className="crew-tool-item"><input type="checkbox" checked={agent.tools.includes(tool.id)} onChange={() => updateActiveCrewAgent(agent.id, { tools: toggleStringValue(agent.tools, tool.id) })} />{tool.label}</label>))}
+                                    </div>
+                                  </div>
+                                  <div className="crew-form-group">
+                                    <span className="crew-label">MCP-Zugriffe</span>
+                                    {configuredMcpServers.length === 0 ? <span className="crew-hint">Keine MCP-Server konfiguriert.</span> : (
+                                      <div className="crew-tool-list">
+                                        {configuredMcpServers.map((srv) => (<label key={srv.name} className="crew-tool-item"><input type="checkbox" checked={agent.mcpServerNames.includes(srv.name)} onChange={() => updateActiveCrewAgent(agent.id, { mcpServerNames: toggleStringValue(agent.mcpServerNames, srv.name) })} />{srv.name}</label>))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 </div>
 
-                <div className="card" style={{ marginBottom: 16 }}>
-                  <strong style={{ display: 'block', marginBottom: 6 }}>Tasks</strong>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                    Tasks werden unter /tasks erstellt, ausgefuehrt und geplant.
-                  </div>
+                {/* Tasks hint */}
+                <div className="crew-tasks-hint">
+                  <span className="crew-tasks-hint-icon">ðŸ“‹</span>
+                  Tasks werden unter /tasks erstellt, ausgefÃ¼hrt und geplant.
                 </div>
               </>
             ) : (
-              <p className="panel-empty">Keine Crew ausgewaehlt.</p>
+              <div className="crew-empty">
+                <div className="crew-empty-icon">ðŸ‘ˆ</div>
+                <div className="crew-empty-text">WÃ¤hle eine Crew aus der Liste aus.</div>
+              </div>
             )}
           </div>
         </div>
@@ -1250,3 +944,4 @@ export default function CrewPanel() {
     </div>
   )
 }
+

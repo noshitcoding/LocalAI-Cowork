@@ -340,9 +340,12 @@ export default function WelcomeScreen() {
 
       const cwd = getEffectiveWelcomeCwd(mergedForSend.next, workingFolder)
 
-      await engineSendMessage(promptWithAttachments, cwd, (event) => {
-        switch (event.type) {
-          case 'text_delta': {
+      await engineSendMessage(
+        promptWithAttachments,
+        cwd,
+        (event) => {
+          switch (event.type) {
+            case 'text_delta': {
             rawAssistantMessage += event.text
             const presentation = resolveAssistantPresentation(rawAssistantMessage, {
               verboseMode,

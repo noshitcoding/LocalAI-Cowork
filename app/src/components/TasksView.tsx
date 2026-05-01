@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useChatStore } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
-import { useCrewStore, type Crew } from '../stores/crewStore'
+import { useCrewStore, type Crew, type CrewProviderKind } from '../stores/crewStore'
 import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
@@ -34,6 +34,11 @@ type CrewExecutionResponse = {
   taskResults: CrewTaskExecutionResponse[]
   logs: CrewExecutionLog[]
   error: string | null
+}
+
+type CrewResolvedProviderConfigs = {
+  openAICompatible: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
+  openRouter: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
 }
 
 function resolveDefaultAgentId(crew: Crew): string | null {
@@ -70,6 +75,47 @@ function resolveExternalProviderConfig(
     apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
     timeoutMs: Math.max(1000, config.timeoutMs || 600000),
   }
+}
+
+function applyCrewDefaultModel(
+  crew: Crew,
+  config: { baseUrl: string; model: string; timeoutMs: number },
+  providerConfigs: CrewResolvedProviderConfigs,
+) {
+  const defaultProvider: CrewProviderKind = crew.defaultProvider ?? 'ollama'
+  const defaultModel = crew.defaultModel?.trim()
+  if (!defaultModel) {
+    return { config, providerConfigs }
+  }
+
+  if (defaultProvider === 'ollama') {
+    return {
+      config: { ...config, model: defaultModel },
+      providerConfigs,
+    }
+  }
+
+  if (defaultProvider === 'openai-compatible' && providerConfigs.openAICompatible) {
+    return {
+      config,
+      providerConfigs: {
+        ...providerConfigs,
+        openAICompatible: { ...providerConfigs.openAICompatible, model: defaultModel },
+      },
+    }
+  }
+
+  if (defaultProvider === 'openrouter' && providerConfigs.openRouter) {
+    return {
+      config,
+      providerConfigs: {
+        ...providerConfigs,
+        openRouter: { ...providerConfigs.openRouter, model: defaultModel },
+      },
+    }
+  }
+
+  return { config, providerConfigs }
 }
 
 function formatTimestamp(ts: number | null | undefined): string {
@@ -476,7 +522,7 @@ export default function TasksView() {
       const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
         ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
 
-      const providerConfigs = {
+      let providerConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
@@ -489,11 +535,15 @@ export default function TasksView() {
         ),
       }
 
-      const config = resolveCrewRuntimeConfig(crew, {
+      let config = resolveCrewRuntimeConfig(crew, {
         baseUrl: ollamaConfig.baseUrl,
         model: ollamaConfig.model,
         timeoutMs: ollamaConfig.timeoutMs,
       })
+      const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
+      config = appliedCrewDefault.config
+      providerConfigs = appliedCrewDefault.providerConfigs
+      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
 
       const response = await safeInvoke<CrewExecutionResponse>('crew_execute', {
         request: {
@@ -522,8 +572,8 @@ export default function TasksView() {
             backstory: agent.backstory,
             skillsMarkdown: agent.skillsMarkdown,
             personalityId: agent.personalityId,
-            modelOverride: agent.modelOverride,
-            providerKind: agent.providerKind,
+            modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
+            providerKind: agent.providerKind || crewDefaultProvider,
             tools: agent.tools,
             mcpServerNames: agent.mcpServerNames,
             enabled: agent.enabled,
@@ -630,7 +680,7 @@ export default function TasksView() {
       const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
         ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
 
-      const providerConfigs = {
+      let providerConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
@@ -643,11 +693,15 @@ export default function TasksView() {
         ),
       }
 
-      const config = resolveCrewRuntimeConfig(crew, {
+      let config = resolveCrewRuntimeConfig(crew, {
         baseUrl: ollamaConfig.baseUrl,
         model: ollamaConfig.model,
         timeoutMs: ollamaConfig.timeoutMs,
       })
+      const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
+      config = appliedCrewDefault.config
+      providerConfigs = appliedCrewDefault.providerConfigs
+      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
 
       const crewSnapshotJson = JSON.stringify({
         id: crew.id,
@@ -667,7 +721,11 @@ export default function TasksView() {
         verbose: crew.verbose,
         maxRpm: crew.maxRpm,
         maxParallelTasks: crew.maxParallelTasks,
-        agents: enabledAgents,
+        agents: enabledAgents.map((agent) => ({
+          ...agent,
+          modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
+          providerKind: agent.providerKind || crewDefaultProvider,
+        })),
         tasks: [
           {
             id: task.id,

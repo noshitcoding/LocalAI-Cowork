@@ -76,6 +76,8 @@ export type EngineConfig = {
   debug?: boolean
   /** Permission mode */
   permissionMode?: 'default' | 'plan' | 'bypass' | 'strict'
+  /** Allowed directories for file access */
+  allowedDirectories?: string[]
   /** Custom tools (in addition to builtins) */
   customTools?: Tool[]
   /** Slash commands */
@@ -857,8 +859,8 @@ export class QueryEngine {
 
   private buildToolContext(messages: Message[]): ToolUseContext {
     const permissionContext: ToolPermissionContext = this.config.permissionMode === 'bypass'
-      ? { ...getEmptyToolPermissionContext(), mode: 'bypass' }
-      : { ...getEmptyToolPermissionContext(), mode: this.config.permissionMode ?? 'default' }
+      ? { ...getEmptyToolPermissionContext(), mode: 'bypass', allowedDirectories: this.config.allowedDirectories ?? [] }
+      : { ...getEmptyToolPermissionContext(), mode: this.config.permissionMode ?? 'default', allowedDirectories: this.config.allowedDirectories ?? [] }
 
     return {
       cwd: this.appState.cwd || this.config.cwd,

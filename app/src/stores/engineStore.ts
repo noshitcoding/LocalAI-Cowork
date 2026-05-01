@@ -42,6 +42,7 @@ import {
 import { useConfigStore } from './configStore'
 import { parsePersistedSessionMessage } from '../utils/sessionThreads'
 import { getChatProviderState, normalizeChatProvider, type ChatProviderKind, type ChatProviderSelection } from '../utils/chatProvider'
+import type { PermissionMode } from '../engine/types/tool'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ export type EngineStoreState = {
     onEvent?: (event: EngineEvent) => void,
     historySeed?: ConversationHistorySeed,
     providerSelection?: ChatProviderSelection,
+    permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
   ) => Promise<void>
   abort: () => void
   resolveApproval: (result: ApprovalResult) => void
@@ -171,7 +173,7 @@ export type EngineStoreState = {
 
   // ── Internal ───────────────────────────────────────────────────────────
   _engine: QueryEngine | null
-  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection) => QueryEngine
+  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }) => QueryEngine
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -235,6 +237,7 @@ function buildChatEngineConfig(
   runId?: string,
   sessionId?: string,
   providerSelection?: ChatProviderSelection,
+  permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
 ): EngineConfig {
   const configState = useConfigStore.getState()
   const providerState = getChatProviderState(configState, provider, providerSelection)
@@ -272,7 +275,8 @@ function buildChatEngineConfig(
     systemPrompt: config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
     maxTurns: config.maxTurns,
     maxBudgetUsd: config.maxBudgetUsd,
-    permissionMode: config.permissionMode,
+    permissionMode: permissionConfig?.mode ?? config.permissionMode,
+    allowedDirectories: permissionConfig?.allowedDirectories ?? [],
     commands: getAllCommands(),
     agentDefinitions: DEFAULT_AGENTS,
     appendSystemPrompt: config.appendSystemPrompt,
@@ -331,7 +335,7 @@ export const useEngineStore = create<EngineStoreState>()(
       setApiKey: (apiKey) => set((s) => ({ config: { ...s.config, apiKey } })),
 
       // ── Init Engine ──────────────────────────────────────────────────────
-      _initEngine: (cwd: string, providerSelection?: ChatProviderSelection): QueryEngine => {
+      _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }): QueryEngine => {
         ensureCommandsRegistered()
 
         const { config, activeProvider, currentRunId, currentSessionId } = get()
@@ -343,6 +347,7 @@ export const useEngineStore = create<EngineStoreState>()(
           currentRunId ?? undefined,
           currentSessionId ?? undefined,
           providerSelection,
+          permissionConfig,
         )
 
         const engine = new QueryEngine(engineConfig)
@@ -357,7 +362,7 @@ export const useEngineStore = create<EngineStoreState>()(
       },
 
       // ── Send Message ─────────────────────────────────────────────────────
-      sendMessage: async (userInput, cwd, onEvent, historySeed, providerSelection) => {
+      sendMessage: async (userInput, cwd, onEvent, historySeed, providerSelection, permissionConfig) => {
         const queuedRun = sendMessageQueue
           .catch(() => undefined)
           .then(async () => {
@@ -389,7 +394,7 @@ export const useEngineStore = create<EngineStoreState>()(
             const provider = getResolvedProvider(providerState.provider)
             let engine = state._engine
             if (!engine) {
-              engine = state._initEngine(cwd, providerSelection)
+              engine = state._initEngine(cwd, providerSelection, permissionConfig)
             } else {
               engine.updateConfig(buildChatEngineConfig(
                 provider,
@@ -398,6 +403,7 @@ export const useEngineStore = create<EngineStoreState>()(
                 runId,
                 latestStore.currentSessionId ?? undefined,
                 providerSelection,
+                permissionConfig,
               ))
             }
 

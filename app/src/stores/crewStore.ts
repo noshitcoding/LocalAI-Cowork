@@ -70,6 +70,8 @@ export type Crew = {
   managerReviewGuidelines: string
   shareAllTaskOutputs: boolean
   sharedOutputCharLimit: number
+  defaultProvider?: CrewProviderKind
+  defaultModel?: string
   providerProfiles: CrewProviderProfiles
   agents: CrewAgent[]
   tasks: CrewTask[]
@@ -269,6 +271,7 @@ const DEFAULT_CREW_PROVIDER_PROFILES: CrewProviderProfiles = {
 }
 
 const DEFAULT_CREW_OUTPUT_MODE: CrewOutputMode = 'standard'
+const DEFAULT_CREW_PROVIDER: CrewProviderKind = 'ollama'
 
 function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig?: OllamaConfig) {
   if (!crew.runtimeConfig.enabled) {
@@ -311,6 +314,8 @@ function normalizeCrewStateEntry(crew: Crew): Crew {
     managerReviewGuidelines: crew.managerReviewGuidelines ?? '',
     shareAllTaskOutputs: crew.shareAllTaskOutputs ?? true,
     sharedOutputCharLimit: crew.sharedOutputCharLimit ?? 0,
+    defaultProvider: crew.defaultProvider ?? DEFAULT_CREW_PROVIDER,
+    defaultModel: crew.defaultModel ?? '',
     providerProfiles: {
       openAICompatible: {
         ...DEFAULT_CREW_PROVIDER_PROFILES.openAICompatible,
@@ -386,6 +391,8 @@ export const useCrewStore = create<CrewState>()(
           managerReviewGuidelines: '',
           shareAllTaskOutputs: true,
           sharedOutputCharLimit: 0,
+          defaultProvider: DEFAULT_CREW_PROVIDER,
+          defaultModel: '',
           providerProfiles: {
             openAICompatible: { ...DEFAULT_CREW_PROVIDER_PROFILES.openAICompatible },
             openRouter: { ...DEFAULT_CREW_PROVIDER_PROFILES.openRouter },
@@ -525,6 +532,33 @@ export const useCrewStore = create<CrewState>()(
         }
 
         config = resolveCrewRuntimeConfig(crew, config)
+        const crewDefaultProvider = crew.defaultProvider ?? DEFAULT_CREW_PROVIDER
+        const crewDefaultModel = crew.defaultModel?.trim() ?? ''
+
+        if (crewDefaultModel) {
+          if (crewDefaultProvider === 'ollama') {
+            config = {
+              ...(config ?? {}),
+              model: crewDefaultModel,
+            }
+          } else if (crewDefaultProvider === 'openai-compatible' && providerConfigs?.openAICompatible) {
+            providerConfigs = {
+              ...providerConfigs,
+              openAICompatible: {
+                ...providerConfigs.openAICompatible,
+                model: crewDefaultModel,
+              },
+            }
+          } else if (crewDefaultProvider === 'openrouter' && providerConfigs?.openRouter) {
+            providerConfigs = {
+              ...providerConfigs,
+              openRouter: {
+                ...providerConfigs.openRouter,
+                model: crewDefaultModel,
+              },
+            }
+          }
+        }
 
         const enabledAgents = crew.agents.filter((agent) => agent.enabled)
         const enabledAgentIds = new Set(enabledAgents.map((agent) => agent.id))
@@ -619,8 +653,8 @@ export const useCrewStore = create<CrewState>()(
                 backstory: agent.backstory,
                 skillsMarkdown: agent.skillsMarkdown,
                 personalityId: agent.personalityId,
-                modelOverride: agent.modelOverride,
-                providerKind: agent.providerKind,
+                modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
+                providerKind: agent.providerKind || crewDefaultProvider,
                 tools: agent.tools,
                 mcpServerNames: agent.mcpServerNames,
                 enabled: agent.enabled,

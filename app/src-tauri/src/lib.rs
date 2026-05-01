@@ -526,6 +526,7 @@ struct ThreadRow {
   created_at: String,
   updated_at: String,
   provider_settings_json: Option<String>,
+  permission_config_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4726,19 +4727,27 @@ fn db_save_thread(
   title: String,
   created_at: String,
   provider_settings_json: Option<String>,
+  permission_config_json: Option<String>,
 ) -> Result<(), String> {
-  state.insert_thread(&id, &title, &created_at, provider_settings_json.as_deref()).map_err(|e| e.to_string())
+  state.insert_thread(
+    &id,
+    &title,
+    &created_at,
+    provider_settings_json.as_deref(),
+    permission_config_json.as_deref(),
+  ).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn db_list_threads(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ThreadRow>, String> {
   state.list_threads().map_err(|e| e.to_string()).map(|rows| {
-    rows.into_iter().map(|(id, title, ca, ua, provider_settings_json)| ThreadRow {
+    rows.into_iter().map(|(id, title, ca, ua, provider_settings_json, permission_config_json)| ThreadRow {
       id,
       title,
       created_at: ca,
       updated_at: ua,
       provider_settings_json,
+      permission_config_json,
     }).collect()
   })
 }

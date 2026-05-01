@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/sessionThreads'
 import type { ChatAttachment } from '../utils/chatAttachments'
 import { normalizeChatProviderSelection, type ChatProviderSelection } from '../utils/chatProvider'
+import type { PermissionMode } from '../engine/types/tool'
 
 export type ChatMessage = {
   id: string
@@ -42,6 +43,11 @@ export type LiveToolCall = {
   freeTextPlaceholder?: string
 }
 
+export type PermissionConfig = {
+  mode: PermissionMode
+  allowedDirectories: string[]
+}
+
 export type ChatThread = {
   id: string
   title: string
@@ -49,6 +55,7 @@ export type ChatThread = {
   createdAt: number
   updatedAt: number
   providerSettings?: ChatProviderSelection
+  permissionConfig?: PermissionConfig
 }
 
 type ChatState = {
@@ -62,6 +69,7 @@ type ChatState = {
   hydrateThread: (thread: ChatThread) => void
   setActiveThread: (id: string | null) => void
   setThreadProviderSettings: (threadId: string, providerSettings?: ChatProviderSelection) => void
+  setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => void
   addMessage: (threadId: string, message: Omit<ChatMessage, 'id'>) => string
   updateMessage: (
     threadId: string,
@@ -118,6 +126,27 @@ function parseThreadProviderSettings(raw: string | null | undefined): ChatProvid
   }
 }
 
+function serializePermissionConfig(config?: PermissionConfig): string | null {
+  if (!config) return null
+  return JSON.stringify(config)
+}
+
+function parsePermissionConfig(raw: string | null | undefined): PermissionConfig | undefined {
+  if (!raw?.trim()) {
+    return undefined
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return {
+      mode: parsed.mode || 'default',
+      allowedDirectories: parsed.allowedDirectories || [],
+    }
+  } catch {
+    return undefined
+  }
+}
+
 export const useChatStore = create<ChatState>()((set) => ({
   threads: [],
   activeThreadId: null,
@@ -136,6 +165,8 @@ export const useChatStore = create<ChatState>()((set) => ({
         updatedAt?: string
         provider_settings_json?: string | null
         providerSettingsJson?: string | null
+        permission_config_json?: string | null
+        permissionConfigJson?: string | null
       }
       type DbMessage = { id: string; role: string; content: string; timestamp: number }
       const dbThreads = await invoke<DbThread[]>('db_list_threads')
@@ -150,6 +181,7 @@ export const useChatStore = create<ChatState>()((set) => ({
           createdAt: parseTimestamp(dt.created_at ?? dt.createdAt),
           updatedAt: parseTimestamp(dt.updated_at ?? dt.updatedAt),
           providerSettings: parseThreadProviderSettings(dt.provider_settings_json ?? dt.providerSettingsJson),
+          permissionConfig: parsePermissionConfig(dt.permission_config_json || dt.permissionConfigJson || '{}'),
         })
       }
       const hydratedThreads = threads.map((thread) => ({
@@ -168,7 +200,7 @@ export const useChatStore = create<ChatState>()((set) => ({
     }
   },
 
-  addThread: (title: string, providerSettings?: ChatProviderSelection) => {
+  addThread: (title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig) => {
     const id = generateId()
     const now = Date.now()
     const normalizedProviderSettings = normalizeChatProviderSelection(providerSettings)
@@ -185,6 +217,7 @@ export const useChatStore = create<ChatState>()((set) => ({
       createdAt: now,
       updatedAt: now,
       providerSettings: normalizedProviderSettings,
+      permissionConfig,
     }
     set((state) => ({
       threads: [thread, ...state.threads],
@@ -196,6 +229,7 @@ export const useChatStore = create<ChatState>()((set) => ({
       title,
       createdAt: isoNow,
       providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
+      permissionConfigJson: serializePermissionConfig(permissionConfig),
     }, 'db_save_thread')
     void persistInvoke('db_save_message', {
       id: systemMsg.id,
@@ -238,6 +272,21 @@ export const useChatStore = create<ChatState>()((set) => ({
       id: threadId,
       providerSettingsJson: serializeThreadProviderSettings(normalized),
     }, 'db_update_thread_provider_settings')
+  },
+
+  setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => {
+    const serialized = serializePermissionConfig(permissionConfig)
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === threadId
+          ? { ...thread, permissionConfig, updatedAt: Date.now() }
+          : thread
+      )),
+    }))
+    void persistInvoke('db_update_thread_permission_config', {
+      id: threadId,
+      permissionConfigJson: serialized,
+    }, 'db_update_thread_permission_config')
   },
 
   addMessage: (threadId, message) => {
@@ -375,3 +424,5 @@ export const useChatStore = create<ChatState>()((set) => ({
 export function getActiveThread(state: ChatState): ChatThread | undefined {
   return state.threads.find((t) => t.id === state.activeThreadId)
 }
+
+export type { PermissionMode }

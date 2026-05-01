@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
+import type { PermissionMode } from '../engine/types/tool'
 
 export type TaskStatus =
   | 'created'
@@ -20,6 +21,11 @@ export type TaskStep = {
   output: string | null
 }
 
+export type PermissionConfig = {
+  mode: PermissionMode
+  allowedDirectories: string[]
+}
+
 export type Task = {
   id: string
   title: string
@@ -30,6 +36,7 @@ export type Task = {
   createdAt: number
   updatedAt: number
   error: string | null
+  permissionConfig?: PermissionConfig
 }
 
 type TaskState = {

@@ -924,27 +924,34 @@ impl Database {
             )?;
         }
 
+        if version < 16 {
+            conn.execute_batch(
+                "ALTER TABLE chat_threads ADD COLUMN permission_config_json TEXT;\n
+                UPDATE schema_version SET version = 16;"
+            )?;
+        }
+
         Ok(())
     }
 
     // -- Chat Threads --
 
-    pub fn insert_thread(&self, id: &str, title: &str, created_at: &str, provider_settings_json: Option<&str>) -> SqlResult<()> {
+    pub fn insert_thread(&self, id: &str, title: &str, created_at: &str, provider_settings_json: Option<&str>, permission_config_json: Option<&str>) -> SqlResult<()> {
         let conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO chat_threads (id, title, created_at, updated_at, provider_settings_json) VALUES (?1, ?2, ?3, ?3, ?4)",
-            params![id, title, created_at, provider_settings_json],
+            "INSERT INTO chat_threads (id, title, created_at, updated_at, provider_settings_json, permission_config_json) VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+            params![id, title, created_at, provider_settings_json, permission_config_json],
         )?;
         Ok(())
     }
 
-    pub fn list_threads(&self) -> SqlResult<Vec<(String, String, String, String, Option<String>)>> {
+    pub fn list_threads(&self) -> SqlResult<Vec<(String, String, String, String, Option<String>, Option<String>)>> {
         let conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, title, created_at, updated_at, provider_settings_json FROM chat_threads ORDER BY updated_at DESC"
+            "SELECT id, title, created_at, updated_at, provider_settings_json, permission_config_json FROM chat_threads ORDER BY updated_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
         })?;
         rows.collect()
     }
@@ -954,6 +961,15 @@ impl Database {
         conn.execute(
             "UPDATE chat_threads SET provider_settings_json = ?2, updated_at = datetime('now') WHERE id = ?1",
             params![id, provider_settings_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_thread_permission_config(&self, id: &str, permission_config_json: Option<&str>) -> SqlResult<()> {
+        let conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE chat_threads SET permission_config_json = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, permission_config_json],
         )?;
         Ok(())
     }
@@ -1615,7 +1631,7 @@ impl Database {
     pub fn list_scheduled_tasks(&self) -> SqlResult<Vec<(String, String, String, String, String, Option<String>, Option<String>, Option<String>, i64, String, bool, Option<String>, Option<String>, String, String)>> {
         let conn = self.conn.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, prompt, schedule_expr, task_kind, crew_id, crew_snapshot_json, model_config_json, priority, depends_on_task_ids_json, active, last_run_at, next_run_at, created_at, updated_at
+            "SELECT id, name, prompt, schedule_expr, next_run_at, task_kind, crew_id, crew_snapshot_json, model_config_json, priority, depends_on_task_ids_json, last_run_at
              FROM scheduled_tasks
              ORDER BY priority DESC, created_at DESC"
         )?;
