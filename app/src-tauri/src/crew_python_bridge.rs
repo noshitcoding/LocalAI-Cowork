@@ -57,6 +57,37 @@ pub struct CrewRuntimeValidateRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CrewRuntimeTaskExecutionResult {
+    pub task_id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewRuntimeExecutionLog {
+    pub id: String,
+    pub crew_id: String,
+    pub agent_id: String,
+    pub task_id: String,
+    pub action: String,
+    pub result: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrewRuntimeExecuteResponse {
+    pub crew_id: String,
+    pub status: String,
+    pub task_results: Vec<CrewRuntimeTaskExecutionResult>,
+    pub logs: Vec<CrewRuntimeExecutionLog>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CrewRuntimeValidateResponse {
     pub valid: bool,
     pub issues: Vec<String>,
@@ -89,6 +120,12 @@ impl CrewPythonBridge {
     fn set_active_run(&self, run_id: String, value: String) {
         if let Ok(mut metadata) = self.metadata.lock() {
             metadata.active_runs.insert(run_id, value);
+        }
+    }
+
+    fn clear_active_run(&self, run_id: &str) {
+        if let Ok(mut metadata) = self.metadata.lock() {
+            metadata.active_runs.remove(run_id);
         }
     }
 }
@@ -250,10 +287,9 @@ fn build_status_from_json<R: Runtime>(
     }
 }
 
-#[tauri::command]
-pub fn crew_runtime_status(
-    app: AppHandle,
-    bridge: State<'_, CrewPythonBridge>,
+fn crew_runtime_status_internal<R: Runtime>(
+    app: &AppHandle<R>,
+    bridge: &CrewPythonBridge,
 ) -> Result<CrewRuntimeStatusResponse, String> {
     let runtime_root = resolve_runtime_root(&app)?;
     if !runtime_root.exists() {
@@ -268,7 +304,7 @@ pub fn crew_runtime_status(
     if !main_script.exists() {
         return Ok(build_status_from_json(
             &app,
-            bridge.inner(),
+            bridge,
             &runtime_root,
             detected_python_path,
             None,
@@ -297,12 +333,20 @@ pub fn crew_runtime_status(
 
     Ok(build_status_from_json(
         &app,
-        bridge.inner(),
+        bridge,
         &runtime_root,
         detected_python_path,
         status_json,
         message,
     ))
+}
+
+#[tauri::command]
+pub fn crew_runtime_status(
+    app: AppHandle,
+    bridge: State<'_, CrewPythonBridge>,
+) -> Result<CrewRuntimeStatusResponse, String> {
+    crew_runtime_status_internal(&app, bridge.inner())
 }
 
 #[tauri::command]
@@ -365,7 +409,7 @@ pub fn crew_runtime_bootstrap(
     }
 
     bridge.set_last_bootstrap_at(Some(chrono::Utc::now().to_rfc3339()));
-    let status = crew_runtime_status(app, bridge.clone())?;
+    let status = crew_runtime_status_internal(&app, bridge.inner())?;
 
     Ok(CrewRuntimeBootstrapResponse {
         ok: status.ready,
@@ -379,6 +423,42 @@ pub fn crew_runtime_bootstrap(
         },
         status,
     })
+}
+
+pub fn crew_runtime_execute_request<R: Runtime>(
+    app: &AppHandle<R>,
+    bridge: &CrewPythonBridge,
+    payload: &Value,
+) -> Result<CrewRuntimeExecuteResponse, String> {
+    let status = crew_runtime_status_internal(app, bridge)?;
+    if !status.ready {
+        return Err("Crew runtime ist nicht vorbereitet. Fuehre zuerst die Runtime-Initialisierung aus.".to_string());
+    }
+
+    let runtime_root = resolve_runtime_root(app)?;
+    let venv_python = resolve_venv_python_path(&runtime_root);
+    if !venv_python.exists() {
+        return Err("Crew runtime ist nicht vorbereitet. Fuehre zuerst die Runtime-Initialisierung aus.".to_string());
+    }
+
+    let scripts_path = resolve_runtime_scripts_path(app);
+    let main_script = scripts_path.join("main.py");
+    if !main_script.exists() {
+        return Err(format!("Crew runtime Skript fehlt: {}", main_script.display()));
+    }
+
+    let run_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("runtime-crew")
+        .to_string();
+    bridge.set_active_run(run_id.clone(), chrono::Utc::now().to_rfc3339());
+
+    let result = run_python_json_command(&venv_python, &main_script, "execute", Some(payload));
+    bridge.clear_active_run(&run_id);
+
+    let response = result?;
+    serde_json::from_value::<CrewRuntimeExecuteResponse>(response).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -19,6 +19,7 @@ mod worker_sandbox;
 use claude_code_bridge::ClaudeCodeBridge;
 use crew_python_bridge::{
   crew_runtime_bootstrap,
+  crew_runtime_execute_request,
   crew_runtime_status,
   crew_runtime_validate_definition,
   CrewPythonBridge,
@@ -2936,6 +2937,167 @@ fn sanitize_crew_request_snapshot(request: &CrewExecuteRequest) -> CrewExecuteRe
   snapshot
 }
 
+fn persist_crew_execution_response(
+  database: &Arc<Database>,
+  request: &CrewExecuteRequest,
+  run_id: &str,
+  started_at: &str,
+  request_snapshot_json: &str,
+  response: &CrewExecutionResponse,
+) {
+  let finished_at = chrono::Utc::now().to_rfc3339();
+
+  let _ = database.insert_crew_run(
+    run_id,
+    &request.id,
+    &request.name,
+    &request.process,
+    &response.status,
+    request.manager_agent_id.as_deref(),
+    response.error.as_deref(),
+    request_snapshot_json,
+    started_at,
+    Some(&finished_at),
+  );
+  let _ = database.insert_crew_run_logs(run_id, &response.logs);
+
+  let response_payload = serde_json::to_string(response).ok();
+  let _ = database.insert_crew_run_event(
+    &uuid::Uuid::new_v4().to_string(),
+    run_id,
+    &request.id,
+    "run_completed",
+    response_payload.as_deref(),
+  );
+
+  for log in &response.logs {
+    let payload = serde_json::json!({
+      "agentId": log.agent_id,
+      "taskId": log.task_id,
+      "action": log.action,
+      "result": log.result,
+      "timestamp": log.timestamp,
+    });
+    let payload_json = serde_json::to_string(&payload).ok();
+    let _ = database.insert_crew_run_event(
+      &uuid::Uuid::new_v4().to_string(),
+      run_id,
+      &request.id,
+      "crew_log",
+      payload_json.as_deref(),
+    );
+  }
+}
+
+async fn execute_crew_request(
+  app: &tauri::AppHandle,
+  database: &Arc<Database>,
+  registry: &CrewExecutionRegistry,
+  bridge: &CrewPythonBridge,
+  request: CrewExecuteRequest,
+) -> Result<CrewExecutionResponse, String> {
+  if request.tasks.is_empty() {
+    return Err("Crew enthaelt keine Tasks".to_string());
+  }
+
+  let enabled_agents: HashMap<String, CrewExecuteAgentRequest> = request
+    .agents
+    .iter()
+    .filter(|agent| agent.enabled)
+    .cloned()
+    .map(|agent| (agent.id.clone(), agent))
+    .collect();
+
+  if enabled_agents.is_empty() {
+    return Err("Crew enthaelt keine aktiven Agenten".to_string());
+  }
+
+  validate_crew_request(&request, &enabled_agents)?;
+
+  let runtime_payload = serde_json::to_value(&request).map_err(|error| error.to_string())?;
+  let started_at = chrono::Utc::now().to_rfc3339();
+  let run_id = uuid::Uuid::new_v4().to_string();
+  let request_snapshot_json = serde_json::to_string(&sanitize_crew_request_snapshot(&request)).unwrap_or_else(|_| "{}".to_string());
+
+  let _ = database.insert_crew_run_event(
+    &uuid::Uuid::new_v4().to_string(),
+    &run_id,
+    &request.id,
+    "run_started",
+    Some(&request_snapshot_json),
+  );
+
+  if let Ok(mut canceled) = registry.canceled.lock() {
+    canceled.remove(&request.id);
+  }
+
+  let runtime_result = crew_runtime_execute_request(app, bridge, &runtime_payload);
+
+  if let Ok(mut canceled) = registry.canceled.lock() {
+    canceled.remove(&request.id);
+  }
+
+  match runtime_result {
+    Ok(runtime_response) => {
+      let response = CrewExecutionResponse {
+        crew_id: runtime_response.crew_id,
+        status: runtime_response.status,
+        task_results: runtime_response
+          .task_results
+          .into_iter()
+          .map(|entry| CrewTaskExecutionRow {
+            task_id: entry.task_id,
+            agent_id: entry.agent_id,
+            status: entry.status,
+            output: entry.output,
+          })
+          .collect(),
+        logs: runtime_response
+          .logs
+          .into_iter()
+          .map(|entry| CrewExecutionLogRow {
+            id: entry.id,
+            crew_id: entry.crew_id,
+            agent_id: entry.agent_id,
+            task_id: entry.task_id,
+            action: entry.action,
+            result: entry.result,
+            timestamp: entry.timestamp,
+          })
+          .collect(),
+        error: runtime_response.error,
+      };
+
+      persist_crew_execution_response(database, &request, &run_id, &started_at, &request_snapshot_json, &response);
+      Ok(response)
+    }
+    Err(error) => {
+      if error.contains("Crew runtime ist nicht vorbereitet") || error.contains("Crew runtime Skript fehlt") {
+        return Err(error);
+      }
+
+      let response = CrewExecutionResponse {
+        crew_id: request.id.clone(),
+        status: "failed".to_string(),
+        task_results: Vec::new(),
+        logs: vec![CrewExecutionLogRow {
+          id: uuid::Uuid::new_v4().to_string(),
+          crew_id: request.id.clone(),
+          agent_id: request.manager_agent_id.clone().unwrap_or_else(|| "python-runtime".to_string()),
+          task_id: request.tasks.first().map(|task| task.id.clone()).unwrap_or_else(|| "runtime".to_string()),
+          action: "Runtime-Fehler".to_string(),
+          result: error.clone(),
+          timestamp: chrono::Utc::now().timestamp_millis(),
+        }],
+        error: Some(error.clone()),
+      };
+
+      persist_crew_execution_response(database, &request, &run_id, &started_at, &request_snapshot_json, &response);
+      Ok(response)
+    }
+  }
+}
+
 async fn execute_crew_task(
   app: tauri::AppHandle,
   database: Arc<Database>,
@@ -3506,10 +3668,11 @@ async fn crew_execute_internal(
 async fn crew_execute(
   app: tauri::AppHandle,
   registry: tauri::State<'_, CrewExecutionRegistry>,
+  bridge: tauri::State<'_, CrewPythonBridge>,
   request: CrewExecuteRequest,
 ) -> Result<CrewExecutionResponse, String> {
   let database = app.state::<Arc<Database>>();
-  crew_execute_internal(&app, database.inner(), &registry, request).await
+  execute_crew_request(&app, database.inner(), &registry, bridge.inner(), request).await
 }
 
 #[tauri::command]
@@ -6407,7 +6570,8 @@ fn run_scheduled_task_once(
       Ok(snapshot_json) => match serde_json::from_str::<CrewExecuteRequest>(snapshot_json) {
         Ok(request) => {
           let registry = app.state::<CrewExecutionRegistry>();
-          match tauri::async_runtime::block_on(crew_execute_internal(&app, database, &registry, request)) {
+          let bridge = app.state::<CrewPythonBridge>();
+          match tauri::async_runtime::block_on(execute_crew_request(&app, database, &registry, bridge.inner(), request)) {
             Ok(response) => {
               let status = if response.status == "completed" { "succeeded".to_string() } else { response.status.clone() };
               let result_json = serde_json::to_string(&response).unwrap_or_else(|_| String::new());
