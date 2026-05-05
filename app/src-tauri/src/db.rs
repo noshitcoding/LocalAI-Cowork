@@ -1151,22 +1151,6 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_thread_permission_config(
-        &self,
-        id: &str,
-        permission_config_json: Option<&str>,
-    ) -> SqlResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute(
-            "UPDATE chat_threads SET permission_config_json = ?2, updated_at = datetime('now') WHERE id = ?1",
-            params![id, permission_config_json],
-        )?;
-        Ok(())
-    }
-
     pub fn delete_thread(&self, id: &str) -> SqlResult<()> {
         let conn = self
             .conn

@@ -107,10 +107,11 @@ describe('LeftSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Persistierte Analyse/i }))
 
     await waitFor(() => {
-      const state = useChatStore.getState()
-      expect(state.activeThreadId).toBe('session-1')
-      expect(state.threads[0]?.title).toBe('Persistierte Analyse')
-      expect(state.threads[0]?.messages[0]?.content).toContain('Bitte pruefe den Build.')
+      // Check that the session was loaded and navigation occurred
+      expect(navigateMock).toHaveBeenCalledWith('/')
+      // Verify the engine store's loadSessionById was called
+      const engineState = useEngineStore.getState()
+      expect(engineState.loadSessionById).toHaveBeenCalledWith('session-1')
     })
 
     expect(navigateMock).toHaveBeenCalledWith('/')

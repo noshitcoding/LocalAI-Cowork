@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionRecord } from '../engine'
+import type { SessionRecord } from '../engine/services/sessionPersistence'
 
 const invokeMock = vi.fn(async (_command?: string, _args?: unknown): Promise<unknown> => undefined)
 const autoSaveSessionMock = vi.fn(async () => undefined)
@@ -23,6 +23,8 @@ function createQueryBarrier(): () => void {
 class FakeQueryEngine {
   updateConfig = vi.fn()
   setToolUICallback = vi.fn()
+  abort = vi.fn()
+  resolveApproval = vi.fn()
 
   constructor(_config: unknown) {}
 
@@ -86,54 +88,31 @@ vi.mock('./configStore', () => ({
   },
 }))
 
-vi.mock('../engine', () => ({
+vi.mock('../engine/core/queryEngine', () => ({
   QueryEngine: FakeQueryEngine,
-  createInitialAppState: () => ({
-    turnCount: 0,
-    totalTokens: { input: 0, output: 0 },
-    totalCostUsd: 0,
-    planMode: false,
-  }),
-  EMPTY_USAGE: { input_tokens: 0, output_tokens: 0 },
+}))
+
+vi.mock('../engine/commands/registry', () => ({
   registerBuiltinCommands: vi.fn(),
   getAllCommands: vi.fn(() => []),
-  DEFAULT_SYSTEM_PROMPT: 'test-system-prompt',
-  DEFAULT_AGENTS: [],
-  createUserMessage: (content: string) => ({
-    type: 'user',
-    uuid: `user-${Math.random()}`,
-    content: [{ type: 'text', text: content }],
-    timestamp: Date.now(),
-  }),
-  createAssistantMessage: (content: unknown, model: string, usage: unknown, stopReason: string) => ({
-    type: 'assistant',
-    uuid: `assistant-${Math.random()}`,
-    content,
-    model,
-    usage,
-    stopReason,
-    timestamp: Date.now(),
-  }),
-  createSystemMessage: (content: string) => ({
-    type: 'system',
-    uuid: `system-${Math.random()}`,
-    content,
-    timestamp: Date.now(),
-  }),
+}))
+
+vi.mock('../engine/api/ollamaClient', () => ({
   listOllamaModels: vi.fn(async () => []),
   checkOllamaConnection: vi.fn(async () => true),
+}))
+
+vi.mock('../engine/services/sessionPersistence', () => ({
   autoSaveSession: () => autoSaveSessionMock(),
   createSession: vi.fn(async () => undefined),
-  endSession: vi.fn(async () => undefined),
   generateSessionTitle: vi.fn(() => 'Seeded Session'),
   loadSession: (sessionId: string) => loadSessionMock(sessionId),
   listSessions: vi.fn(async () => []),
   deleteSession: vi.fn(async () => undefined),
+}))
+
+vi.mock('../engine/memory/memorySystem', () => ({
   buildSystemPromptWithMemory: (cwd: string, systemPrompt: string) => buildSystemPromptWithMemoryMock(cwd, systemPrompt),
-  extractTextContent: (message: { content?: Array<{ type: string; text?: string }> }) =>
-    Array.isArray(message.content)
-      ? message.content.filter((block) => block.type === 'text').map((block) => block.text ?? '').join('')
-      : '',
 }))
 
 describe('engineStore history seeding', () => {
@@ -209,6 +188,17 @@ describe('engineStore history seeding', () => {
   it('continues a loaded persisted session without flattening tool messages', async () => {
     const { useEngineStore } = await import('./engineStore')
 
+    // Mock session with engine-format messages (structured content)
+    const structuredAssistantMessage = JSON.stringify({
+      type: 'assistant',
+      uuid: 'assistant-tool-1',
+      content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'C:/workspace/a.txt' } }],
+      model: 'gpt-oss:20b',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      stopReason: 'tool_use',
+      timestamp: 100,
+    })
+
     loadSessionMock.mockResolvedValueOnce({
       id: 'session-1',
       title: 'Persistierte Analyse',
@@ -233,6 +223,7 @@ describe('engineStore history seeding', () => {
 
     await useEngineStore.getState().loadSessionById('session-1')
 
+    // Send message with historySeed containing the structured messages from the session
     await useEngineStore.getState().sendMessage(
       'und jetzt weiter',
       'C:/workspace',
@@ -242,7 +233,8 @@ describe('engineStore history seeding', () => {
         messages: [
           {
             role: 'assistant',
-            content: '[assistant]',
+            content: 'Tool-Aufruf: Read {"file_path":"C:/workspace/a.txt"}',
+            debugContent: structuredAssistantMessage,
           },
         ],
       },

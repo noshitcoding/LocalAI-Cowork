@@ -39,6 +39,7 @@ import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFro
 import { MessageThinking, MessageVerbose } from './MessageThinking'
 import { HighlightedChatText } from './HighlightedChatText'
 import { writeAuditEvent } from '../utils/audit'
+import { persistInvoke } from '../stores/chatStore'
 import {
   buildClaudeSystemAddendum,
   compactHistoryForPrompt,
@@ -722,6 +723,7 @@ export default function CoworkView() {
   const mcpServer = useConfigStore((s) => s.mcpServer)
   const activeProvider = useEngineStore((s) => s.activeProvider)
   const engineSendMessage = useEngineStore((s) => s.sendMessage)
+  const engineAbort = useEngineStore((s) => s.abort)
   const enginePermissionMode = useEngineStore((s) => s.config.permissionMode)
   const setEngineConfig = useEngineStore((s) => s.setConfig)
   const resolveEngineApproval = useEngineStore((s) => s.resolveApproval)
@@ -795,25 +797,40 @@ export default function CoworkView() {
   const selectableModels = providerState.selectableModels
 
   useEffect(() => {
+    // Wenn bereits ein aktiver Thread existiert und gültig ist, tue nichts
     if (activeThread) {
       emptyThreadBootstrapRef.current = null
       return
     }
 
     const current = useChatStore.getState()
+    
+    // Prüfe, ob activeThreadId gesetzt und gültig ist
     if (current.activeThreadId && current.threads.some((thread) => thread.id === current.activeThreadId)) {
+      setActiveThread(current.activeThreadId)
       return
     }
 
+    // Prüfe, ob ein bootstrapped Thread existiert
     const bootstrappedThreadId = emptyThreadBootstrapRef.current
     if (bootstrappedThreadId && current.threads.some((thread) => thread.id === bootstrappedThreadId)) {
       setActiveThread(bootstrappedThreadId)
       return
     }
 
-    const threadId = addThread('Neuer Chat', createChatProviderSelection(providerState))
-    emptyThreadBootstrapRef.current = threadId
-    setActiveThread(threadId)
+    // Nur einen leeren "Neuer Chat" erstellen, wenn noch gar kein Thread existiert
+    if (current.threads.length === 0) {
+      const threadId = addThread('Neuer Chat', createChatProviderSelection(providerState))
+      emptyThreadBootstrapRef.current = threadId
+      setActiveThread(threadId)
+    } else {
+      // Ansonsten den neuesten Thread aktivieren
+      const sortedThreads = [...current.threads].sort((a, b) => b.updatedAt - a.updatedAt)
+      const mostRecentThread = sortedThreads[0]
+      if (mostRecentThread) {
+        setActiveThread(mostRecentThread.id)
+      }
+    }
   }, [activeThread, addThread, providerState, setActiveThread])
 
   const approvalSteps = Array.isArray(pendingApproval) ? pendingApproval : []
@@ -1131,6 +1148,23 @@ export default function CoworkView() {
     if (!threadId) {
       threadId = addThread(effectiveInput.slice(0, 50), createChatProviderSelection(providerState))
       setActiveThread(threadId)
+    }
+
+    // Automatische Titelgenerierung: Wenn der Thread noch "Neuer Chat" heißt und eine erste Nachricht gesendet wird
+    const currentThread = useChatStore.getState().threads.find(t => t.id === threadId)
+    if (currentThread && currentThread.title === 'Neuer Chat' && currentThread.messages.filter(m => m.role === 'user').length === 0) {
+      const newTitle = effectiveInput.length > 50 ? effectiveInput.slice(0, 50) + '...' : effectiveInput
+      // Titel über den store und DB aktualisieren
+      const updatedThreads = useChatStore.getState().threads.map(t => 
+        t.id === threadId ? { ...t, title: newTitle, updatedAt: Date.now() } : t
+      )
+      useChatStore.setState({ threads: updatedThreads })
+      // Titel in der Datenbank aktualisieren
+      void persistInvoke('db_save_thread', {
+        id: threadId,
+        title: newTitle,
+        createdAt: new Date(currentThread.createdAt).toISOString()
+      }, 'db_save_thread update title')
     }
 
     const slash = parseSlashCommand(text)
@@ -2909,6 +2943,28 @@ export default function CoworkView() {
     await submitPrompt(inputValue, attachments)
   }
 
+  const handleStop = () => {
+    engineAbort()
+    if (activeThreadId) {
+      const streamingMessage = [...activeMessages].reverse().find(
+        (message) => message.role === 'assistant' && message.streaming,
+      )
+      if (streamingMessage) {
+        const content = streamingMessage.content?.trim()
+          ? `${streamingMessage.content}\n\nGenerierung abgebrochen.`
+          : 'Generierung abgebrochen.'
+        updateMessage(
+          activeThreadId,
+          streamingMessage.id,
+          { content, streaming: false },
+          { persist: true },
+        )
+      }
+    }
+    setBusy(false)
+    setError(null)
+  }
+
   const toggleAskUserOption = (optionId: string) => {
     setSelectedAskUserOptionIds((current) => {
       if (current.includes(optionId)) {
@@ -3530,9 +3586,15 @@ export default function CoworkView() {
                 </button>
               </div>
             </div>
-            <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
-              {busy ? '⟳' : askUserQuestion ? 'Antwort senden →' : 'Senden →'}
-            </button>
+            {busy ? (
+              <button type="button" onClick={handleStop} className="btn-stop compact-send-btn">
+                ⏹ Stopp
+              </button>
+            ) : (
+              <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
+                {askUserQuestion ? 'Antwort senden →' : 'Senden →'}
+              </button>
+            )}
           </div>
         </form>
       </div>
