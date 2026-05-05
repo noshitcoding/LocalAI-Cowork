@@ -22,6 +22,7 @@ const CoworkView = lazy(() => import('./components/CoworkView'))
 const SettingsView = lazy(() => import('./components/SettingsView'))
 const TasksView = lazy(() => import('./components/TasksView'))
 const CrewView = lazy(() => import('./components/CrewView'))
+const ProjectView = lazy(() => import('./components/ProjectView'))
 
 type BackendPolicyState = {
   flags: Record<string, boolean>
@@ -68,6 +69,7 @@ function AppRoutes() {
             </div>
           } />
           <Route path="crew" element={<CrewView />} />
+          <Route path="projects" element={<ProjectView />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

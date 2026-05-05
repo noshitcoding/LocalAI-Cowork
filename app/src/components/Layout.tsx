@@ -97,6 +97,9 @@ export default function Layout() {
           <NavLink to="/crew" className={({isActive}) => `top-tab${isActive ? ' active' : ''}`}>
             {t('Crew')}
           </NavLink>
+          <NavLink to="/projects" className={({isActive}) => `top-tab${isActive ? ' active' : ''}`}>
+            Projekte
+          </NavLink>
           <NavLink to="/settings" className={({isActive}) => `top-tab${isActive ? ' active' : ''}`}>
             {t('Settings')}
           </NavLink>
