@@ -27,6 +27,7 @@ import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFro
 import { detectModelCapabilities } from '../engine/api/ollamaClient'
 import { MessageThinking, MessageVerbose } from './MessageThinking'
 import { HighlightedChatText } from './HighlightedChatText'
+import CrewLiveMonitor from './CrewLiveMonitor'
 import { writeAuditEvent } from '../utils/audit'
 import { buildSystemPromptFromPersonality } from '../utils/defaultSeeds'
 import { getSlashCommandSuggestions, useCommandRegistry } from '../stores/commandRegistryStore'
@@ -88,6 +89,18 @@ async function buildEngineUserInput(promptWithAttachments: string, attachments: 
     { type: 'text', text: promptWithAttachments },
     ...imageBlocks,
   ]
+}
+
+function waitForNextPaint(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(resolve, 0)
+    })
+  })
 }
 
 type LiveToolCallPatch = Partial<Omit<LiveToolCall, 'id' | 'startedAt'>> & {
@@ -412,6 +425,7 @@ export default function ChatView() {
     lastActiveMessage?.content,
     lastActiveMessage?.thinkingContent,
     lastActiveMessage?.verboseContent,
+    lastActiveMessage?.crewLive?.updatedAt,
   ])
 
   useEffect(() => {
@@ -704,65 +718,77 @@ export default function ChatView() {
     setSlashSuggestions([])
 
     const mergedForSend = mergeAttachments([], attachments)
-    const attachmentBuild = await buildAttachmentPromptContext(mergedForSend.next, effectiveInput)
-    const attachmentContext = attachmentBuild.context
-    const promptWithAttachments = attachmentContext ? `${effectiveInput}\n\n${attachmentContext}` : effectiveInput
-    const engineUserInput = await buildEngineUserInput(promptWithAttachments, mergedForSend.next)
-
     const userMessage = {
       role: 'user' as const,
       content: text,
       timestamp: Date.now(),
       attachments: mergedForSend.next,
-      debugContent: promptWithAttachments,
     }
-    let userMessageId: string | null = null
-    const history = activeMessages
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }))
-      .filter((m) => m.content.trim().length > 0 || m.role === 'user')
-
-    const compactedHistory = compactHistoryForPrompt(history, 12)
-
-    // Inject system prompt from active personality
-    const activePersonality = personalities.find(p => p.id === activePersonalityId)
-      ?? personalities.find(p => p.is_default)
-      ?? personalities[0]
-    if (activePersonality) {
-      const systemPrompt = buildSystemPromptFromPersonality(activePersonality, globalInstruction, memoryHints)
-      if (systemPrompt) {
-        compactedHistory.compacted.unshift({ role: 'system', content: systemPrompt })
-      }
-    }
-
-    if (superVerboseAuditLogging) {
-      void writeAuditEvent('super_verbose', 'chat_user_prompt', {
-        view: 'chat',
-        threadId: activeThreadId,
-        prompt: text,
-        promptWithAttachments,
-        attachments: mergedForSend.next,
-        history,
-      })
-    }
-
-    userMessageId = addMessage(activeThreadId, userMessage)
+    const userMessageId = addMessage(activeThreadId, userMessage)
     if (inputRef.current) inputRef.current.value = ''
     setAttachments([])
     setAttachmentNotice(null)
+    setBusy(true)
+    setError(null)
+
     const effectiveTimeoutMs = providerState.provider === 'ollama'
       ? Math.max(ollama.timeoutMs, 600000)
       : providerState.timeoutMs
     if (providerState.provider === 'ollama' && effectiveTimeoutMs !== ollama.timeoutMs) {
       setOllama({ timeoutMs: effectiveTimeoutMs })
     }
-    setBusy(true)
-    setError(null)
 
     let assistantMessageId: string | null = null
     let requestPreviewMessageId: string | null = null
+    let promptWithAttachments = effectiveInput
+    let attachmentBuild = {
+      context: '',
+      parsedFiles: 0,
+      failedFiles: [] as Array<{ path: string; error: string }>,
+    }
 
     try {
+      await waitForNextPaint()
+
+      attachmentBuild = await buildAttachmentPromptContext(mergedForSend.next, effectiveInput)
+      const attachmentContext = attachmentBuild.context
+      promptWithAttachments = attachmentContext ? `${effectiveInput}\n\n${attachmentContext}` : effectiveInput
+      const engineUserInput = await buildEngineUserInput(promptWithAttachments, mergedForSend.next)
+      const history = activeMessages
+        .filter((m) => m.role !== 'system')
+        .map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }))
+        .filter((m) => m.content.trim().length > 0 || m.role === 'user')
+
+      const compactedHistory = compactHistoryForPrompt(history, 12)
+
+      // Inject system prompt from active personality
+      const activePersonality = personalities.find(p => p.id === activePersonalityId)
+        ?? personalities.find(p => p.is_default)
+        ?? personalities[0]
+      if (activePersonality) {
+        const systemPrompt = buildSystemPromptFromPersonality(activePersonality, globalInstruction, memoryHints)
+        if (systemPrompt) {
+          compactedHistory.compacted.unshift({ role: 'system', content: systemPrompt })
+        }
+      }
+
+      updateMessage(activeThreadId, userMessageId, {
+        debugContent: promptWithAttachments,
+      }, {
+        persist: true,
+      })
+
+      if (superVerboseAuditLogging) {
+        void writeAuditEvent('super_verbose', 'chat_user_prompt', {
+          view: 'chat',
+          threadId: activeThreadId,
+          prompt: text,
+          promptWithAttachments,
+          attachments: mergedForSend.next,
+          history,
+        })
+      }
+
       const started = Date.now()
       addLog({
         level: 'info',
@@ -1346,7 +1372,7 @@ export default function ChatView() {
           )
           const displayedContent = resolveDisplayedAssistantContent(content, displayedThinkingContent)
           return (
-          <div key={msg.id} className={`cowork-msg ${msg.role}`}>
+          <div key={msg.id} className={`cowork-msg ${msg.role}${msg.crewLive ? ' crew-live-message' : ''}`}>
             <div className="msg-avatar">
               {msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '✦' : '⚙️'}
             </div>
@@ -1354,9 +1380,13 @@ export default function ChatView() {
               <div className="msg-role">
                 {msg.role === 'user' ? 'Du' : msg.role === 'assistant' ? 'Open_Cowork' : 'System'}
               </div>
-              <div className="msg-content">
-                {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
-              </div>
+              {msg.crewLive ? (
+                <CrewLiveMonitor live={msg.crewLive} />
+              ) : (
+                <div className="msg-content">
+                  {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
+                </div>
+              )}
               <MessageThinking
                 content={displayedThinkingContent}
                 limitToRollingWindow={limitThinkingWindow}

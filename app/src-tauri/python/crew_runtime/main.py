@@ -174,7 +174,10 @@ class LiveCapture(io.StringIO):
 
     def write(self, value: str) -> int:
         written = super().write(value)
-        self._pending_line += str(value)
+        # CrewAI frequently updates progress with carriage returns instead of newlines.
+        # Treat both as live line boundaries so the UI can stream log updates promptly.
+        normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        self._pending_line += normalized
 
         while "\n" in self._pending_line:
             line, self._pending_line = self._pending_line.split("\n", 1)

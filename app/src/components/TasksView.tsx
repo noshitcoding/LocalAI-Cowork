@@ -2,7 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useChatStore } from '../stores/chatStore'
+import { useChatStore, type CrewLiveEntry, type CrewLiveEntryCategory, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
 import { useCrewStore, type Crew, type CrewProviderKind } from '../stores/crewStore'
@@ -64,6 +64,21 @@ type CrewResolvedProviderConfigs = {
   openAICompatible: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
   openRouter: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
 }
+
+const CREW_LIVE_MAX_ENTRIES = 150
+const CREW_AGENT_COLORS = [
+  '#2563eb',
+  '#059669',
+  '#d97706',
+  '#7c3aed',
+  '#dc2626',
+  '#0891b2',
+  '#be123c',
+  '#4f46e5',
+]
+const CREW_BOX_CHARS = /[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+/u
+const CREW_BOX_EDGE_START = /^[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+/u
+const CREW_BOX_EDGE_END = /[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+$/u
 
 function resolveDefaultAgentId(crew: Crew): string | null {
   if (crew.process === 'hierarchical' && crew.managerAgentId) {
@@ -299,13 +314,194 @@ function getCrewLogActionLabel(action: string): string {
   }
 }
 
-function formatCrewLogMessage(log: CrewExecutionLog): string {
+function stripCrewRuntimeChrome(line: string): string {
+  const trimmed = line.trimEnd()
+  if (!trimmed || trimmed.replace(CREW_BOX_CHARS, '').trim().length === 0) {
+    return ''
+  }
+
+  return trimmed
+    .replace(CREW_BOX_EDGE_START, '')
+    .replace(CREW_BOX_EDGE_END, '')
+    .trim()
+}
+
+function cleanCrewLogDetail(log: CrewExecutionLog): string {
+  const lines = log.result
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map(stripCrewRuntimeChrome)
+    .filter((line) => line.trim().length > 0)
+
+  return lines.join('\n').trim()
+}
+
+function classifyCrewLog(log: CrewExecutionLog, detail: string): CrewLiveEntryCategory {
+  const combined = `${log.action}\n${detail}`.toLowerCase()
+
+  if (combined.includes('traceback') || combined.includes('error') || combined.includes('failed') || log.action.includes('stderr') || log.action.includes('failed')) {
+    return 'error'
+  }
+  if (combined.includes('mcp')) {
+    return 'mcp'
+  }
+  if (combined.includes('delegate_work') || combined.includes('delegation') || combined.includes('coworker')) {
+    return 'delegation'
+  }
+  if (combined.includes('tool execution') || combined.includes('tool:') || combined.includes('args:')) {
+    return 'tool'
+  }
+  if (log.action === 'task_handoff') {
+    return 'handoff'
+  }
+  if (log.action === 'agent_ready' || combined.includes('agent started')) {
+    return 'agent'
+  }
+  if (log.action === 'runtime_context') {
+    return 'context'
+  }
+  if (log.action === 'task_completed') {
+    return 'task'
+  }
+  if (log.action === 'run_started' || log.action === 'crew_kickoff' || log.action === 'crew_finished') {
+    return 'status'
+  }
+
+  return 'output'
+}
+
+function firstMatchingLine(detail: string, pattern: RegExp): string | null {
+  return detail.split('\n').map((line) => line.trim()).find((line) => pattern.test(line)) ?? null
+}
+
+function buildCrewLiveTitle(log: CrewExecutionLog, category: CrewLiveEntryCategory, detail: string): string {
+  if (category === 'tool') {
+    return firstMatchingLine(detail, /^Tool:/i) ?? 'Tool-Ausfuehrung'
+  }
+  if (category === 'delegation') {
+    return 'Delegation an Crew-Mitglied'
+  }
+  if (category === 'mcp') {
+    return 'MCP-Kontext oder MCP-Zugriff'
+  }
+  if (category === 'handoff') {
+    return `Task-Uebergabe an ${log.agentId}`
+  }
+  if (category === 'agent') {
+    return firstMatchingLine(detail, /^Agent:/i) ?? `Agent ${log.agentId} bereit`
+  }
+  if (category === 'task') {
+    return 'Task-Ergebnis erhalten'
+  }
+  if (category === 'error') {
+    return 'Crew-Fehler'
+  }
+  if (category === 'context') {
+    return 'Runtime-Kontext geladen'
+  }
+  if (category === 'status') {
+    return getCrewLogActionLabel(log.action)
+  }
+
+  return getCrewLogActionLabel(log.action)
+}
+
+function normalizeCrewAgentLabel(value: string): string {
+  const normalized = value.trim().replace(/^['"]|['"]$/g, '')
+  if (!normalized) return ''
+  return normalized.replace(/\s+/g, '-').toLowerCase()
+}
+
+function deriveCrewLiveAgentId(log: CrewExecutionLog, detail: string): string {
+  const agentLine = firstMatchingLine(detail, /^Agent:\s*(.+)$/i)
+  if (agentLine) {
+    const agent = normalizeCrewAgentLabel(agentLine.replace(/^Agent:\s*/i, ''))
+    if (agent) return agent
+  }
+
+  const handoffMatch = detail.match(/Task an Agent uebergeben:\s*([^\n]+)/i)
+  if (handoffMatch?.[1]) {
+    const agent = normalizeCrewAgentLabel(handoffMatch[1])
+    if (agent) return agent
+  }
+
+  const coworkerMatch = detail.match(/coworker['"]?\s*:\s*['"]([^'"]+)/i)
+  if (coworkerMatch?.[1]) {
+    const agent = normalizeCrewAgentLabel(coworkerMatch[1])
+    if (agent) return agent
+  }
+
+  return log.agentId || 'runtime'
+}
+
+function createCrewLiveEntry(log: CrewExecutionLog): CrewLiveEntry | null {
+  const detail = cleanCrewLogDetail(log)
+  if (!detail && (log.action === 'runtime_stdout' || log.action === 'runtime_stderr')) {
+    return null
+  }
+
+  const category = classifyCrewLog(log, detail)
+  return {
+    id: log.id,
+    timestamp: log.timestamp || Date.now(),
+    agentId: deriveCrewLiveAgentId(log, detail),
+    taskId: log.taskId || 'runtime',
+    action: log.action,
+    category,
+    title: buildCrewLiveTitle(log, category, detail),
+    detail,
+  }
+}
+
+function assignCrewAgentColor(agentId: string, colors: Record<string, string>): Record<string, string> {
+  if (!agentId.trim() || colors[agentId]) {
+    return colors
+  }
+
+  const next = { ...colors }
+  next[agentId] = CREW_AGENT_COLORS[Object.keys(next).length % CREW_AGENT_COLORS.length]
+  return next
+}
+
+function shouldMergeCrewLiveEntries(previous: CrewLiveEntry | undefined, next: CrewLiveEntry): boolean {
+  if (!previous) return false
+  if (previous.agentId !== next.agentId || previous.taskId !== next.taskId) return false
+  if (previous.action !== 'runtime_stdout' || next.action !== 'runtime_stdout') return false
+  if (previous.category !== next.category) return false
+  return previous.detail.length < 12000
+}
+
+function appendCrewLiveEntry(state: CrewLiveState, entry: CrewLiveEntry): CrewLiveState {
+  const agentColors = assignCrewAgentColor(entry.agentId, state.agentColors)
+  const entries = [...state.entries]
+  const previous = entries[entries.length - 1]
+
+  if (shouldMergeCrewLiveEntries(previous, entry)) {
+    entries[entries.length - 1] = {
+      ...previous!,
+      detail: [previous!.detail, entry.detail].filter(Boolean).join('\n'),
+      timestamp: entry.timestamp,
+    }
+  } else {
+    entries.push(entry)
+  }
+
+  return {
+    ...state,
+    agentColors,
+    entries: entries.slice(-CREW_LIVE_MAX_ENTRIES),
+    updatedAt: Date.now(),
+  }
+}
+
+function buildCrewLiveMessageContent(state: CrewLiveState): string {
+  const latest = state.entries[state.entries.length - 1]
   return [
-    `Crew Live: ${getCrewLogActionLabel(log.action)}`,
-    `Agent: ${log.agentId}`,
-    `Task: ${log.taskId}`,
-    log.result.trim(),
-  ].filter(Boolean).join('\n\n')
+    'Crew Live Monitor',
+    `Status: ${state.status}`,
+    `Angezeigte Ereignisse: ${state.entries.length}`,
+    latest ? `Letztes Ereignis: ${latest.title}` : '',
+  ].filter(Boolean).join('\n')
 }
 
 function hydrateCrewFromDefinition(baseCrew: Crew, rawDefinition: string): Crew | null {
@@ -738,15 +934,45 @@ export default function TasksView() {
     const crewStreamId = createCrewStreamId()
     const streamedCrewLogIds = new Set<string>()
     let unlistenCrewLogs: (() => void) | null = null
-    const appendCrewLogToChat = (log: CrewExecutionLog) => {
-      if (!log.id || streamedCrewLogIds.has(log.id)) return
-      streamedCrewLogIds.add(log.id)
-      addChatMessage(threadId, {
-        role: 'system',
-        content: formatCrewLogMessage(log),
-        visibleInChat: true,
-        timestamp: log.timestamp || Date.now(),
+    let crewLiveState: CrewLiveState = {
+      streamId: crewStreamId,
+      title: `${deriveTaskName(taskForRun)} - Crew-Ausfuehrung`,
+      status: 'running',
+      entries: [],
+      agentColors: {},
+      updatedAt: Date.now(),
+    }
+    const crewLiveMessageId = addChatMessage(threadId, {
+      role: 'assistant',
+      content: buildCrewLiveMessageContent(crewLiveState),
+      timestamp: Date.now(),
+      streaming: true,
+      crewLive: crewLiveState,
+    })
+    const publishCrewLive = (persist = false) => {
+      updateChatMessage(threadId, crewLiveMessageId, {
+        content: buildCrewLiveMessageContent(crewLiveState),
+        streaming: crewLiveState.status === 'running',
+        crewLive: crewLiveState,
+      }, {
+        persist,
       })
+    }
+    const appendCrewLogToMonitor = (log: CrewExecutionLog) => {
+      if (!log.id || streamedCrewLogIds.has(log.id)) return
+      const entry = createCrewLiveEntry(log)
+      if (!entry) return
+      streamedCrewLogIds.add(log.id)
+      crewLiveState = appendCrewLiveEntry(crewLiveState, entry)
+      publishCrewLive()
+    }
+    const finishCrewLive = (status: CrewLiveStatus, persist = true) => {
+      crewLiveState = {
+        ...crewLiveState,
+        status,
+        updatedAt: Date.now(),
+      }
+      publishCrewLive(persist)
     }
 
     try {
@@ -800,7 +1026,7 @@ export default function TasksView() {
         unlistenCrewLogs = await listen<CrewExecutionLogEvent>('crew-execution-log', (event) => {
           const payload = event.payload
           if (!payload || payload.streamId !== crewStreamId) return
-          appendCrewLogToChat(payload.log)
+          appendCrewLogToMonitor(payload.log)
         })
       } catch {
         // In browser-only tests or fallback environments the Tauri event bus is unavailable.
@@ -854,6 +1080,7 @@ export default function TasksView() {
 
       const mappedStatus = response.status === 'completed' ? 'completed' : 'failed'
       if (canceledTaskIdsRef.current.has(task.id) || response.status === 'canceled') {
+        finishCrewLive('canceled')
         updateTask(task.id, {
           status: 'canceled',
           output: 'Task abgebrochen.',
@@ -870,8 +1097,9 @@ export default function TasksView() {
       const output = buildCrewRunOutput(response, task.id)
 
       for (const log of response.logs) {
-        appendCrewLogToChat(log)
+        appendCrewLogToMonitor(log)
       }
+      finishCrewLive(mappedStatus === 'completed' ? 'completed' : 'failed')
 
       addChatMessage(threadId, {
         role: 'assistant',
@@ -889,6 +1117,7 @@ export default function TasksView() {
       const message = error instanceof Error ? error.message : String(error)
       const aborted = canceledTaskIdsRef.current.has(task.id) || abortController.signal.aborted
       const waitingForApproval = message.trim().toLowerCase().startsWith('crew wartet auf freigabe:')
+      finishCrewLive(aborted ? 'canceled' : 'failed')
       addChatMessage(threadId, {
         role: 'assistant',
         content: aborted ? 'Task abgebrochen.' : message,

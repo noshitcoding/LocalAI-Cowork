@@ -1,4 +1,5 @@
-import { extractTextContent, loadSession, type ContentBlock, type Message, type SessionRecord } from '../engine'
+import { extractTextContent, type ContentBlock, type Message } from '../engine/types'
+import { loadSession, type SessionRecord } from '../engine/services/sessionPersistence'
 import type { ChatMessage, ChatThread } from '../stores/chatStore'
 import { extractAttachmentsFromContent } from './chatAttachments'
 
@@ -136,6 +137,9 @@ function parseStoredChatMessagePayload(rawContent: string): ChatMessage | null {
       thinkingContent: typeof message.thinkingContent === 'string' ? message.thinkingContent : undefined,
       verboseContent: typeof message.verboseContent === 'string' ? message.verboseContent : undefined,
       liveToolCalls: Array.isArray(message.liveToolCalls) ? message.liveToolCalls as ChatMessage['liveToolCalls'] : undefined,
+      crewLive: message.crewLive && typeof message.crewLive === 'object'
+        ? message.crewLive as ChatMessage['crewLive']
+        : undefined,
       streaming: false,
     }
   } catch {
@@ -158,6 +162,7 @@ export function serializeChatMessageForStorage(message: ChatMessage): string {
       thinkingContent: message.thinkingContent,
       verboseContent: message.verboseContent,
       liveToolCalls: message.liveToolCalls,
+      crewLive: message.crewLive,
       streaming: false,
     },
   })
