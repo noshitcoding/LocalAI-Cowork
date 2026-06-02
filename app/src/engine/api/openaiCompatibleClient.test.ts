@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const hasTauriRuntimeMock = vi.fn(() => false)
+const safeInvokeMock = vi.fn()
+
+vi.mock('../../utils/safeInvoke', () => ({
+  hasTauriRuntime: () => hasTauriRuntimeMock(),
+  safeInvoke: (...args: unknown[]) => safeInvokeMock(...args),
+}))
+
 const readToolDef = {
   name: 'Read',
   description: 'Liest eine Datei.',
@@ -16,6 +24,8 @@ describe('streamOpenAiCompatibleMessages', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    hasTauriRuntimeMock.mockReturnValue(false)
+    safeInvokeMock.mockReset()
   })
 
   it('serializes tool results and image inputs for chat completions', async () => {
@@ -59,8 +69,9 @@ describe('streamOpenAiCompatibleMessages', () => {
       // consume stream
     }
 
-    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const [url, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit]
     const body = JSON.parse(String(requestInit.body))
+    expect(url).toBe('https://api.openai.com/v1/chat/completions')
     expect(body.messages).toEqual([
       { role: 'system', content: 'Systemprompt' },
       { role: 'tool', content: 'Screenshot aufgenommen.', tool_call_id: 'tool-1' },
@@ -78,6 +89,122 @@ describe('streamOpenAiCompatibleMessages', () => {
         function: { name: 'Read' },
       },
     ])
+  })
+
+  it('adds /v1/chat/completions for service-root OpenAI-compatible endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: 'resp-root',
+          model: '0xSero/Hy3-preview-nvfp4',
+          usage: { prompt_tokens: 3, completion_tokens: 1 },
+          choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { streamOpenAiCompatibleMessages } = await import('./openaiCompatibleClient')
+    const stream = streamOpenAiCompatibleMessages(
+      {
+        provider: 'openai-compatible',
+        apiKey: 'sk-test',
+        model: '0xSero/Hy3-preview-nvfp4',
+        baseUrl: 'https://mlis.example.test',
+      },
+      [{ role: 'user', content: 'Ping' }],
+      'Systemprompt',
+    )
+
+    while (!(await stream.next()).done) {
+      // consume stream
+    }
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://mlis.example.test/v1/chat/completions')
+  })
+
+  it('retries model-not-found errors with a matching fully-qualified provider model id', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "The model 'Hy3-preview-nvfp4' does not exist.",
+              type: 'NotFoundError',
+              param: 'model',
+              code: 404,
+            },
+          }),
+          {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ id: '0xSero/Hy3-preview-nvfp4' }],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'resp-qualified-model',
+            model: '0xSero/Hy3-preview-nvfp4',
+            usage: { prompt_tokens: 4, completion_tokens: 2 },
+            choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { streamOpenAiCompatibleMessages } = await import('./openaiCompatibleClient')
+    const stream = streamOpenAiCompatibleMessages(
+      {
+        provider: 'openai-compatible',
+        apiKey: 'sk-test',
+        model: 'Hy3-preview-nvfp4',
+        baseUrl: 'https://mlis.example.test/v1',
+      },
+      [{ role: 'user', content: 'Ping' }],
+      'Systemprompt',
+    )
+
+    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null = null
+    while (true) {
+      const next = await stream.next()
+      if (next.done) {
+        result = next.value
+        break
+      }
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[1][0]).toBe('https://mlis.example.test/v1/models')
+
+    const [, firstInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const [, retryInit] = fetchMock.mock.calls[2] as [string, RequestInit]
+    expect(JSON.parse(String(firstInit.body)).model).toBe('Hy3-preview-nvfp4')
+    expect(JSON.parse(String(retryInit.body)).model).toBe('0xSero/Hy3-preview-nvfp4')
+    expect(result).toMatchObject({
+      model: '0xSero/Hy3-preview-nvfp4',
+      content: [{ type: 'text', text: 'ok' }],
+    })
   })
 
   it('maps tool calls into tool_use blocks for the engine loop', async () => {
@@ -418,5 +545,45 @@ describe('streamOpenAiCompatibleMessages', () => {
         // consume stream
       }
     })()).rejects.toThrow('OpenRouter API Error (502): Upstream provider timeout')
+  })
+
+  it('uses the native Tauri request path when TLS verification is disabled', async () => {
+    hasTauriRuntimeMock.mockReturnValue(true)
+    safeInvokeMock.mockResolvedValue({
+      status: 200,
+      body: JSON.stringify({
+        id: 'resp-native',
+        model: 'local/gpt',
+        usage: { prompt_tokens: 5, completion_tokens: 2 },
+        choices: [{ finish_reason: 'stop', message: { content: 'OK' } }],
+      }),
+    })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { streamOpenAiCompatibleMessages } = await import('./openaiCompatibleClient')
+    const stream = streamOpenAiCompatibleMessages(
+      {
+        provider: 'openai-compatible',
+        apiKey: 'sk-test',
+        model: 'local/gpt',
+        baseUrl: 'https://self-signed.local/v1',
+        verifyTlsCertificates: false,
+      },
+      [{ role: 'user', content: 'Hallo' }],
+      'Systemprompt',
+    )
+
+    while (!(await stream.next()).done) {
+      // consume stream
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(safeInvokeMock).toHaveBeenCalledWith('openai_compatible_chat_completion', {
+      request: expect.objectContaining({
+        endpoint: 'https://self-signed.local/v1/chat/completions',
+        verifyTlsCertificates: false,
+      }),
+    })
   })
 })

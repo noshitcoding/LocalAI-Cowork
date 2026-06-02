@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from './SettingsView'
 import { useConfigStore } from '../stores/configStore'
@@ -41,30 +41,22 @@ function defaultInvoke(cmd: string) {
 function resetConfigStore() {
   useConfigStore.setState({
     ollama: {
-      baseUrl: 'http://192.168.178.82:11434',
-      model: 'gpt-oss:20b',
+      baseUrl: 'http://localhost:11434',
+      model: 'llama3.1:8b',
       timeoutMs: 200000,
       contextWindow: 128000,
       temperature: 0.1,
-    },
-    openAIComputerUse: {
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'computer-use-preview',
-      maxSteps: 40,
-      actionDelayMs: 900,
-      launchDelayMs: 2000,
-      autoAcknowledgeSafetyChecks: false,
     },
     llmProfiles: [
       {
         id: 'default-ollama',
         name: 'Lokales Ollama',
         provider: 'ollama',
-        baseUrl: 'http://192.168.178.82:11434',
-        model: 'gpt-oss:20b',
+        baseUrl: 'http://localhost:11434',
+        model: 'llama3.1:8b',
         apiKey: '',
         timeoutMs: 200000,
+        verifyTlsCertificates: true,
         contextWindow: 128000,
         temperature: 0.1,
       },
@@ -76,6 +68,7 @@ function resetConfigStore() {
         model: 'gpt-4.1-mini',
         apiKey: '',
         timeoutMs: 600000,
+        verifyTlsCertificates: true,
         contextWindow: null,
         temperature: null,
       },
@@ -87,6 +80,7 @@ function resetConfigStore() {
         model: '',
         apiKey: '',
         timeoutMs: 600000,
+        verifyTlsCertificates: true,
         contextWindow: null,
         temperature: null,
       },
@@ -148,7 +142,7 @@ function resetEngineStore() {
   fetchOllamaModelsMock.mockReset()
   checkOllamaStatusMock.mockResolvedValue(true)
   fetchOllamaModelsMock.mockResolvedValue([
-    { id: 'gpt-oss:20b', name: 'gpt-oss:20b', size: 1 },
+    { id: 'llama3.1:8b', name: 'llama3.1:8b', size: 1 },
   ])
   useEngineStore.setState({
     config: {
@@ -168,6 +162,7 @@ function resetEngineStore() {
 
 describe('SettingsView', () => {
   beforeEach(() => {
+    delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     invokeMock.mockReset()
     invokeMock.mockImplementation(defaultInvoke)
     resetConfigStore()
@@ -256,6 +251,12 @@ describe('SettingsView', () => {
     expect(screen.queryByRole('heading', { level: 2, name: /Ollama Konfiguration/ })).not.toBeInTheDocument()
   })
 
+  it('does not render OpenAI Computer Use settings', () => {
+    render(<SettingsView />)
+    expect(screen.queryByRole('heading', { level: 2, name: /OpenAI Computer Use/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Safety Checks automatisch bestaetigen')).not.toBeInTheDocument()
+  })
+
   /* ── 12. Default Ollama profile endpoint updates store ── */
   it('updates default Ollama profile endpoint on input change', () => {
     render(<SettingsView />)
@@ -268,7 +269,7 @@ describe('SettingsView', () => {
 
   /* ── 13. Default Ollama profile model updates store ── */
   it('updates default Ollama profile model on input change', () => {
-    useConfigStore.getState().setLlmProfileModels('default-ollama', ['gpt-oss:20b', 'mistral:7b'])
+    useConfigStore.getState().setLlmProfileModels('default-ollama', ['llama3.1:8b', 'mistral:7b'])
     render(<SettingsView />)
     const profileCard = screen.getByText('Lokales Ollama', { selector: 'strong' }).closest('.card') as HTMLElement
     const modelControl = within(profileCard).getByLabelText('Modell')
@@ -276,24 +277,6 @@ describe('SettingsView', () => {
     fireEvent.change(modelControl, { target: { value: 'mistral:7b' } })
     expect(useConfigStore.getState().ollama.model).toBe('mistral:7b')
     expect(useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-ollama')?.model).toBe('mistral:7b')
-  })
-
-  it('renders OpenAI Computer Use settings and keeps profile normalization separate', async () => {
-    render(<SettingsView />)
-
-    const section = screen.getByRole('heading', { level: 2, name: /OpenAI Computer Use/ }).closest('.panel') as HTMLElement
-    const modelInput = within(section).getByLabelText('Modell')
-    fireEvent.change(modelInput, { target: { value: 'computer-use-2025-03' } })
-
-    expect(useConfigStore.getState().openAIComputerUse.model).toBe('computer-use-2025-03')
-
-    useConfigStore.getState().updateLlmProfile('default-openai-compatible', {
-      model: 'computer-use-preview',
-    })
-
-    expect(
-      useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-openai-compatible')?.model,
-    ).toBe('gpt-4.1-mini')
   })
 
   /* ── 14. Toggle updates preference ── */
@@ -308,11 +291,40 @@ describe('SettingsView', () => {
 
   /* ── 15. Model dropdown with Ollama profile models ── */
   it('renders model dropdown when Ollama profile models are set', () => {
-    useConfigStore.getState().setLlmProfileModels('default-ollama', ['gpt-oss:20b', 'mistral:7b', 'codellama:13b'])
+    useConfigStore.getState().setLlmProfileModels('default-ollama', ['llama3.1:8b', 'mistral:7b', 'codellama:13b'])
     render(<SettingsView />)
     const profileCard = screen.getByText('Lokales Ollama', { selector: 'strong' }).closest('.card') as HTMLElement
     const modelControl = within(profileCard).getByLabelText('Modell')
     expect(modelControl.tagName).toBe('SELECT')
+  })
+
+  it('uses exact external model id returned by the provider model list', async () => {
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    useConfigStore.getState().updateLlmProfile('default-openai-compatible', {
+      baseUrl: 'https://mlis.example.test/v1/models',
+      apiKey: 'sk-test',
+      model: 'Hy3-preview-nvfp4',
+    })
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'crew_provider_models_list') {
+        return Promise.resolve({
+          endpoint: 'https://mlis.example.test/v1/models',
+          models: ['0xSero/Hy3-preview-nvfp4'],
+        })
+      }
+      return defaultInvoke(cmd)
+    })
+
+    render(<SettingsView />)
+    const profileCards = screen.getAllByText('OpenAI-kompatibel', { selector: 'strong' })
+    const profileCard = profileCards[1].closest('.card') as HTMLElement
+    fireEvent.click(within(profileCard).getByRole('button', { name: 'Modelle laden' }))
+
+    await waitFor(() => {
+      expect(useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-openai-compatible')?.model)
+        .toBe('0xSero/Hy3-preview-nvfp4')
+    })
+    expect(await within(profileCard).findByText('Modell automatisch auf 0xSero/Hy3-preview-nvfp4 gesetzt.')).toBeInTheDocument()
   })
 
   /* ── 17. Number input for maxToolCalls ── */

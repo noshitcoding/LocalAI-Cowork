@@ -212,7 +212,7 @@ describe('chatStore', () => {
             type: 'assistant',
             uuid: 'assistant-1',
             content: [{ type: 'tool_use', id: 'tool-1', name: 'ListDir', input: { path: 'C:/workspace' } }],
-            model: 'gpt-oss:20b',
+            model: 'llama3.1:8b',
             usage: { input_tokens: 0, output_tokens: 0 },
             stopReason: 'tool_use',
             timestamp: 10,

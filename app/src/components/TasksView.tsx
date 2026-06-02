@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -38,6 +39,17 @@ export type CrewExecutionLog = {
   action: string
   result: string
   timestamp: number
+  agentName?: string | null
+  sourceAgent?: string | null
+  targetAgent?: string | null
+  provider?: string | null
+  model?: string | null
+  taskTitle?: string | null
+  phase?: string | null
+  summary?: string | null
+  detail?: string | null
+  severity?: 'info' | 'warning' | 'error' | null
+  providerReasoning?: string | null
 }
 
 export type CrewExecutionLogEvent = {
@@ -59,7 +71,6 @@ type CrewResolvedProviderConfigs = {
   openRouter: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
 }
 
-const CREW_LIVE_MAX_ENTRIES = 50000
 const CREW_AGENT_COLORS = [
   '#2563eb',
   '#059669',
@@ -321,7 +332,8 @@ function stripCrewRuntimeChrome(line: string): string {
 }
 
 function cleanCrewLogDetail(log: CrewExecutionLog): string {
-  const lines = log.result
+  const rawDetail = log.detail?.trim() ? log.detail : log.result
+  const lines = rawDetail
     .replace(/\r/g, '\n')
     .split('\n')
     .map(stripCrewRuntimeChrome)
@@ -330,11 +342,37 @@ function cleanCrewLogDetail(log: CrewExecutionLog): string {
   return lines.join('\n').trim()
 }
 
+function normalizeCrewLivePhase(value: string | null | undefined): CrewLiveEntryCategory | null {
+  const normalized = value?.trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized === 'reasoning') return 'thinking'
+  if (normalized === 'handoff') return 'handoff'
+  if (normalized === 'delegation') return 'delegation'
+  if (normalized === 'tool') return 'tool'
+  if (normalized === 'mcp') return 'mcp'
+  if (normalized === 'result') return 'result'
+  if (normalized === 'task') return 'task'
+  if (normalized === 'error') return 'error'
+  if (normalized === 'agent') return 'agent'
+  if (normalized === 'context') return 'context'
+  if (normalized === 'status') return 'status'
+  if (normalized === 'output') return 'output'
+  return null
+}
+
 function classifyCrewLog(log: CrewExecutionLog, detail: string): CrewLiveEntryCategory {
+  const structuredPhase = normalizeCrewLivePhase(log.phase)
+  if (structuredPhase) {
+    return structuredPhase
+  }
+
   const combined = `${log.action}\n${detail}`.toLowerCase()
 
   if (combined.includes('traceback') || combined.includes('error') || combined.includes('failed') || log.action.includes('stderr') || log.action.includes('failed')) {
     return 'error'
+  }
+  if (combined.includes('thinking') || combined.includes('reasoning') || combined.includes('arbeitsprozess')) {
+    return 'thinking'
   }
   if (combined.includes('mcp')) {
     return 'mcp'
@@ -355,7 +393,7 @@ function classifyCrewLog(log: CrewExecutionLog, detail: string): CrewLiveEntryCa
     return 'context'
   }
   if (log.action === 'task_completed') {
-    return 'task'
+    return 'result'
   }
   if (log.action === 'run_started' || log.action === 'crew_kickoff' || log.action === 'crew_finished') {
     return 'status'
@@ -368,24 +406,57 @@ function firstMatchingLine(detail: string, pattern: RegExp): string | null {
   return detail.split('\n').map((line) => line.trim()).find((line) => pattern.test(line)) ?? null
 }
 
+function parseAgentNameFromDetail(detail: string): string | null {
+  const agentLine = firstMatchingLine(detail, /^Agent:\s*(.+)$/i)
+  if (agentLine) return agentLine.replace(/^Agent:\s*/i, '').trim()
+
+  const nameMatch = detail.match(/(?:^|\n)Name:\s*([^|\n]+)/i)
+  if (nameMatch?.[1]) return nameMatch[1].trim()
+
+  const handoffMatch = detail.match(/Task an Agent uebergeben:\s*([^\n]+)/i)
+  if (handoffMatch?.[1]) return handoffMatch[1].trim()
+
+  return null
+}
+
+function getDisplayAgentName(log: CrewExecutionLog, detail: string): string {
+  const structuredName = log.agentName?.trim()
+  if (structuredName) return structuredName
+  const parsedName = parseAgentNameFromDetail(detail)
+  if (parsedName) return parsedName
+  return log.agentId || 'Runtime'
+}
+
 function buildCrewLiveTitle(log: CrewExecutionLog, category: CrewLiveEntryCategory, detail: string): string {
+  const summary = log.summary?.trim()
+  if (summary) return summary
+
   if (category === 'tool') {
     return firstMatchingLine(detail, /^Tool:/i) ?? 'Tool-Ausfuehrung'
   }
   if (category === 'delegation') {
-    return 'Delegation an Crew-Mitglied'
+    if (log.sourceAgent?.trim() && log.targetAgent?.trim()) {
+      return `${log.sourceAgent.trim()} -> ${log.targetAgent.trim()}`
+    }
+    return log.targetAgent?.trim() ? `Delegation an ${log.targetAgent.trim()}` : 'Delegation an Crew-Mitglied'
   }
   if (category === 'mcp') {
     return 'MCP-Kontext oder MCP-Zugriff'
   }
+  if (category === 'thinking') {
+    return `Arbeitsprozess: ${getDisplayAgentName(log, detail)}`
+  }
   if (category === 'handoff') {
-    return `Task-Uebergabe an ${log.agentId}`
+    return `Task-Uebergabe an ${log.targetAgent?.trim() || getDisplayAgentName(log, detail)}`
   }
   if (category === 'agent') {
-    return firstMatchingLine(detail, /^Agent:/i) ?? `Agent ${log.agentId} bereit`
+    return firstMatchingLine(detail, /^Agent:/i) ?? `${getDisplayAgentName(log, detail)} bereit`
   }
   if (category === 'task') {
     return 'Task-Ergebnis erhalten'
+  }
+  if (category === 'result') {
+    return log.taskTitle?.trim() ? `Ergebnis: ${log.taskTitle.trim()}` : 'Task-Ergebnis erhalten'
   }
   if (category === 'error') {
     return 'Crew-Fehler'
@@ -406,10 +477,19 @@ function normalizeCrewAgentLabel(value: string): string {
   return normalized.replace(/\s+/g, '-').toLowerCase()
 }
 
+function looksLikeTechnicalAgentId(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return /(?:^|-)pers-\d{8,}/.test(normalized)
+    || normalized.startsWith('personality-pers-')
+    || normalized.startsWith('agent-personality-pers-')
+    || normalized.startsWith('python-runtime')
+    || normalized.startsWith('crew-runtime')
+}
+
 function deriveCrewLiveAgentId(log: CrewExecutionLog, detail: string): string {
-  const agentLine = firstMatchingLine(detail, /^Agent:\s*(.+)$/i)
-  if (agentLine) {
-    const agent = normalizeCrewAgentLabel(agentLine.replace(/^Agent:\s*/i, ''))
+  const displayAgent = log.targetAgent?.trim() || log.agentName?.trim() || parseAgentNameFromDetail(detail)
+  if (displayAgent && !looksLikeTechnicalAgentId(displayAgent)) {
+    const agent = normalizeCrewAgentLabel(displayAgent)
     if (agent) return agent
   }
 
@@ -425,11 +505,31 @@ function deriveCrewLiveAgentId(log: CrewExecutionLog, detail: string): string {
     if (agent) return agent
   }
 
-  return log.agentId || 'runtime'
+  if (log.agentId && !looksLikeTechnicalAgentId(log.agentId)) {
+    return log.agentId
+  }
+
+  return displayAgent ? normalizeCrewAgentLabel(displayAgent) || log.agentId || 'runtime' : log.agentId || 'runtime'
+}
+
+function getLogDetailWithMetadata(log: CrewExecutionLog, baseDetail: string): string {
+  const metadataLines = [
+    log.provider?.trim() ? `Provider: ${log.provider.trim()}` : '',
+    log.model?.trim() ? `Modell: ${log.model.trim()}` : '',
+    log.taskTitle?.trim() ? `Task: ${log.taskTitle.trim()}` : '',
+    log.sourceAgent?.trim() ? `Quelle: ${log.sourceAgent.trim()}` : '',
+    log.targetAgent?.trim() ? `Ziel: ${log.targetAgent.trim()}` : '',
+    log.agentId?.trim() ? `Technische ID: ${log.agentId.trim()}` : '',
+    log.providerReasoning?.trim() ? `Provider-Reasoning: ${log.providerReasoning.trim()}` : '',
+  ].filter(Boolean)
+
+  const merged = [...metadataLines, baseDetail].filter(Boolean).join('\n')
+  return merged.trim()
 }
 
 export function createCrewLiveEntry(log: CrewExecutionLog): CrewLiveEntry | null {
-  const detail = cleanCrewLogDetail(log)
+  const baseDetail = cleanCrewLogDetail(log)
+  const detail = getLogDetailWithMetadata(log, baseDetail)
   if (!detail && (log.action === 'runtime_stdout' || log.action === 'runtime_stderr')) {
     return null
   }
@@ -439,11 +539,23 @@ export function createCrewLiveEntry(log: CrewExecutionLog): CrewLiveEntry | null
     id: log.id,
     timestamp: log.timestamp || Date.now(),
     agentId: deriveCrewLiveAgentId(log, detail),
+    rawAgentId: log.agentId || null,
     taskId: log.taskId || 'runtime',
     action: log.action,
     category,
     title: buildCrewLiveTitle(log, category, detail),
     detail,
+    agentName: log.agentName?.trim() || parseAgentNameFromDetail(detail),
+    sourceAgent: log.sourceAgent ?? null,
+    targetAgent: log.targetAgent ?? null,
+    rawTargetAgentId: null,
+    provider: log.provider ?? null,
+    model: log.model ?? null,
+    taskTitle: log.taskTitle ?? null,
+    phase: log.phase ?? null,
+    summary: log.summary ?? null,
+    severity: log.severity ?? (category === 'error' ? 'error' : 'info'),
+    providerReasoning: log.providerReasoning ?? null,
   }
 }
 
@@ -483,7 +595,7 @@ export function appendCrewLiveEntry(state: CrewLiveState, entry: CrewLiveEntry):
   return {
     ...state,
     agentColors,
-    entries: entries.slice(-CREW_LIVE_MAX_ENTRIES),
+    entries,
     updatedAt: Date.now(),
   }
 }

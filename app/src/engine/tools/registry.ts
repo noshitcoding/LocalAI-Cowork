@@ -6,7 +6,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useConfigStore } from '../../stores/configStore'
 import type { McpServerConfig } from '../../stores/configStore'
-import { runComputerUseAppTest } from '../services/computerUseService'
 import type { AttachmentMessage, Tool, Tools, ToolInputSchema } from '../types'
 
 // ── Tool Registration ──────────────────────────────────────────────────────
@@ -1369,65 +1368,6 @@ const desktopScrollTool: Tool<{ scroll_y: number; x?: number; y?: number; coordi
   },
 }
 
-const computerUseAppTestTool: Tool<{
-  goal: string
-  app_path?: string
-  app_args?: string[]
-  cwd?: string
-  window_title?: string
-  process_name?: string
-  process_id?: number
-  exact_match?: boolean
-  max_steps?: number
-  action_delay_ms?: number
-  launch_delay_ms?: number
-  auto_acknowledge_safety_checks?: boolean
-}> = {
-  name: 'ComputerUseAppTest',
-  aliases: ['computer_use_app_test', 'desktop_ui_test', 'DesktopUITest'],
-  description: 'Startet und testet eine Windows-Desktop-App mit OpenAI computer-use-preview, Screenshots und nativer UI-Steuerung.',
-  category: 'desktop',
-  riskLevel: 'high',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      goal: { type: 'string', description: 'Welche Funktionen oder Workflows in der App geprueft werden sollen' },
-      app_path: { type: 'string', description: 'Optionaler Pfad zur exe, die gestartet werden soll' },
-      app_args: { type: 'array', description: 'Optionale Startargumente fuer die App' },
-      cwd: { type: 'string', description: 'Optionales Arbeitsverzeichnis fuer den Prozessstart' },
-      window_title: { type: 'string', description: 'Fenstertitel oder Teilstring zum Fokussieren des Testfensters' },
-      process_name: { type: 'string', description: 'Optionaler Prozessname der Ziel-App' },
-      process_id: { type: 'number', description: 'Optionale Prozess-ID-Filter fuer das Ziel-Fenster' },
-      exact_match: { type: 'boolean', description: 'Fenster-/Prozessabgleich exakt statt per Teilstring' },
-      max_steps: { type: 'number', description: 'Maximale Anzahl an Computer-Use-Aktionen' },
-      action_delay_ms: { type: 'number', description: 'Wartezeit nach jeder UI-Aktion vor dem naechsten Screenshot' },
-      launch_delay_ms: { type: 'number', description: 'Wartezeit nach dem Start der App vor der ersten Interaktion' },
-      auto_acknowledge_safety_checks: { type: 'boolean', description: 'OpenAI Safety Checks automatisch bestaetigen (nur in kontrollierten Testumgebungen)' },
-    },
-    required: ['goal'],
-  },
-  isReadOnly: () => false,
-  isConcurrencySafe: () => false,
-  async call(input) {
-    const result = await runComputerUseAppTest({
-      goal: input.goal,
-      appPath: input.app_path,
-      appArgs: input.app_args,
-      cwd: input.cwd,
-      windowTitle: input.window_title,
-      processName: input.process_name,
-      processId: input.process_id,
-      exactMatch: input.exact_match,
-      maxSteps: input.max_steps,
-      actionDelayMs: input.action_delay_ms,
-      launchDelayMs: input.launch_delay_ms,
-      autoAcknowledgeSafetyChecks: input.auto_acknowledge_safety_checks,
-    })
-
-    return { data: JSON.stringify(result, null, 2) }
-  },
-}
-
 // ── AgentTool ──────────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/AgentTool/
 
@@ -2162,7 +2102,6 @@ export function registerAllBuiltinTools(): void {
     desktopTypeTextTool,
     desktopKeypressTool,
     desktopScrollTool,
-    computerUseAppTestTool,
     agentTool,
     askUserTool,
     taskCreateTool,

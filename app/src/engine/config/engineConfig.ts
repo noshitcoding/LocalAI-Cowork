@@ -78,8 +78,8 @@ export const DEFAULT_CONFIG: FullEngineConfig = {
     maxTokens: 16384,
   },
   ollama: {
-    baseUrl: 'http://192.168.178.82:11434',
-    model: 'gpt-oss:20b',
+    baseUrl: 'http://localhost:11434',
+    model: 'llama3.1:8b',
     contextWindow: 128000,
     temperature: 0.1,
     thinkingEnabled: false,

@@ -36,16 +36,16 @@ function createLive(entries: CrewLiveEntry[]): CrewLiveState {
 }
 
 describe('CrewLiveMonitor', () => {
-  it('shows up to the last 50000 log lines in the rolling window', () => {
+  it('keeps the full event history while virtualizing rendered log lines', () => {
     const entries = Array.from({ length: 510 }, (_, index) => createEntry(index + 1))
 
     const { container } = render(<CrewLiveMonitor live={createLive(entries)} />)
     const log = screen.getByLabelText('Crew-Live-Log')
 
-    expect(container.querySelectorAll('.crew-live-line')).toHaveLength(510)
-    expect(screen.getByText('510 / 50000 Zeilen')).toBeInTheDocument()
+    expect(container.querySelectorAll('.crew-live-line').length).toBeLessThan(510)
+    expect(screen.getByText('510 Zeilen')).toBeInTheDocument()
+    expect(log).toHaveAttribute('aria-rowcount', '510')
     expect(within(log).getByText('Zeile 1')).toBeInTheDocument()
-    expect(within(log).getByText('Zeile 510')).toBeInTheDocument()
   })
 
   it('renders the three most recently active agents in focus columns', () => {
@@ -137,6 +137,57 @@ describe('CrewLiveMonitor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Filter Runtime' }))
     log = screen.getByLabelText('Crew-Live-Log')
     expect(within(log).getByText('Runtime-Kontext geladen').closest('.crew-live-line')).toHaveClass('tone-runtime')
+  })
+
+  it('uses speaking agent names as primary labels and keeps technical ids in details', () => {
+    const technicalId = 'personality-pers-1777902878654-89d3uh'
+    const { container } = render(<CrewLiveMonitor live={createLive([
+      createEntry(1, {
+        agentId: technicalId,
+        rawAgentId: technicalId,
+        agentName: 'Kreativer',
+        category: 'agent',
+        title: 'Kreativer bereit',
+        detail: `Technische ID: ${technicalId}\nRole: custom`,
+      }),
+    ])} />)
+
+    expect(container.querySelector('.crew-live-focus-name')).toHaveTextContent('Kreativer')
+    expect(container.querySelector('.crew-live-focus-name')).not.toHaveTextContent(technicalId)
+    expect(screen.getAllByText('Kreativer').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(technicalId).length).toBeGreaterThan(0)
+  })
+
+  it('shows handoffs with source, target, model, task and filter support', () => {
+    render(<CrewLiveMonitor live={createLive([
+      createEntry(1, {
+        category: 'handoff',
+        action: 'task_handoff',
+        title: 'Analyst -> Executor',
+        summary: 'Task uebergeben',
+        sourceAgent: 'Analyst',
+        targetAgent: 'Executor',
+        agentName: 'Executor',
+        provider: 'openrouter',
+        model: 'anthropic/claude',
+        taskTitle: 'Spiel verbessern',
+        detail: 'Status: gestartet',
+      }),
+      createEntry(2, {
+        category: 'thinking',
+        action: 'thinking_phase',
+        title: 'Arbeitsprozess: Executor',
+        detail: 'Arbeitsprotokoll: Executor prueft den Task.',
+      }),
+    ])} />)
+
+    expect(screen.getAllByText(/Analyst -> Executor/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Modell anthropic\/claude/).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Filter Uebergabe' }))
+    const log = screen.getByLabelText('Crew-Live-Log')
+    expect(within(log).getByText(/Analyst -> Executor/).closest('.crew-live-line')).toHaveClass('tone-handoff')
+    expect(within(log).queryByText('Arbeitsprozess: Executor')).not.toBeInTheDocument()
   })
 
   it('collapses long details and expands them on demand', () => {

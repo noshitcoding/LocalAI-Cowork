@@ -384,6 +384,7 @@ function buildChatEngineConfig(
           baseUrl: providerState.endpoint,
           model: providerState.model,
           timeoutMs: providerState.timeoutMs,
+          verifyTlsCertificates: providerState.verifyTlsCertificates,
         }
       : undefined,
     cwd,
@@ -437,8 +438,8 @@ export const useEngineStore = create<EngineStoreState>()(
         thinkingBudget: 10000,
         autoCompact: true,
         appendSystemPrompt: '',
-        ollamaBaseUrl: 'http://192.168.178.82:11434',
-        ollamaModel: 'gpt-oss:20b',
+        ollamaBaseUrl: 'http://localhost:11434',
+        ollamaModel: 'llama3.1:8b',
         sessionPersistence: true,
       },
 

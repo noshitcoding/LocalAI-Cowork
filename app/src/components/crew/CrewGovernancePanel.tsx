@@ -63,11 +63,10 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
     loadApprovals,
     resolveApproval,
   } = useCrewControlPlaneStore()
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ crewId: string; message: string } | null>(null)
 
   useEffect(() => {
     void loadApprovals(undefined, activeCrewId)
-    setNotice(null)
   }, [activeCrewId, loadApprovals])
 
   const activeMode = crew?.governanceMode ?? 'allow-all'
@@ -79,7 +78,7 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
   const handleModeSelect = (mode: CrewGovernanceMode) => {
     updateCrew(activeCrewId, { governanceMode: mode })
     const definition = GOVERNANCE_MODES.find((entry) => entry.value === mode)
-    setNotice(definition ? `Governance-Modus gesetzt: ${definition.title}.` : null)
+    setNotice(definition ? { crewId: activeCrewId, message: `Governance-Modus gesetzt: ${definition.title}.` } : null)
   }
 
   const handleResolveApproval = async (approvalId: string, status: 'approved' | 'rejected') => {
@@ -93,77 +92,73 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
 
     if (!useCrewControlPlaneStore.getState().error) {
       setNotice(
-        status === 'approved'
-          ? 'Freigabe erteilt. Falls ein Crew-Run pausiert war, wird er jetzt im Hintergrund fortgesetzt.'
-          : 'Freigabe abgelehnt.',
+        {
+          crewId: activeCrewId,
+          message: status === 'approved'
+            ? 'Freigabe erteilt. Falls ein Crew-Run pausiert war, wird er jetzt im Hintergrund fortgesetzt.'
+            : 'Freigabe abgelehnt.',
+        },
       )
     }
   }
 
   return (
-    <div className="card" style={{ display: 'grid', gap: 12 }}>
-      <div>
-        <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Governance</div>
-        <strong style={{ fontSize: 16 }}>Freigaben & Schutzmodus</strong>
+    <div className="card crew-overview-card">
+      <div className="crew-overview-copy">
+        <div className="crew-overview-kicker">Governance</div>
+        <strong className="crew-overview-title">Freigaben & Schutzmodus</strong>
       </div>
 
-      {error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
-      {notice && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{notice}</div>}
+      {error && <div className="crew-inline-feedback error">{error}</div>}
+      {notice?.crewId === activeCrewId && <div className="crew-inline-feedback">{notice.message}</div>}
 
-      <div style={{ padding: 12, borderRadius: 12, border: '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Aktiver Modus</div>
-        <div style={{ fontSize: 14, fontWeight: 600 }}>{activeModeDefinition.title}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{activeModeDefinition.description}</div>
+      <div className="crew-stat-card crew-emphasis-card">
+        <div className="crew-stat-label">Aktiver Modus</div>
+        <div className="crew-stat-value">{activeModeDefinition.title}</div>
+        <div className="crew-stat-meta">{activeModeDefinition.description}</div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+      <div className="crew-choice-grid">
         {GOVERNANCE_MODES.map((mode) => {
           const selected = mode.value === activeMode
           return (
             <button
               key={mode.value}
               type="button"
-              className="card"
+              className={`crew-choice-card${selected ? ' is-active' : ''}`}
               onClick={() => handleModeSelect(mode.value)}
-              style={{
-                textAlign: 'left',
-                background: selected ? 'color-mix(in srgb, var(--accent) 14%, var(--bg-secondary))' : 'var(--bg-secondary)',
-                border: selected ? '1px solid var(--accent)' : '1px solid var(--border-color)',
-                display: 'grid',
-                gap: 6,
-              }}
             >
-              <strong style={{ fontSize: 13 }}>{mode.title}</strong>
-              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{mode.description}</span>
+              <strong>{mode.title}</strong>
+              <span>{mode.description}</span>
             </button>
           )
         })}
       </div>
 
       <div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Offene / letzte Freigaben</div>
+        <div className="crew-stat-label" style={{ marginBottom: 8 }}>Offene / letzte Freigaben</div>
         {approvals.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine Freigaben fuer diese Crew vorhanden.</div>
+          <div className="crew-inline-feedback">Noch keine Freigaben fuer diese Crew vorhanden.</div>
         ) : (
-          <div style={{ display: 'grid', gap: 8 }}>
+          <div className="crew-stack-list">
             {approvals.slice(0, 6).map((approval) => (
-              <div key={approval.id} style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                  <strong style={{ fontSize: 13 }}>{formatApprovalType(approval.approvalType)}</strong>
-                  <span style={{ fontSize: 11, color: approval.status === 'approved' ? 'var(--success)' : approval.status === 'rejected' ? 'var(--danger)' : 'var(--warning)' }}>{formatApprovalStatus(approval.status)}</span>
+              <div key={approval.id} className="crew-stack-card">
+                <div className="crew-stack-card-header">
+                  <strong>{formatApprovalType(approval.approvalType)}</strong>
+                  <span style={{ color: approval.status === 'approved' ? 'var(--success)' : approval.status === 'rejected' ? 'var(--danger)' : 'var(--warning)' }}>{formatApprovalStatus(approval.status)}</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                <div className="crew-stat-meta">
                   Angefragt: {formatTimestamp(approval.requestedAt)}
                 </div>
                 {approval.resolvedAt && (
-                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  <div className="crew-stat-meta">
                     Entschieden: {formatTimestamp(approval.resolvedAt)}
                   </div>
                 )}
                 {approval.status === 'pending' && (
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button type="button" className="btn-sm" disabled={loading} onClick={() => void handleResolveApproval(approval.id, 'approved')}>Genehmigen</button>
-                    <button type="button" className="btn-sm" disabled={loading} onClick={() => void handleResolveApproval(approval.id, 'rejected')}>Ablehnen</button>
+                  <div className="crew-button-row">
+                    <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void handleResolveApproval(approval.id, 'approved')}>Genehmigen</button>
+                    <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void handleResolveApproval(approval.id, 'rejected')}>Ablehnen</button>
                   </div>
                 )}
               </div>

@@ -57,6 +57,7 @@ describe('CrewPanel', () => {
           model: 'gpt-4.1-mini',
           apiKey: 'sk-test',
           timeoutMs: 600000,
+          verifyTlsCertificates: true,
           contextWindow: null,
           temperature: null,
         },
@@ -68,6 +69,7 @@ describe('CrewPanel', () => {
           model: '',
           apiKey: 'or-test',
           timeoutMs: 600000,
+          verifyTlsCertificates: true,
           contextWindow: null,
           temperature: null,
         },
@@ -107,6 +109,7 @@ describe('CrewPanel', () => {
               model: 'gpt-4.1-mini',
               apiKey: 'sk-test',
               timeoutMs: 600000,
+              verifyTlsCertificates: true,
             },
             openRouter: {
               enabled: false,
@@ -114,6 +117,7 @@ describe('CrewPanel', () => {
               model: '',
               apiKey: '',
               timeoutMs: 600000,
+              verifyTlsCertificates: true,
             },
           },
           agents: [

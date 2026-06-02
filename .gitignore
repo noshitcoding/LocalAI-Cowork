@@ -4,17 +4,68 @@ app/node_modules/
 app/dist/
 app/coverage/
 app/.vite/
+app/playwright-report/
+app/test-results/
+*.tsbuildinfo
 dist-installers/
 
 # Rust
 app/src-tauri/target/
+app/src-tauri/gen/schemas/
 
 # Generated Python runtime artifacts
 app/src-tauri/python/crew_runtime/wheels/
 app/src-tauri/python/crew_runtime/wheels.zip
 app/src-tauri/resources/python/
+app/src-tauri/resources/WebView2Loader.dll
 .tmp-bundled-python312-venv/
+.tmp-crewai-check/
 app/src-tauri/python/crew_runtime/__pycache__/
+__pycache__/
+*.py[cod]
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+secrets.*
+credentials.*
+
+# Local databases, dumps, and app state
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.duckdb
+*.duckdb-*
+*.mdb
+*.accdb
+*.realm
+*.rdb
+*.dump
+*.backup
+*.bak
+*.sql.gz
+*.sql.zip
+data/
+storage/
+uploads/
+sessions/
+memory/
+chroma/
+chromadb/
+qdrant_storage/
 
 # Logs and temp
 *.log
@@ -23,6 +74,8 @@ app/src-tauri/python/crew_runtime/__pycache__/
 .DS_Store
 Thumbs.db
 temp/
+.cache/
+.playwright-mcp/
 
 # External example repositories
 andere_ai_agenten_beispiele/

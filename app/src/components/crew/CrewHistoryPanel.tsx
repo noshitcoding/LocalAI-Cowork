@@ -126,68 +126,67 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
   }
 
   return (
-    <div className="card" style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>History</div>
-          <strong style={{ fontSize: 16 }}>Crew-Runs & Events</strong>
+    <div className="card crew-overview-card">
+      <div className="crew-overview-head">
+        <div className="crew-overview-copy">
+          <div className="crew-overview-kicker">History</div>
+          <strong className="crew-overview-title">Crew-Runs & Events</strong>
         </div>
-        <button type="button" className="btn-sm" disabled={!selectedRunId || replaying} onClick={() => void handleReplaySelectedRun()}>
+        <button type="button" className="btn-sm crew-action-btn" disabled={!selectedRunId || replaying} onClick={() => void handleReplaySelectedRun()}>
           {replaying ? 'Replay laeuft…' : 'Ausgewaehlten Run replayen'}
         </button>
       </div>
 
-      {error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
-      {replayMessage && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{replayMessage}</div>}
+      {error && <div className="crew-inline-feedback error">{error}</div>}
+      {replayMessage && <div className="crew-inline-feedback">{replayMessage}</div>}
 
       {runs.length === 0 ? (
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine gespeicherten Runs fuer diese Crew.</div>
+        <div className="crew-inline-feedback">Noch keine gespeicherten Runs fuer diese Crew.</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-          <div style={{ display: 'grid', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+        <div className="crew-history-grid">
+          <div className="crew-run-list">
             {runs.map((run) => (
               <button
                 key={run.id}
                 type="button"
-                className="card"
+                className={`crew-run-card${selectedRunId === run.id ? ' active' : ''}`}
                 onClick={() => setSelectedRunId(run.id)}
-                style={{ textAlign: 'left', border: selectedRunId === run.id ? '1px solid var(--accent)' : '1px solid var(--border-color)', background: 'var(--bg-secondary)' }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <strong style={{ fontSize: 13 }}>{run.process}</strong>
-                  <span style={{ fontSize: 11, color: run.status === 'completed' ? 'var(--success)' : run.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{run.status}</span>
+                <div className="crew-stack-card-header">
+                  <strong>{run.process}</strong>
+                  <span style={{ color: run.status === 'completed' ? 'var(--success)' : run.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{run.status}</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>{formatTimestamp(run.startedAt)}</div>
+                <div className="crew-stat-meta">{formatTimestamp(run.startedAt)}</div>
               </button>
             ))}
           </div>
 
-          <div style={{ display: 'grid', gap: 10 }}>
+          <div className="crew-run-body">
             {selectedRun && (
-              <div style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                  <strong style={{ fontSize: 13 }}>{selectedRun.crewName}</strong>
-                  <span style={{ fontSize: 11, color: selectedRun.status === 'completed' ? 'var(--success)' : selectedRun.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{selectedRun.status}</span>
+              <div className="crew-stack-card crew-emphasis-card">
+                <div className="crew-stack-card-header">
+                  <strong>{selectedRun.crewName}</strong>
+                  <span style={{ color: selectedRun.status === 'completed' ? 'var(--success)' : selectedRun.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{selectedRun.status}</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                <div className="crew-stat-meta">
                   Start: {formatTimestamp(selectedRun.startedAt)} · Ende: {formatTimestamp(selectedRun.finishedAt)}
                 </div>
                 {selectedRun.error && (
-                  <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 4 }}>{selectedRun.error}</div>
+                  <div className="crew-inline-feedback error">{selectedRun.error}</div>
                 )}
               </div>
             )}
 
             <div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Events</div>
-              <div style={{ maxHeight: 150, overflowY: 'auto', display: 'grid', gap: 8 }}>
+              <div className="crew-stat-label" style={{ marginBottom: 8 }}>Events</div>
+              <div className="crew-stack-list crew-scroll-stack">
                 {events.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine Events gespeichert.</div>
+                  <div className="crew-inline-feedback">Noch keine Events gespeichert.</div>
                 ) : events.slice(0, 8).map((event) => (
-                  <div key={event.id} style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                      <strong style={{ fontSize: 12 }}>{event.eventType}</strong>
-                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{formatTimestamp(event.createdAt)}</span>
+                  <div key={event.id} className="crew-stack-card">
+                    <div className="crew-stack-card-header">
+                      <strong>{event.eventType}</strong>
+                      <span>{formatTimestamp(event.createdAt)}</span>
                     </div>
                   </div>
                 ))}
@@ -195,15 +194,15 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
             </div>
 
             <div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Logs</div>
-              <div style={{ maxHeight: 150, overflowY: 'auto', display: 'grid', gap: 8 }}>
+              <div className="crew-stat-label" style={{ marginBottom: 8 }}>Logs</div>
+              <div className="crew-stack-list crew-scroll-stack">
                 {logs.length === 0 ? (
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine Logs fuer diesen Run.</div>
+                  <div className="crew-inline-feedback">Noch keine Logs fuer diesen Run.</div>
                 ) : logs.slice(0, 8).map((log) => (
-                  <div key={log.id} style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-                    <div style={{ fontSize: 12, fontWeight: 600 }}>{log.action}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>{log.agentId} • {log.taskId}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>{log.result.slice(0, 180)}</div>
+                  <div key={log.id} className="crew-stack-card">
+                    <div className="crew-stat-value">{log.action}</div>
+                    <div className="crew-stat-meta">{log.agentId} • {log.taskId}</div>
+                    <div className="crew-stat-meta">{log.result.slice(0, 180)}</div>
                   </div>
                 ))}
               </div>

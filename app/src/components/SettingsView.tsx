@@ -71,8 +71,6 @@ type CategoryKey = (typeof CATEGORIES)[number]['key']
 export default function SettingsView() {
   const {
     ollama,
-    openAIComputerUse,
-    setOpenAIComputerUse,
     preferences,
     setPreference,
   } = useConfigStore()
@@ -81,12 +79,6 @@ export default function SettingsView() {
   const globalInstruction = useCoworkStore((s) => s.globalInstruction)
   const setGlobalInstruction = useCoworkStore((s) => s.setGlobalInstruction)
   const [activeCategory, setActiveCategory] = useState<CategoryKey>('ai')
-
-  const parseNumberInput = (raw: string, fallback: number): number => {
-    const normalized = raw.replace(',', '.').trim()
-    const parsed = Number(normalized)
-    return Number.isFinite(parsed) ? parsed : fallback
-  }
 
   const pref = <K extends keyof AppPreferences>(key: K) => ({
     checked: preferences[key] as boolean,
@@ -119,77 +111,6 @@ export default function SettingsView() {
             <p className="hint-text">Mehrere LLM-Profile, globale Provider-Defaults und Persoenlichkeiten konfigurieren</p>
 
             <LlmProfilesPanel />
-
-            <Section title="OpenAI Computer Use" icon="🖱️">
-              <div className="grid">
-                <label>
-                  API Key
-                  <input
-                    type="password"
-                    value={openAIComputerUse.apiKey}
-                    onChange={(e) => setOpenAIComputerUse({ apiKey: e.target.value })}
-                    placeholder="sk-..."
-                    style={{ fontFamily: 'monospace' }}
-                  />
-                </label>
-                <label>
-                  Base URL
-                  <input
-                    value={openAIComputerUse.baseUrl}
-                    onChange={(e) => setOpenAIComputerUse({ baseUrl: e.target.value })}
-                    placeholder="https://api.openai.com/v1"
-                    style={{ fontFamily: 'monospace' }}
-                  />
-                </label>
-                <label>
-                  Modell
-                  <input
-                    value={openAIComputerUse.model}
-                    onChange={(e) => setOpenAIComputerUse({ model: e.target.value })}
-                    placeholder="computer-use-preview"
-                    style={{ fontFamily: 'monospace' }}
-                  />
-                </label>
-                <label>
-                  Max Steps
-                  <input
-                    type="number"
-                    min={1}
-                    max={200}
-                    value={openAIComputerUse.maxSteps}
-                    onChange={(e) => setOpenAIComputerUse({ maxSteps: parseNumberInput(e.target.value, openAIComputerUse.maxSteps) })}
-                  />
-                </label>
-                <label>
-                  Action Delay (ms)
-                  <input
-                    type="number"
-                    min={0}
-                    max={10000}
-                    step={50}
-                    value={openAIComputerUse.actionDelayMs}
-                    onChange={(e) => setOpenAIComputerUse({ actionDelayMs: parseNumberInput(e.target.value, openAIComputerUse.actionDelayMs) })}
-                  />
-                </label>
-                <label>
-                  Launch Delay (ms)
-                  <input
-                    type="number"
-                    min={0}
-                    max={30000}
-                    step={100}
-                    value={openAIComputerUse.launchDelayMs}
-                    onChange={(e) => setOpenAIComputerUse({ launchDelayMs: parseNumberInput(e.target.value, openAIComputerUse.launchDelayMs) })}
-                  />
-                </label>
-              </div>
-              <Toggle
-                label="Safety Checks automatisch bestaetigen"
-                hint="Nur fuer kontrollierte lokale Testumgebungen. Sonst Human-in-the-loop beibehalten."
-                checked={openAIComputerUse.autoAcknowledgeSafetyChecks}
-                onChange={(value) => setOpenAIComputerUse({ autoAcknowledgeSafetyChecks: value })}
-              />
-            </Section>
 
             <Section title="Streaming" icon="💾">
               <Toggle label="Stream-Antworten automatisch speichern" hint="Ollama-Antworten werden waehrend des Streamings gesichert" {...pref('ollamaStreamAutosave')} />

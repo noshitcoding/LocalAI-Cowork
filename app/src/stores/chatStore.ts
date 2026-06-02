@@ -29,23 +29,39 @@ export type CrewLiveEntryCategory =
   | 'status'
   | 'context'
   | 'agent'
+  | 'thinking'
   | 'handoff'
   | 'delegation'
   | 'tool'
   | 'mcp'
   | 'task'
+  | 'result'
   | 'output'
   | 'error'
+
+export type CrewLiveSeverity = 'info' | 'warning' | 'error'
 
 export type CrewLiveEntry = {
   id: string
   timestamp: number
   agentId: string
+  rawAgentId?: string | null
   taskId: string
   action: string
   category: CrewLiveEntryCategory
   title: string
   detail: string
+  agentName?: string | null
+  sourceAgent?: string | null
+  targetAgent?: string | null
+  rawTargetAgentId?: string | null
+  provider?: string | null
+  model?: string | null
+  taskTitle?: string | null
+  phase?: string | null
+  summary?: string | null
+  severity?: CrewLiveSeverity | null
+  providerReasoning?: string | null
 }
 
 export type CrewLiveState = {

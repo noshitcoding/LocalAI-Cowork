@@ -4,6 +4,7 @@ import type {
   TokenUsage,
   ToolInputSchema,
 } from '../types'
+import { hasTauriRuntime, safeInvoke } from '../../utils/safeInvoke'
 import {
   EMPTY_USAGE,
   generateUUID,
@@ -15,8 +16,26 @@ export type OpenAiCompatibleConfig = {
   model: string
   baseUrl: string
   timeoutMs?: number
+  verifyTlsCertificates?: boolean
   temperature?: number
   maxTokens?: number
+}
+
+type OpenAiCompatibleChatCompletionResult = {
+  status: number
+  body: string
+}
+
+type OpenAiCompatibleModelsResult = {
+  endpoint: string
+  models: string[]
+}
+
+type OpenAiModelsResponse = {
+  data?: Array<{
+    id?: unknown
+    name?: unknown
+  }>
 }
 
 type APIMessage = {
@@ -98,9 +117,65 @@ function buildEndpoint(baseUrl: string): string {
     throw new Error('Endpoint fehlt')
   }
 
-  return trimmed.endsWith('/chat/completions')
-    ? trimmed
-    : `${trimmed}/chat/completions`
+  if (trimmed.endsWith('/chat/completions')) {
+    return trimmed
+  }
+
+  if (trimmed.endsWith('/models')) {
+    const withoutModels = trimmed.replace(/\/models$/, '')
+    if (withoutModels.endsWith('/v1')) {
+      return `${withoutModels}/chat/completions`
+    }
+    if (isServiceRootEndpoint(withoutModels)) {
+      return `${withoutModels}/v1/chat/completions`
+    }
+    return `${withoutModels}/chat/completions`
+  }
+
+  if (trimmed.endsWith('/v1')) {
+    return `${trimmed}/chat/completions`
+  }
+
+  if (isServiceRootEndpoint(trimmed)) {
+    return `${trimmed}/v1/chat/completions`
+  }
+
+  return `${trimmed}/chat/completions`
+}
+
+function buildModelsEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '')
+  if (!trimmed) {
+    throw new Error('Endpoint fehlt')
+  }
+
+  if (trimmed.endsWith('/models')) {
+    return trimmed
+  }
+
+  if (trimmed.endsWith('/chat/completions')) {
+    const withoutChatCompletions = trimmed.replace(/\/chat\/completions$/, '')
+    return `${withoutChatCompletions}/models`
+  }
+
+  if (trimmed.endsWith('/v1')) {
+    return `${trimmed}/models`
+  }
+
+  if (isServiceRootEndpoint(trimmed)) {
+    return `${trimmed}/v1/models`
+  }
+
+  return `${trimmed}/models`
+}
+
+function isServiceRootEndpoint(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return parsed.pathname.replace(/\/+$/, '') === ''
+  } catch {
+    return false
+  }
 }
 
 function createAbortSignal(timeoutMs: number | undefined, signal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
@@ -386,6 +461,107 @@ function mapStopReason(
   return null
 }
 
+function parseProviderModels(body: string): string[] {
+  const payload = JSON.parse(body) as OpenAiModelsResponse
+  const models = (Array.isArray(payload.data) ? payload.data : [])
+    .map((entry) => {
+      const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+      const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+      return id || name
+    })
+    .filter(Boolean)
+
+  return Array.from(new Set(models)).sort()
+}
+
+function modelNameSuffix(model: string): string {
+  const trimmed = model.trim()
+  return trimmed.split('/').filter(Boolean).at(-1) ?? trimmed
+}
+
+function findModelSuggestion(models: string[], requestedModel: string): string | null {
+  const requested = requestedModel.trim()
+  if (!requested) return null
+
+  const normalizedModels = models.map((model) => model.trim()).filter(Boolean)
+  const lowerRequested = requested.toLowerCase()
+  const exact = normalizedModels.find((model) => model.toLowerCase() === lowerRequested)
+  if (exact) return null
+
+  const suffix = normalizedModels.find((model) => modelNameSuffix(model).toLowerCase() === lowerRequested)
+  if (suffix) return suffix
+
+  return normalizedModels.length === 1 ? normalizedModels[0] : null
+}
+
+function isModelNotFoundFailure(error: unknown): error is RequestFailure {
+  if (!(error instanceof Error)) return false
+
+  const failure = error as RequestFailure
+  if (failure.status !== 404) return false
+
+  const bodyText = failure.bodyText ?? ''
+  const normalized = `${error.message}\n${bodyText}`.toLowerCase()
+  return normalized.includes('model')
+    && (
+      normalized.includes('notfound')
+      || normalized.includes('not found')
+      || normalized.includes('not exist')
+      || normalized.includes('does not exist')
+      || normalized.includes('not available')
+    )
+}
+
+async function fetchProviderModels(
+  config: OpenAiCompatibleConfig,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<string[]> {
+  if (config.verifyTlsCertificates === false && hasTauriRuntime()) {
+    const result = await safeInvoke<OpenAiCompatibleModelsResult>('crew_provider_models_list', {
+      request: {
+        providerKind: config.provider,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        model: config.model,
+        verifyTlsCertificates: config.verifyTlsCertificates,
+      },
+    })
+    return Array.isArray(result.models) ? result.models : []
+  }
+
+  const response = await fetch(buildModelsEndpoint(config.baseUrl), {
+    method: 'GET',
+    headers,
+    signal,
+  })
+
+  if (!response.ok) {
+    return []
+  }
+
+  return parseProviderModels(await response.text())
+}
+
+async function resolveModelNotFoundSuggestion(
+  config: OpenAiCompatibleConfig,
+  headers: Record<string, string>,
+  error: unknown,
+  requestedModel: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (!isModelNotFoundFailure(error)) return null
+
+  try {
+    return findModelSuggestion(
+      await fetchProviderModels(config, headers, signal),
+      requestedModel,
+    )
+  } catch {
+    return null
+  }
+}
+
 export type SampleResult = {
   content: ContentBlock[]
   model: string
@@ -425,9 +601,14 @@ export async function* streamOpenAiCompatibleMessages(
       headers['X-Title'] = 'Open Cowork'
     }
 
-    const executeRequest = async (messagesForRequest: OpenAiCompatibleRequestMessage[]): Promise<OpenAiCompatibleResponse> => {
+    let requestModel = config.model.trim()
+
+    const executeRequest = async (
+      messagesForRequest: OpenAiCompatibleRequestMessage[],
+      model: string,
+    ): Promise<OpenAiCompatibleResponse> => {
       const body: Record<string, unknown> = {
-        model: config.model,
+        model,
         messages: messagesForRequest,
         stream: false,
       }
@@ -453,10 +634,35 @@ export async function* streamOpenAiCompatibleMessages(
         body.max_tokens = config.maxTokens
       }
 
+      const bodyJson = JSON.stringify(body)
+      const shouldUseNativeRequest = config.verifyTlsCertificates === false && hasTauriRuntime()
+
+      if (shouldUseNativeRequest) {
+        const result = await safeInvoke<OpenAiCompatibleChatCompletionResult>('openai_compatible_chat_completion', {
+          request: {
+            endpoint,
+            headers,
+            body: bodyJson,
+            timeoutMs: config.timeoutMs,
+            verifyTlsCertificates: config.verifyTlsCertificates,
+          },
+        })
+
+        if (result.status < 200 || result.status >= 300) {
+          const excerpt = result.body.slice(0, 400)
+          const requestError = new Error(`${providerLabel} API Error (${result.status}): ${excerpt || 'HTTP request failed'}`) as RequestFailure
+          requestError.status = result.status
+          requestError.bodyText = result.body
+          throw requestError
+        }
+
+        return JSON.parse(result.body) as OpenAiCompatibleResponse
+      }
+
       const response = await fetch(endpoint, {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: bodyJson,
         signal: timeoutSignal.signal,
       })
 
@@ -473,8 +679,27 @@ export async function* streamOpenAiCompatibleMessages(
     }
 
     let payload: OpenAiCompatibleResponse
+    const retryWithModelSuggestion = async (
+      requestError: unknown,
+      messagesForRetry: OpenAiCompatibleRequestMessage[],
+    ): Promise<OpenAiCompatibleResponse> => {
+      const suggestedModel = await resolveModelNotFoundSuggestion(
+        config,
+        headers,
+        requestError,
+        requestModel,
+        timeoutSignal.signal,
+      )
+      if (!suggestedModel) {
+        throw requestError
+      }
+
+      requestModel = suggestedModel
+      return executeRequest(messagesForRetry, requestModel)
+    }
+
     try {
-      payload = await executeRequest(requestMessages)
+      payload = await executeRequest(requestMessages, requestModel)
     } catch (error) {
       if (
         config.provider === 'openrouter'
@@ -482,9 +707,13 @@ export async function* streamOpenAiCompatibleMessages(
         && isUnsupportedOpenRouterImageInputError(error)
       ) {
         requestMessages = stripImagePartsFromMessages(requestMessages)
-        payload = await executeRequest(requestMessages)
+        try {
+          payload = await executeRequest(requestMessages, requestModel)
+        } catch (retryError) {
+          payload = await retryWithModelSuggestion(retryError, requestMessages)
+        }
       } else {
-        throw error
+        payload = await retryWithModelSuggestion(error, requestMessages)
       }
     }
 
@@ -498,7 +727,7 @@ export async function* streamOpenAiCompatibleMessages(
     const reasoningContent = extractReasoningContent(message)
     const textContent = extractTextContent(message?.content).trim()
     const toolCalls = message?.tool_calls ?? []
-    const model = payload.model ?? config.model
+    const model = payload.model ?? requestModel
     const usage: TokenUsage = {
       input_tokens: payload.usage?.prompt_tokens ?? 0,
       output_tokens: payload.usage?.completion_tokens ?? 0,

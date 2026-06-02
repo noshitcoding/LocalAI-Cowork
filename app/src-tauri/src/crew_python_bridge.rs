@@ -98,6 +98,28 @@ pub struct CrewRuntimeExecutionLog {
     pub action: String,
     pub result: String,
     pub timestamp: i64,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    #[serde(default)]
+    pub source_agent: Option<String>,
+    #[serde(default)]
+    pub target_agent: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub task_title: Option<String>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub provider_reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -786,24 +808,15 @@ where
 
     let stderr_handle = thread::spawn(move || {
         let mut output = String::new();
-        for line in BufReader::new(stderr).lines() {
-            match line {
-                Ok(line) => {
-                    output.push_str(&line);
-                    output.push('\n');
-                }
-                Err(error) => {
-                    output.push_str(&format!("Crew runtime stderr Lesefehler: {}\n", error));
-                    break;
-                }
-            }
+        for line in read_lossy_lines(stderr) {
+            output.push_str(&line);
+            output.push('\n');
         }
         output
     });
 
     let mut stdout_lines = Vec::new();
-    for line in BufReader::new(stdout).lines() {
-        let line = line.map_err(|error| format!("Crew runtime stdout Lesefehler: {}", error))?;
+    for line in read_lossy_lines(stdout) {
         if let Some(event) = parse_runtime_protocol_event(&line) {
             on_log_event(event);
         } else {
@@ -834,6 +847,18 @@ where
     }
 
     parse_python_json_stdout(&stdout, &stderr)
+}
+
+fn read_lossy_lines<R: std::io::Read>(reader: R) -> impl Iterator<Item = String> {
+    BufReader::new(reader)
+        .split(b'\n')
+        .filter_map(|line| line.ok())
+        .map(|mut bytes| {
+            if bytes.ends_with(b"\r") {
+                bytes.pop();
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
 }
 
 fn parse_runtime_protocol_event(line: &str) -> Option<CrewRuntimeLogEvent> {
@@ -997,7 +1022,9 @@ fn crew_runtime_status_internal<R: Runtime>(
     } else if detected_python_path.is_some() && !python_compatible {
         format!(
             "Erkannter Python-Interpreter ({}) ist fuer CrewAI nicht kompatibel. Die App-interne Runtime wird beim Initialisieren mit Python 3.12 vorbereitet.",
-            detected_python_version.clone().unwrap_or_else(|| "unbekannt".to_string())
+            detected_python_version
+                .clone()
+                .unwrap_or_else(|| "unbekannt".to_string())
         )
     } else if preferred_python.is_none() {
         "Crew runtime muss initialisiert werden. Python 3.12 und CrewAI werden isoliert in den App-Datenordner heruntergeladen.".to_string()

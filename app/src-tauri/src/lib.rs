@@ -18,20 +18,20 @@ mod worker_sandbox;
 
 use claude_code_bridge::ClaudeCodeBridge;
 use crew_python_bridge::{
-    crew_runtime_bootstrap, crew_runtime_execute_request, crew_runtime_status,
-    crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
+    CrewPythonBridge, CrewRuntimeExecutionLog, crew_runtime_bootstrap,
+    crew_runtime_execute_request, crew_runtime_status, crew_runtime_validate_definition,
 };
 use db::Database;
 use mcp::{
-    call_tool, probe_server, runtime_call_tool, runtime_has_server, runtime_list_servers,
-    runtime_probe_server, runtime_restart_server, runtime_start_server, runtime_stop_server,
-    McpCallRequest, McpError, McpRuntimeServerStatus, McpServerRequest,
+    McpCallRequest, McpError, McpRuntimeServerStatus, McpServerRequest, call_tool, probe_server,
+    runtime_call_tool, runtime_has_server, runtime_list_servers, runtime_probe_server,
+    runtime_restart_server, runtime_start_server, runtime_stop_server,
 };
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ollama::{
+    ChatMessage, ChatStreamChunkPayload, ChatToolDef, OllamaConfig, OllamaError,
     chat_turn as chat_turn_internal, chat_turn_stream as chat_turn_stream_internal, check_health,
-    generate_plan as generate_plan_internal, ChatMessage, ChatStreamChunkPayload, ChatToolDef,
-    OllamaConfig, OllamaError,
+    generate_plan as generate_plan_internal,
 };
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
@@ -486,6 +486,10 @@ struct CrewProviderHealthCheckRequest {
     provider_kind: String,
     base_url: String,
     api_key: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default = "default_true")]
+    verify_tls_certificates: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -504,6 +508,28 @@ struct CrewProviderModelsRequest {
     provider_kind: String,
     base_url: String,
     api_key: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default = "default_true")]
+    verify_tls_certificates: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiCompatibleChatCompletionRequest {
+    endpoint: String,
+    headers: HashMap<String, String>,
+    body: String,
+    timeout_ms: Option<u64>,
+    #[serde(default = "default_true")]
+    verify_tls_certificates: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiCompatibleChatCompletionResponse {
+    status: u16,
+    body: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -523,6 +549,65 @@ struct OpenAiModelRow {
     id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+}
+
+fn normalize_openai_model_rows(rows: Vec<OpenAiModelRow>) -> Vec<String> {
+    let mut models = rows
+        .into_iter()
+        .filter_map(|entry| {
+            let id = entry
+                .id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let name = entry
+                .name
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            id.or(name)
+        })
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    models
+}
+
+fn parse_openai_models_response(body: &str) -> Result<Vec<String>, String> {
+    serde_json::from_str::<OpenAiModelsResponse>(body)
+        .map(|payload| normalize_openai_model_rows(payload.data))
+        .map_err(|error| format!("Modellliste konnte nicht gelesen werden: {}", error))
+}
+
+fn model_name_suffix(value: &str) -> &str {
+    let trimmed = value.trim();
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+fn find_model_suggestion<'a>(models: &'a [String], configured_model: &str) -> Option<&'a str> {
+    let configured = configured_model.trim();
+    if configured.is_empty() {
+        return None;
+    }
+
+    let lower_configured = configured.to_lowercase();
+    models
+        .iter()
+        .find(|model| model.to_lowercase() == lower_configured)
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model_name_suffix(model).to_lowercase() == lower_configured)
+        })
+        .or_else(|| models.iter().find(|model| models.len() == 1 && !model.is_empty()))
+        .map(|model| model.as_str())
+}
+
+fn format_model_sample(models: &[String]) -> String {
+    models
+        .iter()
+        .take(5)
+        .map(|model| format!("'{}'", model))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Serialize)]
@@ -960,7 +1045,7 @@ struct CrewStopRequest {
     crew_id: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CrewExecutionLogRow {
     id: String,
@@ -970,6 +1055,28 @@ struct CrewExecutionLogRow {
     action: String,
     result: String,
     timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_reasoning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1008,6 +1115,17 @@ fn runtime_log_to_row(entry: CrewRuntimeExecutionLog) -> CrewExecutionLogRow {
         action: entry.action,
         result: entry.result,
         timestamp: entry.timestamp,
+        agent_name: entry.agent_name,
+        source_agent: entry.source_agent,
+        target_agent: entry.target_agent,
+        provider: entry.provider,
+        model: entry.model,
+        task_title: entry.task_title,
+        phase: entry.phase,
+        summary: entry.summary,
+        detail: entry.detail,
+        severity: entry.severity,
+        provider_reasoning: entry.provider_reasoning,
     }
 }
 
@@ -1335,10 +1453,10 @@ fn collect_crew_memory_payload(
         "Kein gespeichertes Crew-Wissen gefunden. Arbeite konservativ und markiere Annahmen explizit.".to_string()
     } else {
         format!(
-      "{} Memory-Eintraege und {} Profilhinweise stehen als Crew-Kontext bereit. Nutze sie als Arbeitshypothesen und verifiziere strittige Punkte.",
-      entries.len(),
-      user_profile.len(),
-    )
+            "{} Memory-Eintraege und {} Profilhinweise stehen als Crew-Kontext bereit. Nutze sie als Arbeitshypothesen und verifiziere strittige Punkte.",
+            entries.len(),
+            user_profile.len(),
+        )
     };
 
     CrewMemoryPayload {
@@ -1397,10 +1515,9 @@ fn collect_crew_governance_payload(
             .any(|role| crew_role_allows_execution(role))
     {
         return Err(format!(
-      "Crew-Start fuer Subject '{}' blockiert: keine passende Runner-Rolle fuer Crew {} hinterlegt.",
-      subject,
-      request.id,
-    ));
+            "Crew-Start fuer Subject '{}' blockiert: keine passende Runner-Rolle fuer Crew {} hinterlegt.",
+            subject, request.id,
+        ));
     }
 
     let pending_approvals = database
@@ -1529,9 +1646,9 @@ fn collect_crew_governance_payload(
             .any(|role| crew_role_allows_tool_operations(role))
     {
         return Err(format!(
-      "Crew-Start fuer Subject '{}' blockiert: Live-Tools und Delegation erfordern Owner/Admin oder Operator/Runner.",
-      subject,
-    ));
+            "Crew-Start fuer Subject '{}' blockiert: Live-Tools und Delegation erfordern Owner/Admin oder Operator/Runner.",
+            subject,
+        ));
     }
 
     if governance_mode == "read-only" && requested_risky_actions {
@@ -2069,6 +2186,17 @@ fn persist_crew_execution_response(
           "action": log.action,
           "result": log.result,
           "timestamp": log.timestamp,
+          "agentName": log.agent_name,
+          "sourceAgent": log.source_agent,
+          "targetAgent": log.target_agent,
+          "provider": log.provider,
+          "model": log.model,
+          "taskTitle": log.task_title,
+          "phase": log.phase,
+          "summary": log.summary,
+          "detail": log.detail,
+          "severity": log.severity,
+          "providerReasoning": log.provider_reasoning,
         });
         let payload_json = serde_json::to_string(&payload).ok();
         let _ = database.insert_crew_run_event(
@@ -2178,29 +2306,38 @@ async fn execute_crew_request(
                 request.process
             ),
             timestamp: chrono::Utc::now().timestamp_millis(),
+            agent_name: Some("Runtime".to_string()),
+            source_agent: None,
+            target_agent: None,
+            provider: None,
+            model: request.config.as_ref().map(|config| config.model.clone()),
+            task_title: request.tasks.first().map(|task| task.description.clone()),
+            phase: Some("status".to_string()),
+            summary: Some(format!("Crew '{}' startet", request.name)),
+            detail: None,
+            severity: Some("info".to_string()),
+            provider_reasoning: None,
         },
     );
 
     let app_for_runtime_logs = app.clone();
     let stream_id_for_runtime_logs = request.stream_id.clone();
     let run_id_for_runtime_logs = run_id.clone();
-    let runtime_result = crew_runtime_execute_request(
-        app,
-        bridge,
-        &runtime_payload,
-        move |event| {
+    let runtime_result =
+        crew_runtime_execute_request(app, bridge, &runtime_payload, move |event| {
             let stream_id = event
                 .stream_id
                 .or_else(|| stream_id_for_runtime_logs.clone());
-            let run_id = event.run_id.or_else(|| Some(run_id_for_runtime_logs.clone()));
+            let run_id = event
+                .run_id
+                .or_else(|| Some(run_id_for_runtime_logs.clone()));
             emit_crew_execution_log_event(
                 &app_for_runtime_logs,
                 stream_id,
                 run_id,
                 runtime_log_to_row(event.log),
             );
-        },
-    );
+        });
 
     if let Ok(mut canceled) = registry.canceled.lock() {
         canceled.remove(&request.id);
@@ -2224,15 +2361,7 @@ async fn execute_crew_request(
                 logs: runtime_response
                     .logs
                     .into_iter()
-                    .map(|entry| CrewExecutionLogRow {
-                        id: entry.id,
-                        crew_id: entry.crew_id,
-                        agent_id: entry.agent_id,
-                        task_id: entry.task_id,
-                        action: entry.action,
-                        result: entry.result,
-                        timestamp: entry.timestamp,
-                    })
+                    .map(runtime_log_to_row)
                     .collect(),
                 error: runtime_response.error,
             };
@@ -2273,6 +2402,17 @@ async fn execute_crew_request(
                     action: "Runtime-Fehler".to_string(),
                     result: error.clone(),
                     timestamp: chrono::Utc::now().timestamp_millis(),
+                    agent_name: Some("Runtime".to_string()),
+                    source_agent: None,
+                    target_agent: None,
+                    provider: None,
+                    model: request.config.as_ref().map(|config| config.model.clone()),
+                    task_title: request.tasks.first().map(|task| task.description.clone()),
+                    phase: Some("error".to_string()),
+                    summary: Some("Runtime-Fehler".to_string()),
+                    detail: Some(error.clone()),
+                    severity: Some("error".to_string()),
+                    provider_reasoning: None,
                 }],
                 error: Some(error.clone()),
             };
@@ -3367,12 +3507,12 @@ fn capture_screenshot_for_display_payload(
 
     let region_script = if let Some(value) = region {
         format!(
-      "\n$captureX = $bounds.X + {x}\n$captureY = $bounds.Y + {y}\n$captureWidth = {width}\n$captureHeight = {height}\nif ($captureWidth -le 0 -or $captureHeight -le 0) {{ throw 'region width/height must be positive' }}\nif ($captureX -lt $bounds.X -or $captureY -lt $bounds.Y -or ($captureX + $captureWidth) -gt ($bounds.X + $bounds.Width) -or ($captureY + $captureHeight) -gt ($bounds.Y + $bounds.Height)) {{ throw 'region is outside selected display bounds' }}\n",
-      x = value.x,
-      y = value.y,
-      width = value.width,
-      height = value.height,
-    )
+            "\n$captureX = $bounds.X + {x}\n$captureY = $bounds.Y + {y}\n$captureWidth = {width}\n$captureHeight = {height}\nif ($captureWidth -le 0 -or $captureHeight -le 0) {{ throw 'region width/height must be positive' }}\nif ($captureX -lt $bounds.X -or $captureY -lt $bounds.Y -or ($captureX + $captureWidth) -gt ($bounds.X + $bounds.Width) -or ($captureY + $captureHeight) -gt ($bounds.Y + $bounds.Height)) {{ throw 'region is outside selected display bounds' }}\n",
+            x = value.x,
+            y = value.y,
+            width = value.width,
+            height = value.height,
+        )
     } else {
         "\n$captureX = $bounds.X\n$captureY = $bounds.Y\n$captureWidth = $bounds.Width\n$captureHeight = $bounds.Height\n".to_string()
     };
@@ -4354,7 +4494,10 @@ fn project_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ProjectRec
 
     let mut threads_by_project: HashMap<String, Vec<String>> = HashMap::new();
     for (project_id, thread_id) in threads {
-        threads_by_project.entry(project_id).or_default().push(thread_id);
+        threads_by_project
+            .entry(project_id)
+            .or_default()
+            .push(thread_id);
     }
 
     Ok(projects
@@ -4424,7 +4567,11 @@ fn project_resource_upsert(
             request.project_id.trim(),
             request.kind.trim(),
             path,
-            request.label.as_deref().map(str::trim).filter(|label| !label.is_empty()),
+            request
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| !label.is_empty()),
             request.enabled.unwrap_or(true),
             request.added_at.as_deref().unwrap_or(&now),
         )
@@ -5564,7 +5711,7 @@ fn fs_export_artifact_version(
             return Err(
                 "unsupported export format (allowed: json, md, txt, pdf, docx, xlsx, pptx)"
                     .to_string(),
-            )
+            );
         }
     };
 
@@ -5591,41 +5738,41 @@ fn fs_export_artifact_version(
 
     let written_size = if matches!(format.as_str(), "json" | "md" | "markdown" | "txt" | "text") {
         let content = match format.as_str() {
-      "json" => serde_json::to_string_pretty(&serde_json::json!({
-        "artifactVersionId": version_id,
-        "runId": run_id,
-        "label": label,
-        "sourcePath": source_path,
-        "sourceFormat": source_format,
-        "sourceSizeBytes": size_bytes,
-        "summary": summary,
-        "preview": preview,
-        "metadata": metadata,
-      }))
-      .map_err(|err| err.to_string())?,
-      "md" | "markdown" => format!(
-        "# Artefakt-Export\n\n- Artefakt-Version: {}\n- Run-ID: {}\n- Label: {}\n- Quelle: {}\n- Format: {}\n- Groesse: {} Bytes\n\n## Summary\n\n{}\n\n## Preview\n\n```\n{}\n```\n",
-        version_id,
-        run_id.clone().unwrap_or_else(|| "-".to_string()),
-        label.clone().unwrap_or_else(|| "-".to_string()),
-        source_path,
-        source_format,
-        size_bytes,
-        summary,
-        preview,
-      ),
-      _ => format!(
-        "Artefakt-Version: {}\nRun-ID: {}\nLabel: {}\nQuelle: {}\nFormat: {}\nGroesse: {} Bytes\n\nSummary:\n{}\n\nPreview:\n{}\n",
-        version_id,
-        run_id.clone().unwrap_or_else(|| "-".to_string()),
-        label.clone().unwrap_or_else(|| "-".to_string()),
-        source_path,
-        source_format,
-        size_bytes,
-        summary,
-        preview,
-      ),
-    };
+            "json" => serde_json::to_string_pretty(&serde_json::json!({
+              "artifactVersionId": version_id,
+              "runId": run_id,
+              "label": label,
+              "sourcePath": source_path,
+              "sourceFormat": source_format,
+              "sourceSizeBytes": size_bytes,
+              "summary": summary,
+              "preview": preview,
+              "metadata": metadata,
+            }))
+            .map_err(|err| err.to_string())?,
+            "md" | "markdown" => format!(
+                "# Artefakt-Export\n\n- Artefakt-Version: {}\n- Run-ID: {}\n- Label: {}\n- Quelle: {}\n- Format: {}\n- Groesse: {} Bytes\n\n## Summary\n\n{}\n\n## Preview\n\n```\n{}\n```\n",
+                version_id,
+                run_id.clone().unwrap_or_else(|| "-".to_string()),
+                label.clone().unwrap_or_else(|| "-".to_string()),
+                source_path,
+                source_format,
+                size_bytes,
+                summary,
+                preview,
+            ),
+            _ => format!(
+                "Artefakt-Version: {}\nRun-ID: {}\nLabel: {}\nQuelle: {}\nFormat: {}\nGroesse: {} Bytes\n\nSummary:\n{}\n\nPreview:\n{}\n",
+                version_id,
+                run_id.clone().unwrap_or_else(|| "-".to_string()),
+                label.clone().unwrap_or_else(|| "-".to_string()),
+                source_path,
+                source_format,
+                size_bytes,
+                summary,
+                preview,
+            ),
+        };
 
         fs::write(&target_path, &content).map_err(|err| err.to_string())?;
         content.len() as i64
@@ -6102,62 +6249,64 @@ fn scheduled_task_dependencies_ready(
 }
 
 fn start_scheduler_worker(app: tauri::AppHandle, database: Arc<Database>) {
-    std::thread::spawn(move || loop {
-        let now = chrono::Utc::now().to_rfc3339();
-        let due_tasks: Vec<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            i64,
-            String,
-            Option<String>,
-        )> = database.list_due_scheduled_tasks(&now).unwrap_or_default();
-        for (
-            task_id,
-            task_name,
-            task_prompt,
-            schedule_expr,
-            _,
-            task_kind,
-            crew_id,
-            crew_snapshot_json,
-            model_config_json,
-            _,
-            depends_on_task_ids_json,
-            task_last_run_at,
-        ) in due_tasks
-        {
-            if !scheduled_task_dependencies_ready(
-                &database,
-                &depends_on_task_ids_json,
-                task_last_run_at.as_deref(),
-            ) {
-                continue;
+    std::thread::spawn(move || {
+        loop {
+            let now = chrono::Utc::now().to_rfc3339();
+            let due_tasks: Vec<(
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                String,
+                Option<String>,
+            )> = database.list_due_scheduled_tasks(&now).unwrap_or_default();
+            for (
+                task_id,
+                task_name,
+                task_prompt,
+                schedule_expr,
+                _,
+                task_kind,
+                crew_id,
+                crew_snapshot_json,
+                model_config_json,
+                _,
+                depends_on_task_ids_json,
+                task_last_run_at,
+            ) in due_tasks
+            {
+                if !scheduled_task_dependencies_ready(
+                    &database,
+                    &depends_on_task_ids_json,
+                    task_last_run_at.as_deref(),
+                ) {
+                    continue;
+                }
+                let crew_id_ref: Option<&str> = crew_id.as_deref();
+                let crew_snapshot_json_ref: Option<&str> = crew_snapshot_json.as_deref();
+                let model_config_json_ref: Option<&str> = model_config_json.as_deref();
+                run_scheduled_task_once(
+                    &app,
+                    &database,
+                    &task_id,
+                    &task_name,
+                    &task_prompt,
+                    &schedule_expr,
+                    &task_kind,
+                    crew_id_ref,
+                    crew_snapshot_json_ref,
+                    model_config_json_ref,
+                );
             }
-            let crew_id_ref: Option<&str> = crew_id.as_deref();
-            let crew_snapshot_json_ref: Option<&str> = crew_snapshot_json.as_deref();
-            let model_config_json_ref: Option<&str> = model_config_json.as_deref();
-            run_scheduled_task_once(
-                &app,
-                &database,
-                &task_id,
-                &task_name,
-                &task_prompt,
-                &schedule_expr,
-                &task_kind,
-                crew_id_ref,
-                crew_snapshot_json_ref,
-                model_config_json_ref,
-            );
-        }
 
-        std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(Duration::from_secs(30));
+        }
     });
 }
 
@@ -6404,32 +6553,176 @@ fn interpret_connector_status(status: StatusCode) -> (bool, String) {
     }
 }
 
-fn build_provider_probe_url(provider_kind: &str, base_url: &str) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
+fn is_openai_compatible_provider(provider_kind: &str) -> bool {
+    provider_kind.eq_ignore_ascii_case("openai-compatible")
+        || provider_kind.eq_ignore_ascii_case("openrouter")
+}
+
+fn trim_required_url(base_url: &str) -> Result<String, String> {
+    let trimmed = base_url.trim().trim_end_matches('/').to_string();
     if trimmed.is_empty() {
         return Err("baseUrl ist erforderlich".to_string());
     }
 
-    let url = match provider_kind {
-        "openai-compatible" | "openrouter" => {
-            if trimmed.ends_with("/chat/completions") {
-                format!(
-                    "{}{}",
-                    trimmed.trim_end_matches("/chat/completions"),
-                    "/models"
-                )
-            } else if trimmed.ends_with("/models") {
-                trimmed.to_string()
-            } else {
-                format!("{}/models", trimmed)
-            }
+    Url::parse(&trimmed)
+        .map_err(|error| format!("ungueltige URL: {}", error))
+        .map(|_| trimmed)
+}
+
+fn is_service_root_url(url: &str) -> Result<bool, String> {
+    let parsed = Url::parse(url).map_err(|error| format!("ungueltige URL: {}", error))?;
+    Ok(parsed.path().trim_end_matches('/').is_empty())
+}
+
+fn normalize_provider_urls(candidates: Vec<String>) -> Result<Vec<String>, String> {
+    let mut urls = Vec::new();
+    for candidate in candidates {
+        let parsed = Url::parse(&candidate)
+            .map_err(|error| format!("ungueltige URL: {}", error))?
+            .to_string();
+        if !urls.contains(&parsed) {
+            urls.push(parsed);
         }
-        _ => trimmed.to_string(),
+    }
+
+    Ok(urls)
+}
+
+fn build_provider_model_urls(provider_kind: &str, base_url: &str) -> Result<Vec<String>, String> {
+    let trimmed = trim_required_url(base_url)?;
+    if !is_openai_compatible_provider(provider_kind) {
+        return normalize_provider_urls(vec![trimmed]);
+    }
+
+    let candidates = if trimmed.ends_with("/chat/completions") {
+        vec![format!(
+            "{}/models",
+            trimmed.trim_end_matches("/chat/completions")
+        )]
+    } else if trimmed.ends_with("/models") {
+        vec![trimmed]
+    } else if trimmed.ends_with("/v1") {
+        vec![format!("{}/models", trimmed)]
+    } else if is_service_root_url(&trimmed)? {
+        vec![
+            format!("{}/v1/models", trimmed),
+            format!("{}/models", trimmed),
+        ]
+    } else {
+        vec![format!("{}/models", trimmed)]
     };
 
-    Url::parse(&url)
-        .map(|parsed| parsed.to_string())
-        .map_err(|error| format!("ungueltige URL: {}", error))
+    normalize_provider_urls(candidates)
+}
+
+fn build_provider_chat_urls(provider_kind: &str, base_url: &str) -> Result<Vec<String>, String> {
+    let trimmed = trim_required_url(base_url)?;
+    if !is_openai_compatible_provider(provider_kind) {
+        return normalize_provider_urls(vec![trimmed]);
+    }
+
+    let candidates = if trimmed.ends_with("/chat/completions") {
+        vec![trimmed]
+    } else if trimmed.ends_with("/models") {
+        let without_models = trimmed.trim_end_matches("/models").trim_end_matches('/');
+        if without_models.ends_with("/v1") {
+            vec![format!("{}/chat/completions", without_models)]
+        } else if is_service_root_url(without_models)? {
+            vec![
+                format!("{}/v1/chat/completions", without_models),
+                format!("{}/chat/completions", without_models),
+            ]
+        } else {
+            vec![format!("{}/chat/completions", without_models)]
+        }
+    } else if trimmed.ends_with("/v1") {
+        vec![format!("{}/chat/completions", trimmed)]
+    } else if is_service_root_url(&trimmed)? {
+        vec![
+            format!("{}/v1/chat/completions", trimmed),
+            format!("{}/chat/completions", trimmed),
+        ]
+    } else {
+        vec![format!("{}/chat/completions", trimmed)]
+    };
+
+    normalize_provider_urls(candidates)
+}
+
+fn apply_provider_headers(
+    mut request: reqwest::RequestBuilder,
+    provider_kind: &str,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    request = request.header("User-Agent", "Open-Cowork/1.0");
+    if let Some(key) = api_key.filter(|value| !value.trim().is_empty()) {
+        request = request.header("Authorization", format!("Bearer {}", key.trim()));
+    }
+    if provider_kind.eq_ignore_ascii_case("openrouter") {
+        request = request
+            .header("HTTP-Referer", "https://open-cowork.local")
+            .header("X-Title", "Open Cowork");
+    }
+    request
+}
+
+async fn provider_get_response_text(
+    client: &reqwest::Client,
+    provider_kind: &str,
+    endpoint: &str,
+    api_key: Option<&str>,
+) -> Result<(StatusCode, String), String> {
+    let response = apply_provider_headers(client.get(endpoint), provider_kind, api_key)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Ok((status, body))
+}
+
+async fn provider_post_chat_probe(
+    client: &reqwest::Client,
+    provider_kind: &str,
+    endpoint: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<(StatusCode, String), String> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": false,
+    });
+
+    let response = apply_provider_headers(client.post(endpoint), provider_kind, api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Ok((status, body))
+}
+
+fn response_excerpt(body: &str) -> String {
+    body.chars().take(400).collect::<String>()
+}
+
+fn status_message_with_body(status: StatusCode, body: &str) -> String {
+    let (reachable, message) = interpret_connector_status(status);
+    if reachable && body.trim().is_empty() {
+        return message;
+    }
+
+    let excerpt = response_excerpt(body);
+    if excerpt.trim().is_empty() {
+        message
+    } else {
+        format!("{}: {}", message, excerpt)
+    }
 }
 
 #[tauri::command]
@@ -6461,32 +6754,165 @@ async fn crew_provider_health_check(
         });
     }
 
-    let probe_url = build_provider_probe_url(&request.provider_kind, &request.base_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
+        .danger_accept_invalid_certs(!request.verify_tls_certificates)
         .build()
         .map_err(|error| error.to_string())?;
 
     let api_key = request.api_key.as_deref();
-    let status = if request.provider_kind.eq_ignore_ascii_case("openrouter") {
-        let mut request_builder = client
-            .get(&probe_url)
-            .header("User-Agent", "Open-Cowork/1.0")
-            .header("HTTP-Referer", "https://open-cowork.local")
-            .header("X-Title", "Open Cowork");
-        if let Some(key) = api_key.filter(|value| !value.trim().is_empty()) {
-            request_builder =
-                request_builder.header("Authorization", format!("Bearer {}", key.trim()));
-        }
-        request_builder
-            .send()
-            .await
-            .map(|response| response.status())
-            .map_err(|error| error.to_string())?
-    } else {
-        probe_connector_method(&client, &probe_url, Method::GET, api_key).await?
-    };
+    if is_openai_compatible_provider(&request.provider_kind) {
+        let mut last_status = None;
+        let mut last_endpoint = request.base_url.trim().to_string();
+        for endpoint in build_provider_model_urls(&request.provider_kind, &request.base_url)? {
+            let (status, body) =
+                provider_get_response_text(&client, &request.provider_kind, &endpoint, api_key)
+                    .await?;
+            last_status = Some(status);
+            last_endpoint = endpoint.clone();
 
+            if status.is_success() {
+                if let Some(model) = request
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    match parse_openai_models_response(&body) {
+                        Ok(models) if models.iter().any(|available| available == model) => {
+                            return Ok(CrewProviderHealthCheckResponse {
+                                reachable: true,
+                                status: Some(status.as_u16()),
+                                endpoint,
+                                message: format!(
+                                    "Endpoint erreichbar, Modell '{}' verfuegbar",
+                                    model
+                                ),
+                                checked_at,
+                            });
+                        }
+                        Ok(models) if !models.is_empty() => {
+                            let suggestion = find_model_suggestion(&models, model);
+                            let message = if let Some(suggestion) = suggestion {
+                                format!(
+                                    "Konfiguriertes Modell '{}' ist nicht exakt in der Modellliste. Meinst du '{}'? Nutze 'Modelle laden' oder trage exakt diesen Wert ein.",
+                                    model, suggestion
+                                )
+                            } else {
+                                format!(
+                                    "Konfiguriertes Modell '{}' ist nicht in der Modellliste. Verfuegbar: {}",
+                                    model,
+                                    format_model_sample(&models)
+                                )
+                            };
+
+                            return Ok(CrewProviderHealthCheckResponse {
+                                reachable: false,
+                                status: Some(status.as_u16()),
+                                endpoint,
+                                message,
+                                checked_at,
+                            });
+                        }
+                        Ok(_) => {
+                            return Ok(CrewProviderHealthCheckResponse {
+                                reachable: false,
+                                status: Some(status.as_u16()),
+                                endpoint,
+                                message: "Modellliste ist leer. Trage das Modell manuell ein; die App nutzt dann den Chat-Endpoint.".to_string(),
+                                checked_at,
+                            });
+                        }
+                        Err(error) => {
+                            return Ok(CrewProviderHealthCheckResponse {
+                                reachable: false,
+                                status: Some(status.as_u16()),
+                                endpoint,
+                                message: error,
+                                checked_at,
+                            });
+                        }
+                    }
+                }
+
+                let (reachable, message) = interpret_connector_status(status);
+                return Ok(CrewProviderHealthCheckResponse {
+                    reachable,
+                    status: Some(status.as_u16()),
+                    endpoint,
+                    message,
+                    checked_at,
+                });
+            }
+
+            if matches!(status.as_u16(), 401 | 403 | 405) {
+                let (reachable, message) = interpret_connector_status(status);
+                return Ok(CrewProviderHealthCheckResponse {
+                    reachable,
+                    status: Some(status.as_u16()),
+                    endpoint,
+                    message,
+                    checked_at,
+                });
+            }
+
+            if status.as_u16() != 404 {
+                let (reachable, message) = interpret_connector_status(status);
+                return Ok(CrewProviderHealthCheckResponse {
+                    reachable,
+                    status: Some(status.as_u16()),
+                    endpoint,
+                    message,
+                    checked_at,
+                });
+            }
+        }
+
+        if let Some(model) = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            for endpoint in build_provider_chat_urls(&request.provider_kind, &request.base_url)? {
+                let (status, body) = provider_post_chat_probe(
+                    &client,
+                    &request.provider_kind,
+                    &endpoint,
+                    api_key,
+                    model,
+                )
+                .await?;
+                last_status = Some(status);
+                last_endpoint = endpoint.clone();
+
+                if status.as_u16() == 404 {
+                    continue;
+                }
+
+                let (reachable, _) = interpret_connector_status(status);
+                return Ok(CrewProviderHealthCheckResponse {
+                    reachable,
+                    status: Some(status.as_u16()),
+                    endpoint,
+                    message: status_message_with_body(status, &body),
+                    checked_at,
+                });
+            }
+        }
+
+        let status = last_status.unwrap_or(StatusCode::NOT_FOUND);
+        return Ok(CrewProviderHealthCheckResponse {
+            reachable: false,
+            status: Some(status.as_u16()),
+            endpoint: last_endpoint,
+            message: "Modellliste nicht verfuegbar. Trage das Modell manuell ein; die App nutzt dann den Chat-Endpoint.".to_string(),
+            checked_at,
+        });
+    }
+
+    let probe_url = trim_required_url(&request.base_url)?;
+    let status = probe_connector_method(&client, &probe_url, Method::GET, api_key).await?;
     let (reachable, message) = interpret_connector_status(status);
 
     Ok(CrewProviderHealthCheckResponse {
@@ -6502,48 +6928,88 @@ async fn crew_provider_health_check(
 async fn crew_provider_models_list(
     request: CrewProviderModelsRequest,
 ) -> Result<CrewProviderModelsResponse, String> {
-    let endpoint = build_provider_probe_url(&request.provider_kind, &request.base_url)?;
+    let endpoints = build_provider_model_urls(&request.provider_kind, &request.base_url)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
+        .danger_accept_invalid_certs(!request.verify_tls_certificates)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let api_key = request.api_key.as_deref();
+    let mut last_error = None;
+    let mut last_endpoint = request.base_url.trim().to_string();
+    for endpoint in endpoints {
+        last_endpoint = endpoint.clone();
+        let response =
+            apply_provider_headers(client.get(&endpoint), &request.provider_kind, api_key)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let excerpt = response_excerpt(&body);
+            last_error = Some(format!("Provider antwortete mit {}: {}", status, excerpt));
+            continue;
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        let models = parse_openai_models_response(&body)?;
+
+        return Ok(CrewProviderModelsResponse { endpoint, models });
+    }
+
+    if let Some(model) = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(CrewProviderModelsResponse {
+            endpoint: last_endpoint,
+            models: vec![model.to_string()],
+        });
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        "Modellliste nicht verfuegbar. Trage das Modell manuell ein.".to_string()
+    }))
+}
+
+#[tauri::command]
+async fn openai_compatible_chat_completion(
+    request: OpenAiCompatibleChatCompletionRequest,
+) -> Result<OpenAiCompatibleChatCompletionResponse, String> {
+    let endpoint = Url::parse(request.endpoint.trim())
+        .map_err(|error| format!("ungueltige URL: {}", error))?;
+    let timeout_ms = request.timeout_ms.unwrap_or(600_000).max(1_000);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .danger_accept_invalid_certs(!request.verify_tls_certificates)
         .build()
         .map_err(|error| error.to_string())?;
 
     let mut call = client
-        .get(&endpoint)
-        .header("User-Agent", "Open-Cowork/1.0");
-    if let Some(api_key) = request.api_key.filter(|value| !value.trim().is_empty()) {
-        call = call.header("Authorization", format!("Bearer {}", api_key.trim()));
-    }
-    if request.provider_kind.eq_ignore_ascii_case("openrouter") {
-        call = call
-            .header("HTTP-Referer", "https://open-cowork.local")
-            .header("X-Title", "Open Cowork");
+        .post(endpoint)
+        .header("User-Agent", "Open-Cowork/1.0")
+        .body(request.body);
+
+    for (name, value) in request.headers {
+        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| format!("ungueltiger Header '{}': {}", name, error))?;
+        let header_value = reqwest::header::HeaderValue::from_str(&value)
+            .map_err(|error| format!("ungueltiger Header-Wert '{}': {}", name, error))?;
+        call = call.header(header_name, header_value);
     }
 
     let response = call.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        let excerpt: String = body.chars().take(400).collect();
-        return Err(format!("Provider antwortete mit {}: {}", status, excerpt));
-    }
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|error| error.to_string())?;
 
-    let payload: OpenAiModelsResponse = response.json().await.map_err(|error| error.to_string())?;
-    let mut models = payload
-        .data
-        .into_iter()
-        .filter_map(|entry| {
-            entry
-                .id
-                .or(entry.name)
-                .map(|value| value.trim().to_string())
-        })
-        .filter(|entry| !entry.trim().is_empty())
-        .collect::<Vec<_>>();
-    models.sort();
-    models.dedup();
-
-    Ok(CrewProviderModelsResponse { endpoint, models })
+    Ok(OpenAiCompatibleChatCompletionResponse { status, body })
 }
 
 #[tauri::command]
@@ -7759,14 +8225,14 @@ const EXEC_CURRENT_CWD_MARKER: &str = "__OPEN_COWORK_CURRENT_CWD__=";
 fn build_exec_command_text(command_text: &str, force_posix_shell: bool) -> String {
     if cfg!(target_os = "windows") && !force_posix_shell {
         format!(
-      "{command_text}; $openCoworkExit = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output ('{marker}' + (Get-Location).Path); exit $openCoworkExit",
-      marker = EXEC_CURRENT_CWD_MARKER,
-    )
+            "{command_text}; $openCoworkExit = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}; Write-Output ('{marker}' + (Get-Location).Path); exit $openCoworkExit",
+            marker = EXEC_CURRENT_CWD_MARKER,
+        )
     } else {
         format!(
-      "{command_text}; open_cowork_exit=$?; printf '%s%s\\n' '{marker}' \"$PWD\"; exit $open_cowork_exit",
-      marker = EXEC_CURRENT_CWD_MARKER,
-    )
+            "{command_text}; open_cowork_exit=$?; printf '%s%s\\n' '{marker}' \"$PWD\"; exit $open_cowork_exit",
+            marker = EXEC_CURRENT_CWD_MARKER,
+        )
     }
 }
 
@@ -9041,6 +9507,7 @@ pub fn run() {
             connector_test_reachability,
             crew_provider_health_check,
             crew_provider_models_list,
+            openai_compatible_chat_completion,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

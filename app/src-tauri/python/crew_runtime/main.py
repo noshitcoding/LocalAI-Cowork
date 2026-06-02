@@ -97,16 +97,52 @@ def clean_log_text(value: object) -> str:
     return ANSI_ESCAPE_RE.sub("", str(value or "").replace("\r", "\n")).strip()
 
 
-def make_execution_log(crew_id: str, agent_id: str, task_id: str, action: str, result: object) -> dict:
-    return {
+def make_execution_log(
+    crew_id: str,
+    agent_id: str,
+    task_id: str,
+    action: str,
+    result: object,
+    *,
+    agent_name: str | None = None,
+    source_agent: str | None = None,
+    target_agent: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    task_title: str | None = None,
+    phase: str | None = None,
+    summary: str | None = None,
+    detail: object | None = None,
+    severity: str | None = None,
+    provider_reasoning: str | None = None,
+) -> dict:
+    result_text = clean_log_text(result)[:4000]
+    log = {
         "id": str(uuid.uuid4()),
         "crewId": crew_id,
         "agentId": agent_id,
         "taskId": task_id,
         "action": action,
-        "result": clean_log_text(result)[:4000],
+        "result": result_text,
         "timestamp": now_ms(),
     }
+    optional_fields = {
+        "agentName": agent_name,
+        "sourceAgent": source_agent,
+        "targetAgent": target_agent,
+        "provider": provider,
+        "model": model,
+        "taskTitle": task_title,
+        "phase": phase,
+        "summary": summary,
+        "detail": clean_log_text(detail)[:8000] if detail is not None else None,
+        "severity": severity,
+        "providerReasoning": clean_log_text(provider_reasoning)[:8000] if provider_reasoning is not None else None,
+    }
+    for key, value in optional_fields.items():
+        if isinstance(value, str) and value.strip():
+            log[key] = value.strip()
+    return log
 
 
 def emit_protocol_log(log: dict, stream_id: str | None, run_id: str | None) -> None:
@@ -139,12 +175,41 @@ def record_execution_log(
     stream_id: str | None,
     run_id: str | None,
     emit: bool = True,
+    *,
+    agent_name: str | None = None,
+    source_agent: str | None = None,
+    target_agent: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    task_title: str | None = None,
+    phase: str | None = None,
+    summary: str | None = None,
+    detail: object | None = None,
+    severity: str | None = None,
+    provider_reasoning: str | None = None,
 ) -> dict | None:
     result_text = clean_log_text(result)
     if not result_text:
         return None
 
-    log = make_execution_log(crew_id, agent_id, task_id, action, result_text)
+    log = make_execution_log(
+        crew_id,
+        agent_id,
+        task_id,
+        action,
+        result_text,
+        agent_name=agent_name,
+        source_agent=source_agent,
+        target_agent=target_agent,
+        provider=provider,
+        model=model,
+        task_title=task_title,
+        phase=phase,
+        summary=summary,
+        detail=detail,
+        severity=severity,
+        provider_reasoning=provider_reasoning,
+    )
     logs.append(log)
     if emit:
         emit_protocol_log(log, stream_id, run_id)
@@ -336,6 +401,153 @@ def summarize_runtime_context(payload: dict) -> str:
     ])
 
 
+def agent_display_name(agent_payload: dict, fallback: str) -> str:
+    return str(agent_payload.get("name") or agent_payload.get("role") or fallback).strip() or fallback
+
+
+def task_display_title(task_payload: dict, fallback: str) -> str:
+    title = str(task_payload.get("title") or task_payload.get("name") or "").strip()
+    if title:
+        return title
+    description = truncate_text(task_payload.get("description") or "", 80)
+    return description or fallback
+
+
+def resolve_agent_provider(agent_payload: dict) -> str:
+    return str(agent_payload.get("providerKind") or "ollama").strip() or "ollama"
+
+
+def resolve_agent_model_label(request: dict, agent_payload: dict) -> str:
+    provider = resolve_agent_provider(agent_payload)
+    model_override = str(agent_payload.get("modelOverride") or "").strip()
+    if model_override:
+        return model_override
+
+    provider_configs = request.get("providerConfigs") or {}
+    if provider == "openai-compatible":
+        config = provider_configs.get("openAICompatible") or {}
+        return str(config.get("model") or "").strip() or "-"
+    if provider == "openrouter":
+        config = provider_configs.get("openRouter") or {}
+        return str(config.get("model") or "").strip() or "-"
+
+    request_config = request.get("config") or {}
+    return str(request_config.get("model") or "").strip() or "-"
+
+
+def find_agent_payload(agent_payloads: list, agent_id: str) -> dict:
+    return next(
+        (
+            candidate
+            for candidate in agent_payloads
+            if isinstance(candidate, dict) and str(candidate.get("id") or "").strip() == agent_id
+        ),
+        {},
+    )
+
+
+RETIRED_OPENROUTER_MODELS = {
+    "tencent/hy3-preview:free": "Hy3 preview ist bei OpenRouter nicht mehr als free-Modell verfuegbar.",
+}
+
+
+def parse_int(value: object, fallback: int = 0) -> int:
+    try:
+        return int(value or fallback)
+    except Exception:
+        return fallback
+
+
+def is_openrouter_free_model(model: str) -> bool:
+    return str(model or "").strip().lower().endswith(":free")
+
+
+def openrouter_model_id(model: str) -> str:
+    normalized = str(model or "").strip().lower()
+    if normalized.startswith("openrouter/"):
+        return normalized[len("openrouter/"):]
+    return normalized
+
+
+def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) -> None:
+    invalid_models: list[str] = []
+    free_models: list[str] = []
+
+    for agent_payload in agent_payloads:
+        if not isinstance(agent_payload, dict):
+            continue
+        provider = resolve_agent_provider(agent_payload)
+        if provider != "openrouter":
+            continue
+        model = resolve_agent_model_label(payload, agent_payload)
+        model_id = openrouter_model_id(model)
+        if model_id in RETIRED_OPENROUTER_MODELS:
+            invalid_models.append(f"{model} ({RETIRED_OPENROUTER_MODELS[model_id]})")
+        elif is_openrouter_free_model(model):
+            free_models.append(model)
+
+    if invalid_models:
+        raise ValueError(
+            "OpenRouter-Modell nicht verfuegbar: "
+            + "; ".join(invalid_models)
+            + " Bitte ein aktuelles Modell oder einen bezahlten/API-key-backed Provider auswaehlen."
+        )
+
+    if free_models and parse_int(payload.get("maxParallelTasks"), 1) > 1:
+        payload["maxParallelTasks"] = 1
+        payload["_rateLimitPolicyReason"] = (
+            "OpenRouter free-Modelle werden seriell ausgefuehrt, um 429 RateLimit-Fehler zu vermeiden."
+        )
+
+
+def has_openrouter_free_agent(payload: dict, agent_payloads: list[dict]) -> bool:
+    for agent_payload in agent_payloads:
+        if not isinstance(agent_payload, dict):
+            continue
+        if resolve_agent_provider(agent_payload) == "openrouter" and is_openrouter_free_model(resolve_agent_model_label(payload, agent_payload)):
+            return True
+    return False
+
+
+def effective_max_rpm(payload: dict, agent_count: int, uses_openrouter_free: bool) -> int:
+    requested = parse_int(payload.get("maxRpm"), 0)
+    if requested <= 0:
+        return 0
+
+    if uses_openrouter_free:
+        requested = min(requested, 2)
+
+    return max(1, requested // max(1, agent_count))
+
+
+def classify_runtime_error(exc: Exception) -> str:
+    raw = f"{exc.__class__.__name__}: {exc}"
+    lowered = raw.lower()
+
+    if "rate_limit" in lowered or "ratelimit" in lowered or "429" in lowered:
+        return (
+            "RateLimitError: Der Provider hat zu viele oder zu schnelle Anfragen abgelehnt. "
+            "Die Crew wurde gestoppt. Reduziere Max RPM/Parallelitaet oder nutze ein Provider-Profil mit eigenem API-Key. "
+            f"Original: {raw}"
+        )
+
+    if "model" in lowered and ("not found" in lowered or "404" in lowered):
+        return (
+            "ModelNotFoundError: Das konfigurierte Modell ist beim Provider nicht verfuegbar. "
+            "Waehle ein aktuelles Modell in Crew/LLM-Profilen. "
+            f"Original: {raw}"
+        )
+
+    if "utf-8" in lowered or "unicode" in lowered:
+        return (
+            "EncodingError: Die Runtime hat nicht-UTF-8-Ausgabe erhalten. "
+            "Die Ausgabe wird jetzt lossless gelesen; bitte erneut starten. "
+            f"Original: {raw}"
+        )
+
+    return raw
+
+
 def normalize_model_name(provider: str, model: str) -> str:
     normalized = str(model or "").strip()
     if not normalized:
@@ -345,6 +557,20 @@ def normalize_model_name(provider: str, model: str) -> str:
     if provider == "openai-compatible":
         return normalized if normalized.startswith("openai/") else f"openai/{normalized}"
     return normalized if normalized.startswith("ollama/") else f"ollama/{normalized}"
+
+
+def configure_litellm_tls_verification(verify_tls_certificates: object) -> None:
+    if verify_tls_certificates is not False:
+        return
+
+    try:
+        import httpx  # type: ignore
+        import litellm  # type: ignore
+
+        litellm.client_session = httpx.Client(verify=False)
+        litellm.aclient_session = httpx.AsyncClient(verify=False)
+    except Exception:
+        pass
 
 
 def build_llm(request: dict, agent: dict):
@@ -357,21 +583,25 @@ def build_llm(request: dict, agent: dict):
 
     if provider == "openai-compatible":
         config = provider_configs.get("openAICompatible") or {}
+        configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         model = normalize_model_name(provider, model_override or str(config.get("model") or ""))
-        return LLM(
-            model=model,
-            base_url=str(config.get("baseUrl") or request_config.get("baseUrl") or "https://api.openai.com/v1"),
-            api_key=str(config.get("apiKey") or "open-cowork"),
-        )
+        llm_kwargs = {
+            "model": model,
+            "base_url": str(config.get("baseUrl") or request_config.get("baseUrl") or "https://api.openai.com/v1"),
+            "api_key": str(config.get("apiKey") or "open-cowork"),
+        }
+        return LLM(**llm_kwargs)
 
     if provider == "openrouter":
         config = provider_configs.get("openRouter") or {}
+        configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         model = normalize_model_name(provider, model_override or str(config.get("model") or ""))
-        return LLM(
-            model=model,
-            base_url=str(config.get("baseUrl") or "https://openrouter.ai/api/v1"),
-            api_key=str(config.get("apiKey") or "open-cowork"),
-        )
+        llm_kwargs = {
+            "model": model,
+            "base_url": str(config.get("baseUrl") or "https://openrouter.ai/api/v1"),
+            "api_key": str(config.get("apiKey") or "open-cowork"),
+        }
+        return LLM(**llm_kwargs)
 
     model = normalize_model_name(provider, model_override or str(request_config.get("model") or ""))
     return LLM(
@@ -400,7 +630,7 @@ def build_agent(request: dict, agent_payload: dict):
         verbose=bool(agent_payload.get("verbose")),
         allow_delegation=bool(agent_payload.get("allowDelegation")),
         max_iter=max(1, int(agent_payload.get("maxIterations") or 20)),
-        max_rpm=int(agent_payload.get("maxRpm") or request.get("maxRpm") or 0) or None,
+        max_rpm=int(agent_payload.get("maxRpm") or request.get("_effectiveAgentMaxRpm") or 0) or None,
     )
 
 
@@ -463,14 +693,36 @@ def resolve_process(process_name: str):
 
 
 def execute_definition(payload: dict) -> dict:
-    from crewai import Crew, Task  # type: ignore
-
     crew_id = str(payload.get("id") or "crew-runtime")
     stream_id = str(payload.get("streamId") or "").strip() or None
     run_id = str(payload.get("runId") or "").strip() or None
     process_name = str(payload.get("process") or "sequential")
     agent_payloads = payload.get("agents") or []
     task_payloads = payload.get("tasks") or []
+    if not isinstance(agent_payloads, list):
+        agent_payloads = []
+    if not isinstance(task_payloads, list):
+        task_payloads = []
+
+    validate_runtime_provider_models(payload, agent_payloads)
+    openrouter_free = has_openrouter_free_agent(payload, agent_payloads)
+    payload["_effectiveAgentMaxRpm"] = effective_max_rpm(payload, len(agent_payloads), openrouter_free)
+    max_parallel_tasks = max(1, parse_int(payload.get("maxParallelTasks"), 1))
+    if openrouter_free:
+        max_parallel_tasks = 1
+    if max_parallel_tasks <= 1:
+        process_name = "sequential"
+        task_payloads = [
+            {
+                **task_payload,
+                "asyncExecution": False,
+            }
+            if isinstance(task_payload, dict)
+            else task_payload
+            for task_payload in task_payloads
+        ]
+
+    from crewai import Crew, Task  # type: ignore
 
     agents_by_id = {
         str(agent_payload.get("id") or f"agent-{index}"): build_agent(payload, agent_payload)
@@ -553,7 +805,9 @@ def execute_definition(payload: dict) -> dict:
         "process": resolve_process(process_name),
         "verbose": bool(payload.get("verbose")),
     }
-    max_rpm = int(payload.get("maxRpm") or 0)
+    max_rpm = parse_int(payload.get("maxRpm"), 0)
+    if openrouter_free and max_rpm > 0:
+        max_rpm = min(max_rpm, 2)
     if max_rpm > 0:
         crew_kwargs["max_rpm"] = max_rpm
     if manager_agent is not None:
@@ -593,12 +847,35 @@ def execute_definition(payload: dict) -> dict:
         summarize_runtime_context(payload),
         stream_id,
         run_id,
+        agent_name="Runtime",
+        phase="context",
+        summary="Runtime-Kontext geladen",
+        severity="info",
     )
+    rate_limit_reason = str(payload.get("_rateLimitPolicyReason") or "").strip()
+    if rate_limit_reason:
+        record_execution_log(
+            logs,
+            crew_id,
+            runtime_agent_id,
+            runtime_task_id,
+            "rate_limit_policy",
+            rate_limit_reason,
+            stream_id,
+            run_id,
+            agent_name="Runtime",
+            phase="status",
+            summary="Rate-Limit-Schutz aktiv",
+            severity="warning",
+        )
 
     for agent_payload in agent_payloads:
         if not isinstance(agent_payload, dict):
             continue
         agent_id = str(agent_payload.get("id") or "runtime-agent")
+        agent_name = agent_display_name(agent_payload, agent_id)
+        provider = resolve_agent_provider(agent_payload)
+        model = resolve_agent_model_label(payload, agent_payload)
         record_execution_log(
             logs,
             crew_id,
@@ -606,9 +883,10 @@ def execute_definition(payload: dict) -> dict:
             runtime_task_id,
             "agent_ready",
             " | ".join([
-                f"Name: {str(agent_payload.get('name') or agent_payload.get('role') or agent_id).strip()}",
+                f"Name: {agent_name}",
                 f"Role: {str(agent_payload.get('role') or '-').strip()}",
-                f"Provider: {str(agent_payload.get('providerKind') or 'ollama').strip()}",
+                f"Provider: {provider}",
+                f"Model: {model}",
                 f"Model override: {str(agent_payload.get('modelOverride') or '-').strip() or '-'}",
                 f"Delegation: {'erlaubt' if bool(agent_payload.get('allowDelegation')) else 'gesperrt'}",
                 f"Tools: {format_value_list(agent_payload.get('tools') or [])}",
@@ -616,24 +894,34 @@ def execute_definition(payload: dict) -> dict:
             ]),
             stream_id,
             run_id,
+            agent_name=agent_name,
+            provider=provider,
+            model=model,
+            phase="agent",
+            summary=f"{agent_name} bereit",
+            severity="info",
         )
 
     for index, (task_payload, _) in enumerate(ordered_task_bindings):
         task_id = str(task_payload.get("id") or f"task-{index}")
         agent_id = str(task_payload.get("agentId") or "runtime-agent")
-        agent_payload = next(
-            (
-                candidate
-                for candidate in agent_payloads
-                if isinstance(candidate, dict) and str(candidate.get("id") or "").strip() == agent_id
-            ),
-            {},
-        )
-        agent_name = str(agent_payload.get("name") or agent_payload.get("role") or agent_id).strip()
+        agent_payload = find_agent_payload(agent_payloads, agent_id)
+        agent_name = agent_display_name(agent_payload, agent_id)
+        provider = resolve_agent_provider(agent_payload)
+        model = resolve_agent_model_label(payload, agent_payload)
+        task_title = task_display_title(task_payload, task_id)
         context_refs = dedupe_task_refs([
             str(value)
             for value in [*(task_payload.get("context") or []), *(task_payload.get("dependencies") or [])]
             if str(value).strip()
+        ])
+        handoff_detail = "\n".join([
+            f"Task an Agent uebergeben: {agent_name}",
+            f"Beschreibung: {truncate_text(task_payload.get('description') or '', 900)}",
+            f"Erwartetes Ergebnis: {truncate_text(task_payload.get('expectedOutput') or '', 500)}",
+            f"Kontext/Dependencies: {', '.join(context_refs) if context_refs else '-'}",
+            f"Async: {'ja' if bool(task_payload.get('asyncExecution')) else 'nein'}",
+            f"Technische Agent-ID: {agent_id}",
         ])
         record_execution_log(
             logs,
@@ -641,15 +929,42 @@ def execute_definition(payload: dict) -> dict:
             agent_id,
             task_id,
             "task_handoff",
-            "\n".join([
-                f"Task an Agent uebergeben: {agent_name}",
-                f"Beschreibung: {truncate_text(task_payload.get('description') or '', 900)}",
-                f"Erwartetes Ergebnis: {truncate_text(task_payload.get('expectedOutput') or '', 500)}",
-                f"Kontext/Dependencies: {', '.join(context_refs) if context_refs else '-'}",
-                f"Async: {'ja' if bool(task_payload.get('asyncExecution')) else 'nein'}",
-            ]),
+            handoff_detail,
             stream_id,
             run_id,
+            agent_name=agent_name,
+            source_agent="Runtime",
+            target_agent=agent_name,
+            provider=provider,
+            model=model,
+            task_title=task_title,
+            phase="handoff",
+            summary=f"Runtime -> {agent_name}: {task_title}",
+            detail=handoff_detail,
+            severity="info",
+        )
+        thinking_detail = "\n".join([
+            f"Arbeitsprotokoll: {agent_name} beginnt mit dem Task.",
+            f"Task: {task_title}",
+            f"Provider/Modell: {provider} / {model}",
+        ])
+        record_execution_log(
+            logs,
+            crew_id,
+            agent_id,
+            task_id,
+            "thinking_phase",
+            thinking_detail,
+            stream_id,
+            run_id,
+            agent_name=agent_name,
+            provider=provider,
+            model=model,
+            task_title=task_title,
+            phase="thinking",
+            summary=f"{agent_name} arbeitet an {task_title}",
+            detail=thinking_detail,
+            severity="info",
         )
 
     try:
@@ -663,6 +978,10 @@ def execute_definition(payload: dict) -> dict:
             f"CrewAI startet: process={process_name}, agents={len(crew_agents)}, tasks={len(ordered_task_bindings)}",
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="status",
+            summary="CrewAI gestartet",
+            severity="info",
         )
         with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
             crew.kickoff()
@@ -677,10 +996,14 @@ def execute_definition(payload: dict) -> dict:
             "CrewAI kickoff abgeschlossen.",
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="status",
+            summary="CrewAI abgeschlossen",
+            severity="info",
         )
     except Exception as exc:
         status = "failed"
-        error_message = f"{exc.__class__.__name__}: {exc}"
+        error_message = classify_runtime_error(exc)
         stderr_buffer.write(traceback.format_exc())
         stderr_buffer.flush()
         record_execution_log(
@@ -692,11 +1015,21 @@ def execute_definition(payload: dict) -> dict:
             error_message,
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="error",
+            summary="Runtime-Fehler",
+            detail=traceback.format_exc(),
+            severity="error",
         )
 
     for task_payload, task_obj in ordered_task_bindings:
         task_id = str(task_payload.get("id") or "runtime-task")
         agent_id = str(task_payload.get("agentId") or "runtime-agent")
+        agent_payload = find_agent_payload(agent_payloads, agent_id)
+        agent_name = agent_display_name(agent_payload, agent_id)
+        provider = resolve_agent_provider(agent_payload)
+        model = resolve_agent_model_label(payload, agent_payload)
+        task_title = task_display_title(task_payload, task_id)
         output = extract_task_output(task_obj)
         task_status = "completed" if output else ("failed" if status == "failed" else "completed")
         task_results.append({
@@ -715,6 +1048,13 @@ def execute_definition(payload: dict) -> dict:
                 output,
                 stream_id,
                 run_id,
+                agent_name=agent_name,
+                provider=provider,
+                model=model,
+                task_title=task_title,
+                phase="result",
+                summary=f"Task abgeschlossen: {task_title}",
+                severity="info",
             )
 
     captured_stdout = stdout_buffer.getvalue().strip()
@@ -729,6 +1069,10 @@ def execute_definition(payload: dict) -> dict:
             captured_stdout,
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="output",
+            summary="Runtime-Ausgabe",
+            severity="info",
         )
     if captured_stderr and not any(entry.get("action") == "runtime_stderr" for entry in logs):
         record_execution_log(
@@ -740,6 +1084,10 @@ def execute_definition(payload: dict) -> dict:
             captured_stderr,
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="error",
+            summary="Runtime-Fehlerausgabe",
+            severity="error",
         )
 
     if status == "failed" and error_message and not any(entry.get("action") == "runtime_stderr" for entry in logs):
@@ -752,6 +1100,10 @@ def execute_definition(payload: dict) -> dict:
             error_message,
             stream_id,
             run_id,
+            agent_name="Runtime",
+            phase="error",
+            summary="Runtime-Fehler",
+            severity="error",
         )
 
     return {
@@ -779,7 +1131,30 @@ def main() -> int:
 
     if args.command == "execute":
         payload = read_payload()
-        write_json_response(execute_definition(payload))
+        try:
+            write_json_response(execute_definition(payload))
+        except Exception as exc:
+            error_message = classify_runtime_error(exc)
+            write_json_response({
+                "crewId": str(payload.get("id") or "crew-runtime"),
+                "status": "failed",
+                "taskResults": [],
+                "logs": [
+                    make_execution_log(
+                        str(payload.get("id") or "crew-runtime"),
+                        str(payload.get("managerAgentId") or "python-runtime"),
+                        "runtime",
+                        "runtime_failed",
+                        error_message,
+                        agent_name="Runtime",
+                        phase="error",
+                        summary="Runtime-Fehler",
+                        detail=traceback.format_exc(),
+                        severity="error",
+                    )
+                ],
+                "error": error_message,
+            })
         return 0
 
     return 1

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use url::Url;
 
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://192.168.178.82:11434";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_MODEL: &str = "llama3.1:8b";
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 
@@ -515,7 +515,9 @@ where
 
     while let Some(next) = stream.next().await {
         if is_cancelled() {
-            return Err(OllamaError::RequestFailed("Chat-Generierung abgebrochen.".to_string()));
+            return Err(OllamaError::RequestFailed(
+                "Chat-Generierung abgebrochen.".to_string(),
+            ));
         }
 
         let bytes = match next {
@@ -736,8 +738,7 @@ fn build_chat_prompt(prompt: &str, history: &[ChatMessage]) -> String {
     - Erfinde niemals Dokumentinhalte.\n\
     - Wenn nur ein Dateipfad vorhanden ist, aber kein extrahierter Dokumenttext im Prompt steht, sage klar, dass der Inhalt nicht vorliegt und bitte um dokumentierten Textauszug oder aktivierte Dateianalyse.\n\n\
     Kontextverlauf:\n{}\nNutzer: {}\n\nAntwort:",
-        history_text,
-        prompt
+        history_text, prompt
     )
 }
 
@@ -804,12 +805,14 @@ fn build_chat_turn_response(
         let response_steps = parse_steps(&assistant_message);
         let steps: Vec<String> = response_steps.into_iter().take(6).collect();
         if steps.is_empty() || (steps.len() == 1 && steps[0] == assistant_message.trim()) {
-            vec![assistant_message
-                .lines()
-                .next()
-                .unwrap_or("Aktion pruefen")
-                .trim()
-                .to_string()]
+            vec![
+                assistant_message
+                    .lines()
+                    .next()
+                    .unwrap_or("Aktion pruefen")
+                    .trim()
+                    .to_string(),
+            ]
         } else {
             steps
         }
@@ -854,7 +857,7 @@ fn parse_steps(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_turn_response, parse_steps, OllamaConfig, OllamaToolCall, OllamaToolFunctionCall,
+        OllamaConfig, OllamaToolCall, OllamaToolFunctionCall, build_chat_turn_response, parse_steps,
     };
     use serde_json::{Map, Value};
 

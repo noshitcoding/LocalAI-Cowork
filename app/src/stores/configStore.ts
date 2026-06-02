@@ -9,16 +9,6 @@ export type OllamaConfig = {
   temperature: number
 }
 
-export type OpenAIComputerUseConfig = {
-  apiKey: string
-  baseUrl: string
-  model: string
-  maxSteps: number
-  actionDelayMs: number
-  launchDelayMs: number
-  autoAcknowledgeSafetyChecks: boolean
-}
-
 export type LlmProviderKind = 'ollama' | 'openai-compatible' | 'openrouter'
 
 export type LlmProfile = {
@@ -29,6 +19,7 @@ export type LlmProfile = {
   model: string
   apiKey: string
   timeoutMs: number
+  verifyTlsCertificates: boolean
   contextWindow: number | null
   temperature: number | null
 }
@@ -82,7 +73,6 @@ export type AppPreferences = {
 
 type ConfigState = {
   ollama: OllamaConfig
-  openAIComputerUse: OpenAIComputerUseConfig
   llmProfiles: LlmProfile[]
   defaultLlmProfileIds: DefaultLlmProfileIds
   llmProfileModels: Record<string, string[]>
@@ -92,7 +82,6 @@ type ConfigState = {
   activeMcpServerName: string
   availableModels: string[]
   setOllama: (patch: Partial<OllamaConfig>) => void
-  setOpenAIComputerUse: (patch: Partial<OpenAIComputerUseConfig>) => void
   addLlmProfile: (provider: LlmProviderKind) => string
   updateLlmProfile: (id: string, patch: Partial<LlmProfile>) => void
   deleteLlmProfile: (id: string) => void
@@ -109,21 +98,11 @@ type ConfigState = {
 }
 
 const DEFAULT_OLLAMA: OllamaConfig = {
-  baseUrl: 'http://192.168.178.82:11434',
-  model: 'gpt-oss:20b',
+  baseUrl: 'http://localhost:11434',
+  model: 'llama3.1:8b',
   timeoutMs: 600000,
   contextWindow: 128000,
   temperature: 0.1,
-}
-
-const DEFAULT_OPENAI_COMPUTER_USE: OpenAIComputerUseConfig = {
-  apiKey: '',
-  baseUrl: 'https://api.openai.com/v1',
-  model: 'computer-use-preview',
-  maxSteps: 40,
-  actionDelayMs: 900,
-  launchDelayMs: 2000,
-  autoAcknowledgeSafetyChecks: false,
 }
 
 const DEFAULT_OPENAI_COMPATIBLE_PROFILE = {
@@ -149,6 +128,7 @@ function createBaseLlmProfile(provider: LlmProviderKind): LlmProfile {
         model: DEFAULT_OLLAMA.model,
         apiKey: '',
         timeoutMs: DEFAULT_OLLAMA.timeoutMs,
+        verifyTlsCertificates: true,
         contextWindow: DEFAULT_OLLAMA.contextWindow,
         temperature: DEFAULT_OLLAMA.temperature,
       }
@@ -161,6 +141,7 @@ function createBaseLlmProfile(provider: LlmProviderKind): LlmProfile {
           model: DEFAULT_OPENAI_COMPATIBLE_PROFILE.model,
           apiKey: DEFAULT_OPENAI_COMPATIBLE_PROFILE.apiKey,
           timeoutMs: DEFAULT_OPENAI_COMPATIBLE_PROFILE.timeoutMs,
+          verifyTlsCertificates: true,
           contextWindow: null,
           temperature: null,
         }
@@ -172,6 +153,7 @@ function createBaseLlmProfile(provider: LlmProviderKind): LlmProfile {
           model: '',
           apiKey: '',
           timeoutMs: DEFAULT_OLLAMA.timeoutMs,
+          verifyTlsCertificates: true,
           contextWindow: null,
           temperature: null,
         }
@@ -182,10 +164,7 @@ function normalizeLlmProfile(profile: Partial<LlmProfile> & Pick<LlmProfile, 'pr
   const rawTimeout = Number(profile.timeoutMs ?? baseProfile.timeoutMs)
   const rawContextWindow = profile.contextWindow ?? baseProfile.contextWindow
   const rawTemperature = profile.temperature ?? baseProfile.temperature
-  const rawModel = profile.model?.trim()
-  const normalizedModel = profile.provider === 'openai-compatible' && rawModel === 'computer-use-preview'
-    ? DEFAULT_OPENAI_COMPATIBLE_PROFILE.model
-    : rawModel
+  const normalizedModel = profile.model?.trim()
 
   return {
     ...baseProfile,
@@ -195,6 +174,7 @@ function normalizeLlmProfile(profile: Partial<LlmProfile> & Pick<LlmProfile, 'pr
     model: normalizedModel ?? baseProfile.model,
     apiKey: profile.apiKey?.trim() ?? baseProfile.apiKey,
     timeoutMs: Math.max(1000, Number.isFinite(rawTimeout) ? rawTimeout : baseProfile.timeoutMs),
+    verifyTlsCertificates: profile.verifyTlsCertificates ?? baseProfile.verifyTlsCertificates,
     contextWindow: profile.provider === 'ollama'
       ? Math.max(512, Number.isFinite(Number(rawContextWindow)) ? Number(rawContextWindow) : DEFAULT_OLLAMA.contextWindow)
       : null,
@@ -409,7 +389,6 @@ export const useConfigStore = create<ConfigState>()(
   persist(
     (set) => ({
       ollama: DEFAULT_OLLAMA,
-      openAIComputerUse: DEFAULT_OPENAI_COMPUTER_USE,
       llmProfiles: buildDefaultLlmProfiles(DEFAULT_OLLAMA),
       defaultLlmProfileIds: DEFAULT_LLM_PROFILE_IDS,
       llmProfileModels: {
@@ -444,10 +423,6 @@ export const useConfigStore = create<ConfigState>()(
             llmProfiles,
           }
         }),
-      setOpenAIComputerUse: (patch) =>
-        set((state) => ({
-          openAIComputerUse: { ...state.openAIComputerUse, ...patch },
-        })),
       addLlmProfile: (provider) => {
         const id = createLlmProfileId(provider)
         set((state) => ({
@@ -620,6 +595,10 @@ export const useConfigStore = create<ConfigState>()(
       name: 'open-cowork-config',
       merge: (persisted, current) => {
         const state = persisted as Partial<ConfigState>
+        const persistedState = { ...(state as Partial<ConfigState> & {
+          openAIComputerUse?: unknown
+        }) }
+        delete persistedState.openAIComputerUse
         const persistedServers = Array.isArray(state.mcpServers) ? state.mcpServers : []
         const normalizedServers = persistedServers
           .map(normalizeServer)
@@ -642,12 +621,8 @@ export const useConfigStore = create<ConfigState>()(
         }
         return {
           ...current,
-          ...state,
+          ...persistedState,
           ollama: syncLegacyOllamaConfig(llmProfiles, defaultLlmProfileIds, state.ollama),
-          openAIComputerUse: {
-            ...DEFAULT_OPENAI_COMPUTER_USE,
-            ...(state.openAIComputerUse ?? {}),
-          },
           llmProfiles,
           defaultLlmProfileIds,
           llmProfileModels,

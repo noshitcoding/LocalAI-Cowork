@@ -1,4 +1,4 @@
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Result as SqlResult};
+use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -21,7 +21,12 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> SqlResult<b
     Ok(false)
 }
 
-fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) -> SqlResult<()> {
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> SqlResult<()> {
     if !table_has_column(conn, table, column)? {
         conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), [])?;
     }
@@ -1127,8 +1132,18 @@ impl Database {
         }
 
         if version < 18 {
-            add_column_if_missing(&conn, "agent_personalities", "role", "role TEXT NOT NULL DEFAULT 'custom'")?;
-            add_column_if_missing(&conn, "agent_personalities", "goal", "goal TEXT NOT NULL DEFAULT ''")?;
+            add_column_if_missing(
+                &conn,
+                "agent_personalities",
+                "role",
+                "role TEXT NOT NULL DEFAULT 'custom'",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "agent_personalities",
+                "goal",
+                "goal TEXT NOT NULL DEFAULT ''",
+            )?;
             add_column_if_missing(
                 &conn,
                 "agent_personalities",
@@ -1182,6 +1197,16 @@ impl Database {
 
                 UPDATE schema_version SET version = 19;",
             )?;
+        }
+
+        if version < 20 {
+            add_column_if_missing(
+                &conn,
+                "crew_run_logs",
+                "metadata_json",
+                "metadata_json TEXT",
+            )?;
+            conn.execute("UPDATE schema_version SET version = 20", [])?;
         }
 
         Ok(())
@@ -1257,7 +1282,11 @@ impl Database {
         }
 
         tx.commit()?;
-        Ok(if delete_threads { thread_ids } else { Vec::new() })
+        Ok(if delete_threads {
+            thread_ids
+        } else {
+            Vec::new()
+        })
     }
 
     pub fn upsert_project_resource(
@@ -1284,7 +1313,15 @@ impl Database {
              ON CONFLICT(project_id, kind, path) DO UPDATE SET
                label = excluded.label,
                enabled = excluded.enabled",
-            params![id, project_id, kind, path, label, if enabled { 1 } else { 0 }, added_at],
+            params![
+                id,
+                project_id,
+                kind,
+                path,
+                label,
+                if enabled { 1 } else { 0 },
+                added_at
+            ],
         )?;
         conn.execute(
             "UPDATE projects SET updated_at = datetime('now') WHERE id = ?1",
@@ -1321,7 +1358,10 @@ impl Database {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute("DELETE FROM project_resources WHERE id = ?1", params![resource_id])?;
+        conn.execute(
+            "DELETE FROM project_resources WHERE id = ?1",
+            params![resource_id],
+        )?;
         Ok(())
     }
 
@@ -1381,9 +1421,8 @@ impl Database {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let mut stmt = conn.prepare(
-            "SELECT project_id, thread_id FROM project_threads ORDER BY added_at DESC",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT project_id, thread_id FROM project_threads ORDER BY added_at DESC")?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect()
     }
@@ -1478,7 +1517,10 @@ impl Database {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute("DELETE FROM project_threads WHERE thread_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM project_threads WHERE thread_id = ?1",
+            params![id],
+        )?;
         conn.execute("DELETE FROM chat_threads WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -1557,11 +1599,12 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "INSERT INTO crew_run_logs (id, run_id, crew_id, agent_id, task_id, action, result, timestamp, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))"
+            "INSERT INTO crew_run_logs (id, run_id, crew_id, agent_id, task_id, action, result, timestamp, metadata_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))"
         )?;
 
         for log in logs {
+            let metadata_json = serde_json::to_string(log).ok();
             stmt.execute(params![
                 log.id,
                 run_id,
@@ -1571,6 +1614,7 @@ impl Database {
                 log.action,
                 log.result,
                 log.timestamp,
+                metadata_json,
             ])?;
         }
 
@@ -1654,13 +1698,23 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, crew_id, agent_id, task_id, action, result, timestamp
+            "SELECT id, crew_id, agent_id, task_id, action, result, timestamp, metadata_json
              FROM crew_run_logs
              WHERE run_id = ?1
              ORDER BY timestamp ASC",
         )?;
 
         let rows = stmt.query_map(params![run_id], |row| {
+            let metadata_json: Option<String> = row.get(7)?;
+            if let Some(metadata) = metadata_json
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                if let Ok(log) = serde_json::from_str::<crate::CrewExecutionLogRow>(metadata) {
+                    return Ok(log);
+                }
+            }
+
             Ok(crate::CrewExecutionLogRow {
                 id: row.get(0)?,
                 crew_id: row.get(1)?,
@@ -1669,6 +1723,17 @@ impl Database {
                 action: row.get(4)?,
                 result: row.get(5)?,
                 timestamp: row.get(6)?,
+                agent_name: None,
+                source_agent: None,
+                target_agent: None,
+                provider: None,
+                model: None,
+                task_title: None,
+                phase: None,
+                summary: None,
+                detail: None,
+                severity: None,
+                provider_reasoning: None,
             })
         })?;
 
@@ -4551,10 +4616,18 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let sql = match (category, event_type) {
-            (Some(_), Some(_)) => "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 AND event_type = ?2 ORDER BY created_at DESC LIMIT ?3",
-            (Some(_), None) => "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 ORDER BY created_at DESC LIMIT ?2",
-            (None, Some(_)) => "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE event_type = ?1 ORDER BY created_at DESC LIMIT ?2",
-            (None, None) => "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events ORDER BY created_at DESC LIMIT ?1",
+            (Some(_), Some(_)) => {
+                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 AND event_type = ?2 ORDER BY created_at DESC LIMIT ?3"
+            }
+            (Some(_), None) => {
+                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 ORDER BY created_at DESC LIMIT ?2"
+            }
+            (None, Some(_)) => {
+                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE event_type = ?1 ORDER BY created_at DESC LIMIT ?2"
+            }
+            (None, None) => {
+                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events ORDER BY created_at DESC LIMIT ?1"
+            }
         };
 
         let mut stmt = conn.prepare(sql)?;
@@ -4942,7 +5015,11 @@ mod tests {
 
         let resources = db.list_project_resources().unwrap();
         assert_eq!(resources.len(), 2);
-        assert!(resources.iter().any(|resource| resource.kind == "link" && !resource.enabled));
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == "link" && !resource.enabled)
+        );
 
         let threads = db.list_project_threads().unwrap();
         assert_eq!(threads, vec![("p1".to_string(), "t1".to_string())]);
@@ -4953,14 +5030,29 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
             .unwrap();
-        db.upsert_project("p1", "Alpha", "", "2026-05-11T09:00:00Z", "2026-05-11T09:00:00Z")
-            .unwrap();
-        db.upsert_project("p2", "Beta", "", "2026-05-11T09:00:00Z", "2026-05-11T09:00:00Z")
-            .unwrap();
+        db.upsert_project(
+            "p1",
+            "Alpha",
+            "",
+            "2026-05-11T09:00:00Z",
+            "2026-05-11T09:00:00Z",
+        )
+        .unwrap();
+        db.upsert_project(
+            "p2",
+            "Beta",
+            "",
+            "2026-05-11T09:00:00Z",
+            "2026-05-11T09:00:00Z",
+        )
+        .unwrap();
 
         db.attach_project_thread("p1", "t1").unwrap();
         db.attach_project_thread("p2", "t1").unwrap();
-        assert_eq!(db.list_project_threads().unwrap(), vec![("p2".to_string(), "t1".to_string())]);
+        assert_eq!(
+            db.list_project_threads().unwrap(),
+            vec![("p2".to_string(), "t1".to_string())]
+        );
 
         let deleted_threads = db.delete_project("p2", true).unwrap();
         assert_eq!(deleted_threads, vec!["t1".to_string()]);

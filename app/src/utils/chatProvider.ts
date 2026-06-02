@@ -29,6 +29,7 @@ export type ChatProviderState = {
   model: string
   apiKey: string
   timeoutMs: number
+  verifyTlsCertificates: boolean
   selectableModels: string[]
   profileId?: string
 }
@@ -46,6 +47,49 @@ function resolveDefaultProfile(
 ): LlmProfile | undefined {
   return profiles.find((profile) => profile.id === defaultIds[provider] && profile.provider === provider)
     ?? profiles.find((profile) => profile.provider === provider)
+}
+
+function modelSuffix(model: string): string {
+  const trimmed = model.trim()
+  return trimmed.split('/').filter(Boolean).at(-1) ?? trimmed
+}
+
+function resolveExternalModel(
+  selectedModel: string,
+  profileModel: string,
+  selectableModels: string[],
+): string {
+  if (!selectedModel) return profileModel
+
+  const normalizedModels = selectableModels.map((model) => model.trim()).filter(Boolean)
+  if (normalizedModels.length > 0) {
+    const lowerSelected = selectedModel.toLowerCase()
+    const exactSelected = normalizedModels.find((model) => model.toLowerCase() === lowerSelected)
+    if (exactSelected) return exactSelected
+
+    const suffixSelected = normalizedModels.find((model) => modelSuffix(model).toLowerCase() === lowerSelected)
+    if (suffixSelected) return suffixSelected
+
+    if (profileModel) {
+      const lowerProfile = profileModel.toLowerCase()
+      const exactProfile = normalizedModels.find((model) => model.toLowerCase() === lowerProfile)
+      if (exactProfile) return exactProfile
+
+      const suffixProfile = normalizedModels.find((model) => modelSuffix(model).toLowerCase() === lowerProfile)
+      if (suffixProfile) return suffixProfile
+    }
+
+    return profileModel || selectedModel
+  }
+
+  if (profileModel && profileModel.toLowerCase() !== selectedModel.toLowerCase()) {
+    const lowerSelected = selectedModel.toLowerCase()
+    if (modelSuffix(profileModel).toLowerCase() === lowerSelected) {
+      return profileModel
+    }
+  }
+
+  return selectedModel || profileModel
 }
 
 export function normalizeChatProvider(value: unknown): ChatProviderKind {
@@ -95,6 +139,7 @@ export function getChatProviderState(
       model: selectedModel || context.ollama.model,
       apiKey: '',
       timeoutMs: context.ollama.timeoutMs,
+      verifyTlsCertificates: true,
       selectableModels: Array.isArray(context.availableModels) ? context.availableModels : [],
     }
   }
@@ -103,15 +148,19 @@ export function getChatProviderState(
     ? context.llmProfiles.find((item) => item.id === selection.profileId && item.provider === provider)
     : undefined
   const profile = selectedProfile ?? resolveDefaultProfile(context.llmProfiles, context.defaultLlmProfileIds, provider)
+  const selectableModels = profile ? (context.llmProfileModels[profile.id] ?? []) : []
+  const profileModel = profile?.model?.trim() || ''
+  const model = resolveExternalModel(selectedModel, profileModel, selectableModels)
 
   return {
     provider,
     label: CHAT_PROVIDER_LABELS[provider],
     endpoint: profile?.baseUrl?.trim() ?? '',
-    model: selectedModel || profile?.model?.trim() || '',
+    model,
     apiKey: profile?.apiKey?.trim() ?? '',
     timeoutMs: Math.max(1000, Number(profile?.timeoutMs ?? 600000)),
-    selectableModels: profile ? (context.llmProfileModels[profile.id] ?? []) : [],
+    verifyTlsCertificates: profile?.verifyTlsCertificates ?? true,
+    selectableModels,
     profileId: profile?.id,
   }
 }

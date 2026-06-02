@@ -31,13 +31,14 @@
     "targets": [
       "nsis"
     ],
-    "resources": [
-      "resources/pdfium/bin/pdfium.dll",
-      "resources/pdfium/LICENSE",
-      "resources/pdfium/VERSION",
-      "python/crew_runtime/main.py",
-      "python/crew_runtime/requirements.txt"
-    ],
+    "resources": {
+      "resources/pdfium/bin/pdfium.dll": "resources/pdfium/bin/pdfium.dll",
+      "resources/pdfium/LICENSE": "resources/pdfium/LICENSE",
+      "resources/pdfium/VERSION": "resources/pdfium/VERSION",
+      "python/crew_runtime/main.py": "python/crew_runtime/main.py",
+      "python/crew_runtime/requirements.txt": "python/crew_runtime/requirements.txt",
+      "resources/WebView2Loader.dll": "WebView2Loader.dll"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

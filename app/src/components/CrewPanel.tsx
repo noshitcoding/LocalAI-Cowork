@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
-import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind } from '../stores/crewStore'
+import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind, type CrewProviderProfiles, type CrewRuntimeConfig } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
 import CrewControlPlanePanel from './crew/CrewControlPlanePanel'
 import CrewGovernancePanel from './crew/CrewGovernancePanel'
@@ -29,6 +29,47 @@ type ProviderModelState = {
   cacheKey?: string
 }
 
+type ImportedCrewAgent = {
+  id?: unknown
+  name?: unknown
+  role?: unknown
+  goal?: unknown
+  backstory?: unknown
+  skillsMarkdown?: unknown
+  personalityId?: unknown
+  modelOverride?: unknown
+  providerKind?: unknown
+  tools?: unknown
+  mcpServerNames?: unknown
+  enabled?: unknown
+  allowDelegation?: unknown
+  verbose?: unknown
+  maxIterations?: unknown
+}
+
+type ImportedCrewPayload = {
+  name?: unknown
+  description?: unknown
+  executionGuidelines?: unknown
+  outputMode?: unknown
+  stopOnFailure?: unknown
+  retryCount?: unknown
+  managerReviewEnabled?: unknown
+  managerReviewGuidelines?: unknown
+  shareAllTaskOutputs?: unknown
+  sharedOutputCharLimit?: unknown
+  defaultProvider?: unknown
+  defaultModel?: unknown
+  providerProfiles?: unknown
+  process?: unknown
+  managerAgentId?: unknown
+  verbose?: unknown
+  maxRpm?: unknown
+  maxParallelTasks?: unknown
+  runtimeConfig?: unknown
+  agents?: unknown
+}
+
 function toggleStringValue(values: string[], nextValue: string): string[] {
   return values.includes(nextValue)
     ? values.filter((value) => value !== nextValue)
@@ -45,6 +86,57 @@ function setStringValue(values: string[], nextValue: string, enabled: boolean): 
 
 function getProviderLabel(providerKind: CrewProviderKind): string {
   return PROVIDER_OPTIONS.find((option) => option.value === providerKind)?.label ?? providerKind
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function isCrewProviderProfiles(value: unknown): value is CrewProviderProfiles {
+  return isObjectRecord(value)
+    && isObjectRecord(value.openAICompatible)
+    && isObjectRecord(value.openRouter)
+}
+
+function isCrewRuntimeConfig(value: unknown): value is CrewRuntimeConfig {
+  return isObjectRecord(value)
+    && typeof value.enabled === 'boolean'
+    && typeof value.baseUrl === 'string'
+    && typeof value.model === 'string'
+    && typeof value.timeoutMs === 'number'
+}
+
+function isAgentRole(value: unknown): value is AgentRole {
+  return ROLE_OPTIONS.includes(value as AgentRole)
+}
+
+function isCrewProviderKind(value: unknown): value is CrewProviderKind {
+  return value === 'ollama' || value === 'openai-compatible' || value === 'openrouter'
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+}
+
+function normalizeImportedCrewAgent(value: unknown): CrewAgent {
+  const agent = isObjectRecord(value) ? value as ImportedCrewAgent : {}
+  return {
+    id: typeof agent.id === 'string' ? agent.id : crypto.randomUUID(),
+    name: typeof agent.name === 'string' ? agent.name : 'Agent',
+    role: isAgentRole(agent.role) ? agent.role : 'custom',
+    goal: typeof agent.goal === 'string' ? agent.goal : '',
+    backstory: typeof agent.backstory === 'string' ? agent.backstory : '',
+    skillsMarkdown: typeof agent.skillsMarkdown === 'string' ? agent.skillsMarkdown : '',
+    personalityId: typeof agent.personalityId === 'string' ? agent.personalityId : null,
+    modelOverride: typeof agent.modelOverride === 'string' ? agent.modelOverride : null,
+    providerKind: isCrewProviderKind(agent.providerKind) ? agent.providerKind : 'ollama',
+    tools: toStringArray(agent.tools),
+    mcpServerNames: toStringArray(agent.mcpServerNames),
+    enabled: typeof agent.enabled === 'boolean' ? agent.enabled : true,
+    allowDelegation: typeof agent.allowDelegation === 'boolean' ? agent.allowDelegation : true,
+    verbose: typeof agent.verbose === 'boolean' ? agent.verbose : false,
+    maxIterations: typeof agent.maxIterations === 'number' ? agent.maxIterations : 10,
+  }
 }
 
 function resolveCrewRuntimeConfig(
@@ -65,7 +157,7 @@ function resolveCrewRuntimeConfig(
 
 function resolveExternalProviderConfig(
   config: CrewExternalProviderConfig | undefined,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string } | undefined,
+  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; verifyTlsCertificates?: boolean } | undefined,
   fallbackBaseUrl: string,
 ) {
   if (!config?.enabled) {
@@ -77,6 +169,7 @@ function resolveExternalProviderConfig(
     model: config.model.trim() || fallbackConfig?.model?.trim() || '',
     apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
     timeoutMs: Math.max(1000, config.timeoutMs || 600000),
+    verifyTlsCertificates: (config.verifyTlsCertificates ?? true) && (fallbackConfig?.verifyTlsCertificates ?? true),
   }
 }
 
@@ -325,7 +418,7 @@ export default function CrewPanel() {
   const getProviderModelCacheKey = (providerKey: 'openAICompatible' | 'openRouter') => {
     const config = resolvedActiveProviderConfigs[providerKey]
     if (!config) return ''
-    return `${config.baseUrl.trim()}::${config.apiKey.trim()}`
+    return `${config.baseUrl.trim()}::${config.apiKey.trim()}::${config.verifyTlsCertificates}`
   }
 
   const getProviderModelCatalog = (providerKind: CrewProviderKind) => {
@@ -602,28 +695,7 @@ export default function CrewPanel() {
 
     try {
       const raw = await file.text()
-      const imported = JSON.parse(raw) as {
-        name?: unknown
-        description?: unknown
-        executionGuidelines?: unknown
-        outputMode?: unknown
-        stopOnFailure?: unknown
-        retryCount?: unknown
-        managerReviewEnabled?: unknown
-        managerReviewGuidelines?: unknown
-        shareAllTaskOutputs?: unknown
-        sharedOutputCharLimit?: unknown
-        defaultProvider?: unknown
-        defaultModel?: unknown
-        providerProfiles?: unknown
-        process?: unknown
-        managerAgentId?: unknown
-        verbose?: unknown
-        maxRpm?: unknown
-        maxParallelTasks?: unknown
-        runtimeConfig?: unknown
-        agents?: unknown
-      }
+      const imported = JSON.parse(raw) as ImportedCrewPayload
       const newId = crypto.randomUUID()
       const importedName = typeof imported.name === 'string' && imported.name.trim() ? imported.name : 'Importierte Crew'
       createCrew(newId, importedName, [])
@@ -648,57 +720,26 @@ export default function CrewPanel() {
       }
       if (typeof imported.defaultModel === 'string') patch.defaultModel = imported.defaultModel
       if (
-        imported.providerProfiles
-        && typeof imported.providerProfiles === 'object'
-        && imported.providerProfiles !== null
-        && 'openAICompatible' in imported.providerProfiles
-        && 'openRouter' in imported.providerProfiles
+        isCrewProviderProfiles(imported.providerProfiles)
       ) {
-        patch.providerProfiles = imported.providerProfiles as any
+        patch.providerProfiles = imported.providerProfiles
       }
       if (imported.process === 'sequential' || imported.process === 'parallel' || imported.process === 'hierarchical') {
         patch.process = imported.process
       }
       if (typeof imported.managerAgentId === 'string' || imported.managerAgentId === null) {
-        patch.managerAgentId = imported.managerAgentId as any
+        patch.managerAgentId = imported.managerAgentId
       }
       if (typeof imported.verbose === 'boolean') patch.verbose = imported.verbose
       if (typeof imported.maxRpm === 'number') patch.maxRpm = imported.maxRpm
       if (typeof imported.maxParallelTasks === 'number') patch.maxParallelTasks = imported.maxParallelTasks
       if (
-        imported.runtimeConfig
-        && typeof imported.runtimeConfig === 'object'
-        && imported.runtimeConfig !== null
-        && 'enabled' in imported.runtimeConfig
-        && 'baseUrl' in imported.runtimeConfig
-        && 'model' in imported.runtimeConfig
-        && 'timeoutMs' in imported.runtimeConfig
+        isCrewRuntimeConfig(imported.runtimeConfig)
       ) {
-        patch.runtimeConfig = imported.runtimeConfig as any
+        patch.runtimeConfig = imported.runtimeConfig
       }
       if (Array.isArray(imported.agents)) {
-        patch.agents = imported.agents.map((agent) => ({
-          id: typeof (agent as any)?.id === 'string' ? (agent as any).id : crypto.randomUUID(),
-          name: typeof (agent as any)?.name === 'string' ? (agent as any).name : 'Agent',
-          role: ROLE_OPTIONS.includes((agent as any)?.role) ? (agent as any).role : 'custom',
-          goal: typeof (agent as any)?.goal === 'string' ? (agent as any).goal : '',
-          backstory: typeof (agent as any)?.backstory === 'string' ? (agent as any).backstory : '',
-          skillsMarkdown: typeof (agent as any)?.skillsMarkdown === 'string' ? (agent as any).skillsMarkdown : '',
-          personalityId: typeof (agent as any)?.personalityId === 'string' ? (agent as any).personalityId : null,
-          modelOverride: typeof (agent as any)?.modelOverride === 'string' ? (agent as any).modelOverride : null,
-          providerKind:
-            (agent as any)?.providerKind === 'ollama'
-            || (agent as any)?.providerKind === 'openai-compatible'
-            || (agent as any)?.providerKind === 'openrouter'
-              ? (agent as any).providerKind
-              : 'ollama',
-          tools: Array.isArray((agent as any)?.tools) ? (agent as any).tools.filter((tool: unknown) => typeof tool === 'string') : [],
-          mcpServerNames: Array.isArray((agent as any)?.mcpServerNames) ? (agent as any).mcpServerNames.filter((name: unknown) => typeof name === 'string') : [],
-          enabled: typeof (agent as any)?.enabled === 'boolean' ? (agent as any).enabled : true,
-          allowDelegation: typeof (agent as any)?.allowDelegation === 'boolean' ? (agent as any).allowDelegation : true,
-          verbose: typeof (agent as any)?.verbose === 'boolean' ? (agent as any).verbose : false,
-          maxIterations: typeof (agent as any)?.maxIterations === 'number' ? (agent as any).maxIterations : 10,
-        }))
+        patch.agents = imported.agents.map(normalizeImportedCrewAgent)
       }
 
       updateCrew(newId, patch)
@@ -730,6 +771,8 @@ export default function CrewPanel() {
           providerKind: providerKey === 'openAICompatible' ? 'openai-compatible' : 'openrouter',
           baseUrl: config.baseUrl,
           apiKey: config.apiKey,
+          model: config.model,
+          verifyTlsCertificates: config.verifyTlsCertificates,
         },
       })
 
@@ -764,40 +807,64 @@ export default function CrewPanel() {
     return map[role] ?? '🤖'
   }
   const processLabel = (p: CrewProcess) => PROCESS_OPTIONS.find((o) => o.value === p)?.label ?? p
+  const activeAgentCount = activeCrew?.agents.filter((agent) => agent.enabled).length ?? 0
+  const profileBackedAgentCount = activeCrew?.agents.filter((agent) => Boolean(agent.personalityId)).length ?? 0
+  const configuredToolCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.tools)).size : 0
+  const configuredMcpCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.mcpServerNames)).size : 0
+  const outputModeLabel = activeCrew?.outputMode === 'bullet-report'
+    ? 'Stichpunkte'
+    : activeCrew?.outputMode === 'json'
+      ? 'JSON'
+      : 'Standard'
 
   return (
-    <div className="panel">
-      <CrewRuntimePanel />
-      {/* Header */}
-      <div className="crew-header">
-        <div className="crew-header-title">
-          <span className="crew-header-icon">🚀</span> Crew AI
+    <div className="panel crew-shell">
+      <div className="crew-shell-top">
+        <CrewRuntimePanel />
+        <div className="crew-header">
+          <div className="crew-header-copy">
+            <div className="crew-header-eyebrow">Crew Workspace</div>
+            <div className="crew-header-title">
+              <span className="crew-header-icon">🚀</span>
+              <span>Crew AI</span>
+            </div>
+            <div className="crew-header-subtitle">
+              Plane Rollen, Governance und reproduzierbare Runs in einer aufgeraeumten Arbeitsflaeche statt in gequetschten Einzelkarten.
+            </div>
+          </div>
+          <div className="crew-header-badge" aria-label="Crew-Uebersicht">
+            <strong>{crews.length}</strong>
+            <span>{crews.length === 1 ? 'Crew konfiguriert' : 'Crews konfiguriert'}</span>
+          </div>
         </div>
       </div>
       <input ref={importCrewInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={(event) => void handleImportCrew(event)} />
 
-      {/* Toolbar */}
       <div className="crew-toolbar">
-        <input
-          className="crew-toolbar-input"
-          placeholder="Neue Crew…"
-          value={crewName}
-          onChange={(event) => setCrewName(event.target.value)}
-          onKeyDown={(event) => { if (event.key === 'Enter') handleCreateCrew() }}
-        />
-        <button type="button" className="crew-toolbar-btn" onClick={handleCreateCrew}>➕ Anlegen</button>
-        <button type="button" className="crew-toolbar-btn secondary" onClick={handleDuplicateCrew} disabled={!activeCrew}>📋 Duplizieren</button>
-        <button type="button" className="crew-toolbar-btn secondary" onClick={handleExportCrew} disabled={!activeCrew}>📤 Export</button>
-        <button type="button" className="crew-toolbar-btn secondary" onClick={() => importCrewInputRef.current?.click()}>📥 Import</button>
-        <button type="button" className="crew-toolbar-btn secondary crew-toolbar-toggle" aria-pressed={isCrewListVisible} onClick={toggleCrewListVisibility}>
-          {isCrewListVisible ? '🗂 Crew-Liste ausblenden' : '🗂 Crew-Liste anzeigen'}
-        </button>
+        <div className="crew-toolbar-primary">
+          <input
+            className="crew-toolbar-input"
+            placeholder="Neue Crew…"
+            value={crewName}
+            onChange={(event) => setCrewName(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') handleCreateCrew() }}
+          />
+          <button type="button" className="crew-toolbar-btn" onClick={handleCreateCrew}>Anlegen</button>
+        </div>
+        <div className="crew-toolbar-actions">
+          <button type="button" className="crew-toolbar-btn secondary" onClick={handleDuplicateCrew} disabled={!activeCrew}>Duplizieren</button>
+          <button type="button" className="crew-toolbar-btn secondary" onClick={handleExportCrew} disabled={!activeCrew}>Export</button>
+          <button type="button" className="crew-toolbar-btn secondary" onClick={() => importCrewInputRef.current?.click()}>Import</button>
+          <button type="button" className="crew-toolbar-btn secondary crew-toolbar-toggle" aria-pressed={isCrewListVisible} onClick={toggleCrewListVisibility}>
+            {isCrewListVisible ? 'Liste ausblenden' : 'Liste zeigen'}
+          </button>
+        </div>
       </div>
 
       {activeCrew && (
-        <div style={{ display: 'grid', gap: 16, marginBottom: 16 }}>
+        <div className="crew-overview-grid">
           <CrewControlPlanePanel activeCrew={activeCrew} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          <div className="crew-overview-meta-grid">
             <CrewGovernancePanel activeCrewId={activeCrew.id} />
             <CrewHistoryPanel activeCrewId={activeCrew.id} />
           </div>
@@ -853,7 +920,7 @@ export default function CrewPanel() {
                         </div>
                       </div>
                     </div>
-                    <button type="button" className="crew-compact-toggle" onClick={toggleCrewListVisibility}>Crew-Liste zeigen</button>
+                    <button type="button" className="crew-compact-toggle" onClick={toggleCrewListVisibility}>Liste zeigen</button>
                   </div>
                 )}
 
@@ -1027,18 +1094,54 @@ export default function CrewPanel() {
                 {/* Agents */}
                 <div className="crew-section open">
                   <div className="crew-section-header" style={{ cursor: 'default' }}>
-                    <span className="crew-section-icon">👥</span> Crew-Mitglieder ({activeCrew.agents.filter((a) => a.enabled).length}/{activeCrew.agents.length})
+                    <span className="crew-section-icon">👥</span> Crew-Mitglieder ({activeAgentCount}/{activeCrew.agents.length})
                   </div>
                   <div className="crew-section-body">
+                    <div className="crew-members-hero">
+                      <div className="crew-members-copy">
+                        <div className="crew-overview-kicker">Mitglieder</div>
+                        <strong className="crew-overview-title">Rollen, Modelle und Zugriffe pro Agent</strong>
+                        <div className="crew-overview-description">
+                          Profile, Laufzeitverhalten und Berechtigungen bleiben hier gesammelt sichtbar, damit die Crew-Konfiguration nicht in einzelne Formblöcke zerfällt.
+                        </div>
+                      </div>
+                      <div className="crew-members-stats">
+                        <div className="crew-members-stat">
+                          <strong>{activeAgentCount}</strong>
+                          <span>aktiv</span>
+                        </div>
+                        <div className="crew-members-stat">
+                          <strong>{profileBackedAgentCount}</strong>
+                          <span>mit Profil</span>
+                        </div>
+                        <div className="crew-members-stat">
+                          <strong>{configuredToolCount}</strong>
+                          <span>Tools genutzt</span>
+                        </div>
+                        <div className="crew-members-stat">
+                          <strong>{configuredMcpCount}</strong>
+                          <span>MCP-Zugriffe</span>
+                        </div>
+                      </div>
+                    </div>
                     <div className="crew-agent-panel crew-agent-panel-wide crew-bulk-access-panel">
-                      <div className="crew-agent-panel-header">
-                        <div className="crew-agent-panel-title">Freigaben fuer alle Mitglieder</div>
-                        <div className="crew-agent-panel-subtitle">Setzt Tool- und MCP-Zugriffe global fuer die aktive Crew.</div>
+                      <div className="crew-agent-panel-header crew-agent-panel-header-split">
+                        <div>
+                          <div className="crew-agent-panel-title">Freigaben fuer alle Mitglieder</div>
+                          <div className="crew-agent-panel-subtitle">Setzt Tool- und MCP-Zugriffe global fuer die aktive Crew.</div>
+                        </div>
+                        <div className="crew-members-badge-row">
+                          <span className="crew-inline-badge subtle">{claudeTools.length} Tools verfuegbar</span>
+                          <span className="crew-inline-badge subtle">{configuredMcpServers.length} MCP-Server</span>
+                        </div>
                       </div>
                       <div className="crew-agent-access-grid">
                         <div className="crew-agent-subpanel">
                           <div className="crew-form-group">
-                            <span className="crew-label">Tools</span>
+                            <div className="crew-subpanel-head">
+                              <span className="crew-label">Tools</span>
+                              <span className="crew-subpanel-count">Alle Mitglieder synchronisieren</span>
+                            </div>
                             <div className="crew-tool-list">
                               {claudeTools.map((tool) => {
                                 const allAgentsHaveTool = activeCrew.agents.length > 0 && activeCrew.agents.every((agent) => agent.tools.includes(tool.id))
@@ -1058,7 +1161,10 @@ export default function CrewPanel() {
                         </div>
                         <div className="crew-agent-subpanel">
                           <div className="crew-form-group">
-                            <span className="crew-label">MCP-Zugriffe</span>
+                            <div className="crew-subpanel-head">
+                              <span className="crew-label">MCP-Zugriffe</span>
+                              <span className="crew-subpanel-count">Workspace-Verbindungen</span>
+                            </div>
                             {configuredMcpServers.length === 0 ? <span className="crew-hint">Keine MCP-Server konfiguriert.</span> : (
                               <div className="crew-tool-list">
                                 {configuredMcpServers.map((srv) => {
@@ -1237,9 +1343,32 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Tasks hint */}
-                <div className="crew-tasks-hint">
-                  <span className="crew-tasks-hint-icon">📋</span>
-                  Tasks werden unter /tasks erstellt, ausgeführt und geplant.
+                <div className="crew-task-rail">
+                  <div className="crew-task-rail-copy">
+                    <div className="crew-overview-kicker">Task-Flow</div>
+                    <strong className="crew-overview-title">Tasks werden unter /tasks erstellt, ausgefuehrt und geplant</strong>
+                    <div className="crew-overview-description">
+                      Diese Crew-Ansicht steuert dafuer Parallelitaet, Retry-Verhalten, Ergebnis-Sharing und das Ausgabeformat der Laufzeit.
+                    </div>
+                  </div>
+                  <div className="crew-task-rail-metrics">
+                    <div className="crew-task-metric">
+                      <span>Parallel</span>
+                      <strong>{activeCrew.maxParallelTasks}</strong>
+                    </div>
+                    <div className="crew-task-metric">
+                      <span>Retries</span>
+                      <strong>{activeCrew.retryCount}</strong>
+                    </div>
+                    <div className="crew-task-metric">
+                      <span>Ausgabe</span>
+                      <strong>{outputModeLabel}</strong>
+                    </div>
+                    <div className="crew-task-metric">
+                      <span>Kontext teilen</span>
+                      <strong>{activeCrew.shareAllTaskOutputs ? 'Ja' : 'Nein'}</strong>
+                    </div>
+                  </div>
                 </div>
               </>
             ) : (

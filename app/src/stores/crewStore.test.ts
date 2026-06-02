@@ -83,8 +83,8 @@ describe('crewStore', () => {
           defaultProvider: 'ollama',
           defaultModel: '',
           providerProfiles: {
-            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000 },
-            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000 },
+            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
           },
           agents: [localA],
           tasks: [],
@@ -116,8 +116,8 @@ describe('crewStore', () => {
           defaultProvider: 'ollama',
           defaultModel: '',
           providerProfiles: {
-            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000 },
-            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000 },
+            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
           },
           agents: [localB],
           tasks: [],
@@ -171,8 +171,8 @@ describe('crewStore', () => {
         defaultProvider: 'ollama',
         defaultModel: '',
         providerProfiles: {
-          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000 },
-          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000 },
+          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
         },
         agents: [{ ...duplicateAgent, id: 'agent-a', personalityId: 'pers-delete', tools: ['read_file'] }],
         tasks: [],
@@ -232,8 +232,8 @@ describe('crewStore', () => {
         defaultProvider: 'ollama',
         defaultModel: '',
         providerProfiles: {
-          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000 },
-          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000 },
+          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
         },
         agents: [
           { ...duplicateAgent, id: 'agent-a', name: 'Analyst', goal: 'Analyse A' },
@@ -311,8 +311,8 @@ describe('crewStore', () => {
         defaultProvider: 'ollama',
         defaultModel: '',
         providerProfiles: {
-          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000 },
-          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000 },
+          openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+          openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
         },
         agents: [{ ...duplicateAgent, id: 'agent-runtime', name: 'Stale', goal: 'Alt', backstory: 'Alt', personalityId: 'pers-runtime' }],
         tasks: [{

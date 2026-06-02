@@ -1,9 +1,19 @@
 $ErrorActionPreference = "Stop"
 
-$appRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$repoRoot = Resolve-Path (Join-Path $appRoot "..")
+$appRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repoRoot = (Resolve-Path (Join-Path $appRoot "..")).Path
 $installerDir = Join-Path $repoRoot "dist-installers"
-$bundleDir = Join-Path $appRoot "src-tauri\target\release\bundle\nsis"
+$targetRoot = Join-Path $appRoot "src-tauri\target"
+
+# The Windows GNU Rust toolchain calls dlltool, which can fail when the
+# target directory contains spaces. Keep local release artifacts in a temp
+# target dir unless the caller explicitly configured CARGO_TARGET_DIR.
+if (-not $env:CARGO_TARGET_DIR -and $targetRoot -match "\s") {
+    $env:CARGO_TARGET_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "open-cowork-target"
+}
+
+$effectiveTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { $targetRoot }
+$bundleDir = Join-Path $effectiveTargetRoot "release\bundle\nsis"
 $stableInstallerPath = Join-Path $installerDir "Open-Cowork-Setup.exe"
 
 Push-Location $appRoot

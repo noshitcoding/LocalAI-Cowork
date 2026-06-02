@@ -1,6 +1,6 @@
 use chrono::Utc;
-use serde_json::{json, Value};
-use std::fs::{create_dir_all, OpenOptions};
+use serde_json::{Value, json};
+use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
 use std::path::PathBuf;
 

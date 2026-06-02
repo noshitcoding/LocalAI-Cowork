@@ -28,6 +28,7 @@ type ProfileModelsState = {
   endpoint?: string
   models: string[]
   error?: string
+  message?: string
 }
 
 const PROVIDER_ORDER: LlmProviderKind[] = ['ollama', 'openai-compatible', 'openrouter']
@@ -40,8 +41,8 @@ const PROVIDER_LABELS: Record<LlmProviderKind, string> = {
 
 const PROVIDER_PLACEHOLDERS: Record<LlmProviderKind, { baseUrl: string; model: string }> = {
   ollama: {
-    baseUrl: 'http://192.168.178.82:11434',
-    model: 'gpt-oss:20b',
+    baseUrl: 'http://localhost:11434',
+    model: 'llama3.1:8b',
   },
   'openai-compatible': {
     baseUrl: 'https://api.openai.com/v1',
@@ -60,6 +61,29 @@ function parseNumericInput(raw: string, fallback: number): number {
 
 function supportsApiKey(provider: LlmProviderKind): boolean {
   return provider !== 'ollama'
+}
+
+function modelSuffix(model: string): string {
+  return model.trim().split('/').filter(Boolean).at(-1) ?? model.trim()
+}
+
+function resolveLoadedModel(currentModel: string, models: string[]): string {
+  const current = currentModel.trim()
+  const normalizedModels = models.map((model) => model.trim()).filter(Boolean)
+  if (normalizedModels.length === 0) return current
+  if (!current) return normalizedModels.length === 1 ? normalizedModels[0] : ''
+
+  const exact = normalizedModels.find((model) => model === current)
+  if (exact) return exact
+
+  const lowerCurrent = current.toLowerCase()
+  const caseInsensitive = normalizedModels.find((model) => model.toLowerCase() === lowerCurrent)
+  if (caseInsensitive) return caseInsensitive
+
+  const suffixMatch = normalizedModels.find((model) => modelSuffix(model).toLowerCase() === lowerCurrent)
+  if (suffixMatch) return suffixMatch
+
+  return normalizedModels.length === 1 ? normalizedModels[0] : current
 }
 
 export default function LlmProfilesPanel() {
@@ -111,6 +135,7 @@ export default function LlmProfilesPanel() {
           loading: false,
           endpoint: profile.baseUrl,
           models: modelNames,
+          message: undefined,
         },
       }))
       setHealthChecks((current) => ({
@@ -164,6 +189,8 @@ export default function LlmProfilesPanel() {
           providerKind: profile.provider,
           baseUrl: profile.baseUrl,
           apiKey: profile.apiKey,
+          model: profile.model,
+          verifyTlsCertificates: profile.verifyTlsCertificates,
         },
       })
 
@@ -219,6 +246,7 @@ export default function LlmProfilesPanel() {
           loading: false,
           endpoint: profile.baseUrl,
           models: modelNames,
+          message: undefined,
         },
       }))
     } catch (error) {
@@ -263,8 +291,16 @@ export default function LlmProfilesPanel() {
           providerKind: profile.provider,
           baseUrl: profile.baseUrl,
           apiKey: profile.apiKey,
+          model: profile.model,
+          verifyTlsCertificates: profile.verifyTlsCertificates,
         },
       })
+
+      const resolvedModel = resolveLoadedModel(profile.model, result.models)
+      const modelChanged = resolvedModel.trim() !== profile.model.trim()
+      if (resolvedModel && modelChanged) {
+        updateLlmProfile(profile.id, { model: resolvedModel })
+      }
 
       setLlmProfileModels(profile.id, result.models)
       setModelStates((current) => ({
@@ -273,6 +309,12 @@ export default function LlmProfilesPanel() {
           loading: false,
           endpoint: result.endpoint,
           models: result.models,
+          message: modelChanged
+            ? `Modell automatisch auf ${resolvedModel} gesetzt.`
+            : undefined,
+          error: !modelChanged && profile.model.trim() && result.models.length > 0 && !result.models.includes(profile.model.trim())
+            ? `Konfiguriertes Modell ${profile.model.trim()} ist nicht in der geladenen Modellliste.`
+            : undefined,
         },
       }))
     } catch (error) {
@@ -406,6 +448,23 @@ export default function LlmProfilesPanel() {
                             />
                           </label>
                         )}
+                        {supportsApiKey(profile.provider) && (
+                          <label className="toggle-row" style={{ alignSelf: 'end' }}>
+                            <span>
+                              SSL Verify / TLS-Zertifikate pruefen
+                              <span className="hint-text">Ausschalten fuer HTTPS mit Self-Signed-Zertifikaten.</span>
+                            </span>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={profile.verifyTlsCertificates}
+                              className={`toggle-switch${profile.verifyTlsCertificates ? ' on' : ''}`}
+                              onClick={() => updateLlmProfile(profile.id, { verifyTlsCertificates: !profile.verifyTlsCertificates })}
+                            >
+                              <span className="toggle-knob" />
+                            </button>
+                          </label>
+                        )}
                         <label>
                           Timeout (ms)
                           <input
@@ -468,6 +527,9 @@ export default function LlmProfilesPanel() {
                         <p className="hint-text" style={{ marginTop: 8 }}>
                           {models.length} Modell(e) geladen{modelState?.endpoint ? ` von ${modelState.endpoint}` : ''}.
                         </p>
+                      )}
+                      {modelState?.message && (
+                        <p style={{ marginTop: 8, color: 'var(--success)' }}>{modelState.message}</p>
                       )}
                       {modelState?.error && (
                         <p className="error" style={{ marginTop: 8 }}>{modelState.error}</p>

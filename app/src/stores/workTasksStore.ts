@@ -59,25 +59,32 @@ function normalizeTask(raw: Partial<WorkTask> & { id?: unknown }): WorkTask | nu
   const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : Date.now()
   const updatedAt = typeof raw.updatedAt === 'number' ? raw.updatedAt : createdAt
   const runner: WorkTaskRunner = raw.runner === 'crew' || raw.runner === 'model' ? raw.runner : 'crew'
+  const rawStatus = raw.status === 'idle' || raw.status === 'waiting_approval' || raw.status === 'running' || raw.status === 'completed' || raw.status === 'failed' || raw.status === 'canceled'
+    ? raw.status
+    : 'idle'
+  const status: WorkTaskStatus = rawStatus === 'running' ? 'failed' : rawStatus
+  const interrupted = rawStatus === 'running'
+  const prompt = typeof raw.prompt === 'string' ? raw.prompt.trim() : ''
+  const scheduleExpr = typeof raw.scheduleExpr === 'string' ? raw.scheduleExpr.trim() : ''
 
   return {
-    id: raw.id,
-    title: typeof raw.title === 'string' ? raw.title : '',
-    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
-    expectedOutput: typeof raw.expectedOutput === 'string' ? raw.expectedOutput : '',
-    workDir: typeof raw.workDir === 'string' ? raw.workDir : '',
+    id: raw.id.trim(),
+    title: typeof raw.title === 'string' ? raw.title.trim() : '',
+    prompt,
+    expectedOutput: typeof raw.expectedOutput === 'string' ? raw.expectedOutput.trim() : '',
+    workDir: typeof raw.workDir === 'string' ? raw.workDir.trim() : '',
     threadId: typeof raw.threadId === 'string' ? raw.threadId : null,
     runner,
     crewId: typeof raw.crewId === 'string' ? raw.crewId : null,
-    model: typeof raw.model === 'string' ? raw.model : '',
-    scheduleExpr: typeof raw.scheduleExpr === 'string' ? raw.scheduleExpr : '',
-    scheduleEnabled: Boolean(raw.scheduleEnabled),
-    status: raw.status === 'idle' || raw.status === 'waiting_approval' || raw.status === 'running' || raw.status === 'completed' || raw.status === 'failed' || raw.status === 'canceled' ? raw.status : 'idle',
+    model: typeof raw.model === 'string' ? raw.model.trim() : '',
+    scheduleExpr,
+    scheduleEnabled: Boolean(raw.scheduleEnabled) && Boolean(scheduleExpr),
+    status,
     output: typeof raw.output === 'string' ? raw.output : null,
-    error: typeof raw.error === 'string' ? raw.error : null,
+    error: interrupted ? 'Task-Lauf wurde unterbrochen.' : typeof raw.error === 'string' ? raw.error : null,
     lastRunAt: typeof raw.lastRunAt === 'number' ? raw.lastRunAt : null,
     createdAt,
-    updatedAt,
+    updatedAt: interrupted ? Date.now() : updatedAt,
   }
 }
 
@@ -87,12 +94,17 @@ export const useWorkTasksStore = create<WorkTasksState>()(
       tasks: [],
 
       addTask: (input) => {
+        const prompt = input.prompt.trim()
+        if (!prompt) {
+          throw new Error('Task-Prompt darf nicht leer sein.')
+        }
+
         const now = Date.now()
         const id = generateId()
         const task: WorkTask = {
           id,
           title: (input.title ?? '').trim(),
-          prompt: input.prompt.trim(),
+          prompt,
           expectedOutput: (input.expectedOutput ?? '').trim(),
           workDir: (input.workDir ?? '').trim(),
           threadId: typeof input.threadId === 'string' ? input.threadId : null,
@@ -100,7 +112,7 @@ export const useWorkTasksStore = create<WorkTasksState>()(
           crewId: input.runner === 'crew' ? (input.crewId ?? null) : null,
           model: input.runner === 'model' ? (input.model ?? '').trim() : '',
           scheduleExpr: (input.scheduleExpr ?? '').trim(),
-          scheduleEnabled: Boolean(input.scheduleEnabled),
+          scheduleEnabled: Boolean(input.scheduleEnabled) && Boolean((input.scheduleExpr ?? '').trim()),
           status: 'idle',
           output: null,
           error: null,
@@ -144,7 +156,11 @@ export const useWorkTasksStore = create<WorkTasksState>()(
                         ? patch.model
                         : task.model,
                   scheduleExpr: patch.scheduleExpr !== undefined ? patch.scheduleExpr : task.scheduleExpr,
-                  scheduleEnabled: patch.scheduleEnabled !== undefined ? patch.scheduleEnabled : task.scheduleEnabled,
+                  scheduleEnabled: patch.scheduleEnabled !== undefined
+                    ? Boolean(patch.scheduleEnabled) && Boolean((patch.scheduleExpr ?? task.scheduleExpr).trim())
+                    : patch.scheduleExpr !== undefined && !patch.scheduleExpr.trim()
+                      ? false
+                      : task.scheduleEnabled,
                   updatedAt: Date.now(),
                 }
               : task,

@@ -36,71 +36,71 @@ export default function CrewControlPlanePanel({ activeCrew }: Props) {
   const activeDefinition = definitions.find((entry) => entry.id === activeCrew.id) ?? null
 
   return (
-    <div className="card" style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>Control Plane</div>
-          <strong style={{ fontSize: 16 }}>Versionierte Crew-Definition</strong>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+    <div className="card crew-overview-card">
+      <div className="crew-overview-head">
+        <div className="crew-overview-copy">
+          <div className="crew-overview-kicker">Control Plane</div>
+          <strong className="crew-overview-title">Versionierte Crew-Definition</strong>
+          <div className="crew-overview-description">
             Die aktive Crew wird als reproduzierbare Definition gespeichert und kann vor dem Lauf gegen die Python-Crew-Runtime validiert werden.
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button type="button" className="btn-sm" disabled={loading} onClick={() => void validateCrew(activeCrew)}>
+        <div className="crew-overview-actions">
+          <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void validateCrew(activeCrew)}>
             {loading ? 'Pruefe…' : 'Definition validieren'}
           </button>
-          <button type="button" className="btn-sm" disabled={loading} onClick={() => void saveCrewDefinition(activeCrew, changeSummary)}>
+          <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void saveCrewDefinition(activeCrew, changeSummary)}>
             {loading ? 'Speichere…' : 'Neue Version speichern'}
           </button>
         </div>
       </div>
 
       <input
-        className="crew-toolbar-input"
+        className="crew-toolbar-input crew-inline-input"
         placeholder="Aenderungskommentar fuer die naechste Definition…"
         value={changeSummary}
         onChange={(event) => setChangeSummary(event.target.value)}
       />
 
-      {error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
+      {error && <div className="crew-inline-feedback error">{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Aktive Definition</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>{activeDefinition ? `Version ${activeDefinition.versionCount}` : 'noch nicht versioniert'}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+      <div className="crew-stat-grid crew-stat-grid-compact">
+        <div className="crew-stat-card">
+          <div className="crew-stat-label">Aktive Definition</div>
+          <div className="crew-stat-value">{activeDefinition ? `Version ${activeDefinition.versionCount}` : 'noch nicht versioniert'}</div>
+          <div className="crew-stat-meta">
             {activeDefinition ? `Zuletzt aktualisiert: ${formatTimestamp(activeDefinition.updatedAt)}` : 'Noch kein persistierter DB-Stand fuer diese Crew.'}
           </div>
         </div>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Validation</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>{validation ? (validation.valid ? 'gueltig' : 'mit Problemen') : 'noch nicht geprueft'}</div>
+        <div className="crew-stat-card">
+          <div className="crew-stat-label">Validation</div>
+          <div className="crew-stat-value">{validation ? (validation.valid ? 'gueltig' : 'mit Problemen') : 'noch nicht geprueft'}</div>
           {validation && validation.issues.length > 0 && (
-            <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 4 }}>
+            <div className="crew-stat-meta" style={{ color: 'var(--warning)' }}>
               {validation.issues.join(' • ')}
             </div>
           )}
         </div>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Bibliothek</div>
-          <div style={{ fontSize: 13, marginTop: 4 }}>{definitions.length} Definitionen gespeichert</div>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>Die DB haelt versionierte Crew-Staende fuer Replay und Scheduling fest.</div>
+        <div className="crew-stat-card">
+          <div className="crew-stat-label">Bibliothek</div>
+          <div className="crew-stat-value">{definitions.length} Definitionen gespeichert</div>
+          <div className="crew-stat-meta">Die DB haelt versionierte Crew-Staende fuer Replay und Scheduling fest.</div>
         </div>
       </div>
 
       <div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Neueste Versionen dieser Crew</div>
+        <div className="crew-stat-label" style={{ marginBottom: 8 }}>Neueste Versionen dieser Crew</div>
         {versions.length === 0 ? (
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Noch keine Versionen gespeichert.</div>
+          <div className="crew-inline-feedback">Noch keine Versionen gespeichert.</div>
         ) : (
-          <div style={{ display: 'grid', gap: 8 }}>
+          <div className="crew-stack-list">
             {versions.slice(0, 5).map((version) => (
-              <div key={version.id} style={{ padding: 10, borderRadius: 10, background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <strong style={{ fontSize: 13 }}>Version {version.versionNumber}</strong>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{formatTimestamp(version.createdAt)}</span>
+              <div key={version.id} className="crew-stack-card">
+                <div className="crew-stack-card-header">
+                  <strong>Version {version.versionNumber}</strong>
+                  <span>{formatTimestamp(version.createdAt)}</span>
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{version.changeSummary || 'ohne Kommentar'}</div>
+                <div className="crew-stat-meta">{version.changeSummary || 'ohne Kommentar'}</div>
               </div>
             ))}
           </div>

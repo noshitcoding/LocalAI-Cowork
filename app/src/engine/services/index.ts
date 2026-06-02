@@ -46,13 +46,3 @@ export {
 } from './sessionPersistence'
 export type { SessionRecord, SessionSummary } from './sessionPersistence'
 
-export {
-  // Computer Use
-  runComputerUseAppTest,
-} from './computerUseService'
-export type {
-  ComputerUseActionLog,
-  ComputerUseRunOptions,
-  ComputerUseRunResult,
-} from './computerUseService'
-

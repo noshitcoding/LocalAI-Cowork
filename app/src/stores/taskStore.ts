@@ -51,8 +51,27 @@ type TaskState = {
   setTaskError: (taskId: string, error: string) => void
 }
 
+const TASK_STATUSES: TaskStatus[] = ['created', 'planned', 'waiting_approval', 'running', 'completed', 'failed', 'cancelled']
+const STEP_STATES: TaskStep['state'][] = ['pending', 'running', 'completed', 'failed', 'skipped']
+const RISK_LEVELS: TaskStep['riskLevel'][] = ['low', 'medium', 'high']
+
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function normalizeTaskStatus(status: string): TaskStatus {
+  if (TASK_STATUSES.includes(status as TaskStatus)) {
+    return status === 'running' ? 'failed' : status as TaskStatus
+  }
+  return 'failed'
+}
+
+function normalizeStepState(state: string): TaskStep['state'] {
+  return STEP_STATES.includes(state as TaskStep['state']) ? state as TaskStep['state'] : 'failed'
+}
+
+function normalizeRiskLevel(riskLevel: string): TaskStep['riskLevel'] {
+  return RISK_LEVELS.includes(riskLevel as TaskStep['riskLevel']) ? riskLevel as TaskStep['riskLevel'] : 'medium'
 }
 
 function isTauriRuntime(): boolean {
@@ -86,7 +105,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
           id: dt.id,
           title: dt.title,
           prompt: dt.prompt,
-          status: dt.status as TaskStatus,
+          status: normalizeTaskStatus(dt.status),
           threadId: dt.thread_id,
           createdAt: new Date(dt.created_at).getTime(),
           updatedAt: new Date(dt.updated_at).getTime(),
@@ -95,9 +114,9 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
             id: s.id,
             index: s.idx,
             title: s.title,
-            state: s.state as TaskStep['state'],
+            state: normalizeStepState(s.state),
             requiresApproval: s.requires_approval,
-            riskLevel: s.risk_level as TaskStep['riskLevel'],
+            riskLevel: normalizeRiskLevel(s.risk_level),
             output: s.output,
           })),
         })
@@ -109,12 +128,17 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   },
 
   createTask: (prompt, title, threadId) => {
+    const normalizedPrompt = prompt.trim()
+    if (!normalizedPrompt) {
+      throw new Error('Task-Prompt darf nicht leer sein.')
+    }
+
     const id = generateId()
     const now = Date.now()
     const task: Task = {
       id,
       title,
-      prompt,
+      prompt: normalizedPrompt,
       status: 'created',
       steps: [],
       threadId,
@@ -134,6 +158,14 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
   },
 
   updateTaskStatus: (taskId, status) => {
+    if (status === 'running') {
+      const task = get().tasks.find((entry) => entry.id === taskId)
+      if (task && task.steps.length === 0) {
+        get().setTaskError(taskId, 'Task kann nicht ohne Schritte gestartet werden.')
+        return
+      }
+    }
+
     set((state) => ({
       tasks: state.tasks.map((t) =>
         t.id === taskId ? { ...t, status, updatedAt: Date.now() } : t

@@ -44,7 +44,7 @@ const sessionRecord: SessionRecord = {
       uuid: 'assistant-1',
       timestamp: 1002,
       content: [{ type: 'text', text: 'Build ist gruen.' }],
-      model: 'gpt-oss:20b',
+      model: 'llama3.1:8b',
       usage: { input_tokens: 12, output_tokens: 34 },
     } as never,
   ],

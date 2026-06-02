@@ -52,6 +52,7 @@ export type CrewExternalProviderConfig = {
   model: string
   apiKey: string
   timeoutMs: number
+  verifyTlsCertificates: boolean
 }
 
 export type CrewProviderProfiles = {
@@ -98,6 +99,17 @@ export type CrewExecutionLog = {
   action: string
   result: string
   timestamp: number
+  agentName?: string | null
+  sourceAgent?: string | null
+  targetAgent?: string | null
+  provider?: string | null
+  model?: string | null
+  taskTitle?: string | null
+  phase?: string | null
+  summary?: string | null
+  detail?: string | null
+  severity?: 'info' | 'warning' | 'error' | null
+  providerReasoning?: string | null
 }
 
 export type CrewPersonalityProfile = {
@@ -281,6 +293,7 @@ const DEFAULT_EXTERNAL_PROVIDER_CONFIG: CrewExternalProviderConfig = {
   model: '',
   apiKey: '',
   timeoutMs: 600000,
+  verifyTlsCertificates: true,
 }
 
 const DEFAULT_CREW_PROVIDER_PROFILES: CrewProviderProfiles = {
@@ -479,7 +492,7 @@ function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig?: OllamaConfig) {
 
 function resolveExternalProviderConfig(
   config: CrewExternalProviderConfig,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string } | undefined,
+  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; verifyTlsCertificates?: boolean } | undefined,
   fallbackBaseUrl: string,
 ) {
   if (!config.enabled) {
@@ -491,6 +504,7 @@ function resolveExternalProviderConfig(
     model: config.model.trim() || fallbackConfig?.model?.trim() || '',
     apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
     timeoutMs: Math.max(1000, config.timeoutMs || DEFAULT_EXTERNAL_PROVIDER_CONFIG.timeoutMs),
+    verifyTlsCertificates: (config.verifyTlsCertificates ?? true) && (fallbackConfig?.verifyTlsCertificates ?? true),
   }
 }
 
@@ -600,8 +614,8 @@ export const useCrewStore = create<CrewState>()(
           process: 'sequential',
           managerAgentId: null,
           verbose: true,
-          maxRpm: 10,
-          maxParallelTasks: 3,
+          maxRpm: 3,
+          maxParallelTasks: 1,
           status: 'idle',
           createdAt: Date.now(),
           updatedAt: Date.now(),

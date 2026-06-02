@@ -62,7 +62,7 @@ describe('LeftSidebar', () => {
       ...useConfigStore.getState(),
       ollama: {
         ...useConfigStore.getState().ollama,
-        model: 'gpt-oss:20b',
+        model: 'llama3.1:8b',
       },
       mcpServer: { name: 'local-mcp', command: '', args: '', env: {} },
     })

@@ -24,8 +24,19 @@ describe('taskStore', () => {
     const id = useTaskStore.getState().createTask('Test', 'Task', null)
     useTaskStore.getState().updateTaskStatus(id, 'planned')
     expect(useTaskStore.getState().tasks[0].status).toBe('planned')
+    useTaskStore.getState().setTaskSteps(id, [
+      { id: 's1', index: 0, title: 'Step 1', state: 'pending', requiresApproval: false, riskLevel: 'low', output: null },
+    ])
     useTaskStore.getState().updateTaskStatus(id, 'running')
     expect(useTaskStore.getState().tasks[0].status).toBe('running')
+  })
+
+  it('fails fast when starting a task without steps', () => {
+    const id = useTaskStore.getState().createTask('Test', 'Task', null)
+    useTaskStore.getState().updateTaskStatus(id, 'running')
+    const task = useTaskStore.getState().tasks[0]
+    expect(task.status).toBe('failed')
+    expect(task.error).toBe('Task kann nicht ohne Schritte gestartet werden.')
   })
 
   it('sets task steps', () => {

@@ -103,7 +103,7 @@ export type EngineConfig = {
 export type EngineEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; thinking: string }
-  | { type: 'request_debug'; provider: 'ollama'; payload: string }
+  | { type: 'request_debug'; provider: 'ollama' | 'openai-compatible' | 'openrouter'; payload: string }
   | { type: 'tool_call_delta'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_use_start'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_use_complete'; toolUseId: string; toolName: string; result: string }

@@ -28,7 +28,7 @@ Open_Cowork ist eine Windows-Desktop-Anwendung (Tauri + React + Rust) fuer agent
 - npm 10+
 - Rust (via rustup)
 - WebView2 Runtime
-- Ollama erreichbar, Standard-Endpunkt: `http://192.168.178.82:11434`
+- Ollama erreichbar, Standard-Endpunkt: `http://localhost:11434`
 
 ## Schnellstart
 
