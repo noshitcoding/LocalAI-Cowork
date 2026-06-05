@@ -744,7 +744,7 @@ def execute_definition(payload: dict) -> dict:
         task_payload = task_specs[task_id]
         agent_id = str(task_payload.get("agentId") or "")
         if agent_id not in agents_by_id:
-            raise ValueError(f"Task {task_id} referenziert unbekannten Agenten {agent_id}.")
+            raise ValueError(f"Task {task_id} references unknown agent {agent_id}.")
 
         agent_payload = next(
             (
@@ -789,7 +789,7 @@ def execute_definition(payload: dict) -> dict:
     manager_agent_id = str(payload.get("managerAgentId") or "").strip()
     if process_name.lower() == "hierarchical":
         if not manager_agent_id or manager_agent_id not in agents_by_id:
-            raise ValueError("Hierarchische Crew benoetigt einen aktiven Manager-Agenten.")
+            raise ValueError("Hierarchical crew requires an active manager agent.")
         manager_agent = agents_by_id[manager_agent_id]
     crew_agents = [
         agent

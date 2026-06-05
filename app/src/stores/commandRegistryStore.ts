@@ -197,7 +197,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'loop', command: '/loop', label: 'Agentic Loop', description: 'Startet eine automatisierte Agent-Schleife',
+      id: 'loop', command: '/loop', label: 'Agentic Loop', description: 'Starts an automated agent loop',
       category: 'agent', execute: (args) => {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
@@ -374,7 +374,7 @@ function buildAllCommands(): SlashCommand[] {
 
     // ===== Memory Commands =====
     {
-      id: 'memory', command: '/memory', label: 'Memory', description: 'memory entries verwalten und durchsuchen',
+      id: 'memory', command: '/memory', label: 'Memory', description: 'Manage and search memory entries',
       category: 'memory', execute: async (args) => {
         if (args?.trim()) {
           await useMemoryStore.getState().searchEntries(args.trim())
@@ -420,7 +420,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'rewind', command: '/rewind', label: 'Rewind', description: 'Letzte N messages entfernen',
+      id: 'rewind', command: '/rewind', label: 'Rewind', description: 'Remove the latest N messages',
       category: 'session', execute: (args) => {
         const count = Number.parseInt(args ?? '1', 10) || 1
         const cs = useChatStore.getState()
@@ -429,7 +429,7 @@ function buildAllCommands(): SlashCommand[] {
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
             content: removed.pairsRemoved > 0
-              ? `Rewound: ${removed.pairsRemoved} messagespaar(e) entfernt.`
+              ? `Rewound: ${removed.pairsRemoved} message pair(s) removed.`
               : 'No matching messages found to rewind.',
             timestamp: Date.now(),
           })
@@ -486,7 +486,7 @@ function buildAllCommands(): SlashCommand[] {
 
     // ===== Config Commands =====
     {
-      id: 'color', command: '/color', label: 'Color scheme', description: 'Color scheme anpassen',
+      id: 'color', command: '/color', label: 'Color scheme', description: 'Adjust color scheme',
       category: 'display', execute: (args) => {
         if (args === 'dark' || args === 'light') {
           useUiStore.getState().setTheme(args)
@@ -510,7 +510,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'privacy-settings', command: '/privacy-settings', label: 'Privacy', description: 'Privacy- und Telemetrie-Einstellungen',
+      id: 'privacy-settings', command: '/privacy-settings', label: 'Privacy', description: 'Privacy and telemetry settings',
       category: 'config', execute: () => {
         useConfigStore.getState().setPreference('telemetryEnabled', false)
       },
@@ -533,7 +533,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'insights', command: '/insights', label: 'Insights Dashboard', description: 'Ausfuehrliches Insights-Dashboard oeffnen',
+      id: 'insights', command: '/insights', label: 'Insights Dashboard', description: 'Open detailed insights dashboard',
       category: 'debug', execute: () => {
         useInsightsStore.getState().loadSummary()
         useInsightsStore.getState().loadEvents()
@@ -556,7 +556,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'usage', command: '/usage', label: 'Usage', description: 'Detaillierte Usagesstatistik',
+      id: 'usage', command: '/usage', label: 'Usage', description: 'Detailed usage statistics',
       category: 'debug', execute: () => useInsightsStore.getState().loadSummary(),
     },
     {
@@ -574,7 +574,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'statusline', command: '/statusline', label: 'Status line', description: 'Kompakte Status line ein/ausblenden',
+      id: 'statusline', command: '/statusline', label: 'Status line', description: 'Show or hide compact status line',
       category: 'display', execute: () => {
         useConfigStore.getState().setPreference('compactMode', !useConfigStore.getState().preferences.compactMode)
       },
@@ -621,7 +621,7 @@ function buildAllCommands(): SlashCommand[] {
       category: 'memory', execute: () => useSkillStore.getState().loadSkills(),
     },
     {
-      id: 'tasks', command: '/tasks', label: 'Tasks', description: 'Offene Tasks anzeigen',
+      id: 'tasks', command: '/tasks', label: 'Tasks', description: 'Show open tasks',
       category: 'agent', execute: () => useTaskStore.getState().loadFromDb(),
     },
 
@@ -635,7 +635,7 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'reload-plugins', command: '/reload-plugins', label: 'Reload plugins', description: 'Alle Reload plugins',
+      id: 'reload-plugins', command: '/reload-plugins', label: 'Reload plugins', description: 'Reload all plugins',
       category: 'plugins', execute: () => {
         useCoworkStore.getState().installPluginExamples()
       },
@@ -691,7 +691,7 @@ function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Voice input: Nutze die Browser SpeechRecognition API. Feature wird in kuenftige Versionen integriert.',
+            role: 'system', content: 'Voice input: use the browser SpeechRecognition API. This feature will be integrated in future versions.',
             timestamp: Date.now(),
           })
         }
@@ -779,7 +779,7 @@ function buildAllCommands(): SlashCommand[] {
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
-            content: `Heap dump created: ${snapshot.total_entries} memory entries, ${snapshot.total_profile_keys} Profil-Keys`,
+            content: `Heap dump created: ${snapshot.total_entries} memory entries, ${snapshot.total_profile_keys} profile keys`,
             timestamp: Date.now(),
           })
         }
@@ -845,7 +845,7 @@ function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Open_Cowork v1.0\n- 100+ Slash-Commands\n- 5 Standard-Persoenlichkeiten\n- CrewAI Multi-Agent\n- Memory Engine\n- Full Claude Code compatibility',
+            role: 'system', content: 'Open_Cowork v1.0\n- 100+ slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Memory engine\n- Full Claude Code compatibility',
             timestamp: Date.now(),
           })
         }

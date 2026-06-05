@@ -311,7 +311,7 @@ export default function LlmProfilesPanel() {
           endpoint: result.endpoint,
           models: result.models,
           message: modelChanged
-            ? `Model automatisch auf ${resolvedModel} gesetzt.`
+            ? tr('Model automatically set to {{model}}.', { model: resolvedModel })
             : undefined,
           error: !modelChanged && profile.model.trim() && result.models.length > 0 && !result.models.includes(profile.model.trim())
             ? `Configured model ${profile.model.trim()} is not in the loaded model list.`
@@ -398,7 +398,7 @@ export default function LlmProfilesPanel() {
                           className="btn-sm"
                           onClick={() => deleteLlmProfile(profile.id)}
                           disabled={!canDelete}
-                          title={canDelete ? 'Delete profile' : 'Default profile or last profile cannot be deleted'}
+                          title={canDelete ? tr('Delete profile') : tr('Default profile or last profile cannot be deleted')}
                         >{tr("Delete")}</button>
                       </div>
 
@@ -492,7 +492,7 @@ export default function LlmProfilesPanel() {
                           {health?.loading ? tr('Testing...') : tr('Health check')}
                         </button>
                         <button type="button" className="btn-sm" onClick={() => void handleLoadModels(profile)}>
-                          {modelState?.loading ? 'Loading models...' : 'Load models'}
+                          {modelState?.loading ? tr('Loading models...') : tr('Load models')}
                         </button>
                         {!isDefault && (
                           <button type="button" className="btn-sm" onClick={() => setDefaultLlmProfile(provider, profile.id)}>{tr("Set as default")}</button>
@@ -506,7 +506,7 @@ export default function LlmProfilesPanel() {
                       )}
                       {models.length > 0 && (
                         <p className="hint-text" style={{ marginTop: 8 }}>
-                          {models.length}{tr("Model(e) loaded")}{modelState?.endpoint ? ` von ${modelState.endpoint}` : ''}.
+                          {models.length}{tr("Model(s) loaded")}{modelState?.endpoint ? ` ${tr('from')} ${modelState.endpoint}` : ''}.
                         </p>
                       )}
                       {modelState?.message && (

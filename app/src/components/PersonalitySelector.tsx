@@ -90,7 +90,7 @@ function PersonalityEditor({
           style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, resize: 'vertical' }}
         />
       </label>
-      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Hintergrund / System-Prompt")}<textarea
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Background / system prompt")}<textarea
           value={form.systemPrompt}
           onChange={(e) => onChange({ ...form, systemPrompt: e.target.value })}
           rows={8}

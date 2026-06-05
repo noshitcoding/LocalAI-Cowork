@@ -78,8 +78,8 @@ describe('filesystem tool extensions', () => {
       { cwd: 'C:\\workspace', runId: 'run-move' } as never,
     )
 
-    expect(result.data).toContain('file verschoben: C:\\workspace\\Downloads\\file.txt -> C:\\workspace\\archive\\file.txt')
-    expect(result.data).toContain('Targetordner was automatisch created.')
+    expect(result.data).toContain('file moved: C:\\workspace\\Downloads\\file.txt -> C:\\workspace\\archive\\file.txt')
+    expect(result.data).toContain('Target folder was created automatically.')
     expect(invokeMock).toHaveBeenCalledWith('fs_move_path', {
       sourcePath: 'C:\\workspace\\Downloads\\file.txt',
       destinationPath: 'C:\\workspace\\archive\\file.txt',
@@ -112,7 +112,7 @@ describe('filesystem tool extensions', () => {
       { cwd: 'C:\\workspace', runId: 'run-copy' } as never,
     )
 
-    expect(result.data).toContain('directory kopiert: C:\\workspace\\src -> C:\\workspace\\backup\\src')
+    expect(result.data).toContain('directory copied: C:\\workspace\\src -> C:\\workspace\\backup\\src')
     expect(result.data).toContain('Existing Target was replaced.')
     expect(invokeMock).toHaveBeenCalledWith('fs_copy_path', {
       sourcePath: 'C:\\workspace\\src',

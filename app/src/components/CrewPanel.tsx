@@ -1055,7 +1055,7 @@ export default function CrewPanel() {
                           {activeCrew.defaultProvider !== 'ollama' && getCrewDefaultModelOptions().length === 0 && (
                             <span className="crew-hint">{tr("No models have been loaded for this provider yet.")}</span>
                           )}
-                          <span className="crew-hint">{tr("Aktuell wirksam:")}{activeCrew.defaultModel || 'Globale Settings'}</span>
+                          <span className="crew-hint">{tr("Aktuell wirksam:")}{activeCrew.defaultModel || tr('Global settings')}</span>
                           <span className="crew-hint">{tr("Gilt automatisch for alle members ohne eigenes Model-Override.")}</span>
                         </div>
                       </div>
@@ -1105,7 +1105,7 @@ export default function CrewPanel() {
                         </div>
                         <div className="crew-members-stat">
                           <strong>{profileBackedAgentCount}</strong>
-                          <span>{tr("mit Profil")}</span>
+                          <span>{tr("with profile")}</span>
                         </div>
                         <div className="crew-members-stat">
                           <strong>{configuredToolCount}</strong>
@@ -1226,8 +1226,8 @@ export default function CrewPanel() {
                               <div className="crew-agent-body">
                                 <div className="crew-agent-panel">
                                   <div className="crew-agent-panel-header">
-                                    <div className="crew-agent-panel-title">{tr("Profil")}</div>
-                                    <div className="crew-agent-panel-subtitle">{tr("Name, Rolle und Arbeitskontext des Crew-Mitglieds.")}</div>
+                                    <div className="crew-agent-panel-title">{tr("Profile")}</div>
+                                    <div className="crew-agent-panel-subtitle">{tr("Name, role, and work context of the crew member.")}</div>
                                   </div>
                                   <div className="crew-agent-col">
                                     <div className="crew-form-row">
@@ -1250,8 +1250,8 @@ export default function CrewPanel() {
                                       <label className="crew-checkbox-label"><input type="checkbox" checked={profile.isDefault ?? false} onChange={(e) => updateCrewPersonalityProfile(profile, { isDefault: e.target.checked })} />{tr("Als Standard verwenden")}</label>
                                     )}
                                     <div className="crew-form-group"><span className="crew-label">{tr("Target / Prompt-Fokus")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.goal} onChange={(e) => updateProfileOrSnapshot({ goal: e.target.value })} /></div>
-                                    <div className="crew-form-group"><span className="crew-label">{tr("Hintergrund / System-Prompt")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.backstory} onChange={(e) => updateProfileOrSnapshot({ backstory: e.target.value })} /></div>
-                                    <div className="crew-form-group"><span className="crew-label">{tr("skills.md")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.skillsMarkdown} onChange={(e) => updateProfileOrSnapshot({ skillsMarkdown: e.target.value })} placeholder={tr("# skills.md&#10;- Projektkontext&#10;- Arbeitsstil")} /></div>
+                                    <div className="crew-form-group"><span className="crew-label">{tr("Background / system prompt")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.backstory} onChange={(e) => updateProfileOrSnapshot({ backstory: e.target.value })} /></div>
+                                    <div className="crew-form-group"><span className="crew-label">{tr("skills.md")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.skillsMarkdown} onChange={(e) => updateProfileOrSnapshot({ skillsMarkdown: e.target.value })} placeholder={tr("# skills.md&#10;- Project context&#10;- Work style")} /></div>
                                     <span className="crew-hint">{profile ? 'Profile fields are synchronized globally for all crews.' : 'Local snapshot without active profile synchronization.'}</span>
                                   </div>
                                 </div>

@@ -145,7 +145,7 @@ const commands: SlashCommand[] = [
     id: 'clear',
     command: '/clear',
     label: 'Clear',
-    description: 'Chat leeren',
+    description: 'Clear chat',
     category: 'session',
     execute: vi.fn(),
   },

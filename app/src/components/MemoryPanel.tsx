@@ -190,7 +190,7 @@ export default function MemoryPanel() {
             }}>+</button>
           </div>
           {profileEntries.length === 0 ? (
-            <p className="panel-empty">{tr("No Profil angelegt")}</p>
+            <p className="panel-empty">{tr("No profile created")}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {profileEntries.map((p) => (
@@ -257,7 +257,7 @@ export default function MemoryPanel() {
       {tab === 'hints' && (
         <>
           {hints.length === 0 ? (
-            <p className="panel-empty">{tr("No Hinweise available")}</p>
+            <p className="panel-empty">{tr("No notes available")}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {hints.map((h, i) => (

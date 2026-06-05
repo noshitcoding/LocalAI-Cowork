@@ -126,7 +126,7 @@ export default function TerminalPanel() {
               placeholder={tr("Enter command...")}
               style={{ flex: 1, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, fontFamily: 'monospace' }} />
             <button type="button" className="btn-sm" onClick={handleExec} disabled={execLoading}>
-              {execLoading ? '...' : 'Ausfuehren'}
+              {execLoading ? '...' : tr('Execute')}
             </button>
             <button type="button" className="btn-sm" onClick={() => { setExecBackendId(''); setExecResult(null) }}>{tr("Close")}</button>
           </div>

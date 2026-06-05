@@ -885,7 +885,7 @@ export default function TasksView() {
       })
       return typeof selected === 'string' ? selected.trim() : null
     } catch {
-      const path = window.prompt('Absoluten Ordnerpfad eingeben:')
+      const path = window.prompt('Enter an absolute folder path:')
       return path ? path.trim() : null
     }
   }
@@ -1502,7 +1502,7 @@ export default function TasksView() {
           <label style={{ gridColumn: '1 / -1' }}>
             Working folder (optional, absolute)
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} placeholder="C:\\Projekte\\mein-task" />
+              <input value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} placeholder="C:\\Projects\\my-task" />
               <button type="button" className="btn-secondary" onClick={() => void handlePickNewWorkDir()}>
                 Choose folder
               </button>
@@ -1615,7 +1615,7 @@ export default function TasksView() {
                     <label style={{ gridColumn: '1 / -1' }}>
                       Working folder (absolute)
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <input value={task.workDir} onChange={(e) => updateTask(task.id, { workDir: e.target.value })} placeholder="C:\\Projekte\\mein-task" />
+                        <input value={task.workDir} onChange={(e) => updateTask(task.id, { workDir: e.target.value })} placeholder="C:\\Projects\\my-task" />
                         <button type="button" className="btn-secondary" onClick={() => void handlePickTaskWorkDir(task)}>
                           Choose folder
                         </button>

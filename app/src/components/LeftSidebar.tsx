@@ -47,7 +47,7 @@ function getTaskSidebarTitle(task: WorkTask): string {
 
 function buildTaskSidebarSummary(task: WorkTask): string {
   return [
-    `Task angelegt: ${getTaskSidebarTitle(task)}`,
+    `${tr('Task created')}: ${getTaskSidebarTitle(task)}`,
     `Runner: ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
     task.expectedOutput.trim() ? `Expected Output: ${task.expectedOutput.trim()}` : '',
     task.workDir.trim() ? `Working folder: ${task.workDir.trim()}` : '',

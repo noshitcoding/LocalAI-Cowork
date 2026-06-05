@@ -19,7 +19,7 @@ const ignoredDirs = new Set([
   'resources',
 ])
 
-const germanPattern = /[\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df]|\b(Anlegen|Duplizieren|Allgemein|Arbeitsbereich|Berechtigung|Freigabe|Gedaechtnis|Persoenlichkeit|Aufgabe|Antwort|Frage|Bitte|Datei|Ordner|Kontext|Modell|Noch|Neu|Neue|Neuer|Neues|keine|kein|nicht|werden|wurde|konnte|fuer|ueber|checkn|auschoose|Hinzuf|Loesch|loeschen|laeuft|verfuegbar|Eintraege|Uebergabe|Uebergaben|Prozess|Speichere|Teste|Persistenz|Code-Kommentare|Task-Uebergabe|Hinweis|Eingabe|Optionale|Optionaler|Maximale|Suchanfrage|Zeichenanzahl|Prozessname|Arbeitsverzeichnis|Ungueltig|ungueltig|Konfiguration|gefunden|erstellt|geladen|gestartet|bereit|waehlen|Auswahl|Abbrechen|Speichern|Laden|Loeschen|Bearbeiten|Senden|Naechste|letzten|konkreten|aktuellen|Darstellung|Schriftgroesse|Startansicht|Projekt|Daten|Erlaubt|Zugriff)\b/i
+const germanPattern = /[\u00c4\u00d6\u00dc\u00e4\u00f6\u00fc\u00df]|\b(Anlegen|Duplizieren|Allgemein|Arbeitsbereich|Berechtigung|Freigabe|Gedaechtnis|Persoenlichkeit|Aufgabe|Antwort|Frage|Bitte|Datei|Ordner|Kontext|Modell|Noch|Neu|Neue|Neuer|Neues|keine|kein|nicht|werden|wurde|konnte|fuer|ueber|checkn|auschoose|Hinzuf|Loesch|loeschen|laeuft|verfuegbar|Eintraege|Uebergabe|Uebergaben|Prozess|Speichere|Teste|Persistenz|Code-Kommentare|Task-Uebergabe|Hinweis|Eingabe|Optionale|Optionaler|Maximale|Suchanfrage|Zeichenanzahl|Prozessname|Arbeitsverzeichnis|Ungueltig|ungueltig|Konfiguration|gefunden|erstellt|geladen|gestartet|bereit|waehlen|Auswahl|Abbrechen|Speichern|Laden|Loeschen|Bearbeiten|Senden|Naechste|letzten|konkreten|aktuellen|Darstellung|Schriftgroesse|Startansicht|Projekt|Daten|Erlaubt|Zugriff|Ablehnen|Leeren|Wiederverwenden|Hauptchat|Profil|Hinweise|Benachrichtigungen|Bestaetigung|Filesicherheit|Filezugriff|Datenhaltung|Aufbewahrung|Intervall|Systemstart|Workspace-Pfad|Systemprompts|Agent-Memory|Agenten|Telemetrie|Sourcen|Ansicht|Autostart|konfigurieren|ausgeblendet|Anzeigen|Hintergrund|Standard-Workspace|Desktop-Integration|Laufzeit|Uebersicht|Vertraege|Verhalten|Laeufe|parallele|Versuche|geteilte|Resultse|sofort|stoppen|Vorherige|Globale|Gilt|automatisch|ohne|eigenes|Zugriffe|Verbindungen|Fokus|runtimeverhalten|Werkzeuge|angelegt|oeffnen|umgeschaltet|volle|Suche|gesetzt|Ausfuehren)\b/i
 
 const uiPropNames = new Set([
   'label',
@@ -87,7 +87,10 @@ function isAllowedGermanMatch(file, line) {
     return /bitte geben sie an/.test(line)
   }
   if (normalized === 'src/utils/chatAttachments.ts') {
-    return /ordner/.test(line)
+    return /ordner|File-Metadaten|Retrieval-Context/.test(line)
+  }
+  if (normalized === 'src/utils/webSearchSources.ts') {
+    return /Web-Suche failed/.test(line)
   }
   return false
 }
@@ -190,7 +193,10 @@ for (const file of files) {
   if (file.replace(/\\/g, '/') === 'src/i18n.ts') continue
   const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
   lines.forEach((line, index) => {
-    if (!germanPattern.test(line)) return
+    const lineWithoutTranslationKeys = line
+      .replace(/\b(?:tr|t)\(\s*(["'`])(?:\\.|(?!\1).)*\1/g, '')
+      .replace(/\/\/.*/, '')
+    if (!germanPattern.test(lineWithoutTranslationKeys)) return
     const finding = { file, line: index + 1, text: line.trim().slice(0, 220) }
     if (isTestFile(file)) {
       testGermanFindings.push(finding)

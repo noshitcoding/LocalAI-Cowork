@@ -1823,12 +1823,12 @@ async fn execute_pipeline_web_fetch(url: &str) -> Result<String, String> {
         .map_err(|err| err.to_string())?;
     let status = response.status();
     let body = response.text().await.map_err(|err| err.to_string())?;
-    let title = extract_html_title(&body).unwrap_or_else(|| "(ohne Titel)".to_string());
+    let title = extract_html_title(&body).unwrap_or_else(|| "(no title)".to_string());
     let stripped = strip_html_like_content(&body);
     let content: String = stripped.trim().chars().take(4_000).collect();
 
     Ok(format!(
-        "URL: {}\nStatus: {}\nTitel: {}\n\n{}",
+        "URL: {}\nStatus: {}\nTitle: {}\n\n{}",
         requested_url,
         status.as_u16(),
         title,
@@ -2464,7 +2464,7 @@ async fn pipeline_execute(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| {
                 if args_text.trim().is_empty() {
-                    format!("Pipeline-Schritt {} ohne Eingabetext", index + 1)
+                    format!("Pipeline step {} has no input text", index + 1)
                 } else {
                     args_text.clone()
                 }
@@ -4927,7 +4927,7 @@ fn execute_task(
                 return Ok(());
             }
 
-            let output = format!("Automatisch executed: {}", title);
+            let output = format!("Automatically executed: {}", title);
             state
                 .update_step_state(&step_id, "completed", Some(&output))
                 .map_err(|e| e.to_string())?;
@@ -7805,7 +7805,7 @@ fn enforce_tool_policy(
         .iter()
         .any(|enabled_tool_id| enabled_tool_id == &canonical_tool)
     {
-        return Err(format!("tool {} ist im Profil deaktiviert", canonical_tool));
+        return Err(format!("tool {} is disabled in the profile", canonical_tool));
     }
 
     if policy

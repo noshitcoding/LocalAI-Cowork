@@ -626,8 +626,8 @@ const movePathTool: Tool<{ source_path: string; destination_path: string; overwr
       runId: context.runId,
     })
     const notes = [
-      `${result.itemKind} verschoben: ${result.sourcePath} -> ${result.destinationPath}`,
-      result.createdParent ? 'Targetordner was automatisch created.' : '',
+      `${result.itemKind} moved: ${result.sourcePath} -> ${result.destinationPath}`,
+      result.createdParent ? 'Target folder was created automatically.' : '',
       result.replacedExisting ? 'Existing Target was replaced.' : '',
     ].filter(Boolean)
     return { data: notes.join('\n') }
@@ -670,8 +670,8 @@ const copyPathTool: Tool<{ source_path: string; destination_path: string; overwr
       runId: context.runId,
     })
     const notes = [
-      `${result.itemKind} kopiert: ${result.sourcePath} -> ${result.destinationPath}`,
-      result.createdParent ? 'Targetordner was automatisch created.' : '',
+      `${result.itemKind} copied: ${result.sourcePath} -> ${result.destinationPath}`,
+      result.createdParent ? 'Target folder was created automatically.' : '',
       result.replacedExisting ? 'Existing Target was replaced.' : '',
     ].filter(Boolean)
     return { data: notes.join('\n') }
@@ -867,7 +867,7 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
         ].filter(Boolean).join('\n\n')
         return { data: output }
       } catch (err) {
-        return { data: `Error beim Ausfuehren im Terminal: ${err instanceof Error ? err.message : String(err)}` }
+        return { data: `Error while running in terminal: ${err instanceof Error ? err.message : String(err)}` }
       }
     }
 
@@ -943,7 +943,7 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
       ].filter(Boolean).join('\n\n')
       return { data: output }
     } catch (err) {
-      return { data: `Error beim Ausfuehren: ${err instanceof Error ? err.message : String(err)}` }
+      return { data: `Error while running: ${err instanceof Error ? err.message : String(err)}` }
     } finally {
       if (unlisten) {
         unlisten()
@@ -1024,7 +1024,7 @@ const webSearchTool: Tool<{ query: string; max_results?: number }> = {
       })
       return { data: lines.join('\n\n') || `No results for "${input.query}"` }
     } catch {
-      return { data: `Web-Suche failed for: "${input.query}"` }
+      return { data: `Web search failed for: "${input.query}"` }
     }
   },
 }

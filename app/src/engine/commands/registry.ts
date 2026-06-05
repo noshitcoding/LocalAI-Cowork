@@ -215,12 +215,12 @@ const agentsCommand: Command = {
   category: 'agents',
   async call(_args, context) {
     if (context.agentDefinitions.length === 0) {
-      return 'No Agenten configured.'
+      return 'No agents configured.'
     }
     const lines = context.agentDefinitions.map(a =>
       `- **${a.name}** (${a.type}): ${a.description}`,
     )
-    return `### Verfuegbare Agenten\n${lines.join('\n')}`
+    return `### Available agents\n${lines.join('\n')}`
   },
 }
 

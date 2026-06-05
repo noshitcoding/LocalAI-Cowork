@@ -863,15 +863,15 @@ mod tests {
 
     #[test]
     fn parse_steps_extracts_numbered_lines() {
-        let raw = "1. Initialize project\n2) Ollama konfigurieren\n- Tests ausfuehren";
+        let raw = "1. Initialize project\n2) Configure Ollama\n- Run tests";
         let parsed = parse_steps(raw);
 
         assert_eq!(
             parsed,
             vec![
                 "Initialize project".to_string(),
-                "Ollama konfigurieren".to_string(),
-                "Tests ausfuehren".to_string()
+                "Configure Ollama".to_string(),
+            "Run tests".to_string()
             ]
         );
     }

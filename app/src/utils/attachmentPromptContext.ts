@@ -385,7 +385,7 @@ export async function buildAttachmentPromptContext(
       : ''
 
   const metadataBlock =
-    metadataLines.length > 0 ? ['File-Metadaten (ohne Volltext):', ...metadataLines].join('\n') : ''
+      metadataLines.length > 0 ? ['File metadata (without full text):', ...metadataLines].join('\n') : ''
 
   const analysisBlock =
     retrievalLines.length > 0 ? ['Retrieval-Context (selektiv geread):', ...retrievalLines].join('\n') : ''

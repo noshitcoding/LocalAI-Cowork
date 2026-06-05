@@ -1468,7 +1468,7 @@ export default function ChatView() {
           </ol>
           <div className="approval-actions">
             <button type="button" className="btn-approve" onClick={handleApprove} disabled={busy}>{tr("✓ Approve")}</button>
-            <button type="button" className="btn-reject" onClick={handleReject} disabled={busy}>{tr("✗ Ablehnen")}</button>
+            <button type="button" className="btn-reject" onClick={handleReject} disabled={busy}>{tr("✗ Reject")}</button>
           </div>
         </div>
       )}

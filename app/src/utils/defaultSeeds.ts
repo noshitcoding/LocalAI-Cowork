@@ -21,7 +21,7 @@ export const DEFAULT_PERSONALITIES: DefaultPersonalityDef[] = [
     name: 'Coder',
     description: 'Precise technical answers. Focus on code quality, best practices, and clear explanations.',
     role: 'executor',
-    goal: 'Praezise technische answers mit Fokus auf Code-quality, best practices und klare explanations.',
+    goal: 'Precise technical answers focused on code quality, best practices, and clear explanations.',
     systemPrompt: `Du bist ein erfahrener Software-Entwickler und technischer Berater.
 Your tasks:
 - Schreibe sauberen, idiomatischen Code mit best practices
@@ -203,7 +203,7 @@ export const DEFAULT_MEMORY_ENTRIES: DefaultMemoryEntry[] = [
 export const DEFAULT_PROFILE_ENTRIES = [
   { key: 'sprache', value: 'English', source: 'system' },
   { key: 'erfahrung', value: 'Fortgeschritten', source: 'system' },
-  { key: 'fokus', value: 'Produktivitaet und Code-quality', source: 'system' },
+  { key: 'focus', value: 'Productivity and code quality', source: 'system' },
 ]
 
 export async function seedDefaultMemory(): Promise<void> {
@@ -261,7 +261,7 @@ export function buildSystemPromptFromPersonality(
   }
 
   if (globalInstruction.trim()) {
-    parts.push(`\n[Globale Instruktionen]\n${globalInstruction}`)
+    parts.push(`\n[Global instructions]\n${globalInstruction}`)
   }
 
   if (memoryHints.length > 0) {
