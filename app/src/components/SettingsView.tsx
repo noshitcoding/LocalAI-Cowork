@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useConfigStore } from '../stores/configStore'
 import type { AppPreferences, StartView } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
@@ -70,6 +71,8 @@ type CategoryKey = (typeof CATEGORIES)[number]['key']
 /* ── Main Component ─────────────────────────── */
 
 export default function SettingsView() {
+  useTranslation()
+
   const {
     ollama,
     preferences,
@@ -89,7 +92,7 @@ export default function SettingsView() {
   return (
     <div className="settings-layout">
       {/* Sidebar navigation */}
-      <nav className="settings-sidebar" role="navigation" aria-label={tr("Einstellungs-Kategorien")}>
+      <nav className="settings-sidebar" role="navigation" aria-label={tr("Settings categories")}>
         {CATEGORIES.map((cat) => (
           <button
             key={cat.key}
@@ -156,12 +159,12 @@ export default function SettingsView() {
               </div>
             </Section>
 
-            <Section title={tr("Systemprompts")} icon="SP">
+            <Section title={tr("System prompts")} icon="SP">
               <label style={{ marginTop: 12, display: 'block' }}>{tr("Base system prompt")}<textarea
                   rows={10}
                   value={engineConfig.systemPrompt}
                   onChange={(e) => setEngineConfig({ systemPrompt: e.target.value })}
-                  placeholder={tr("Base behavior for die agentische Engine...")}
+                  placeholder={tr("Base behavior for the agentic engine...")}
                   style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace' }}
                 />
               </label>
@@ -172,7 +175,7 @@ export default function SettingsView() {
                   rows={3}
                   value={engineConfig.appendSystemPrompt}
                   onChange={(e) => setEngineConfig({ appendSystemPrompt: e.target.value })}
-                  placeholder={tr("Additional instructions for den Agenten...")}
+                  placeholder={tr("Additional instructions for the agent...")}
                   style={{ width: '100%', resize: 'vertical' }}
                 />
               </label>
@@ -180,7 +183,7 @@ export default function SettingsView() {
                   rows={4}
                   value={globalInstruction}
                   onChange={(e) => setGlobalInstruction(e.target.value)}
-                  placeholder={tr("Project-wide instructions for Chat und Cowork...")}
+                  placeholder={tr("Project-wide instructions for chat and cowork...")}
                   style={{ width: '100%', resize: 'vertical' }}
                 />
               </label>
@@ -196,7 +199,7 @@ export default function SettingsView() {
         {activeCategory === 'memory' && (
           <div className="settings-view">
             <h1>{tr("Memory")}</h1>
-            <p className="hint-text">{tr("Agent-Memory, Profil, Provider und Hinweise verwalten")}</p>
+            <p className="hint-text">{tr("Manage agent memory, profile, provider, and notes")}</p>
             <MemoryPanel />
           </div>
         )}
@@ -258,7 +261,7 @@ export default function SettingsView() {
                 <label>{tr("Font size (%)")}<input type="number" min={85} max={120} step={5} value={preferences.fontScale} onChange={(e) => setPreference('fontScale', Number(e.target.value))} />
                 </label>
                 <label>{tr("Start view")}<select value={preferences.defaultStartView} onChange={(e) => setPreference('defaultStartView', e.target.value as StartView)}>
-                    <option value="last">{tr("Letzte Ansicht")}</option>
+                    <option value="last">{tr("Last view")}</option>
                     <option value="work">{tr("Workspace")}</option>
                     <option value="settings">{tr("Settings")}</option>
                   </select>
@@ -266,10 +269,10 @@ export default function SettingsView() {
               </div>
             </Section>
 
-            <Section title={tr("Benachrichtigungen & Sound")} icon="🔔">
-              <Toggle label="Desktop notifications" hint="Windows notifications for important events" {...pref('notificationsEnabled')} />
-              <Toggle label="Enable sounds" hint="Audio feedback for actions" {...pref('soundsEnabled')} />
-              <Toggle label="Bestaetigung beim Close" hint="Fragt vor dem Beenden der Desktop-App nach" {...pref('confirmOnCloseWithRunningTasks')} />
+            <Section title={tr("Notifications & sound")} icon="🔔">
+              <Toggle label={tr("Desktop notifications")} hint={tr("Windows notifications for important events")} {...pref('notificationsEnabled')} />
+              <Toggle label={tr("Enable sounds")} hint={tr("Audio feedback for actions")} {...pref('soundsEnabled')} />
+              <Toggle label={tr("Confirm on close")} hint={tr("Ask before exiting the desktop app")} {...pref('confirmOnCloseWithRunningTasks')} />
             </Section>
           </div>
         )}
@@ -278,26 +281,26 @@ export default function SettingsView() {
         {activeCategory === 'security' && (
           <div className="settings-view">
             <h1>{tr("Security & data")}</h1>
-            <p className="hint-text">{tr("Filezugriff, Commandsfilter und Datenhaltung konfigurieren")}</p>
+            <p className="hint-text">{tr("Configure file access, command filters, and data retention")}</p>
 
-            <Section title={tr("Filesicherheit")} icon="🔒">
-              <Toggle label="Nur-Lesen-Mode" hint="No Files write oder delete" {...pref('readOnlyFsMode')} />
+            <Section title={tr("File security")} icon="🔒">
+              <Toggle label={tr("Read-only mode")} hint={tr("No file writes or deletes")} {...pref('readOnlyFsMode')} />
               <div className="grid" style={{ marginTop: 12 }}>
                 <label>{tr("Allowed commands (allowlist)")}<textarea rows={3} value={preferences.commandWhitelist} onChange={(e) => setPreference('commandWhitelist', e.target.value)} placeholder={tr("One command per line")} />
                 </label>
-                <label>{tr("Gesperrte commands (Blacklist)")}<textarea rows={3} value={preferences.commandBlacklist} onChange={(e) => setPreference('commandBlacklist', e.target.value)} placeholder={tr("One command per line")} />
+                <label>{tr("Blocked commands (blacklist)")}<textarea rows={3} value={preferences.commandBlacklist} onChange={(e) => setPreference('commandBlacklist', e.target.value)} placeholder={tr("One command per line")} />
                 </label>
               </div>
             </Section>
 
             <Section title={tr("Data & storage")} icon="💾">
-              <Toggle label="Enable telemetry" hint={tr("Send anonymous usage statistics")} {...pref('telemetryEnabled')} />
-              <Toggle label="Automatisches DB-Backup" hint="SQLite-Datenbank regelmaessig sichern" {...pref('autoBackupDb')} />
+              <Toggle label={tr("Enable telemetry")} hint={tr("Send anonymous usage statistics")} {...pref('telemetryEnabled')} />
+              <Toggle label={tr("Automatic DB backup")} hint={tr("Regularly back up the SQLite database")} {...pref('autoBackupDb')} />
               <Toggle label={tr("DB cleanup on startup")} hint={tr("Clean up orphaned entries when the app starts")} {...pref('dbCleanupOnStart')} />
               <div className="grid" style={{ marginTop: 12 }}>
-                <label>{tr("Chat-Aufbewahrung (Tage)")}<input type="number" min={1} max={365} value={preferences.chatRetentionDays} onChange={(e) => setPreference('chatRetentionDays', Number(e.target.value))} />
+                <label>{tr("Chat retention (days)")}<input type="number" min={1} max={365} value={preferences.chatRetentionDays} onChange={(e) => setPreference('chatRetentionDays', Number(e.target.value))} />
                 </label>
-                <label>{tr("Backup-Intervall (Stunden)")}<input type="number" min={1} max={168} value={preferences.dbBackupIntervalHours} onChange={(e) => setPreference('dbBackupIntervalHours', Number(e.target.value))} />
+                <label>{tr("Backup interval (hours)")}<input type="number" min={1} max={168} value={preferences.dbBackupIntervalHours} onChange={(e) => setPreference('dbBackupIntervalHours', Number(e.target.value))} />
                 </label>
               </div>
             </Section>
@@ -310,12 +313,12 @@ export default function SettingsView() {
         {activeCategory === 'system' && (
           <div className="settings-view">
             <h1>{tr("System & Info")}</h1>
-            <p className="hint-text">{tr("Workspace-Pfade, Autostart und App-Informationen")}</p>
+            <p className="hint-text">{tr("Workspace paths, startup, and app information")}</p>
 
             <Section title={tr("Workspace & System")} icon="📁">
-              <Toggle label="Beim Systemstart starten" hint="App automatisch mit Windows starten" {...pref('launchAtStartup')} />
+              <Toggle label={tr("Launch at system startup")} hint={tr("Start the app automatically with Windows")} {...pref('launchAtStartup')} />
               <div className="grid" style={{ marginTop: 12 }}>
-                <label>{tr("Standard-Workspace-Pfad")}<input value={preferences.workspaceDefaultPath} onChange={(e) => setPreference('workspaceDefaultPath', e.target.value)} placeholder={tr("C:\\Projects\\mein-workspace")} style={{ fontFamily: 'monospace' }} />
+                <label>{tr("Default workspace path")}<input value={preferences.workspaceDefaultPath} onChange={(e) => setPreference('workspaceDefaultPath', e.target.value)} placeholder={tr("C:\\Projects\\my-workspace")} style={{ fontFamily: 'monospace' }} />
                 </label>
               </div>
             </Section>
@@ -323,11 +326,45 @@ export default function SettingsView() {
             <ConnectorPanel />
 
             <Section title={tr("About Open_Cowork")} icon="✦">
-              <div className="card">
-                <p><strong>{tr("Open_Cowork")}</strong>{tr("v0.2.0")}</p>
-                <p>{tr("Tauri + React + Rust desktop app for agentic work")}</p>
-                <p><strong>{tr("Endpoint:")}</strong> {ollama.baseUrl}</p>
-                <p><strong>{tr("Model:")}</strong> {ollama.model}</p>
+              <div className="card about-open-cowork-card">
+                <div className="about-open-cowork-intro">
+                  <strong>{tr("Open_Cowork")}</strong>
+                  <span>{tr("Local desktop workspace for chat, tools, tasks, and multi-agent runs.")}</span>
+                </div>
+                <dl className="about-open-cowork-details">
+                  <div>
+                    <dt>{tr("Creator")}</dt>
+                    <dd>noshitcoding</dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Project page")}</dt>
+                    <dd>
+                      <a href="https://github.com/noshitcoding/Open_Cowork" target="_blank" rel="noreferrer">
+                        github.com/noshitcoding/Open_Cowork
+                      </a>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Runtime")}</dt>
+                    <dd>{tr("Tauri desktop app")}</dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Local LLM endpoint")}</dt>
+                    <dd>{ollama.baseUrl || tr("Not configured")}</dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Default model")}</dt>
+                    <dd>{ollama.model || tr("Not configured")}</dd>
+                  </div>
+                  <div>
+                    <dt>{tr("Workspace")}</dt>
+                    <dd>{preferences.workspaceDefaultPath || tr("Last used")}</dd>
+                  </div>
+                </dl>
+                <div className="about-open-cowork-disclaimer">
+                  <strong>{tr("Disclaimer")}</strong>
+                  <p>{tr("Open_Cowork can execute commands, use tools, and modify local files. Use it at your own risk, review AI output before relying on it, and do not treat responses as legal, medical, financial, or safety-critical advice.")}</p>
+                </div>
               </div>
             </Section>
           </div>

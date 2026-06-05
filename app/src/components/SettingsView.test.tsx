@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from './SettingsView'
 import { useConfigStore } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
+import i18n from '../i18n'
 
 const invokeMock = vi.fn()
 const checkOllamaStatusMock = vi.fn()
@@ -162,7 +163,8 @@ function resetEngineStore() {
 }
 
 describe('SettingsView', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
     delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     invokeMock.mockReset()
     invokeMock.mockImplementation(defaultInvoke)
@@ -173,7 +175,7 @@ describe('SettingsView', () => {
   /* ── 1. sidebar renders all 9 categories ── */
   it('renders all 9 category buttons in sidebar', () => {
     render(<SettingsView />)
-    const nav = screen.getByRole('navigation', { name: 'Einstellungs-Kategorien' })
+    const nav = screen.getByRole('navigation', { name: 'Settings categories' })
     const buttons = nav.querySelectorAll('.settings-nav-item')
     expect(buttons.length).toBe(9)
   })
@@ -205,15 +207,23 @@ describe('SettingsView', () => {
     render(<SettingsView />)
     fireEvent.click(screen.getByText('Security & data'))
     expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
-    expect(screen.getByText('Nur-Lesen-Mode')).toBeInTheDocument()
+    expect(screen.getByText('Read-only mode')).toBeInTheDocument()
   })
 
-  /* ── 6. System & Info shows version ── */
-  it('switches to System & Info and shows version info', () => {
+  /* ── 6. System & Info shows runtime info ── */
+  it('switches to System & Info and shows runtime info', () => {
     render(<SettingsView />)
     fireEvent.click(screen.getByText('System & Info'))
     expect(screen.getByRole('heading', { level: 1, name: 'System & Info' })).toBeInTheDocument()
-    expect(screen.getByText(/v0\.2\.0/)).toBeInTheDocument()
+    expect(screen.getByText('Local LLM endpoint')).toBeInTheDocument()
+    expect(screen.getByText('http://localhost:11434')).toBeInTheDocument()
+    expect(screen.getByText('Default model')).toBeInTheDocument()
+    expect(screen.getByText('llama3.1:8b')).toBeInTheDocument()
+    expect(screen.getByText('Creator')).toBeInTheDocument()
+    expect(screen.getByText('noshitcoding')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'github.com/noshitcoding/Open_Cowork' })).toHaveAttribute('href', 'https://github.com/noshitcoding/Open_Cowork')
+    expect(screen.getByText('Disclaimer')).toBeInTheDocument()
+    expect(screen.getByText(/Use it at your own risk/)).toBeInTheDocument()
   })
 
   /* ── 7. Memory category renders ── */
@@ -235,7 +245,7 @@ describe('SettingsView', () => {
     render(<SettingsView />)
     fireEvent.click(screen.getByText('Terminal & Processes'))
     expect(screen.getByRole('heading', { level: 1, name: 'Terminal & Processes' })).toBeInTheDocument()
-    expect(screen.getByText('Terminal-Dock')).toBeInTheDocument()
+    expect(screen.getByText('Terminal dock')).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Persistence' })).toHaveValue('runtime')
   })
 
@@ -327,7 +337,7 @@ describe('SettingsView', () => {
       expect(useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-openai-compatible')?.model)
         .toBe('0xSero/Hy3-preview-nvfp4')
     })
-    expect(await within(profileCard).findByText('Model automatisch auf 0xSero/Hy3-preview-nvfp4 gesetzt.')).toBeInTheDocument()
+    expect(await within(profileCard).findByText('Model automatically set to 0xSero/Hy3-preview-nvfp4.')).toBeInTheDocument()
   })
 
   /* ── 17. Number input for maxToolCalls ── */
@@ -351,7 +361,7 @@ describe('SettingsView', () => {
   /* ── 19. active category button gets active class ── */
   it('highlights the active category button', () => {
     render(<SettingsView />)
-    const nav = screen.getByRole('navigation', { name: 'Einstellungs-Kategorien' })
+    const nav = screen.getByRole('navigation', { name: 'Settings categories' })
     const aiBtn = nav.querySelector('.settings-nav-item.active')!
     expect(aiBtn.textContent).toContain('AI & model')
 
@@ -363,6 +373,20 @@ describe('SettingsView', () => {
   /* ── 20. sidebar has navigation role ── */
   it('sidebar has proper navigation role', () => {
     render(<SettingsView />)
-    expect(screen.getByRole('navigation', { name: 'Einstellungs-Kategorien' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Settings categories' })).toBeInTheDocument()
+  })
+
+  it('updates visible settings text when the language changes', async () => {
+    render(<SettingsView />)
+    fireEvent.click(screen.getByText('Terminal & Processes'))
+
+    expect(screen.getByRole('option', { name: 'Runtime only' })).toBeInTheDocument()
+
+    await i18n.changeLanguage('de')
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: 'Einstellungskategorien' })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('option', { name: 'Nur Laufzeit' })).toBeInTheDocument()
   })
 })

@@ -3264,6 +3264,28 @@ button.compact-send-btn {
   overflow-wrap: anywhere;
 }
 
+.about-open-cowork-details a {
+  color: var(--accent);
+}
+
+.about-open-cowork-disclaimer {
+  border-top: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding-top: 12px;
+}
+
+.about-open-cowork-disclaimer strong {
+  color: var(--text-primary);
+  display: block;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.about-open-cowork-disclaimer p {
+  line-height: 1.45;
+  margin: 0;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
