@@ -998,7 +998,20 @@ const resources = {
       "from": "from",
       "Execute": "Execute",
       "?? Your tasks": "?? Your tasks",
-      "Open_Cowork can plan tasks, execute work, and manage files ? all locally on your computer.": "Open_Cowork can plan tasks, execute work, and manage files - all locally on your computer."
+      "Open_Cowork can plan tasks, execute work, and manage files ? all locally on your computer.": "Open_Cowork can plan tasks, execute work, and manage files - all locally on your computer.",
+      "? Runtime stoppen": "? Stop runtime",
+      "Task created": "Task created",
+      "Web search": "Web search",
+      "Permission mode set to {{mode}}": "Permission mode set to {{mode}}",
+      "Memory search": "Memory search",
+      "Starts an automated agent loop": "Starts an automated agent loop",
+      "Manage and search memory entries": "Manage and search memory entries",
+      "Remove the latest N messages": "Remove the latest N messages",
+      "Adjust color scheme": "Adjust color scheme",
+      "Open detailed insights dashboard": "Open detailed insights dashboard",
+      "Detailed usage statistics": "Detailed usage statistics",
+      "Show or hide compact status line": "Show or hide compact status line",
+      "Reload all plugins": "Reload all plugins"
     }
   },
   "de": {
@@ -1972,7 +1985,20 @@ const resources = {
       "from": "von",
       "Execute": "Ausfuehren",
       "?? Your tasks": "?? Deine Tasks",
-      "Open_Cowork can plan tasks, execute work, and manage files ? all locally on your computer.": "Open_Cowork kann Tasks planen, Arbeit ausfuehren und Dateien verwalten - alles lokal auf deinem Computer."
+      "Open_Cowork can plan tasks, execute work, and manage files ? all locally on your computer.": "Open_Cowork kann Tasks planen, Arbeit ausfuehren und Dateien verwalten - alles lokal auf deinem Computer.",
+      "? Runtime stoppen": "? Runtime stoppen",
+      "Task created": "Task angelegt",
+      "Web search": "Web-Suche",
+      "Permission mode set to {{mode}}": "Berechtigungsmodus gesetzt auf {{mode}}",
+      "Memory search": "Memory-Suche",
+      "Starts an automated agent loop": "Startet eine automatisierte Agent-Schleife",
+      "Manage and search memory entries": "Memory-Eintraege verwalten und durchsuchen",
+      "Remove the latest N messages": "Letzte N Nachrichten entfernen",
+      "Adjust color scheme": "Farbschema anpassen",
+      "Open detailed insights dashboard": "Ausfuehrliches Insights-Dashboard oeffnen",
+      "Detailed usage statistics": "Detaillierte Nutzungsstatistik",
+      "Show or hide compact status line": "Kompakte Statuszeile ein- oder ausblenden",
+      "Reload all plugins": "Alle Plugins neu laden"
     }
   }
 } as const

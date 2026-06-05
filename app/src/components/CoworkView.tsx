@@ -326,7 +326,7 @@ function formatToolProgress(toolName: string, data: ToolProgressData): { headlin
       }
     case 'web_search_progress':
       return {
-        headline: `${toolName}: Web-Suche`,
+        headline: `${toolName}: ${tr('Web search')}`,
         details: `Query: ${data.query}\nTreffer: ${data.results}`,
       }
     case 'mcp_progress':
@@ -1698,7 +1698,7 @@ export default function CoworkView() {
         const target = slash.args as ClaudePermissionMode
         if (VALID_PERMISSION_MODES.includes(target)) {
           setClaudePermissionMode(target)
-          appendAssistantMessage(`Permission-Mode gesetzt: ${target}`)
+          appendAssistantMessage(tr('Permission mode set to {{mode}}', { mode: target }))
         } else {
           appendAssistantMessage(tr("Invalid permission mode. Allowed: default, acceptEdits, bypassPermissions, dontAsk, plan"))
         }
@@ -1989,7 +1989,7 @@ export default function CoworkView() {
           await useMemoryStore.getState().searchEntries(slash.args.trim())
           const entries = useMemoryStore.getState().entries
           appendAssistantMessage(entries.length > 0
-            ? `Memory-Suche "${slash.args.trim()}":\n${entries.slice(0, 10).map(e => `- [${e.scope}/${e.category}] ${e.content.slice(0, 100)}`).join('\n')}`
+            ? `${tr('Memory search')} "${slash.args.trim()}":\n${entries.slice(0, 10).map(e => `- [${e.scope}/${e.category}] ${e.content.slice(0, 100)}`).join('\n')}`
             : `No results for "${slash.args.trim()}".`)
         } else {
           await useMemoryStore.getState().loadEntries()
