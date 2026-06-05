@@ -1,8 +1,14 @@
 {
-  "name": "app",
+  "name": "open-cowork",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Local-first desktop workspace for agentic work with Ollama, MCP, tasks, and tools.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/noshitcoding/Open_Cowork.git"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "dev:tauri": "vite --host 127.0.0.1 --port 5173 --strictPort",
