@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "cargoAuditVersion": "0.22.2",
+  "npmAuditLevel": "high",
+  "allowedLicenses": [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BlueOak-1.0.0",
+    "BSL-1.0",
+    "CC-BY-4.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "NCSA",
+    "Python-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib"
+  ],
+  "allowedExceptions": [
+    "LLVM-exception"
+  ],
+  "deniedLicenseFamilies": [
+    "AGPL",
+    "BUSL",
+    "Commons-Clause",
+    "EUPL",
+    "GPL",
+    "LGPL",
+    "SSPL"
+  ]
+}

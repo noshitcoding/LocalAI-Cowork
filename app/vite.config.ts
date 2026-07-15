@@ -54,25 +54,80 @@ export default defineConfig({
         pluginTimings: false,
       },
       output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) {
-            if (id.includes('/src/components/CoworkView')) return 'cowork-view'
-            if (id.includes('/src/components/SettingsView')) return 'settings-view'
-            if (id.includes('/src/components/FeaturesView')) return 'features-view'
-            if (id.includes('/src/engine/')) return 'engine-core'
-            if (id.includes('/src/stores/commandRegistryStore') || id.includes('/src/stores/coworkStore')) {
-              return 'cowork-support'
-            }
-            return undefined
-          }
-
-          if (id.includes('react-router-dom')) return 'router'
-          if (id.includes('@tanstack/react-query')) return 'query'
-          if (id.includes('@tauri-apps')) return 'tauri'
-          if (id.includes('@xterm')) return 'terminal-vendor'
-          if (id.includes('lucide-react')) return 'icons'
-          if (id.includes('react') || id.includes('scheduler')) return 'react-vendor'
-          return 'vendor'
+        codeSplitting: {
+          groups: [
+            {
+              name: 'router',
+              test: (id) => id.replaceAll('\\', '/').includes('react-router'),
+              priority: 120,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'i18n',
+              test: (id) => id.replaceAll('\\', '/').endsWith('/src/i18n.ts'),
+              priority: 120,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'query',
+              test: (id) => id.replaceAll('\\', '/').includes('@tanstack/react-query'),
+              priority: 110,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'tauri',
+              test: (id) => id.replaceAll('\\', '/').includes('@tauri-apps'),
+              priority: 110,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'terminal-vendor',
+              test: (id) => id.replaceAll('\\', '/').includes('@xterm'),
+              priority: 110,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'icons',
+              test: (id) => id.replaceAll('\\', '/').includes('lucide-react'),
+              priority: 110,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'react-vendor',
+              test: (id) => {
+                const normalizedId = id.replaceAll('\\', '/')
+                return normalizedId.includes('/node_modules/react/')
+                  || normalizedId.includes('/node_modules/react-dom/')
+                  || normalizedId.includes('/node_modules/scheduler/')
+              },
+              priority: 110,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'engine-core',
+              test: /[\\/]src[\\/]engine[\\/]/,
+              priority: 100,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'cowork-support',
+              test: (id) => {
+                const normalizedId = id.replaceAll('\\', '/')
+                return normalizedId.includes('/src/stores/commandRegistryStore')
+                  || normalizedId.includes('/src/stores/coworkStore')
+                  || normalizedId.includes('/src/utils/attachmentPromptContext')
+                  || normalizedId.includes('/src/utils/chatAttachments')
+              },
+              priority: 100,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'vendor',
+              test: /[\\/]node_modules[\\/]/,
+              priority: 10,
+              includeDependenciesRecursively: false,
+            },
+          ],
         },
       },
     },
