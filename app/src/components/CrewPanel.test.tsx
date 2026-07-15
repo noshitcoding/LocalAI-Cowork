@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CrewPanel from './CrewPanel'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
@@ -13,6 +14,20 @@ vi.mock('../utils/safeInvoke', () => ({
 
 const hasTauriRuntimeMock = vi.mocked(hasTauriRuntime)
 const safeInvokeMock = vi.mocked(safeInvoke)
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{`${location.pathname}${location.search}`}</output>
+}
+
+function renderCrewPanel() {
+  return render(
+    <MemoryRouter>
+      <CrewPanel />
+      <LocationProbe />
+    </MemoryRouter>,
+  )
+}
 
 const baseAgent: CrewAgent = {
   id: 'agent-1',
@@ -172,7 +187,7 @@ describe('CrewPanel', () => {
     useCrewStore.setState({ migrateAgentsToPersonalityProfiles })
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     expect(migrateAgentsToPersonalityProfiles).not.toHaveBeenCalled()
@@ -191,7 +206,7 @@ describe('CrewPanel', () => {
     })
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Build crew/i }))
@@ -203,9 +218,17 @@ describe('CrewPanel', () => {
     expect(created.agents.map((agent) => agent.role)).toEqual(['planner', 'executor', 'reviewer'])
   })
 
+  it('hands the active crew to the task mission composer', async () => {
+    renderCrewPanel()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare mission in Tasks' }))
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?crew=crew-1')
+  })
+
   it('syncs member providers to the crew provider when changing the crew provider', async () => {
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     await act(async () => {
@@ -229,7 +252,7 @@ describe('CrewPanel', () => {
 
   it('can grant a tool to all crew members from the crew-level access panel', async () => {
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     await act(async () => {
@@ -249,7 +272,7 @@ describe('CrewPanel', () => {
     })
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     await act(async () => {
@@ -291,7 +314,7 @@ describe('CrewPanel', () => {
     })
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Run crew' }))
@@ -326,7 +349,7 @@ describe('CrewPanel', () => {
     }))
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     const crew = useCrewStore.getState().crews[0]

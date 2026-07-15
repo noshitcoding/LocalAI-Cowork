@@ -70,7 +70,7 @@ describe('task panels', () => {
     expect(screen.queryByText(/settings first/i)).not.toBeInTheDocument()
   })
 
-  it('selects tasks and exposes explicit crew import', async () => {
+  it('selects tasks and exposes one crew mission action', async () => {
     const user = userEvent.setup()
     const onSelectTask = vi.fn()
     const onImportCrewTasks = vi.fn()
@@ -89,20 +89,20 @@ describe('task panels', () => {
     )
 
     await user.click(screen.getByRole('button', { name: /Weekly Report/i }))
-    await user.click(screen.getByRole('button', { name: /Import from crew/i }))
+    await user.click(screen.getByRole('button', { name: /Create crew mission/i }))
 
     expect(onSelectTask).toHaveBeenCalledWith('task-1')
     expect(onImportCrewTasks).toHaveBeenCalledTimes(1)
   })
 
-  it('disables crew import when selected templates already exist as WorkTasks', () => {
+  it('disables mission creation when the selected crew already has a mission', () => {
     const onImportCrewTasks = vi.fn()
 
     render(
       <TaskListPane
-        tasks={[{ ...baseTask, id: 'crew-task-1' }]}
+        tasks={[{ ...baseTask, id: 'crew-mission-crew-1' }]}
         crews={[crew]}
-        selectedTaskId="crew-task-1"
+        selectedTaskId="crew-mission-crew-1"
         importCrewId={crew.id}
         onSelectTask={vi.fn()}
         onImportCrewIdChange={vi.fn()}
@@ -111,7 +111,7 @@ describe('task panels', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: /Import from crew/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Mission created/i })).toBeDisabled()
     expect(onImportCrewTasks).not.toHaveBeenCalled()
   })
 

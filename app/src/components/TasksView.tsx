@@ -1,7 +1,7 @@
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CalendarClock, ListTodo, PlayCircle } from 'lucide-react'
 import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
@@ -13,6 +13,7 @@ import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
 import { tr } from '../i18n'
+import type { ChatProviderSelection } from '../utils/chatProvider'
 import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
 import { streamChatTurn } from '../utils/ollamaStreaming'
 import {
@@ -31,6 +32,9 @@ import {
 } from '../engine/crew/workTaskCrewRuntime'
 import {
   buildCrewRunOutput,
+  buildCrewMissionDraft,
+  buildCrewMissionId,
+  buildCrewMissionTask,
   buildTaskPromptMessage,
   buildTaskThreadSummary,
   createCrewStreamId,
@@ -48,6 +52,7 @@ import TaskListPane from './tasks/TaskListPane'
 
 export default function TasksView() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const crews = useCrewStore((s) => s.crews)
   const personalities = usePersonalityStore((s) => s.personalities)
   const loadPersonalities = usePersonalityStore((s) => s.loadPersonalities)
@@ -102,9 +107,11 @@ export default function TasksView() {
   const [newModel, setNewModel] = useState<string>('')
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [importCrewId, setImportCrewId] = useState<string>('')
+  const [pendingCrewMissionId, setPendingCrewMissionId] = useState<string | null>(null)
   const runningTaskControllersRef = useRef(new Map<string, AbortController>())
   const runningCrewTaskIdsRef = useRef(new Map<string, string>())
   const canceledTaskIdsRef = useRef(new Set<string>())
+  const handledCrewHandoffRef = useRef<string | null>(null)
 
   const normalizedNewWorkDir = newWorkDir.trim()
   const canCreateTask = newPrompt.trim().length > 0
@@ -129,6 +136,33 @@ export default function TasksView() {
     if (importCrewId && crews.some((crew) => crew.id === importCrewId)) return
     setImportCrewId(crews[0]?.id ?? '')
   }, [crews, importCrewId])
+
+  useEffect(() => {
+    const handoffCrewId = searchParams.get('crew')?.trim() ?? ''
+    if (!handoffCrewId || handledCrewHandoffRef.current === handoffCrewId) return
+
+    const crew = crews.find((entry) => entry.id === handoffCrewId)
+    if (!crew) return
+
+    handledCrewHandoffRef.current = handoffCrewId
+    setImportCrewId(crew.id)
+    const existingMission = tasks.find((task) => task.id === buildCrewMissionId(crew.id))
+    if (existingMission) {
+      setSelectedTaskId(existingMission.id)
+    } else {
+      const mission = buildCrewMissionDraft(crew)
+      setPendingCrewMissionId(crew.id)
+      setNewRunner('crew')
+      setNewCrewId(crew.id)
+      setNewTitle(mission.title)
+      setNewPrompt(mission.prompt)
+      setNewExpectedOutput(mission.expectedOutput)
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.delete('crew')
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [crews, searchParams, setSearchParams, tasks])
 
   useEffect(() => {
     if (selectedTaskId && tasks.some((task) => task.id === selectedTaskId)) return
@@ -215,9 +249,10 @@ export default function TasksView() {
     }
 
     const previousActiveThreadId = activeThreadId
+    const providerSettings = resolveTaskThreadProviderSettings(task)
     const threadId = addThread(
       deriveTaskName(task),
-      undefined,
+      providerSettings,
       undefined,
       task.runner,
       task.runner === 'crew' ? task.crewId : null,
@@ -235,6 +270,36 @@ export default function TasksView() {
     }
 
     return threadId
+  }
+
+  const resolveTaskThreadProviderSettings = (task: WorkTask): ChatProviderSelection | undefined => {
+    if (task.runner === 'crew') {
+      const crew = task.crewId ? crewsById.get(task.crewId) : null
+      if (!crew) return undefined
+
+      const provider = crew.defaultProvider ?? 'ollama'
+      const profileId = provider === 'ollama' ? undefined : defaultLlmProfileIds[provider]
+      const defaultProfile = provider === 'ollama'
+        ? undefined
+        : llmProfiles.find((profile) => profile.id === profileId && profile.provider === provider)
+          ?? llmProfiles.find((profile) => profile.provider === provider)
+      const model = crew.defaultModel?.trim()
+        || (provider === 'ollama' ? ollamaConfig.model.trim() : defaultProfile?.model.trim() ?? '')
+
+      return {
+        provider,
+        ...(model ? { model } : {}),
+        ...(defaultProfile?.id ? { profileId: defaultProfile.id } : {}),
+      }
+    }
+
+    const currentThread = threads.find((thread) => thread.id === activeThreadId)
+    if (!currentThread?.providerSettings && !task.model.trim()) return undefined
+
+    return {
+      ...(currentThread?.providerSettings ?? { provider: 'ollama' as const }),
+      ...(task.model.trim() ? { model: task.model.trim() } : {}),
+    }
   }
 
   const applyTaskWorkingFolder = async (task: WorkTask) => {
@@ -290,23 +355,41 @@ export default function TasksView() {
   const handleCreateTask = () => {
     if (!canCreateTask) return
 
-    const id = addTask({
-      title: newTitle,
-      prompt: newPrompt,
-      expectedOutput: newExpectedOutput,
-      workDir: normalizedNewWorkDir,
-      runner: newRunner,
-      crewId: newRunner === 'crew' ? newCrewId : null,
-      model: newRunner === 'model' ? newModel : '',
-    })
+    let createdTask: WorkTask | undefined
+    if (pendingCrewMissionId && newRunner === 'crew' && newCrewId === pendingCrewMissionId) {
+      const crew = crewsById.get(pendingCrewMissionId)
+      if (crew) {
+        createdTask = {
+          ...buildCrewMissionTask(crew),
+          title: newTitle.trim(),
+          prompt: newPrompt.trim(),
+          expectedOutput: newExpectedOutput.trim(),
+          workDir: normalizedNewWorkDir,
+        }
+        upsertMany([createdTask])
+      }
+    }
 
-    const createdTask = useWorkTasksStore.getState().tasks.find((task) => task.id === id)
+    if (!createdTask) {
+      const id = addTask({
+        title: newTitle,
+        prompt: newPrompt,
+        expectedOutput: newExpectedOutput,
+        workDir: normalizedNewWorkDir,
+        runner: newRunner,
+        crewId: newRunner === 'crew' ? newCrewId : null,
+        model: newRunner === 'model' ? newModel : '',
+      })
+      createdTask = useWorkTasksStore.getState().tasks.find((task) => task.id === id)
+    }
+
     if (createdTask) {
       void ensureAllowedTaskFolder(createdTask.workDir)
       createTaskThread(createdTask, true)
       setSelectedTaskId(createdTask.id)
     }
 
+    setPendingCrewMissionId(null)
     setNewTitle('')
     setNewPrompt('')
     setNewExpectedOutput('')
@@ -317,40 +400,13 @@ export default function TasksView() {
     const crew = crewsById.get(importCrewId)
     if (!crew) return
 
-    const existingIds = new Set(tasks.map((task) => task.id))
-    const importedTasks = (crew.tasks ?? [])
-      .filter((crewTask) => !existingIds.has(crewTask.id) && crewTask.description.trim())
-      .map((crewTask): WorkTask => {
-        const now = Date.now()
-        const timestamp = crew.updatedAt || now
-        return {
-          id: crewTask.id,
-          title: '',
-          prompt: crewTask.description,
-          expectedOutput: crewTask.expectedOutput,
-          workDir: '',
-          threadId: null,
-          runner: 'crew',
-          crewId: crew.id,
-          model: '',
-          scheduleExpr: '',
-          scheduleEnabled: false,
-          status: crewTask.status === 'completed'
-            ? 'completed'
-            : crewTask.status === 'failed'
-              ? 'failed'
-              : 'idle',
-          output: crewTask.output ?? null,
-          error: null,
-          lastRunAt: null,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }
-      })
+    const missionId = buildCrewMissionId(crew.id)
+    if (tasks.some((task) => task.id === missionId)) return
 
-    if (importedTasks.length === 0) return
-    upsertMany(importedTasks)
-    setSelectedTaskId(importedTasks[0].id)
+    const missionTask = buildCrewMissionTask(crew, crew.updatedAt || Date.now())
+    upsertMany([missionTask])
+    createTaskThread(missionTask, true)
+    setSelectedTaskId(missionTask.id)
   }
 
   const handleRunTask = async (task: WorkTask) => {

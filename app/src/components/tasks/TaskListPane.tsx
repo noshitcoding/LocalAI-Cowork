@@ -1,9 +1,9 @@
-import { Download, ListChecks } from 'lucide-react'
+import { ListChecks, Sparkles } from 'lucide-react'
 import type { Crew } from '../../stores/crewStore'
 import type { ScheduledTask } from '../../stores/coworkStore'
 import type { WorkTask } from '../../stores/workTasksStore'
 import { tr } from '../../i18n'
-import { deriveTaskName, formatWorkTaskStatus } from '../../engine/tasks/workTaskExecutionService'
+import { buildCrewMissionId, deriveTaskName, formatWorkTaskStatus } from '../../engine/tasks/workTaskExecutionService'
 import { findScheduledTask } from '../../engine/tasks/workTaskScheduleService'
 
 type TaskListPaneProps = {
@@ -29,9 +29,7 @@ export default function TaskListPane({
 }: TaskListPaneProps) {
   const importCrew = crews.find((crew) => crew.id === importCrewId) ?? null
   const existingTaskIds = new Set(tasks.map((task) => task.id))
-  const importableCount = importCrew?.tasks?.filter((task) => (
-    task.description.trim() && !existingTaskIds.has(task.id)
-  )).length ?? 0
+  const missionExists = importCrew ? existingTaskIds.has(buildCrewMissionId(importCrew.id)) : false
 
   return (
     <aside className="task-list-pane" data-doc-id="element:/tasks/task-list-pane" aria-label={tr('Tasks')}>
@@ -44,7 +42,7 @@ export default function TaskListPane({
 
       <div className="task-import-strip" data-doc-id="element:/tasks/crew-task-import">
         <label>
-          {tr('Crew templates')}
+          {tr('Crew mission')}
           <select className="ui-field" value={importCrewId} onChange={(e) => onImportCrewIdChange(e.target.value)}>
             {crews.length === 0 && (
               <option value="">{tr('No crews available')}</option>
@@ -54,9 +52,9 @@ export default function TaskListPane({
             ))}
           </select>
         </label>
-        <button type="button" className="ui-button ui-button--secondary" data-doc-id="button:/tasks/crew-task-import/import" onClick={onImportCrewTasks} disabled={!importCrewId || importableCount === 0}>
-          <Download size={15} aria-hidden="true" />
-          {tr('Import from crew')}
+        <button type="button" className="ui-button ui-button--secondary" data-doc-id="button:/tasks/crew-task-import/import" onClick={onImportCrewTasks} disabled={!importCrewId || missionExists}>
+          <Sparkles size={15} aria-hidden="true" />
+          {missionExists ? tr('Mission created') : tr('Create crew mission')}
         </button>
       </div>
 
@@ -64,7 +62,7 @@ export default function TaskListPane({
         <div className="task-list-empty">
           <span className="task-empty-icon" aria-hidden="true"><ListChecks size={20} /></span>
           <strong>{tr('Your queue is clear')}</strong>
-          <p className="hint-text">{tr('Create your first task above or import ready-made work from a crew.')}</p>
+          <p className="hint-text">{tr('Create your first task above or turn a crew into one complete mission.')}</p>
         </div>
       ) : (
         <div className="task-list-items" role="list">

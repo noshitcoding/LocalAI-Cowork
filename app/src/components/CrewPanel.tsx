@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
 import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind, type CrewProviderProfiles, type CrewRuntimeConfig } from '../stores/crewStore'
@@ -9,7 +10,7 @@ import CrewHistoryPanel from './crew/CrewHistoryPanel'
 import CrewRuntimePanel from './crew/CrewRuntimePanel'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { tr } from '../i18n'
-import { ChevronDown, ListCollapse, ListTree, MousePointerClick, Trash2, UsersRound, Workflow } from 'lucide-react'
+import { ArrowRight, ChevronDown, ListCollapse, ListTree, MousePointerClick, Trash2, UsersRound, Workflow } from 'lucide-react'
 
 const ROLE_OPTIONS: AgentRole[] = ['researcher', 'writer', 'reviewer', 'planner', 'executor', 'analyst', 'custom']
 const PROCESS_OPTIONS: Array<{ value: CrewProcess; label: string }> = [
@@ -312,6 +313,7 @@ openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string }) {
 }
 
 export default function CrewPanel() {
+  const navigate = useNavigate()
   const {
     crews,
     activeCrewId,
@@ -1449,8 +1451,17 @@ export default function CrewPanel() {
                 <div className="crew-task-rail">
                   <div className="crew-task-rail-copy">
                     <div className="crew-overview-kicker">{tr("Task-Flow")}</div>
-                    <strong className="crew-overview-title">{tr("Tasks are created, executed, and scheduled under /tasks")}</strong>
-                    <div className="crew-overview-description">{tr("This crew view controls parallelism, retry behavior, result sharing, and the runtime output format.")}</div>
+                    <strong className="crew-overview-title">{tr("Turn this crew into one complete mission")}</strong>
+                    <div className="crew-overview-description">{tr("Prepare the objective here, then create, run, and schedule the complete crew workflow in Tasks.")}</div>
+                    <button
+                      type="button"
+                      className="ui-button ui-button--primary"
+                      style={{ justifySelf: 'start' }}
+                      onClick={() => navigate(`/tasks?crew=${encodeURIComponent(activeCrew.id)}`)}
+                    >
+                      {tr("Prepare mission in Tasks")}
+                      <ArrowRight size={15} aria-hidden="true" />
+                    </button>
                   </div>
                   <div className="crew-task-rail-metrics">
                     <div className="crew-task-metric">

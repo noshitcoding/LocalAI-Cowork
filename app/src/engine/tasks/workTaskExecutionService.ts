@@ -1,6 +1,58 @@
 import type { WorkTask, WorkTaskStatus } from '../../stores/workTasksStore'
+import type { Crew } from '../../stores/crewStore'
 import { tr } from '../../i18n'
 import type { CrewExecutionResponse } from '../crew/workTaskCrewRuntime'
+
+export type CrewMissionDraft = {
+  title: string
+  prompt: string
+  expectedOutput: string
+  workDir: string
+  runner: 'crew'
+  crewId: string
+  model: string
+}
+
+export function buildCrewMissionId(crewId: string): string {
+  return `crew-mission-${crewId}`
+}
+
+export function buildCrewMissionDraft(crew: Pick<Crew, 'id' | 'name' | 'description' | 'tasks'>): CrewMissionDraft {
+  const crewTasks = crew.tasks ?? []
+  const firstStep = crewTasks.find((task) => task.description.trim())
+  const finalStep = [...crewTasks].reverse().find((task) => task.expectedOutput.trim())
+
+  return {
+    title: `${crew.name.trim() || 'Crew'} · Mission`,
+    prompt: crew.description.trim()
+      || firstStep?.description.trim()
+      || `Run the complete ${crew.name.trim() || 'crew'} workflow.`,
+    expectedOutput: finalStep?.expectedOutput.trim() || 'A complete, reviewed result.',
+    workDir: '',
+    runner: 'crew',
+    crewId: crew.id,
+    model: '',
+  }
+}
+
+export function buildCrewMissionTask(
+  crew: Pick<Crew, 'id' | 'name' | 'description' | 'tasks'>,
+  now = Date.now(),
+): WorkTask {
+  return {
+    id: buildCrewMissionId(crew.id),
+    ...buildCrewMissionDraft(crew),
+    threadId: null,
+    scheduleExpr: '',
+    scheduleEnabled: false,
+    status: 'idle',
+    output: null,
+    error: null,
+    lastRunAt: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
 
 export function buildCrewRunOutput(response: CrewExecutionResponse, fallbackTaskId: string): string {
   const directResult = response.taskResults.find((result) => result.taskId === fallbackTaskId)
