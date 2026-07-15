@@ -208,6 +208,23 @@ describe('SettingsView', () => {
     expect(buttons.length).toBe(9)
   })
 
+  it('filters settings categories by label and description', () => {
+    renderSettingsView()
+    const search = screen.getByRole('searchbox', { name: 'Search settings' })
+
+    fireEvent.change(search, { target: { value: 'file access' } })
+
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]).toHaveTextContent('Security & data')
+
+    fireEvent.click(tabs[0])
+    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: 'definitely missing' } })
+    expect(screen.getByRole('status')).toHaveTextContent('No settings sections match your search')
+  })
+
   /* 2. default category is AI & model */
   it('shows AI & model content by default', () => {
     renderSettingsView()

@@ -18,7 +18,19 @@ EXPECTED_CREWAI_VERSION = "1.15.2"
 RUNTIME_SCHEMA_VERSION = 2
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+for runtime_stream in (sys.stdout, sys.stderr):
+    try:
+        runtime_stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"crewai(?:\.|$)")
+
+
+def suppress_runtime_deprecation_warnings() -> None:
+    # CrewAI currently installs warning filters while importing some modules.
+    # Reapply this after its imports so deprecated internal fields do not appear
+    # as red runtime stderr events in the desktop UI.
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 def read_payload() -> dict:
@@ -511,6 +523,7 @@ def openrouter_model_id(model: str) -> str:
 def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) -> None:
     invalid_models: list[str] = []
     free_models: list[str] = []
+    has_openrouter_agent = False
 
     for agent_payload in agent_payloads:
         if not isinstance(agent_payload, dict):
@@ -518,12 +531,22 @@ def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) 
         provider = resolve_agent_provider(agent_payload)
         if provider != "openrouter":
             continue
+        has_openrouter_agent = True
         model = resolve_agent_model_label(payload, agent_payload)
         model_id = openrouter_model_id(model)
         if model_id in RETIRED_OPENROUTER_MODELS:
             invalid_models.append(f"{model} ({RETIRED_OPENROUTER_MODELS[model_id]})")
         elif is_openrouter_free_model(model):
             free_models.append(model)
+
+    if has_openrouter_agent:
+        provider_configs = payload.get("providerConfigs") or {}
+        openrouter_config = provider_configs.get("openRouter") or {}
+        if not str(openrouter_config.get("apiKey") or "").strip():
+            raise ValueError(
+                "OpenRouter API key is missing. Add it to the default OpenRouter LLM profile "
+                "or this Crew's OpenRouter provider profile before starting the Crew."
+            )
 
     if invalid_models:
         raise ValueError(
@@ -635,8 +658,9 @@ def configure_litellm_tls_verification(verify_tls_certificates: object) -> None:
 
 def build_llm(request: dict, agent: dict):
     from crewai import LLM  # type: ignore
+    suppress_runtime_deprecation_warnings()
 
-    provider = str(agent.get("providerKind") or "ollama").strip() or "ollama"
+    provider = resolve_agent_provider(agent)
     model_override = str(agent.get("modelOverride") or "").strip()
     request_config = request.get("config") or {}
     provider_configs = request.get("providerConfigs") or {}
@@ -659,11 +683,16 @@ def build_llm(request: dict, agent: dict):
         config = provider_configs.get("openRouter") or {}
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         model = normalize_model_name(provider, model_override or str(config.get("model") or ""))
+        api_key = str(config.get("apiKey") or "").strip()
+        if not api_key:
+            raise ValueError(
+                "OpenRouter API key is missing. Configure the default OpenRouter LLM profile before starting the Crew."
+            )
         timeout_seconds = max(1, parse_int(config.get("timeoutMs"), parse_int(request_config.get("timeoutMs"), 600_000)) // 1000)
         llm_kwargs = {
             "model": model,
             "base_url": str(config.get("baseUrl") or "https://openrouter.ai/api/v1"),
-            "api_key": str(config.get("apiKey") or "open-cowork"),
+            "api_key": api_key,
             "timeout": timeout_seconds,
             "max_tokens": 4096,
         }
@@ -682,6 +711,7 @@ def build_llm(request: dict, agent: dict):
 def build_agent(request: dict, agent_payload: dict):
     from crewai import Agent  # type: ignore
     from crew_tools import build_runtime_tools, unavailable_runtime_tools
+    suppress_runtime_deprecation_warnings()
 
     skills_markdown = str(agent_payload.get("skillsMarkdown") or "").strip()
     backstory = str(agent_payload.get("backstory") or "").strip()
@@ -897,6 +927,7 @@ def execute_definition(payload: dict) -> dict:
     )
 
     from crewai import Crew, Task  # type: ignore
+    suppress_runtime_deprecation_warnings()
 
     agents_by_id = {
         str(agent_payload.get("id") or f"agent-{index}"): build_agent(payload, agent_payload)

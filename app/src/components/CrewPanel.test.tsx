@@ -34,6 +34,10 @@ const baseAgent: CrewAgent = {
 
 describe('CrewPanel', () => {
   beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    })
     window.localStorage.removeItem('open-cowork-crew')
     hasTauriRuntimeMock.mockReset()
     hasTauriRuntimeMock.mockReturnValue(false)
@@ -173,6 +177,30 @@ describe('CrewPanel', () => {
 
     expect(migrateAgentsToPersonalityProfiles).not.toHaveBeenCalled()
     expect(usePersonalityStore.getState().loadPersonalities).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates a complete starter workflow from an empty-state preset', async () => {
+    useCrewStore.setState({
+      crews: [],
+      activeCrewId: null,
+      agents: [
+        { ...baseAgent, id: 'planner', name: 'Planner', role: 'planner' },
+        { ...baseAgent, id: 'executor', name: 'Executor', role: 'executor' },
+        { ...baseAgent, id: 'reviewer', name: 'Reviewer', role: 'reviewer' },
+      ],
+    })
+
+    await act(async () => {
+      render(<CrewPanel />)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Build crew/i }))
+
+    const created = useCrewStore.getState().crews[0]
+    expect(created.name).toBe('Build crew')
+    expect(created.description).toContain('complete working deliverable')
+    expect(created.tasks).toHaveLength(3)
+    expect(created.agents.map((agent) => agent.role)).toEqual(['planner', 'executor', 'reviewer'])
   })
 
   it('syncs member providers to the crew provider when changing the crew provider', async () => {

@@ -408,7 +408,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, _validate_public_url(newurl))
 
 
-def _fetch_public_text(url: str) -> tuple[str, str, int]:
+def _fetch_public_text(url: str) -> tuple[str, str, int, bool]:
     validated = _validate_public_url(url)
     request = urllib.request.Request(
         validated,
@@ -424,12 +424,13 @@ def _fetch_public_text(url: str) -> tuple[str, str, int]:
         if not allowed:
             raise ValueError(f"Unsupported web content type: {content_type}")
         raw = response.read(MAX_WEB_BYTES + 1)
-        if len(raw) > MAX_WEB_BYTES:
-            raise ValueError(f"Web response exceeds the {MAX_WEB_BYTES}-byte limit")
+        truncated = len(raw) > MAX_WEB_BYTES
+        if truncated:
+            raw = raw[:MAX_WEB_BYTES]
         charset = response.headers.get_content_charset() or "utf-8"
         body = raw.decode(charset, errors="replace")
         final_url = _validate_public_url(response.geturl())
-        return final_url, body, int(getattr(response, "status", 200))
+        return final_url, body, int(getattr(response, "status", 200)), truncated
 
 
 class WebFetchInput(BaseModel):
@@ -443,11 +444,12 @@ class WebFetchTool(BaseTool):
 
     def _run(self, url: str) -> str:
         def execute() -> str:
-            final_url, body, status = _fetch_public_text(url)
+            final_url, body, status, truncated = _fetch_public_text(url)
             extractor = _TextExtractor()
             extractor.feed(body)
             text = extractor.text()
-            return f"URL: {final_url}\nHTTP: {status}\n\n{_truncate(text, 20_000)}"
+            limit_note = "\nDownload truncated safely after 1000000 bytes." if truncated else ""
+            return f"URL: {final_url}\nHTTP: {status}{limit_note}\n\n{_truncate(text, 20_000)}"
 
         return _safe_result("web_fetch", execute)
 
@@ -591,13 +593,13 @@ class WebSearchTool(BaseTool):
                 raise ValueError("A non-empty search query is required")
             provider = "Bing"
             search_url = "https://www.bing.com/search?q=" + urllib.parse.quote_plus(normalized)
-            _, body, _ = _fetch_public_text(search_url)
+            _, body, _, _ = _fetch_public_text(search_url)
             parser: _BingParser | _DuckDuckGoParser = _BingParser()
             parser.feed(body)
             if not parser.results:
                 provider = "DuckDuckGo"
                 search_url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(normalized)
-                _, body, _ = _fetch_public_text(search_url)
+                _, body, _, _ = _fetch_public_text(search_url)
                 parser = _DuckDuckGoParser()
                 parser.feed(body)
             rendered: list[str] = []

@@ -5,7 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { CheckCircle2, ChevronDown, Clock3, Loader2, PanelRightOpen, ShieldAlert, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
@@ -131,6 +131,14 @@ export function buildProjectInstructionsPromptContext(
   const instructions = project?.instructions.trim()
   if (!project || !instructions) return ''
   return `Project instructions for "${project.title}":\n${instructions}`
+}
+
+export function isAssistantFailureContent(content: string): boolean {
+  const normalized = content.trim().toLocaleLowerCase()
+  return normalized.startsWith('llm request failed:')
+    || normalized.startsWith('authenticationerror:')
+    || normalized.startsWith('connectionerror:')
+    || normalized.startsWith('timeouterror:')
 }
 
 type McpCallResponse = {
@@ -3367,6 +3375,7 @@ export default function CoworkView() {
               )
               const displayedContent = resolveDisplayedAssistantContent(content, displayedThinkingContent)
               const canRegenerate = msg.role === 'assistant' && findPreviousUserMessage(msg.id) !== null
+              const assistantFailure = msg.role === 'assistant' && isAssistantFailureContent(displayedContent)
 
               // Check if this assistant message should be collapsed
               const isCollapsed = msg.role === 'assistant' && (() => {
@@ -3423,7 +3432,15 @@ export default function CoworkView() {
                       style={{ cursor: 'pointer', color: 'var(--text-muted)', fontStyle: 'italic', padding: '8px 0', border: 'none', background: 'transparent', textAlign: 'left' }}
                     >{tr("Output hidden. Show output")}</button>
                   ) : (
-                    <div className="msg-content">
+                    <div className={`msg-content${assistantFailure ? ' is-error' : ''}`} role={assistantFailure ? 'alert' : undefined}>
+                      {assistantFailure ? (
+                        <div className="msg-error-header">
+                          <span><ShieldAlert size={16} aria-hidden="true" /><strong>{tr('Response needs attention')}</strong></span>
+                          <button type="button" onClick={() => navigate('/settings')}>
+                            <Settings2 size={14} aria-hidden="true" />{tr('Open settings')}
+                          </button>
+                        </div>
+                      ) : null}
                       {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
                     </div>
                   )}

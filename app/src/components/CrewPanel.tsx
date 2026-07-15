@@ -23,6 +23,24 @@ const PROVIDER_OPTIONS: Array<{ value: CrewProviderKind; label: string }> = [
   { value: 'openrouter', label: 'OpenRouter' },
 ]
 
+const CREW_STARTER_PRESETS = [
+  {
+    id: 'research',
+    name: 'Research squad',
+    description: 'Find reliable evidence and turn it into a clear recommendation.',
+  },
+  {
+    id: 'build',
+    name: 'Build crew',
+    description: 'Plan, create, and verify a complete working deliverable.',
+  },
+  {
+    id: 'review',
+    name: 'Review council',
+    description: 'Audit an existing result, close gaps, and sign off the final output.',
+  },
+] as const
+
 type ProviderModelState = {
   loading: boolean
   endpoint?: string
@@ -551,7 +569,10 @@ export default function CrewPanel() {
 
   useEffect(() => {
     if (!pendingScrollCrewId || activeCrew?.id !== pendingScrollCrewId) return
-    activeCrewDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const activeCrewDetails = activeCrewDetailsRef.current
+    if (typeof activeCrewDetails?.scrollIntoView === 'function') {
+      activeCrewDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
     setPendingScrollCrewId(null)
   }, [activeCrew?.id, pendingScrollCrewId])
 
@@ -609,6 +630,13 @@ export default function CrewPanel() {
   const handleCreateCrew = () => {
     const nextName = crewName.trim() || buildDefaultCrewName(crews.map((crew) => crew.name))
     const id = createStarterCrew(nextName, nextName)
+    setPendingScrollCrewId(id)
+    setCrewName('')
+  }
+
+  const handleCreateStarterPreset = (preset: (typeof CREW_STARTER_PRESETS)[number]) => {
+    const presetName = tr(preset.name)
+    const id = createStarterCrew(presetName, tr(preset.description))
     setPendingScrollCrewId(id)
     setCrewName('')
   }
@@ -919,12 +947,26 @@ export default function CrewPanel() {
             <strong>{tr('Build your first operating team')}</strong>
             <div className="crew-empty-text">{tr('Create a crew, give each agent a clear role, then reuse the setup for repeatable work.')}</div>
           </div>
+          <div className="crew-starter-grid" aria-label={tr('Starter crews')}>
+            {CREW_STARTER_PRESETS.map((preset, index) => (
+              <button
+                key={preset.id}
+                type="button"
+                className="crew-starter-card"
+                onClick={() => handleCreateStarterPreset(preset)}
+              >
+                <span className="crew-starter-number" aria-hidden="true">0{index + 1}</span>
+                <strong>{tr(preset.name)}</strong>
+                <small>{tr(preset.description)}</small>
+              </button>
+            ))}
+          </div>
           <div className="crew-empty-steps" aria-label={tr('Crew setup steps')}>
             <span><strong>01</strong>{tr('Name the crew')}</span>
             <span><strong>02</strong>{tr('Add roles and tools')}</span>
             <span><strong>03</strong>{tr('Run and review')}</span>
           </div>
-          <button type="button" className="crew-toolbar-btn" onClick={() => crewNameInputRef.current?.focus()}>{tr('Create first crew')}</button>
+          <button type="button" className="crew-toolbar-btn secondary" onClick={() => crewNameInputRef.current?.focus()}>{tr('Name a custom crew')}</button>
         </div>
       ) : (
         <div className={`crew-grid${isCrewListVisible ? '' : ' crew-grid-list-hidden'}`}>

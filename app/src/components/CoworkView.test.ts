@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildProjectInstructionsPromptContext,
   buildProjectLinkPromptContext,
+  isAssistantFailureContent,
 } from './CoworkView'
 import type { ProjectResource } from '../stores/projectStore'
 
@@ -28,6 +29,12 @@ describe('CoworkView project context helpers', () => {
       title: 'Alpha',
       instructions: '   ',
     })).toBe('')
+  })
+
+  it('recognizes actionable assistant failures without flagging ordinary answers', () => {
+    expect(isAssistantFailureContent('LLM request failed: timeout')).toBe(true)
+    expect(isAssistantFailureContent('ConnectionError: provider unreachable')).toBe(true)
+    expect(isAssistantFailureContent('Here is the completed launch checklist.')).toBe(false)
   })
 
   it('fetches project links manually and reports non-blocking failures', async () => {

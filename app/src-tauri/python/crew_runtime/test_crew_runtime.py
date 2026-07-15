@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 RUNTIME_DIR = Path(__file__).resolve().parent
@@ -14,6 +15,8 @@ if str(RUNTIME_DIR) not in sys.path:
 
 import crew_tools
 import main as crew_runtime
+
+TEST_OPENROUTER_NEMOTRON_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 
 class CrewRuntimeStatusTests(unittest.TestCase):
@@ -36,6 +39,14 @@ class CrewRuntimeToolTests(unittest.TestCase):
                 "baseUrl": "http://127.0.0.1:11434",
                 "model": "qwen3:4b",
                 "timeoutMs": 30_000,
+            },
+            "providerConfigs": {
+                "openRouter": {
+                    "baseUrl": "https://openrouter.ai/api/v1",
+                    "model": TEST_OPENROUTER_NEMOTRON_MODEL,
+                    "apiKey": "test-key",
+                    "timeoutMs": 30_000,
+                }
             },
             "governance": {
                 "agentAccess": [
@@ -63,6 +74,7 @@ class CrewRuntimeToolTests(unittest.TestCase):
             "role": "executor",
             "goal": "Verify the runtime",
             "backstory": "A deterministic test agent.",
+            "providerKind": "openrouter",
             "tools": [
                 "read_file",
                 "edit_file",
@@ -118,6 +130,46 @@ class CrewRuntimeToolTests(unittest.TestCase):
 
         self.assertIn("Private, loopback", result)
 
+    def test_web_fetch_safely_extracts_oversized_html_instead_of_failing(self) -> None:
+        class FakeHeaders:
+            @staticmethod
+            def get_content_type() -> str:
+                return "text/html"
+
+            @staticmethod
+            def get_content_charset() -> str:
+                return "utf-8"
+
+        class FakeResponse:
+            headers = FakeHeaders()
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            @staticmethod
+            def read(_amount: int) -> bytes:
+                return ("<html><body><h1>CrewAI docs</h1>" + "useful research " * 80_000).encode("utf-8")
+
+            @staticmethod
+            def geturl() -> str:
+                return "https://example.com/docs"
+
+        fake_opener = mock.Mock()
+        fake_opener.open.return_value = FakeResponse()
+        with (
+            mock.patch.object(crew_tools, "_validate_public_url", side_effect=lambda value: value),
+            mock.patch.object(crew_tools.urllib.request, "build_opener", return_value=fake_opener),
+        ):
+            result = self._tools()["web_fetch"]._run("https://example.com/docs")
+
+        self.assertIn("Download truncated safely", result)
+        self.assertIn("CrewAI docs", result)
+        self.assertNotIn("ERROR", result)
+
     def test_office_workflow_creates_a_real_powerpoint(self) -> None:
         sections = json.dumps([
             {"title": "Research", "bullets": ["Search works", "Sources included"]},
@@ -141,6 +193,54 @@ class CrewRuntimeToolTests(unittest.TestCase):
 
 
 class CrewRuntimeTaskTests(unittest.TestCase):
+    def test_openrouter_respects_selected_models_and_agent_overrides(self) -> None:
+        request = {
+            "providerConfigs": {
+                "openRouter": {
+                    "model": "anthropic/claude-sonnet-4",
+                    "apiKey": "test-key",
+                }
+            }
+        }
+
+        configured = crew_runtime.resolve_agent_model_label(
+            request,
+            {"providerKind": "openrouter"},
+        )
+        overridden = crew_runtime.resolve_agent_model_label(
+            request,
+            {"providerKind": "openrouter", "modelOverride": "google/gemini-2.5-pro"},
+        )
+
+        self.assertEqual(configured, "anthropic/claude-sonnet-4")
+        self.assertEqual(overridden, "google/gemini-2.5-pro")
+
+    def test_openrouter_configuration_requires_an_api_key(self) -> None:
+        payload = {
+            "providerConfigs": {"openRouter": {"model": TEST_OPENROUTER_NEMOTRON_MODEL}},
+            "maxParallelTasks": 3,
+        }
+        agents = [{"providerKind": "openrouter"}]
+
+        with self.assertRaisesRegex(ValueError, "OpenRouter API key is missing"):
+            crew_runtime.validate_runtime_provider_models(payload, agents)
+
+    def test_free_openrouter_crews_are_serialized(self) -> None:
+        payload = {
+            "providerConfigs": {
+                "openRouter": {
+                    "model": TEST_OPENROUTER_NEMOTRON_MODEL,
+                    "apiKey": "test-key",
+                }
+            },
+            "maxParallelTasks": 3,
+        }
+        agents = [{"providerKind": "openrouter"}]
+
+        crew_runtime.validate_runtime_provider_models(payload, agents)
+
+        self.assertEqual(payload["maxParallelTasks"], 1)
+
     def test_tasks_are_stably_topologically_ordered(self) -> None:
         tasks = [
             {"id": "review", "context": ["implement"], "dependencies": []},
@@ -170,8 +270,9 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("OPEN_COWORK_RUN_CREW_INTEGRATION") == "1",
-    "Set OPEN_COWORK_RUN_CREW_INTEGRATION=1 to run the live Ollama/tool smoke test.",
+    os.environ.get("OPEN_COWORK_RUN_CREW_INTEGRATION") == "1"
+    and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
+    "Set OPEN_COWORK_RUN_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live OpenRouter smoke test.",
 )
 class CrewRuntimeIntegrationTests(unittest.TestCase):
     def test_live_research_coding_and_powerpoint_run(self) -> None:
@@ -185,7 +286,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                     "role": "researcher",
                     "goal": "Find verifiable sources.",
                     "backstory": "A careful web researcher.",
-                    "providerKind": "ollama",
+                    "providerKind": "openrouter",
                     "tools": ["web_search", "web_fetch"],
                     "allowDelegation": False,
                     "maxIterations": 3,
@@ -196,7 +297,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                     "role": "executor",
                     "goal": "Create and verify working code.",
                     "backstory": "A precise software engineer.",
-                    "providerKind": "ollama",
+                    "providerKind": "openrouter",
                     "tools": ["read_file", "edit_file", "bash"],
                     "allowDelegation": False,
                     "maxIterations": 4,
@@ -207,7 +308,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                     "role": "writer",
                     "goal": "Create real presentation artifacts.",
                     "backstory": "A concise presentation author.",
-                    "providerKind": "ollama",
+                    "providerKind": "openrouter",
                     "tools": ["office_workflow"],
                     "allowDelegation": False,
                     "maxIterations": 4,
@@ -216,7 +317,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
             tasks = [
                 {
                     "id": "research",
-                    "description": "/no_think\nUse web_search for 'CrewAI official documentation'. Return at least two source URLs from the tool result.",
+                    "description": "Use web_search for 'CrewAI official documentation'. Return at least two source URLs from the tool result.",
                     "expectedOutput": "At least two real source URLs.",
                     "agentId": "researcher",
                     "context": [],
@@ -225,7 +326,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                 },
                 {
                     "id": "code",
-                    "description": "/no_think\nUse edit_file to create artifacts/proof.py containing exactly print('crew tools work'), then use bash to execute it.",
+                    "description": "Use edit_file to create artifacts/proof.py containing exactly print('crew tools work'), then use bash to execute it.",
                     "expectedOutput": "The created file path and successful command output.",
                     "agentId": "coder",
                     "context": [],
@@ -234,7 +335,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                 },
                 {
                     "id": "presentation",
-                    "description": "/no_think\nUse office_workflow to create artifacts/proof.pptx with title 'Crew Tools Work' and two content slides.",
+                    "description": "Use office_workflow to create artifacts/proof.pptx with title 'Crew Tools Work' and two content slides.",
                     "expectedOutput": "The exact path of a valid PPTX artifact.",
                     "agentId": "presenter",
                     "context": [],
@@ -253,7 +354,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                 "id": "integration-smoke",
                 "name": "Integration Smoke Crew",
                 "description": "Verify research, coding, and PowerPoint tools.",
-                "executionGuidelines": "/no_think\nCall the required tool; do not answer from memory. Finish immediately after the required tool result is verified.",
+                "executionGuidelines": "Call the required tool; do not answer from memory. Finish immediately after the required tool result is verified.",
                 "knowledgeFocus": "Runtime verification",
                 "outputMode": "standard",
                 "retryCount": 0,
@@ -264,10 +365,21 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                 "cwd": str(root),
                 "config": {
                     "baseUrl": "http://127.0.0.1:11434",
-                    "model": os.environ.get("OPEN_COWORK_CREW_TEST_MODEL", "qwen3:4b"),
+                    "model": "unused-for-openrouter",
                     "timeoutMs": 60_000,
                 },
-                "providerConfigs": {},
+                "providerConfigs": {
+                    "openRouter": {
+                        "baseUrl": "https://openrouter.ai/api/v1",
+                        "model": os.environ.get(
+                            "OPEN_COWORK_CREW_TEST_MODEL",
+                            TEST_OPENROUTER_NEMOTRON_MODEL,
+                        ),
+                        "apiKey": os.environ["OPENROUTER_API_KEY"],
+                        "timeoutMs": 180_000,
+                        "verifyTlsCertificates": True,
+                    }
+                },
                 "agents": agents,
                 "tasks": tasks,
                 "governance": {

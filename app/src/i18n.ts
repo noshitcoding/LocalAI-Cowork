@@ -1438,7 +1438,21 @@ const resources = {
       "Workspace preferences": "Workspace preferences",
       "Workspace ready": "Workspace ready",
       "Workspace status": "Workspace status",
-      "Your queue is clear": "Your queue is clear"
+      "Your queue is clear": "Your queue is clear",
+      "Advanced setup": "Advanced setup",
+      "Optional output and workspace controls": "Optional output and workspace controls",
+      "Starter crews": "Starter crews",
+      "Research squad": "Research squad",
+      "Find reliable evidence and turn it into a clear recommendation.": "Find reliable evidence and turn it into a clear recommendation.",
+      "Build crew": "Build crew",
+      "Plan, create, and verify a complete working deliverable.": "Plan, create, and verify a complete working deliverable.",
+      "Review council": "Review council",
+      "Audit an existing result, close gaps, and sign off the final output.": "Audit an existing result, close gaps, and sign off the final output.",
+      "Name a custom crew": "Name a custom crew",
+      "Search settings": "Search settings",
+      "No settings sections match your search": "No settings sections match your search",
+      "Response needs attention": "Response needs attention",
+      "Open settings": "Open settings"
     }
   },
   "de": {
@@ -2852,7 +2866,21 @@ const resources = {
       "Workspace preferences": "Arbeitsbereichseinstellungen",
       "Workspace ready": "Arbeitsbereich bereit",
       "Workspace status": "Arbeitsbereichsstatus",
-      "Your queue is clear": "Deine Warteschlange ist leer"
+      "Your queue is clear": "Deine Warteschlange ist leer",
+      "Advanced setup": "Erweiterte Einrichtung",
+      "Optional output and workspace controls": "Optionale Ausgabe- und Arbeitsbereichsoptionen",
+      "Starter crews": "Startvorlagen fuer Crews",
+      "Research squad": "Recherche-Team",
+      "Find reliable evidence and turn it into a clear recommendation.": "Finde verlaessliche Belege und forme daraus eine klare Empfehlung.",
+      "Build crew": "Umsetzungs-Crew",
+      "Plan, create, and verify a complete working deliverable.": "Plane, erstelle und pruefe ein vollstaendig nutzbares Ergebnis.",
+      "Review council": "Pruefteam",
+      "Audit an existing result, close gaps, and sign off the final output.": "Pruefe ein bestehendes Ergebnis, schliesse Luecken und gib die finale Ausgabe frei.",
+      "Name a custom crew": "Eigene Crew benennen",
+      "Search settings": "Einstellungen durchsuchen",
+      "No settings sections match your search": "Keine Einstellungsbereiche passen zu deiner Suche",
+      "Response needs attention": "Antwort benoetigt Aufmerksamkeit",
+      "Open settings": "Einstellungen oeffnen"
     }
   }
 } as const

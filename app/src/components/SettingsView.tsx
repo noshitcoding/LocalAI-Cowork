@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, useSearchParams } from 'react-router-dom'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -18,6 +19,7 @@ import {
   Palette,
   PlugZap,
   Save,
+  Search,
   Settings2,
   ShieldCheck,
   SquareTerminal,
@@ -361,6 +363,17 @@ export default function SettingsView() {
   const categoryParam = searchParams.get('section')
   const activeCategory: CategoryKey = isCategoryKey(categoryParam) ? categoryParam : 'ai'
   const activeToolsetPolicy = toolsetPolicies.find((policy) => policy.id === activeToolsetPolicyId)
+  const [categorySearch, setCategorySearch] = useState('')
+  const normalizedCategorySearch = categorySearch.trim().toLocaleLowerCase()
+  const getVisibleCategories = (search: string) => {
+    const normalizedSearch = search.trim().toLocaleLowerCase()
+    return CATEGORIES.filter((category) => (
+      !normalizedSearch
+      || tr(category.label).toLocaleLowerCase().includes(normalizedSearch)
+      || tr(category.description).toLocaleLowerCase().includes(normalizedSearch)
+    ))
+  }
+  const visibleCategories = getVisibleCategories(categorySearch)
 
   const setActiveCategory = (category: CategoryKey) => {
     const nextParams = new URLSearchParams(searchParams)
@@ -372,6 +385,31 @@ export default function SettingsView() {
     setSearchParams(nextParams)
   }
 
+  const handleCategorySearchChange = (value: string) => {
+    setCategorySearch(value)
+    const matches = getVisibleCategories(value)
+    if (matches.length > 0 && !matches.some((category) => category.key === activeCategory)) {
+      setActiveCategory(matches[0].key)
+    }
+  }
+
+  const handleCategoryKeyDown = (event: KeyboardEvent<HTMLButtonElement>, category: CategoryKey) => {
+    const currentIndex = visibleCategories.findIndex((item) => item.key === category)
+    if (currentIndex < 0 || visibleCategories.length === 0) return
+
+    let nextIndex = currentIndex
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % visibleCategories.length
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + visibleCategories.length) % visibleCategories.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = visibleCategories.length - 1
+    else return
+
+    event.preventDefault()
+    const nextCategory = visibleCategories[nextIndex].key
+    setActiveCategory(nextCategory)
+    window.requestAnimationFrame(() => document.getElementById(getTabId(nextCategory))?.focus())
+  }
+
   const pref = <K extends keyof AppPreferences>(key: K) => ({
     checked: preferences[key] as boolean,
     onChange: (v: boolean) => setPreference(key, v as AppPreferences[K]),
@@ -380,26 +418,44 @@ export default function SettingsView() {
   return (
     <div className="settings-layout">
       {/* Sidebar navigation */}
-      <nav className="settings-sidebar" role="tablist" aria-label={tr("Settings categories")}>
-        {CATEGORIES.map((cat) => {
-          const Icon = cat.icon
-          return (
-            <button
-              key={cat.key}
-              id={getTabId(cat.key)}
-              type="button"
-              role="tab"
-              className={`settings-nav-item${activeCategory === cat.key ? ' active' : ''}`}
-              aria-selected={activeCategory === cat.key}
-              aria-controls={getPanelId(cat.key)}
-              onClick={() => setActiveCategory(cat.key)}
-            >
-              <Icon className="settings-nav-icon" size={16} strokeWidth={1.8} aria-hidden="true" />
-              <span className="settings-nav-label">{tr(cat.label)}</span>
-            </button>
-          )
-        })}
-      </nav>
+      <aside className="settings-sidebar">
+        <label className="settings-category-search">
+          <Search size={15} aria-hidden="true" />
+          <input
+            type="search"
+            value={categorySearch}
+            onChange={(event) => handleCategorySearchChange(event.currentTarget.value)}
+            aria-label={tr('Search settings')}
+            placeholder={tr('Search settings')}
+          />
+          {normalizedCategorySearch ? <span>{visibleCategories.length}</span> : null}
+        </label>
+        <nav className="settings-nav-list" role="tablist" aria-label={tr("Settings categories")}>
+          {visibleCategories.map((cat) => {
+            const Icon = cat.icon
+            return (
+              <button
+                key={cat.key}
+                id={getTabId(cat.key)}
+                type="button"
+                role="tab"
+                tabIndex={activeCategory === cat.key ? 0 : -1}
+                className={`settings-nav-item${activeCategory === cat.key ? ' active' : ''}`}
+                aria-selected={activeCategory === cat.key}
+                aria-controls={getPanelId(cat.key)}
+                onClick={() => setActiveCategory(cat.key)}
+                onKeyDown={(event) => handleCategoryKeyDown(event, cat.key)}
+              >
+                <Icon className="settings-nav-icon" size={16} strokeWidth={1.8} aria-hidden="true" />
+                <span className="settings-nav-label">{tr(cat.label)}</span>
+              </button>
+            )
+          })}
+          {visibleCategories.length === 0 ? (
+            <p className="settings-category-empty" role="status">{tr('No settings sections match your search')}</p>
+          ) : null}
+        </nav>
+      </aside>
 
       {/* Content area */}
       <div className="settings-content">
