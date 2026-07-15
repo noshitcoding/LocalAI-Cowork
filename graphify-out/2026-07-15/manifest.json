@@ -45,8 +45,8 @@
     "semantic_hash": ""
   },
   "app/scripts/i18n-audit.mjs": {
-    "mtime": 1780656133.0,
-    "ast_hash": "4f0b1028dffea99bbf39e67cbc15a583",
+    "mtime": 1784130184.7520826,
+    "ast_hash": "573ef4addbd140c151f99b698f243e0c",
     "semantic_hash": ""
   },
   "app/scripts/mcp/duckduckgo-websearch-server.mjs": {
@@ -65,8 +65,8 @@
     "semantic_hash": ""
   },
   "app/src-tauri/python/crew_runtime/main.py": {
-    "mtime": 1783002775.9324117,
-    "ast_hash": "81ff137638d44d5d87cfba18da1cb7a8",
+    "mtime": 1784131478.5512621,
+    "ast_hash": "ea54476fb832b0c2643bb3c23a740f24",
     "semantic_hash": ""
   },
   "app/src-tauri/src/artifact_pipeline.rs": {
@@ -110,8 +110,8 @@
     "semantic_hash": ""
   },
   "app/src-tauri/src/crew_python_bridge.rs": {
-    "mtime": 1783002191.9999828,
-    "ast_hash": "88359ffe5c439b6ddf9091a7401febbf",
+    "mtime": 1784130020.4685893,
+    "ast_hash": "10eeb70f0eb2daad608a6aa25737c6fd",
     "semantic_hash": ""
   },
   "app/src-tauri/src/db.rs": {
@@ -140,8 +140,8 @@
     "semantic_hash": ""
   },
   "app/src-tauri/src/lib.rs": {
-    "mtime": 1783788543.7273471,
-    "ast_hash": "ba79b86b7eb19584af7205e9e18f117d",
+    "mtime": 1784130057.0144866,
+    "ast_hash": "e5fe078212fe98d46fca90f6d4ce5669",
     "semantic_hash": ""
   },
   "app/src-tauri/src/main.rs": {
@@ -210,8 +210,8 @@
     "semantic_hash": ""
   },
   "app/src-tauri/tauri.conf.json": {
-    "mtime": 1781785900.0,
-    "ast_hash": "fe193addc6481e00f1e3eb4ae2784e70",
+    "mtime": 1784130006.7807465,
+    "ast_hash": "6384f207e9d8ed6281e029b47e2a10e4",
     "semantic_hash": ""
   },
   "app/src/App.test.tsx": {
@@ -270,8 +270,8 @@
     "semantic_hash": ""
   },
   "app/src/components/FeaturesView.tsx": {
-    "mtime": 1783874218.2992215,
-    "ast_hash": "44587b9e3d095e346dc15a437535ccce",
+    "mtime": 1784130097.318582,
+    "ast_hash": "a075b49e974941b7069aa9931ab2e527",
     "semantic_hash": ""
   },
   "app/src/components/HighlightedChatText.tsx": {
@@ -350,13 +350,13 @@
     "semantic_hash": ""
   },
   "app/src/components/ProjectView.test.tsx": {
-    "mtime": 1781773730.0,
-    "ast_hash": "f157ec734ec9d9c5c066c6b00c8b2e37",
+    "mtime": 1784130147.7035592,
+    "ast_hash": "84b9827c6886a287f6f5b138683801b2",
     "semantic_hash": ""
   },
   "app/src/components/ProjectView.tsx": {
-    "mtime": 1783001197.1376538,
-    "ast_hash": "3951bcad68138a859b67d6ca6e5e8992",
+    "mtime": 1784130039.0446079,
+    "ast_hash": "27c45ee5ee19e7300130908c2a916d86",
     "semantic_hash": ""
   },
   "app/src/components/RightSidebar.tsx": {
@@ -445,8 +445,8 @@
     "semantic_hash": ""
   },
   "app/src/components/crew/CrewRuntimePanel.tsx": {
-    "mtime": 1783876690.64952,
-    "ast_hash": "83fbdab186bd40d231a4d94e3c854bcf",
+    "mtime": 1784130030.0885437,
+    "ast_hash": "2f4607e4fbf26a44c4b07ee86ed8f916",
     "semantic_hash": ""
   },
   "app/src/components/tasks/TaskCreatePanel.tsx": {
@@ -540,8 +540,8 @@
     "semantic_hash": ""
   },
   "app/src/engine/crew/workTaskCrewRuntime.ts": {
-    "mtime": 1782999561.0398676,
-    "ast_hash": "6cf19fc405aac53beffae6cdef58ce09",
+    "mtime": 1784130085.2492359,
+    "ast_hash": "c567654e07b0d324fc5e928803fdad2c",
     "semantic_hash": ""
   },
   "app/src/engine/index.ts": {
@@ -640,8 +640,8 @@
     "semantic_hash": ""
   },
   "app/src/i18n.ts": {
-    "mtime": 1784128064.7831478,
-    "ast_hash": "056840a845d986f7edd85fe690e809a6",
+    "mtime": 1784130116.27691,
+    "ast_hash": "3f2269028d6f7b3c47ef365ed96d55b0",
     "semantic_hash": ""
   },
   "app/src/lib/utils.ts": {
@@ -690,8 +690,8 @@
     "semantic_hash": ""
   },
   "app/src/stores/coworkStore.ts": {
-    "mtime": 1783637545.2042122,
-    "ast_hash": "459e848ff73dde6d817f73110e74a4b2",
+    "mtime": 1784130057.0059655,
+    "ast_hash": "13549a830f755ffd90ae47fbb9e61179",
     "semantic_hash": ""
   },
   "app/src/stores/crewControlPlaneStore.ts": {
@@ -700,8 +700,8 @@
     "semantic_hash": ""
   },
   "app/src/stores/crewRuntimeStore.ts": {
-    "mtime": 1780518800.0,
-    "ast_hash": "7e8ca7e5cb652ebf4cb57ae93ab4f5f4",
+    "mtime": 1784130030.0855472,
+    "ast_hash": "2f07837f3f0e1f9e4f7fa791287df69b",
     "semantic_hash": ""
   },
   "app/src/stores/crewStore.test.ts": {
@@ -710,8 +710,8 @@
     "semantic_hash": ""
   },
   "app/src/stores/crewStore.ts": {
-    "mtime": 1783874282.392504,
-    "ast_hash": "3a9f517b375c40898cb8c132996bb269",
+    "mtime": 1784130057.008477,
+    "ast_hash": "e469906c39e2904576e03303cf821acd",
     "semantic_hash": ""
   },
   "app/src/stores/documentWorkspaceStore.test.ts": {
@@ -1145,8 +1145,8 @@
     "semantic_hash": ""
   },
   "app/src-tauri/python/crew_runtime/requirements.txt": {
-    "mtime": 1778506483.1790357,
-    "ast_hash": "ae34413ff3fa4eff0bebbb03eaab1287",
+    "mtime": 1784130006.7777462,
+    "ast_hash": "ff52ca0b8f49dbcf085637ed62d9f8c7",
     "semantic_hash": ""
   },
   "docs/ARCHITECTURE.md": {
@@ -1595,8 +1595,8 @@
     "semantic_hash": ""
   },
   "app/src/components/FeaturesView.test.tsx": {
-    "mtime": 1783874745.7228272,
-    "ast_hash": "b20e4ba4cf0bb41be2dce3cc5960a26b",
+    "mtime": 1784130147.7015593,
+    "ast_hash": "2a5ce83e562ac256b1fb97ffb47aab24",
     "semantic_hash": ""
   },
   "app/src/components/MemoryPanel.test.tsx": {
@@ -1652,6 +1652,21 @@
   "app/scripts/native-desktop-launch-smoke.ps1": {
     "mtime": 1783887115.7386796,
     "ast_hash": "ac9b613f96314cd7294eb48c17dfe3fb",
+    "semantic_hash": ""
+  },
+  "app/src-tauri/python/crew_runtime/crew_tools.py": {
+    "mtime": 1784130368.8126519,
+    "ast_hash": "0ca84a36f70638417d48c428ca46dfd8",
+    "semantic_hash": ""
+  },
+  "app/src-tauri/python/crew_runtime/test_crew_runtime.py": {
+    "mtime": 1784131275.4792387,
+    "ast_hash": "9d91e0b2bf2f1fc381c5906a8a3f3fc2",
+    "semantic_hash": ""
+  },
+  "app/src/engine/crew/workTaskCrewRuntime.test.ts": {
+    "mtime": 1784130664.093672,
+    "ast_hash": "46927e99ab8039a6b4f40b96e013be16",
     "semantic_hash": ""
   }
 }
