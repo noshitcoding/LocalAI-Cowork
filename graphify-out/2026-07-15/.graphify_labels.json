@@ -239,5 +239,9 @@
   "237": "8. Accessibility",
   "238": "7. Desktop- und Fensterverhalten",
   "239": "9. Visuelle und textliche Anforderungen",
-  "240": "notifications.ts"
+  "240": "notifications.ts",
+  "241": "readRouteRegistry",
+  "242": "task-detail-pane.md",
+  "243": "task-run-toolbar.md",
+  "244": "network-access-policy.md"
 }
