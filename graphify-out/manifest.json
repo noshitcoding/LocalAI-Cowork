@@ -255,13 +255,13 @@
     "semantic_hash": ""
   },
   "app/src/components/CrewPanel.test.tsx": {
-    "mtime": 1784133598.568003,
-    "ast_hash": "55146c5323daa7f6992d7e973d9e6b1e",
+    "mtime": 1784135409.511551,
+    "ast_hash": "8a3f2279804bd3059368e1fac0ffc0a1",
     "semantic_hash": ""
   },
   "app/src/components/CrewPanel.tsx": {
-    "mtime": 1784133543.9213326,
-    "ast_hash": "95bfc388bccee88991df36526ae9b598",
+    "mtime": 1784135384.4528952,
+    "ast_hash": "5ace6469026e3a668c965cb40f789621",
     "semantic_hash": ""
   },
   "app/src/components/CrewView.tsx": {
@@ -410,8 +410,8 @@
     "semantic_hash": ""
   },
   "app/src/components/TasksView.tsx": {
-    "mtime": 1784126261.4335234,
-    "ast_hash": "55c1bbdb318a5220e454c82473a5ef67",
+    "mtime": 1784135777.0166388,
+    "ast_hash": "c60bb6266e3f34c5d5ff44aef4eb12a3",
     "semantic_hash": ""
   },
   "app/src/components/TerminalDock.test.tsx": {
@@ -460,13 +460,13 @@
     "semantic_hash": ""
   },
   "app/src/components/tasks/TaskListPane.tsx": {
-    "mtime": 1784126261.4375238,
-    "ast_hash": "4d4ae83bdd4b0b8b26ae5cf21e5327b3",
+    "mtime": 1784135371.2711768,
+    "ast_hash": "11cbb8a2954450d664dee0ef317556c9",
     "semantic_hash": ""
   },
   "app/src/components/tasks/TaskPanels.test.tsx": {
-    "mtime": 1783014873.1927035,
-    "ast_hash": "35e15da0a0b4e73612d60f97fca0fb79",
+    "mtime": 1784135424.71519,
+    "ast_hash": "0ddc1ead2cd5a2cb75ca6c85506926d7",
     "semantic_hash": ""
   },
   "app/src/components/tasks/TaskRunToolbar.tsx": {
@@ -590,8 +590,8 @@
     "semantic_hash": ""
   },
   "app/src/engine/tasks/workTaskExecutionService.ts": {
-    "mtime": 1783006527.606143,
-    "ast_hash": "342cd67703b3b1a8df53107ae1cf48e4",
+    "mtime": 1784135324.7540765,
+    "ast_hash": "363b855396d0c2f5f0a39e787a1af9ba",
     "semantic_hash": ""
   },
   "app/src/engine/tasks/workTaskScheduleService.ts": {
@@ -640,8 +640,8 @@
     "semantic_hash": ""
   },
   "app/src/i18n.ts": {
-    "mtime": 1784132585.0950136,
-    "ast_hash": "2ca0bd2d4af339ce892a2eb7cbfe840b",
+    "mtime": 1784135455.7775044,
+    "ast_hash": "949ac8a286956731d7504aca38030693",
     "semantic_hash": ""
   },
   "app/src/lib/utils.ts": {
@@ -1672,6 +1672,16 @@
   "app/src/components/tasks/TaskCreatePanel.test.tsx": {
     "mtime": 1784132601.5341005,
     "ast_hash": "25f0e4ba8b0db8b348d42e4234524fcf",
+    "semantic_hash": ""
+  },
+  "app/src/components/TasksView.flow.test.tsx": {
+    "mtime": 1784135787.92216,
+    "ast_hash": "823613a938830bbbaf08bf0b3580639b",
+    "semantic_hash": ""
+  },
+  "app/src/engine/tasks/workTaskExecutionService.test.ts": {
+    "mtime": 1784135467.8380835,
+    "ast_hash": "c0efde79a2fad16abedf9e9328e3eb3c",
     "semantic_hash": ""
   }
 }
