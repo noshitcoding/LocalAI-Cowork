@@ -1803,5 +1803,20 @@
     "mtime": 1784214976.4310377,
     "ast_hash": "57e822ae79b9b072ea0fe5a69357e985",
     "semantic_hash": ""
+  },
+  "scripts/scan-secrets.mjs": {
+    "mtime": 1784215227.877041,
+    "ast_hash": "7f1088ea29c7645d321e6664d4514556",
+    "semantic_hash": ""
+  },
+  "SECURITY.md": {
+    "mtime": 1784215141.8731847,
+    "ast_hash": "f1c5e9f4eba675587f6da1600217fd39",
+    "semantic_hash": ""
+  },
+  "SUPPORT.md": {
+    "mtime": 1784215141.8771896,
+    "ast_hash": "976650251a1508d117b163837de9ede9",
+    "semantic_hash": ""
   }
 }

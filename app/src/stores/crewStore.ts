@@ -144,20 +144,6 @@ export type CrewPersonalityProfile = {
   isDefault?: boolean
 }
 
-export type CrewPersonalityProfile = {
-  id: string
-  name: string
-  description: string
-  role: AgentRole
-  goal: string
-  systemPrompt: string
-  skillsMarkdown: string
-  modelOverride: string | null
-  temperature?: number | null
-  icon?: string | null
-  isDefault?: boolean
-}
-
 type CrewTaskExecutionResponse = {
   taskId: string
   agentId: string

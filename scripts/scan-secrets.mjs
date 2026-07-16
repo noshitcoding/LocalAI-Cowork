@@ -20,9 +20,30 @@ const secretRules = [
 
 const privacyRules = [
   ['private-ipv4', /\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b/g],
-  ['windows-user-path', /\b[A-Za-z]:\\Users\\([^\\\s"'`<>]+)/g],
+  ['windows-user-path', /\b[A-Za-z]:[\\/]Users[\\/]([^\\/\s"'`<>]+)/g],
   ['email-address', /\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b/gi],
 ]
+
+function entropy(value) {
+  const counts = new Map()
+  for (const character of value) counts.set(character, (counts.get(character) ?? 0) + 1)
+  let result = 0
+  for (const count of counts.values()) {
+    const probability = count / value.length
+    result -= probability * Math.log2(probability)
+  }
+  return result
+}
+
+function allowedSecretMatch(rule, match, file) {
+  if (PLACEHOLDER.test(match[0])) return true
+  if (rule === 'private-key' && /(?:^|\/)resources\/python\/.*\/test\/certdata\//.test(file)) return true
+  if (rule === 'openai-style-key') {
+    const body = match[0].replace(/^sk-(?:proj-|svcacct-)?/, '')
+    return body.length < 32 || entropy(body) < 3.25
+  }
+  return false
+}
 
 function runGit(args, encoding = 'utf8') {
   const result = spawnSync('git', args, {
@@ -51,16 +72,21 @@ function lineNumber(text, offset) {
   return line
 }
 
-function allowedPrivacyMatch(rule, match) {
+function allowedPrivacyMatch(rule, match, file) {
+  if (rule === 'private-ipv4' && /(?:^|\/)network_safety\.rs$/.test(file)) {
+    return true
+  }
   if (rule === 'windows-user-path') {
     return /^(?:example|user|username|runneradmin|wdagtutilityaccount)$/i.test(match[1] ?? '')
   }
   if (rule === 'email-address') {
     const domain = (match[1] ?? '').toLowerCase()
+    const topLevel = domain.split('.').at(-1)
     return domain === 'example.com'
       || domain === 'example.test'
       || domain.endsWith('.example.com')
       || domain === 'users.noreply.github.com'
+      || ['png', 'jpg', 'jpeg', 'svg', 'webp', 'json'].includes(topLevel)
   }
   return false
 }
@@ -83,7 +109,7 @@ function scanCurrent() {
     for (const [rule, expression] of secretRules) {
       expression.lastIndex = 0
       for (const match of text.matchAll(expression)) {
-        if (PLACEHOLDER.test(match[0])) continue
+        if (allowedSecretMatch(rule, match, file)) continue
         findings.push({ file, line: lineNumber(text, match.index ?? 0), rule })
       }
     }
@@ -92,7 +118,7 @@ function scanCurrent() {
     for (const [rule, expression] of privacyRules) {
       expression.lastIndex = 0
       for (const match of text.matchAll(expression)) {
-        if (allowedPrivacyMatch(rule, match)) continue
+        if (allowedPrivacyMatch(rule, match, file)) continue
         findings.push({ file, line: lineNumber(text, match.index ?? 0), rule })
       }
     }
@@ -101,26 +127,47 @@ function scanCurrent() {
 }
 
 function scanHistory() {
-  const patch = runGit(['log', '--all', '--full-history', '--no-color', '--format=commit:%H', '-p', '--', '.'])
+  const commits = runGit(['rev-list', '--all']).trim().split(/\r?\n/).filter(Boolean)
   const findings = []
   const seen = new Set()
-  let commit = 'unknown'
 
-  for (const line of patch.split(/\r?\n/)) {
-    if (line.startsWith('commit:')) {
-      commit = line.slice('commit:'.length, 'commit:'.length + 12)
-      continue
-    }
-    if (!line.startsWith('+') && !line.startsWith('-')) continue
-    if (line.startsWith('+++') || line.startsWith('---')) continue
+  const highConfidenceEre = [
+    '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----',
+    'gh[pousr]_[A-Za-z0-9]{20,}',
+    'github_pat_[A-Za-z0-9_]{20,}',
+    'sk-(proj-|svcacct-)?[A-Za-z0-9_-]{32,}',
+    'AIza[0-9A-Za-z_-]{30,}',
+    '(AKIA|ASIA)[0-9A-Z]{16}',
+    'xox[baprs]-[A-Za-z0-9-]{20,}',
+    '(sk|rk)_(live|test)_[0-9A-Za-z]{20,}',
+  ].join('|')
+
+  const result = spawnSync('git', [
+    'grep', '-I', '-n', '-E', '-e', highConfidenceEre,
+    ...commits,
+    '--', '.',
+    ':(exclude)graphify-out/**',
+    ':(exclude)app/src-tauri/resources/python/**',
+  ], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  })
+  if (result.status !== 0 && result.status !== 1) throw new Error('git grep failed while scanning history')
+
+  for (const line of result.stdout.split(/\r?\n/).filter(Boolean)) {
+    const parsed = /^([0-9a-f]{40}):(.+?):(\d+):(.*)$/.exec(line)
+    if (!parsed) continue
+    const [, commit, file, , content] = parsed
     for (const [rule, expression] of secretRules) {
       expression.lastIndex = 0
-      const match = expression.exec(line)
-      if (!match || PLACEHOLDER.test(match[0])) continue
-      const key = `${commit}:${rule}`
-      if (!seen.has(key)) {
-        seen.add(key)
-        findings.push({ commit, rule })
+      for (const match of content.matchAll(expression)) {
+        if (allowedSecretMatch(rule, match, file)) continue
+        const key = `${file}:${rule}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          findings.push({ commit: commit.slice(0, 12), file, rule })
+        }
       }
     }
   }
@@ -130,15 +177,15 @@ function scanHistory() {
 try {
   const findings = HISTORY ? scanHistory() : scanCurrent()
   if (findings.length > 0) {
-    console.error(`${HISTORY ? 'History' : 'Current tree'} secret/privacy scan failed:`)
+    console.error(HISTORY ? 'History secret scan failed:' : 'Current tree secret/privacy scan failed:')
     for (const finding of findings) {
-      if ('file' in finding) console.error(`- ${finding.file}:${finding.line} [${finding.rule}]`)
-      else console.error(`- commit ${finding.commit} [${finding.rule}]`)
+      if (HISTORY) console.error(`- commit ${finding.commit} ${finding.file} [${finding.rule}]`)
+      else console.error(`- ${finding.file}:${finding.line} [${finding.rule}]`)
     }
     console.error('Matched values are intentionally not printed. Remove or rotate any real secret before pushing.')
     process.exit(1)
   }
-  console.log(`${HISTORY ? 'History' : 'Current tree'} secret/privacy scan passed.`)
+    console.log(HISTORY ? 'History secret scan passed.' : 'Current tree secret/privacy scan passed.')
 } catch (error) {
   console.error(`Secret scan could not run: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(2)

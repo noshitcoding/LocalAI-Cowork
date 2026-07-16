@@ -18,7 +18,7 @@ dataSource: coworkStore.scheduledTasks active state; workTasksStore schedule dra
 accessibility: Native checkbox and labeled expression field; save/remove buttons expose text labels and disabled states.
 tests: TaskPanels.test.tsx, TasksView.schedule.test.tsx, db.rs delete_work_task_removes_matching_schedule
 codeRefs: app/src/components/tasks/TaskSchedulerPanel.tsx, app/src/engine/tasks/workTaskScheduleService.ts
-screenshots: C:/Users/Riege/AppData/Local/Temp/open-cowork-qa/tasks-desktop.png
+screenshots: app/e2e/ui-quality.spec.ts-snapshots/tasks-wide-chromium-win32.png
 rationale: Scheduling belongs to WorkTask identity; the matching scheduled_tasks row uses the same id.
 ---
 

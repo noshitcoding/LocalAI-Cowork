@@ -18,7 +18,7 @@ dataSource: workTasksStore.updateTask; projectStore.projects through linked thre
 accessibility: Detail section has aria label; form fields use labels; invalid working folder displays inline text and disables Start.
 tests: TaskPanels.test.tsx
 codeRefs: app/src/components/tasks/TaskDetailPane.tsx
-screenshots: C:/Users/Riege/AppData/Local/Temp/open-cowork-qa/tasks-desktop.png
+screenshots: app/e2e/ui-quality.spec.ts-snapshots/tasks-wide-chromium-win32.png
 rationale: WorkTask owns execution fields; project ownership remains resolved through chat-thread membership.
 ---
 

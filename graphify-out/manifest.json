@@ -670,8 +670,8 @@
     "semantic_hash": ""
   },
   "app/src/stores/commandRegistryStore.ts": {
-    "mtime": 1784214866.937159,
-    "ast_hash": "d9239d4642a018daf1b02fe4a4727aa7",
+    "mtime": 1784216276.2396617,
+    "ast_hash": "690641bf419afc800cb5d5c8a0454fcb",
     "semantic_hash": ""
   },
   "app/src/stores/configStore.ts": {
@@ -700,13 +700,13 @@
     "semantic_hash": ""
   },
   "app/src/stores/crewStore.test.ts": {
-    "mtime": 1784214866.9436665,
-    "ast_hash": "aeb66cd0bd41c4918bece777892307b2",
+    "mtime": 1784216375.3572335,
+    "ast_hash": "a95c74ae918156fca9ad3f9c8f7e0cf3",
     "semantic_hash": ""
   },
   "app/src/stores/crewStore.ts": {
-    "mtime": 1784214866.9496882,
-    "ast_hash": "ee0b2c42425889739a834aabdbb68e9d",
+    "mtime": 1784216373.8787196,
+    "ast_hash": "6d19395019eafee78f8644318b68f100",
     "semantic_hash": ""
   },
   "app/src/stores/documentWorkspaceStore.test.ts": {
@@ -995,8 +995,8 @@
     "semantic_hash": ""
   },
   "app/vite.config.ts": {
-    "mtime": 1784214830.8372085,
-    "ast_hash": "21c04e7655fe77552c1ef56aa9320093",
+    "mtime": 1784216443.3783076,
+    "ast_hash": "3acc9eb6313778c0e3dc351e21b1d6f9",
     "semantic_hash": ""
   },
   "app/vitest.config.ts": {
@@ -1345,33 +1345,33 @@
     "semantic_hash": ""
   },
   "docs/product/elements/crew-task-import.md": {
-    "mtime": 1784214831.085214,
-    "ast_hash": "cbf483d66f2fee7f71273130dd98b86c",
+    "mtime": 1784215436.9894035,
+    "ast_hash": "1cb4484c016341888f98b13220aeec1d",
     "semantic_hash": ""
   },
   "docs/product/elements/task-create-panel.md": {
-    "mtime": 1784214831.0922122,
-    "ast_hash": "ca71591e01ff73ff3dc8cdbf38362f38",
+    "mtime": 1784215436.994134,
+    "ast_hash": "be4ae38b32229c18b1587cb1a5db0445",
     "semantic_hash": ""
   },
   "docs/product/elements/task-detail-pane.md": {
-    "mtime": 1784214831.0992107,
-    "ast_hash": "afd7ab645ad8211e04551eb769b517a6",
+    "mtime": 1784215436.999175,
+    "ast_hash": "0007de74f321206b39c2c6723bc3bd19",
     "semantic_hash": ""
   },
   "docs/product/elements/task-list-pane.md": {
-    "mtime": 1784214831.1022096,
-    "ast_hash": "866467b72ca4683b667d654a7578e56e",
+    "mtime": 1784215437.003186,
+    "ast_hash": "cce46ea2cbfd5a5e3836a9a77fd14efb",
     "semantic_hash": ""
   },
   "docs/product/elements/task-run-toolbar.md": {
-    "mtime": 1784214831.105207,
-    "ast_hash": "bee7bbd65e48ff8d54d0e16067925463",
+    "mtime": 1784215437.0071497,
+    "ast_hash": "c714f9c1e8a6a2806e11f4ba6e22b2dc",
     "semantic_hash": ""
   },
   "docs/product/elements/task-scheduler-panel.md": {
-    "mtime": 1784214831.1082106,
-    "ast_hash": "1ae34b7ffeeced4185e39038e0424ac8",
+    "mtime": 1784215437.0111847,
+    "ast_hash": "e91865168f18ea0a60066e461ad00f43",
     "semantic_hash": ""
   },
   "docs/product/flows/crew-task-import.md": {
@@ -1805,8 +1805,8 @@
     "semantic_hash": ""
   },
   "scripts/scan-secrets.mjs": {
-    "mtime": 1784215227.877041,
-    "ast_hash": "7f1088ea29c7645d321e6664d4514556",
+    "mtime": 1784215831.149266,
+    "ast_hash": "c646b77d9f887ff6b8cf204ebd1cef52",
     "semantic_hash": ""
   },
   "SECURITY.md": {
@@ -1817,6 +1817,11 @@
   "SUPPORT.md": {
     "mtime": 1784215141.8771896,
     "ast_hash": "976650251a1508d117b163837de9ede9",
+    "semantic_hash": ""
+  },
+  "graphify-out/memory/query_20260716_154345_where_are_credentials_and_private_data_handled__an.md": {
+    "mtime": 1784216625.0103726,
+    "ast_hash": "d43c8f8db1d1cee1636e98e26e22e764",
     "semantic_hash": ""
   }
 }

@@ -18,7 +18,7 @@ dataSource: workTasksStore.tasks; coworkStore.scheduledTasks; crewStore.crews
 accessibility: The pane has an aria label, task rows are buttons, and status metadata remains textual.
 tests: TaskPanels.test.tsx
 codeRefs: app/src/components/tasks/TaskListPane.tsx
-screenshots: C:/Users/Riege/AppData/Local/Temp/open-cowork-qa/tasks-desktop.png
+screenshots: app/e2e/ui-quality.spec.ts-snapshots/tasks-wide-chromium-win32.png
 rationale: Listing and importing are grouped because both operate on task selection and WorkTask inventory.
 ---
 

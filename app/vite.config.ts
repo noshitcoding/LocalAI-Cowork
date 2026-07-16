@@ -55,42 +55,37 @@ export default defineConfig({
       },
       output: {
         codeSplitting: {
+          includeDependenciesRecursively: false,
           groups: [
             {
               name: 'router',
               test: (id) => id.replaceAll('\\', '/').includes('react-router'),
               priority: 120,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'i18n',
               test: (id) => id.replaceAll('\\', '/').endsWith('/src/i18n.ts'),
               priority: 120,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'query',
               test: (id) => id.replaceAll('\\', '/').includes('@tanstack/react-query'),
               priority: 110,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'tauri',
               test: (id) => id.replaceAll('\\', '/').includes('@tauri-apps'),
               priority: 110,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'terminal-vendor',
               test: (id) => id.replaceAll('\\', '/').includes('@xterm'),
               priority: 110,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'icons',
               test: (id) => id.replaceAll('\\', '/').includes('lucide-react'),
               priority: 110,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'react-vendor',
@@ -101,13 +96,11 @@ export default defineConfig({
                   || normalizedId.includes('/node_modules/scheduler/')
               },
               priority: 110,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'engine-core',
               test: /[\\/]src[\\/]engine[\\/]/,
               priority: 100,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'cowork-support',
@@ -119,13 +112,11 @@ export default defineConfig({
                   || normalizedId.includes('/src/utils/chatAttachments')
               },
               priority: 100,
-              includeDependenciesRecursively: false,
             },
             {
               name: 'vendor',
               test: /[\\/]node_modules[\\/]/,
               priority: 10,
-              includeDependenciesRecursively: false,
             },
           ],
         },

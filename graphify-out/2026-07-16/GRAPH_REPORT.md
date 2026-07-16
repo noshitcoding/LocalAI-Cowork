@@ -1,16 +1,16 @@
 # Graph Report - Open_Cowork  (2026-07-16)
 
 ## Corpus Check
-- 319 files · ~332,844 words
+- 322 files · ~333,832 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 5104 nodes · 12781 edges · 223 communities (193 shown, 30 thin omitted)
+- 5126 nodes · 12805 edges · 246 communities (213 shown, 33 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 94 edges (avg confidence: 0.72)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `fc699c89`
+- Built from commit: `d7692e30`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -207,11 +207,15 @@
 - resolveShellNavigationTarget
 - main.rs
 - normalizeDesktopCoordinateSpace
+- CrewGovernancePanel.tsx
 - App.test.tsx
 - Error
 - Self
 - AppHandle
+- globalSearch.ts
+- taskStore.ts
 - Item
+- messageDisplay.ts
 - State
 - StatusCode
 - T
@@ -223,9 +227,28 @@
 - CrewRoleBindingRow
 - EngineRunArtifactRow
 - EngineRunCheckpointRow
+- modelCapabilities.ts
 - OfficeWorkflowResponse
 - RuntimeInstructionRow
 - WorkerSandboxRow
+- CoworkContextRail.tsx
+- documentWorkspaceStore.ts
+- gateway_health
+- engineRunRecords.ts
+- webSearchSources.ts
+- claudeBridge.ts
+- queryEngine.approval.test.ts
+- CrewRuntimeToolTests
+- scan-secrets.mjs
+- SettingsView.test.tsx
+- test_crew_runtime.py
+- followUpPrompt.ts
+- .list_steps
+- windowState.ts
+- Security Policy
+- Support
+- 5.5 Settings-Ansicht
+- registerAllBuiltinTools
 
 ## God Nodes (most connected - your core abstractions)
 1. `Database` - 369 edges
@@ -254,67 +277,63 @@
 ## Import Cycles
 - None detected.
 
-## Communities (223 total, 30 thin omitted)
+## Communities (246 total, 33 thin omitted)
 
 ### Community 0 - "Result"
-Cohesion: 0.04
-Nodes (145): CredentialStore, Default, backend_delete(), backend_ensure_local(), backend_exec(), backend_list(), backend_upsert(), claude_code_stop() (+137 more)
+Cohesion: 0.05
+Nodes (152): CredentialStore, Default, Database, ArtifactExportRow, ArtifactVersionRow, authorize_worker_sandbox_source(), backend_delete(), backend_ensure_local() (+144 more)
 
 ### Community 1 - "lib.rs"
-Cohesion: 0.05
-Nodes (88): authorize_worker_sandbox_source(), build_crew_memory_query(), build_effective_crew_tool_ids(), canonical_policy_tool_id(), collect_crew_governance_payload(), collect_crew_memory_payload(), crew_agent_can_delegate(), crew_execute() (+80 more)
+Cohesion: 0.08
+Nodes (45): build_crew_memory_query(), build_effective_crew_tool_ids(), collect_crew_governance_payload(), collect_crew_memory_payload(), crew_agent_can_delegate(), crew_execute(), crew_role_allows_execution(), crew_role_allows_tool_operations() (+37 more)
 
 ### Community 2 - "crewStore.ts"
-Cohesion: 0.05
-Nodes (66): buildCrewRunOutput(), createCrewStreamId(), CrewTaskMessageParams, handleCrewTaskMessage(), appendCrewLiveEntry(), applyCrewDefaultModel(), assignCrewAgentColor(), augmentCrewToolsForTask() (+58 more)
+Cohesion: 0.11
+Nodes (16): AskQuestionOption, ChatState, CrewLiveEntryCategory, CrewLiveSeverity, CrewLiveStatus, DbMessage, getActiveThread(), isTauriRuntime() (+8 more)
 
 ### Community 3 - "registry.ts"
 Cohesion: 0.03
-Nodes (65): agentTool, askUserTool, AskUserToolInput, bashTool, copyPathTool, createDirectoryTool, deleteFileTool, DesktopActionResponse (+57 more)
+Nodes (66): agentTool, askUserTool, AskUserToolInput, bashTool, copyPathTool, createDirectoryTool, deleteFileTool, DesktopActionResponse (+58 more)
 
 ### Community 4 - "String"
-Cohesion: 0.10
-Nodes (26): claude_code_list_commands(), claude_code_list_tools(), command_contains_path_traversal(), crew_run_events_list(), CrewGovernanceAgentAccessPayload, CrewGovernancePayload, desktop_launch_app(), DesktopLaunchRequest (+18 more)
+Cohesion: 0.09
+Nodes (27): ModelSwitcher(), DEFAULT_PERSONALITY_ICONS, EMPTY_FORM, formatRoleLabel(), PersonalityEditor(), PersonalityForm, PersonalitySelector(), randomId() (+19 more)
 
 ### Community 5 - "crew_python_bridge.rs"
 Cohesion: 0.13
 Nodes (58): build_status_from_json(), command_available(), crew_runtime_bootstrap(), crew_runtime_execute_request(), crew_runtime_status(), crew_runtime_status_internal(), crew_runtime_validate_definition(), CrewPythonBridge (+50 more)
 
 ### Community 6 - "CoworkView.tsx"
-Cohesion: 0.04
-Nodes (96): appendStoppedAssistantContent(), AskUserOption, AskUserPromptModel, buildChatExportPayload(), buildProjectInstructionsPromptContext(), buildProjectLinkPromptContext(), ChatExportFormat, clipVerboseText() (+88 more)
+Cohesion: 0.07
+Nodes (54): appendStoppedAssistantContent(), AskUserOption, AskUserPromptModel, buildChatExportPayload(), buildProjectInstructionsPromptContext(), buildProjectLinkPromptContext(), ChatExportFormat, clipVerboseText() (+46 more)
 
 ### Community 7 - "AppHandle"
-Cohesion: 0.20
-Nodes (17): OllamaEngineConfig, sampleOllamaMessage(), applyToolResultBudget(), autoCompact(), createTokenBudget(), estimateConversationTokens(), estimateTokens(), fallbackCompact() (+9 more)
+Cohesion: 0.18
+Nodes (18): OllamaEngineConfig, sampleOllamaMessage(), applyToolResultBudget(), autoCompact(), createTokenBudget(), estimateConversationTokens(), estimateTokens(), fallbackCompact() (+10 more)
 
 ### Community 8 - "App.tsx"
-Cohesion: 0.03
-Nodes (90): CrewExecutionLogRow, CrewExecutionResponse, CrewHistoryPanel(), CrewRunEventRow, CrewRunHistoryRow, formatTimestamp(), Props, CrewRuntimePanel() (+82 more)
+Cohesion: 0.04
+Nodes (70): CrewRuntimePanel(), formatTimestamp(), hasTauriRuntimeMock, formatDateTime(), getTabLabel(), MemoryPanel(), MemoryTab, randomId() (+62 more)
 
 ### Community 9 - "ollamaClient.ts"
 Cohesion: 0.07
 Nodes (53): blockContentToText(), buildOllamaChatRequest(), buildStartTagRegex(), buildToolLookup(), canDelayVisibleStream(), canonicalizeArgumentKey(), canUseTauriInvoke(), clipOllamaDebugText() (+45 more)
 
 ### Community 10 - "Option"
-Cohesion: 0.07
-Nodes (56): ConnectorPanel(), CoworkQuickPrompts(), CoworkQuickPromptsProps, GuidedOnboarding(), GuidedOnboardingProps, persistState(), readStoredState(), baseProps (+48 more)
-
-### Community 11 - "tr"
 Cohesion: 0.06
-Nodes (6): CrewRuntimeComplexIntegrationTests, CrewRuntimeIntegrationTests, CrewRuntimeParallelIntegrationTests, CrewRuntimeStatusTests, CrewRuntimeTaskTests, CrewRuntimeToolTests
+Nodes (81): TaskCreatePanel(), TaskCreatePanelProps, TaskDetailPane(), TaskDetailPaneProps, TaskProjectContext, TaskListPane(), TaskListPaneProps, baseTask (+73 more)
 
 ### Community 12 - "index.ts"
-Cohesion: 0.06
-Nodes (48): ANTHROPIC_MODELS, AnthropicAPIError, AnthropicConfig, APIContentBlock, APIMessage, APIToolDef, calculateCost(), COST_PER_MILLION (+40 more)
+Cohesion: 0.07
+Nodes (42): ANTHROPIC_MODELS, AnthropicAPIError, AnthropicConfig, APIContentBlock, APIMessage, APIToolDef, calculateCost(), COST_PER_MILLION (+34 more)
 
 ### Community 13 - "Database"
 Cohesion: 0.12
 Nodes (26): account_id(), account_ids_are_stable_and_do_not_expose_locator_values(), CredentialBackend, CredentialLocator, CredentialReadResponse, CredentialSetRequest, CredentialStoreError, empty_values_delete_existing_credentials() (+18 more)
 
 ### Community 14 - "index.ts"
-Cohesion: 0.09
-Nodes (49): streamMessages(), PermissionDecision, accumulateUsage(), AgentToolProgress, AssistantMessage, AttachmentMessage, BashProgress, ContentBlockDelta (+41 more)
+Cohesion: 0.08
+Nodes (54): PermissionDecision, getAllTools(), accumulateUsage(), AgentToolProgress, AssistantMessage, AttachmentMessage, BashProgress, ContentBlockDelta (+46 more)
 
 ### Community 15 - "ServiceError"
 Cohesion: 0.08
@@ -325,8 +344,8 @@ Cohesion: 0.13
 Nodes (51): build_chat_messages(), build_chat_prompt(), build_chat_turn_response(), build_chat_turn_response_preserves_tool_calls(), build_http_client(), chat_turn(), chat_turn_stream(), chat_turn_with_tools() (+43 more)
 
 ### Community 17 - "workTaskCrewRuntime.ts"
-Cohesion: 0.10
-Nodes (29): AddProjectResourceInput, addUniqueResources(), DbProject, DbProjectResource, DeleteProjectOptions, generateId(), getEnabledProjectAttachments(), getEnabledProjectLinks() (+21 more)
+Cohesion: 0.09
+Nodes (28): AddProjectResourceInput, addUniqueResources(), DbProject, DbProjectResource, DeleteProjectOptions, generateId(), getEnabledProjectAttachments(), getEnabledProjectLinks() (+20 more)
 
 ### Community 18 - "properties"
 Cohesion: 0.17
@@ -337,8 +356,8 @@ Cohesion: 0.23
 Nodes (37): ArtifactParseResponse, bind_pdfium(), extract_pdf_text_with_pdfium(), extract_text_for_llm(), extract_text_for_llm_limited(), parse_artifact(), parse_binary(), parse_csv() (+29 more)
 
 ### Community 20 - "useConfigStore"
-Cohesion: 0.16
-Nodes (19): BackendWorkTask, mapBackendWorkTask(), mergeTaskPatch(), migrateLegacyStorageToSqlite(), normalizeRunner(), normalizeStatus(), normalizeTask(), optionalString() (+11 more)
+Cohesion: 0.13
+Nodes (21): TaskRunToolbar(), TaskRunToolbarProps, BackendWorkTask, mapBackendWorkTask(), mergeTaskPatch(), migrateLegacyStorageToSqlite(), normalizeRunner(), normalizeStatus() (+13 more)
 
 ### Community 21 - "safeInvoke"
 Cohesion: 0.13
@@ -354,15 +373,15 @@ Nodes (32): Capability, capability_deserializes_from_policy_name(), capability_r
 
 ### Community 24 - "String"
 Cohesion: 0.06
-Nodes (17): CrewDefinitionVersionRow, EngineRunCheckpointRow, LearningOutcomeRow, ManagedProcessRow, MemoryProviderRow, PersonalityRow, project_thread_assignment_is_exclusive_and_delete_can_remove_threads(), ProjectResourceRow (+9 more)
+Nodes (15): CrewDefinitionVersionRow, CrewRunEventRow, EngineRunCheckpointRow, LearningOutcomeRow, ManagedProcessRow, MemoryProviderRow, PersonalityRow, ProjectRow (+7 more)
 
 ### Community 25 - "coworkStore.ts"
 Cohesion: 0.06
 Nodes (40): BackendConnectorTestResponse, BackendScheduledRunRow, BackendScheduledTaskRow, buildPolicySyncRequest(), CLAUDE_TOOL_CAPABILITIES, ClaudeToolCapability, ClaudeToolPreset, ConnectorConfig (+32 more)
 
 ### Community 26 - "configStore.ts"
-Cohesion: 0.17
-Nodes (21): normalizeSessions(), normalizeSessionSummary(), SessionLike, SessionSearchPanel(), toNumber(), clipText(), createFallbackUuid(), hydrateStoredMessage() (+13 more)
+Cohesion: 0.22
+Nodes (16): ChatMessage, loadThreadMessagesFromDb(), clipText(), createFallbackUuid(), hydrateStoredMessage(), isChatRole(), parsePersistedSessionMessage(), parseStoredChatMessagePayload() (+8 more)
 
 ### Community 27 - "context.rs"
 Cohesion: 0.09
@@ -378,11 +397,11 @@ Nodes (17): type, type, type, type, properties, accessibility, confirmation, han
 
 ### Community 30 - "chatStore.ts"
 Cohesion: 0.09
-Nodes (36): active_toolset_inference_detects_custom_edits(), backend_file_mutations_respect_the_active_toolset_policy(), build_policy_tool_states(), build_toolset_policy(), crew_tool_allowed_by_flags(), default_policy_enabled_tool_ids_vec(), default_policy_flags(), deny_rule_errors_do_not_echo_sensitive_targets() (+28 more)
+Nodes (36): active_toolset_inference_detects_custom_edits(), backend_file_mutations_respect_the_active_toolset_policy(), build_policy_tool_states(), build_toolset_policy(), canonical_policy_tool_id(), crew_tool_allowed_by_flags(), default_policy_enabled_tool_ids_vec(), default_policy_flags() (+28 more)
 
 ### Community 31 - "mcp.rs"
-Cohesion: 0.15
-Nodes (45): mcp_runtime_restart(), mcp_runtime_start(), call_tool(), format_call_result(), McpCallRequest, McpCallResponse, McpError, McpProbeResponse (+37 more)
+Cohesion: 0.16
+Nodes (43): mcp_probe(), call_tool(), format_call_result(), McpCallRequest, McpCallResponse, McpError, McpProbeResponse, McpRuntimeServerStatus (+35 more)
 
 ### Community 32 - "properties"
 Cohesion: 0.14
@@ -394,15 +413,15 @@ Nodes (40): APIMessage, APIToolDef, blocksToUserContent(), buildEndpoint(), buil
 
 ### Community 34 - "engineStore.ts"
 Cohesion: 0.07
-Nodes (27): sessionRecord, sessionSummary, getAllCommands(), EngineBackend, autoSaveSession(), createSession(), DbSessionRow, deleteSession() (+19 more)
+Nodes (31): sessionRecord, sessionSummary, getAllCommands(), EngineBackend, CrewTaskMessageParams, autoSaveSession(), DbSessionRow, deleteSession() (+23 more)
 
 ### Community 35 - "Option"
 Cohesion: 0.05
 Nodes (42): 10. Release-Gates, 11. Steuerung und Priorisierung, 12. Unmittelbar naechste Umsetzungsschritte, 1. Zielbild, 2. Verifizierter Ausgangspunkt und Fortschritt, 3. Produkt- und Architekturentscheidungen, 4. Ziel-Domaenen und neue Vertraege, 5. Themengebiete und Feature-Plan (+34 more)
 
 ### Community 36 - "personalityStore.ts"
-Cohesion: 0.20
-Nodes (7): audit_event_insert(), diagnostic_database_sinks_redact_before_persistence(), engine_event_retention_keeps_the_latest_bounded_window(), engine_run_artifacts_round_trip_and_cascade(), engine_run_events_are_ordered_and_summarized(), engine_runs_capture_gateway_metadata(), insert_test_engine_run()
+Cohesion: 0.10
+Nodes (16): audit_event_insert(), diagnostic_database_sinks_redact_before_persistence(), engine_event_retention_keeps_the_latest_bounded_window(), engine_run_artifacts_round_trip_and_cascade(), engine_run_events_are_ordered_and_summarized(), engine_runs_capture_gateway_metadata(), EngineRunArtifactRow, EngineRunEventRow (+8 more)
 
 ### Community 37 - "terminal_sessions.rs"
 Cohesion: 0.13
@@ -414,7 +433,7 @@ Nodes (14): BashTool, CopyPathTool, EditFileTool, GlobTool, GrepTool, MovePathTo
 
 ### Community 39 - "CrewLiveMonitor.tsx"
 Cohesion: 0.11
-Nodes (29): AgentStream, buildAgentStreams(), buildEntryMeta(), buildRollingWindowLines(), CATEGORY_LABELS, createEmptyCounts(), CrewLiveDisplayCategory, CrewLiveFilter (+21 more)
+Nodes (30): AgentStream, buildAgentStreams(), buildEntryMeta(), buildRollingWindowLines(), CATEGORY_LABELS, createEmptyCounts(), CrewLiveDisplayCategory, CrewLiveFilter (+22 more)
 
 ### Community 40 - "EventEnvelope"
 Cohesion: 0.14
@@ -425,16 +444,20 @@ Cohesion: 0.18
 Nodes (32): detect_app(), detect_app_for_kind(), detect_office_apps(), document_format(), DocumentPreviewRequest, DocumentPreviewResponse, export_office_to_pdf(), find_in_path() (+24 more)
 
 ### Community 42 - "LeftSidebar.tsx"
-Cohesion: 0.06
-Nodes (68): ArtifactExportRow, ArtifactVersionRow, audit_event(), build_exec_command_text(), capture_screenshot_for_display_payload(), crew_runs_list(), CrewDefinitionUpsertRequest, CrewRoleBindingUpsertRequest (+60 more)
+Cohesion: 0.08
+Nodes (41): WorkerSandboxRow, build_exec_command_text(), crew_runs_list(), CrewRunHistoryRow, db_save_task(), db_update_step(), db_update_thread_provider_settings(), emit_exec_chunk() (+33 more)
 
 ### Community 43 - "toolOrchestrator.ts"
 Cohesion: 0.09
-Nodes (24): agentsCommand, clearCommand, commandRegistry, compactCommand, costCommand, cwdCommand, debugCommand, executeCommand() (+16 more)
+Nodes (23): agentsCommand, clearCommand, commandRegistry, compactCommand, costCommand, cwdCommand, debugCommand, executeCommand() (+15 more)
+
+### Community 44 - "Vec"
+Cohesion: 0.23
+Nodes (4): CreateDirectoryTool, Path, _resolve_workspace_path(), _subprocess_environment()
 
 ### Community 45 - "claude_code_bridge.rs"
 Cohesion: 0.17
-Nodes (25): ClaudeCodeBridge, ClaudeCodeCommandInfo, ClaudeCodeConfig, ClaudeCodeProcess, ClaudeCodeResponse, ClaudeCodeStatus, ClaudeCodeStreamChunk, ClaudeCodeToolInfo (+17 more)
+Nodes (26): ClaudeCodeBridge, ClaudeCodeCommandInfo, ClaudeCodeConfig, ClaudeCodeProcess, ClaudeCodeResponse, ClaudeCodeStatus, ClaudeCodeStreamChunk, ClaudeCodeToolInfo (+18 more)
 
 ### Community 46 - "properties"
 Cohesion: 0.05
@@ -457,16 +480,16 @@ Cohesion: 0.06
 Nodes (39): items, type, type, items, type, pattern, type, type (+31 more)
 
 ### Community 51 - "Message"
-Cohesion: 0.16
-Nodes (19): _agent_access(), BashInput, build_runtime_tools(), _canonical_tool_id(), EditFileInput, GlobInput, GrepInput, OfficeWorkflowInput (+11 more)
+Cohesion: 0.13
+Nodes (22): _agent_access(), BashInput, build_runtime_tools(), _canonical_tool_id(), EditFileInput, _fetch_public_text(), GlobInput, GrepInput (+14 more)
 
 ### Community 52 - "audit_service.rs"
 Cohesion: 0.18
 Nodes (3): _BingParser, _DuckDuckGoParser, HTMLParser
 
 ### Community 53 - "projectStore.ts"
-Cohesion: 0.05
-Nodes (48): ExternalProviderHealthCheckResult, ExternalProviderModelsResult, isLlmProviderKind(), LlmProfilesPanel(), modelSuffix(), parseNumericInput(), ProfileHealthState, ProfileModelsState (+40 more)
+Cohesion: 0.06
+Nodes (44): ExternalProviderHealthCheckResult, ExternalProviderModelsResult, isLlmProviderKind(), LlmProfilesPanel(), modelSuffix(), parseNumericInput(), ProfileHealthState, ProfileModelsState (+36 more)
 
 ### Community 54 - "db.rs"
 Cohesion: 0.25
@@ -486,23 +509,23 @@ Nodes (33): app, security, trayIcon, windows, build, beforeBuildCommand, beforeD
 
 ### Community 59 - "terminalStore.ts"
 Cohesion: 0.07
-Nodes (36): getSessionLabel(), getStatusLabel(), TerminalDock(), TerminalDockProps, xtermInstances, randomId(), TerminalPanel(), invokeMock (+28 more)
+Nodes (33): getSessionLabel(), getStatusLabel(), TerminalDock(), TerminalDockProps, xtermInstances, createSession(), invokeMock, runAiCommandMock (+25 more)
 
 ### Community 60 - "properties"
 Cohesion: 0.06
 Nodes (34): type, type, type, pattern, type, accessibility, id, owner_element (+26 more)
 
 ### Community 61 - "registry.ts"
-Cohesion: 0.33
-Nodes (6): crew_approval_create(), crew_approval_list(), crew_approval_resolve(), CrewApprovalCreateRequest, CrewApprovalResolveRequest, CrewApprovalRow
+Cohesion: 0.08
+Nodes (23): CoworkQuickPrompts(), CoworkQuickPromptsProps, CrewExecutionLogRow, CrewExecutionResponse, CrewHistoryPanel(), CrewRunEventRow, CrewRunHistoryRow, formatTimestamp() (+15 more)
 
 ### Community 62 - "RunPanel.tsx"
-Cohesion: 0.18
-Nodes (9): EngineRunArtifactRow, EngineRunEventRow, EngineRunRow, InsightsEventRow, map_engine_run_artifact_row(), map_engine_run_event_row(), map_engine_run_row(), map_insights_row() (+1 more)
+Cohesion: 0.09
+Nodes (31): audit_event(), capture_screenshot_for_display_payload(), chat_turn_stream_cancel(), ChatStreamRegistry, fs_watch_list(), fs_watch_start(), fs_watch_stop(), local_docs_mcp_call() (+23 more)
 
 ### Community 63 - "QueryEngine"
-Cohesion: 0.12
-Nodes (28): apply_provider_headers(), build_provider_chat_urls(), build_provider_model_urls(), connector_test_reachability(), ConnectorReachabilityRequest, ConnectorReachabilityResponse, crew_provider_health_check(), crew_provider_models_list() (+20 more)
+Cohesion: 0.04
+Nodes (89): apply_provider_headers(), build_provider_chat_urls(), build_provider_model_urls(), command_contains_path_traversal(), connector_test_reachability(), ConnectorReachabilityRequest, ConnectorReachabilityResponse, crew_provider_health_check() (+81 more)
 
 ### Community 65 - "validate-agent-discipline.mjs"
 Cohesion: 0.08
@@ -517,16 +540,16 @@ Cohesion: 0.09
 Nodes (18): collectTsFindings(), deKeys, enKeys, files, germanInEnglishResources, ignoredDirs, isTestFile(), missingInDe (+10 more)
 
 ### Community 68 - "messageDisplay.ts"
-Cohesion: 0.05
-Nodes (105): append_audit_event(), integrity_report(), Option, Path, PathBuf, Result, String, Value (+97 more)
+Cohesion: 0.06
+Nodes (101): append_audit_event(), integrity_report(), Option, Path, PathBuf, Result, String, Value (+93 more)
 
 ### Community 69 - "globalSearch.ts"
-Cohesion: 0.05
-Nodes (17): CrewApprovalRow, CrewDefinitionRow, CrewRoleBindingRow, CrewRunEventRow, Database, map_worker_sandbox_row(), MemoryEntryRow, Option (+9 more)
+Cohesion: 0.04
+Nodes (10): CrewApprovalRow, CrewDefinitionRow, CrewRoleBindingRow, map_worker_sandbox_row(), MemoryEntryRow, Option, RuntimeInstructionRow, scheduled_run_claim_prevents_overlap_and_completion_updates_the_same_row() (+2 more)
 
 ### Community 70 - "RequestContext"
-Cohesion: 0.16
-Nodes (22): NoopAuditSink, RequestContext, DateTime, Utc, EventSink, NoopEventSink, Send, Sync (+14 more)
+Cohesion: 0.13
+Nodes (25): AuditSink, NoopAuditSink, Send, Sync, RequestContext, DateTime, Utc, EventSink (+17 more)
 
 ### Community 71 - "compilerOptions"
 Cohesion: 0.07
@@ -537,8 +560,8 @@ Cohesion: 0.09
 Nodes (22): 1. Anforderungsliste (Requirements List), 2. Einzelne Tasks (Individual Tasks), 3. Qualitätskriterien (Quality Criteria), 4. Technische Hinweise, 5. Umsetzungsreihenfolge (Implementation Order), Anforderungen: Task-Chat Collapse & Projekt-Lösch-Button Entfernung, Betroffene Dateien, Chat-Typ „Task“ identifizieren (+14 more)
 
 ### Community 73 - "lifecycle.ts"
-Cohesion: 0.06
-Nodes (52): buildEngineUserInput(), ArtifactVersionResponse, createDocument(), DocumentPreviewPage, DocumentPreviewResponse, DocumentWorkspaceItem, DocumentWorkspaceState, inferFormat() (+44 more)
+Cohesion: 0.10
+Nodes (35): buildEngineUserInput(), allowFolderAttachments(), AttachmentPromptBuildResult, buildAttachmentPromptContext(), collectSnippets(), extractQueryTerms(), ExtractTextLimitedResponse, FsAttachmentMetadataEntry (+27 more)
 
 ### Community 74 - "ollamaStreaming.ts"
 Cohesion: 0.16
@@ -549,32 +572,32 @@ Cohesion: 0.22
 Nodes (8): 10. Abnahmekriterien fuer die UI, 11. Priorisierung fuer Open_Cowork, 12. Bezug zu bestehender Dokumentation, 1. Zweck und Scope, 2. UI-Ziele, Muss fuer den naechsten UI-Ausbau, Soll nachziehen, UI-Anforderungsliste fuer Open_Cowork
 
 ### Community 76 - "memoryStore.ts"
-Cohesion: 0.10
-Nodes (38): aggregate_gateway_status(), build_local_gateway_subsystems(), check_audit_writable(), claude_code_send_stream(), configure_pdfium_search_paths(), document_render_preview(), enforce_file_tool_policy(), ensure_run_file_access() (+30 more)
+Cohesion: 0.08
+Nodes (36): claude_code_send_stream(), configure_pdfium_search_paths(), crew_approval_resolve(), CrewApprovalResolveRequest, document_render_preview(), enforce_file_tool_policy(), ensure_run_file_access(), execute_task() (+28 more)
 
 ### Community 77 - "workTasksStore.ts"
 Cohesion: 0.14
 Nodes (14): Backup und Recovery (Initialfassung), Build, CI-Gates (aktueller Stand), Development und Betrieb, Empfohlene Betriebsgrenzen (vorlaeufig), Fall A: `npm run tauri build` erzeugt keine EXE, Fall B: Ollama nicht erreichbar, Fall C: Build in CI rot (+6 more)
 
 ### Community 78 - "terminal_backends.rs"
-Cohesion: 0.06
-Nodes (81): attach_process_tree(), configure_process_tree(), ProcessTreeGuard, Child, Option, Result, Send, terminate_platform_tree() (+73 more)
+Cohesion: 0.08
+Nodes (62): attach_process_tree(), configure_process_tree(), ProcessTreeGuard, Child, Option, Result, Send, terminate_platform_tree() (+54 more)
 
 ### Community 79 - "INDEX.md"
 Cohesion: 0.06
 Nodes (16): Crew Task Import Control, Task Create Panel, Task Detail Pane, Task List Pane, Task Run Toolbar, Task Scheduler Panel, Crew Task Import Flow, WorkTask Run And Schedule Flow (+8 more)
 
 ### Community 80 - "5. Anforderungen pro Ansicht"
-Cohesion: 0.18
-Nodes (11): 5.1 Welcome Screen, 5.4 Features-Ansicht, 5.5 Settings-Ansicht, 5. Anforderungen pro Ansicht, UI-020 Einstieg und Orientierung, UI-021 Guided Onboarding, UI-050 Feature-Katalog, UI-051 Aktivierung und Konfiguration (+3 more)
+Cohesion: 0.17
+Nodes (12): 5.1 Welcome Screen, 5.3 Plan-, Approval- und Task-UI, 5.4 Features-Ansicht, 5. Anforderungen pro Ansicht, UI-020 Einstieg und Orientierung, UI-021 Guided Onboarding, UI-040 Planansicht, UI-041 Approval-Interaktion (+4 more)
 
 ### Community 81 - "check-budgets.mjs"
 Cohesion: 0.10
 Nodes (16): assets, assetsDir, budgets, cssAssets, cssGzipBytes, distDir, indexHtml, indexHtmlPath (+8 more)
 
 ### Community 82 - "5.5 Settings-Ansicht"
-Cohesion: 0.07
-Nodes (37): queryClient, isSensitiveKey(), normalizeKey(), redactAtDepth(), redactRecord(), redactSensitiveData(), redactText(), ChatThread (+29 more)
+Cohesion: 0.16
+Nodes (17): queryClient, isSensitiveKey(), normalizeKey(), redactAtDepth(), redactRecord(), redactSensitiveData(), redactText(), redactCrewExecutionLog() (+9 more)
 
 ### Community 83 - "memory_engine.rs"
 Cohesion: 0.17
@@ -585,8 +608,8 @@ Cohesion: 0.05
 Nodes (37): dependencies, class-variance-authority, clsx, i18next, lucide-react, react, react-dom, react-i18next (+29 more)
 
 ### Community 85 - "SkillPanel.tsx"
-Cohesion: 0.40
-Nodes (5): 5.3 Plan-, Approval- und Task-UI, UI-040 Planansicht, UI-041 Approval-Interaktion, UI-042 Task-Lifecycle, UI-043 Schritt- und Artefakttransparenz
+Cohesion: 0.23
+Nodes (20): delete_reference(), deleting_a_reference_removes_its_resolvable_value(), failed_commit_preserves_previous_revision(), is_reference(), locator(), parse_reference(), prepare(), PreparedSecureConfig (+12 more)
 
 ### Community 86 - "useTerminalStore"
 Cohesion: 0.40
@@ -609,8 +632,8 @@ Cohesion: 0.24
 Nodes (17): next_daily(), next_run_from_expression(), next_weekday(), normalize(), parse_interval_duration(), parse_time(), parse_weekday(), parses_daily_expression() (+9 more)
 
 ### Community 91 - "Vec"
-Cohesion: 0.03
-Nodes (103): url, CrewControlPlanePanel(), formatTimestamp(), Props, CrewGovernancePanel(), formatApprovalStatus(), formatApprovalType(), formatTimestamp() (+95 more)
+Cohesion: 0.04
+Nodes (59): url, buildDefaultCrewName(), CREW_STARTER_PRESETS, CrewPanel(), CrewProviderModelsResult, downloadCrewJson(), getCrewDiagnostics(), getProviderKey() (+51 more)
 
 ### Community 92 - "compilerOptions"
 Cohesion: 0.10
@@ -641,8 +664,8 @@ Cohesion: 0.12
 Nodes (16): 1. Type Definitions, 2. Store Updates, 3. Engine Core Updates, 4. Database Schema, 5. UI Components, 6. CSS, Benefits, Fallback Behavior (+8 more)
 
 ### Community 99 - "5.3 Plan-, Approval- und Task-UI"
-Cohesion: 0.09
-Nodes (34): add_column_if_missing(), configure_connection(), connection_pragmas_enforce_integrity_and_contention_policy(), corrupt_database_files_and_invalid_data_directories_are_rejected(), create_pre_migration_backup(), creating_an_existing_session_does_not_replace_its_frozen_snapshot(), current_schema_version(), database_error() (+26 more)
+Cohesion: 0.11
+Nodes (29): add_column_if_missing(), configure_connection(), connection_pragmas_enforce_integrity_and_contention_policy(), corrupt_database_files_and_invalid_data_directories_are_rejected(), create_pre_migration_backup(), current_schema_version(), database_error(), database_test_dir() (+21 more)
 
 ### Community 100 - "Feature Implementierungsvergleich"
 Cohesion: 0.12
@@ -657,16 +680,16 @@ Cohesion: 0.25
 Nodes (14): build_summary(), CategoryCount, EventSummary, InsightsEventRequest, InsightsQueryRequest, InsightsSummary, record_event(), Arc (+6 more)
 
 ### Community 103 - "Current Architecture"
-Cohesion: 0.10
-Nodes (28): detectModelCapabilities(), DefaultLlmProfileIds, getResolvedProvider(), CHAT_PROVIDER_LABELS, CHAT_PROVIDER_OPTIONS, ChatProviderContext, ChatProviderKind, ChatProviderState (+20 more)
+Cohesion: 0.12
+Nodes (25): formatDate(), getProjectTitleForThread(), ProjectView(), readDraggedThreadId(), DefaultLlmProfileIds, getResolvedProvider(), getProjectForThread(), extractFileAttachmentsFromFileList() (+17 more)
 
 ### Community 104 - "FEHLENDE_FEATURES_IM_CODE.md"
 Cohesion: 0.13
 Nodes (14): 10) Security und Compliance (Kapitel 7.10, IDs 216-230), 11) Enterprise Controls, Monitoring, Betrieb (Kapitel 7.11, IDs 231-240), 12) UX Foundation und Produktivitaetsfeatures (Kapitel 7.1 UX, IDs 241-250), 13) Performance und Stabilitaet (Kapitel 7.1 Performance, IDs 251-254), 14) QA- und Security-Testtiefe (Anforderungsnah, ueber aktuellen Stand hinaus), 1) Plattform und Windows-Basis (Kapitel 7.1, IDs 1-25), 3) Task-Orchestrierung (fortgeschritten) und Personalisierung (Kapitel 7.3, IDs 41-70, 171-185), 4) Dateisystem und File Safety Layer (Kapitel 7.4, IDs 71-100) (+6 more)
 
 ### Community 105 - "duckduckgo-websearch-server.mjs"
-Cohesion: 0.06
-Nodes (56): canOpenArtifact(), CoworkContextRail(), CoworkContextRailProps, STATUS_LABELS, baseProps, safeInvokeMock, task, toolStatusIcon() (+48 more)
+Cohesion: 0.19
+Nodes (19): asBoolean(), asNullableString(), asNumber(), asRecord(), asString(), asTimestampString(), EngineRunCheckpointRow, EngineRunRow (+11 more)
 
 ### Community 106 - "documentWorkspaceStore.ts"
 Cohesion: 0.31
@@ -681,8 +704,8 @@ Cohesion: 0.26
 Nodes (17): copy_dir_recursive(), CopyStats, destroy_workspace_snapshot(), prepare_workspace_snapshot(), HashSet, Path, PathBuf, Result (+9 more)
 
 ### Community 109 - "modelCapabilities.ts"
-Cohesion: 0.08
-Nodes (30): ClaudeMcpServer, exampleJson(), McpCallResponse, McpProbeResponse, McpRuntimeServerStatus, McpTool, McpView(), parseEnv() (+22 more)
+Cohesion: 0.09
+Nodes (27): normalizeSessions(), normalizeSessionSummary(), SessionLike, SessionSearchPanel(), toNumber(), CATEGORIES, CategoryKey, EMPTY_GATEWAY_HEALTH (+19 more)
 
 ### Community 110 - "WorkTaskRow"
 Cohesion: 0.14
@@ -693,7 +716,7 @@ Cohesion: 0.13
 Nodes (12): Agent Runtime Boundary, Backend Boundary, Current Architecture, Frontend Boundary, Persistence Boundary, System Shape, Transitional Notes, Current Canonical Docs (+4 more)
 
 ### Community 112 - "README.md"
-Cohesion: 0.17
+Cohesion: 0.16
 Nodes (8): AgentCoordinator, AgentInstance, appendAgentRunEvent(), DEFAULT_AGENTS, stringifyRunPayload(), EngineConfig, EngineEvent, AgentDefinition
 
 ### Community 113 - "Decisions"
@@ -703,6 +726,10 @@ Nodes (12): CD-001: Local-first is the default product model, CD-002: Projects o
 ### Community 115 - "build.rs"
 Cohesion: 0.36
 Nodes (11): cargo_home(), is_dir(), main(), prepare_webview2_loader(), push_build_candidates(), push_registry_candidates(), Option, Path (+3 more)
+
+### Community 116 - "Architektur"
+Cohesion: 0.13
+Nodes (18): ActiveTab, PipelinePanel(), OllamaConfig, BackendPipelineExecutionResult, getLocalPipelines(), hasString(), isRecord(), normalizeRpcPipeline() (+10 more)
 
 ### Community 117 - "Decisions"
 Cohesion: 0.17
@@ -717,8 +744,8 @@ Cohesion: 0.18
 Nodes (11): addGroup(), buildDuplicateRows(), buildMissingHints(), catalogKindTitle(), countDocs(), formatDocElements(), generateCatalogMarkdown(), generateIndex() (+3 more)
 
 ### Community 120 - "Desktop Smoke Test"
-Cohesion: 0.67
-Nodes (3): _fetch_public_text(), _SafeRedirectHandler, _validate_public_url()
+Cohesion: 0.11
+Nodes (9): creating_an_existing_session_does_not_replace_its_frozen_snapshot(), delete_thread_cascades(), messages_round_trip(), migration_creates_tables(), project_thread_assignment_is_exclusive_and_delete_can_remove_threads(), ProjectResourceRow, projects_resources_and_threads_round_trip(), session_search_finds_linked_persisted_chat_messages() (+1 more)
 
 ### Community 121 - "Decisions"
 Cohesion: 0.20
@@ -845,16 +872,16 @@ Cohesion: 0.33
 Nodes (3): PRODUCT_SURFACES, ProductSurface, VIEWPORTS
 
 ### Community 180 - "sensitive_data.rs"
-Cohesion: 0.14
-Nodes (22): bounded_json_stays_valid_and_redacted(), bounds_utf8_text_without_splitting_characters(), is_sensitive_key(), normalized_key(), recursively_redacts_sensitive_keys_and_nested_environment_maps(), redact_and_bound_json_text(), redact_and_bound_optional_json(), redact_and_bound_optional_text() (+14 more)
+Cohesion: 0.13
+Nodes (23): bounded_json_stays_valid_and_redacted(), bounds_utf8_text_without_splitting_characters(), diagnostic_label(), is_sensitive_key(), normalized_key(), recursively_redacts_sensitive_keys_and_nested_environment_maps(), redact_and_bound_json_text(), redact_and_bound_optional_json() (+15 more)
 
 ### Community 181 - "gateway_health"
 Cohesion: 0.04
-Nodes (95): chat_turn(), chat_turn_stream(), chat_turn_stream_cancel(), ChatStreamRegistry, ChatTurnRequest, claude_code_send(), crew_stop(), CrewExecutionRegistry (+87 more)
+Nodes (89): chat_turn(), chat_turn_stream(), ChatTurnRequest, crew_stop(), CrewGovernanceAgentAccessPayload, CrewGovernancePayload, CrewMemoryEntryPayload, CrewMemoryPayload (+81 more)
 
 ### Community 182 - "webSearchSources.ts"
-Cohesion: 0.07
-Nodes (20): streamOllamaMessagesMock, streamOllamaMessagesMock, QueryEngine, chunk(), DEFAULT_ORCHESTRATOR_CONFIG, ToolExecutionEvent, ToolExecutionResult, ToolOrchestrator (+12 more)
+Cohesion: 0.11
+Nodes (16): streamOllamaMessagesMock, QueryEngine, chunk(), DEFAULT_ORCHESTRATOR_CONFIG, ToolExecutionEvent, ToolExecutionResult, ToolOrchestrator, ToolOrchestratorConfig (+8 more)
 
 ### Community 183 - "Audit Integrity and Threat Model Contract"
 Cohesion: 0.29
@@ -877,8 +904,8 @@ Cohesion: 0.29
 Nodes (6): Compatibility matrix, Hermes Memory and Command Adoption, Intentional differences, Memory lifecycle, Scope, Slash-command contract
 
 ### Community 192 - "7. Desktop- und Fensterverhalten"
-Cohesion: 0.04
-Nodes (81): App(), AppRoutes(), BackendPolicyState, confirmAppClose(), CoworkView, CrewView, FeaturesView, hasRunningWork() (+73 more)
+Cohesion: 0.05
+Nodes (76): App(), AppRoutes(), BackendPolicyState, confirmAppClose(), CoworkView, CrewView, FeaturesView, hasRunningWork() (+68 more)
 
 ### Community 194 - "8. Accessibility"
 Cohesion: 0.40
@@ -916,6 +943,10 @@ Nodes (7): type, source_files, tests, items, type, items, type
 Cohesion: 0.29
 Nodes (7): pattern, items, type, items, type, owned_elements, primary_actions
 
+### Community 203 - "CrewGovernancePanel.tsx"
+Cohesion: 0.14
+Nodes (17): CrewControlPlanePanel(), formatTimestamp(), Props, CrewGovernancePanel(), formatApprovalStatus(), formatApprovalType(), formatTimestamp(), GOVERNANCE_MODES (+9 more)
+
 ### Community 204 - "App.test.tsx"
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: warum wird mein Opencowork nicht bei einer Google suche angezigt?, Source Nodes
@@ -932,9 +963,21 @@ Nodes (3): $schema, title, type
 Cohesion: 0.50
 Nodes (3): $schema, title, type
 
+### Community 208 - "globalSearch.ts"
+Cohesion: 0.15
+Nodes (17): SessionSummary, ChatThread, buildSearchIndex(), BuildSearchIndexInput, compact(), filterSearchIndex(), getTaskSearchTitle(), normalize() (+9 more)
+
+### Community 209 - "taskStore.ts"
+Cohesion: 0.13
+Nodes (16): isTauriRuntime(), normalizeRiskLevel(), normalizeStepState(), normalizeTaskStatus(), PermissionConfig, persistInvoke(), PlanApproval, PlanApprovalStatus (+8 more)
+
 ### Community 210 - "Item"
 Cohesion: 0.67
 Nodes (3): pattern, type, id
+
+### Community 211 - "messageDisplay.ts"
+Cohesion: 0.26
+Nodes (14): AssistantPresentationOptions, buildModelDebugContent(), escapeRegExp(), extractThinkingContent(), extractThinkingFallback(), resolveAssistantPresentation(), resolveDisplayedAssistantContent(), resolveDisplayedThinkingContent() (+6 more)
 
 ### Community 212 - "State"
 Cohesion: 0.67
@@ -953,8 +996,8 @@ Cohesion: 0.67
 Nodes (3): tests, items, type
 
 ### Community 216 - "chatStore.ts"
-Cohesion: 0.06
-Nodes (31): FeaturesView(), isWorkbenchTab(), TABS, WorkbenchTab, ProcessPanel(), emptyForm, formatDateTime(), getRunModeLabel() (+23 more)
+Cohesion: 0.05
+Nodes (39): FeaturesView(), isWorkbenchTab(), TABS, WorkbenchTab, ClaudeMcpServer, exampleJson(), McpCallResponse, McpProbeResponse (+31 more)
 
 ### Community 217 - "CrewDefinitionRow"
 Cohesion: 0.67
@@ -980,25 +1023,85 @@ Nodes (3): items, type, layout_regions
 Cohesion: 0.67
 Nodes (3): items, type, loading_states
 
+### Community 224 - "modelCapabilities.ts"
+Cohesion: 0.26
+Nodes (12): detectModelCapabilities(), ChatProviderState, detectProviderModelCapabilities(), hasPersistedVisionBlock(), inferFamily(), markModelVisionUnsupported(), ModelCapabilities, normalizeModelKey() (+4 more)
+
+### Community 228 - "CoworkContextRail.tsx"
+Cohesion: 0.19
+Nodes (12): canOpenArtifact(), CoworkContextRail(), CoworkContextRailProps, STATUS_LABELS, baseProps, safeInvokeMock, task, toolStatusIcon() (+4 more)
+
+### Community 229 - "documentWorkspaceStore.ts"
+Cohesion: 0.20
+Nodes (13): ArtifactVersionResponse, createDocument(), DocumentPreviewPage, DocumentPreviewResponse, DocumentWorkspaceItem, DocumentWorkspaceState, inferFormat(), isDocumentWorkspacePath() (+5 more)
+
+### Community 230 - "gateway_health"
+Cohesion: 0.31
+Nodes (14): aggregate_gateway_status(), build_local_gateway_subsystems(), check_audit_writable(), gateway_health(), gateway_payload(), gateway_probe(), gateway_provider_probe(), gateway_status() (+6 more)
+
+### Community 231 - "engineRunRecords.ts"
+Cohesion: 0.31
+Nodes (11): asNullableString(), asNumber(), asRecord(), asString(), asTimestampString(), EngineRunArtifactRow, EngineRunEventRow, ISO_EPOCH (+3 more)
+
+### Community 232 - "webSearchSources.ts"
+Cohesion: 0.35
+Nodes (9): HighlightedChatText(), HighlightedChatTextProps, appendWebSearchSources(), extractWebSearchSources(), formatWebSearchSourcesBlock(), mergeWebSearchSources(), normalizeUrl(), parseWebSearchSourcesFromToolResult() (+1 more)
+
+### Community 233 - "claudeBridge.ts"
+Cohesion: 0.20
+Nodes (9): ClaudePermissionMode, buildClaudeSystemAddendum(), compactHistoryForPrompt(), isToolDeniedByRules(), ParsedSlashCommand, parseSlashCommand(), SLASH_COMMAND_DEFINITIONS, SlashCommandDefinition (+1 more)
+
+### Community 236 - "scan-secrets.mjs"
+Cohesion: 0.31
+Nodes (9): allowedPrivacyMatch(), HISTORY, isText(), lineNumber(), privacyRules, runGit(), scanCurrent(), scanHistory() (+1 more)
+
+### Community 237 - "SettingsView.test.tsx"
+Cohesion: 0.22
+Nodes (4): checkOllamaStatusMock, fetchOllamaModelsMock, invokeMock, saveDialogMock
+
+### Community 238 - "test_crew_runtime.py"
+Cohesion: 0.22
+Nodes (4): CrewRuntimeComplexIntegrationTests, CrewRuntimeIntegrationTests, CrewRuntimeParallelIntegrationTests, CrewRuntimeStatusTests
+
+### Community 239 - "followUpPrompt.ts"
+Cohesion: 0.42
+Nodes (7): buildClarificationContinuationPrompt(), ClarificationContext, CLARIFYING_QUESTION_PATTERNS, FollowUpPromptMessage, inferClarificationContext(), isLikelyClarifyingQuestion(), isLikelyShortFollowUpAnswer()
+
+### Community 241 - "windowState.ts"
+Cohesion: 0.48
+Nodes (6): canUseDesktopApis(), captureAndStoreWindowState(), loadFromStorage(), saveToStorage(), setupWindowStatePersistence(), StoredWindowState
+
+### Community 242 - "Security Policy"
+Cohesion: 0.33
+Nodes (5): Public Security Improvements, Report A Vulnerability, Security Design Notes, Security Policy, Supported Versions
+
+### Community 243 - "Support"
+Cohesion: 0.33
+Nodes (5): Before Opening An Issue, Safe Diagnostic Sharing, Scope, Support, Where To Ask
+
+### Community 244 - "5.5 Settings-Ansicht"
+Cohesion: 0.50
+Nodes (4): 5.5 Settings-Ansicht, UI-060 Einstellungsarchitektur, UI-061 Konfigurationsklarheit, UI-062 Rueckmeldung und Tests in Einstellungen
+
 ## Knowledge Gaps
-- **1284 isolated node(s):** `ProductSurface`, `PRODUCT_SURFACES`, `VIEWPORTS`, `name`, `private` (+1279 more)
+- **1295 isolated node(s):** `ProductSurface`, `PRODUCT_SURFACES`, `VIEWPORTS`, `name`, `private` (+1290 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **30 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **33 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Database` connect `globalSearch.ts` to `Result`, `lib.rs`, `String`, `String`, `chatStore.ts`, `personalityStore.ts`, `LeftSidebar.tsx`, `sensitive_data.rs`, `gateway_health`, `registry.ts`, `getToolDefinitions`, `RunPanel.tsx`, `RequestContext`, `WorkTaskRow`, `memoryStore.ts`, `terminal_backends.rs`, `memory_engine.rs`, `skill_engine.rs`, `5.3 Plan-, Approval- und Task-UI`, `insights.rs`, `workTasksStore.ts`?**
+- **Why does `Database` connect `Result` to `lib.rs`, `String`, `chatStore.ts`, `personalityStore.ts`, `LeftSidebar.tsx`, `sensitive_data.rs`, `gateway_health`, `RunPanel.tsx`, `getToolDefinitions`, `QueryEngine`, `globalSearch.ts`, `RequestContext`, `WorkTaskRow`, `memoryStore.ts`, `terminal_backends.rs`, `memory_engine.rs`, `skill_engine.rs`, `5.3 Plan-, Approval- und Task-UI`, `insights.rs`, `gateway_health`, `.list_steps`, `workTasksStore.ts`, `Desktop Smoke Test`?**
   _High betweenness centrality (0.073) - this node is a cross-community bridge._
-- **Why does `CoworkView()` connect `CoworkView.tsx` to `7. Desktop- und Fensterverhalten`, `crewStore.ts`, `Current Architecture`, `App.tsx`, `lifecycle.ts`, `Option`, `gateway_health`, `terminalStore.ts`, `workTaskCrewRuntime.ts`, `5.5 Settings-Ansicht`, `webSearchSources.ts`, `chatStore.ts`, `crew_provider_health_check`, `Vec`?**
+- **Why does `CoworkView()` connect `CoworkView.tsx` to `crewStore.ts`, `App.tsx`, `Option`, `workTaskCrewRuntime.ts`, `webSearchSources.ts`, `crew_provider_health_check`, `registry.ts`, `7. Desktop- und Fensterverhalten`, `lifecycle.ts`, `taskStore.ts`, `5.5 Settings-Ansicht`, `messageDisplay.ts`, `chatStore.ts`, `Vec`, `Current Architecture`, `webSearchSources.ts`, `duckduckgo-websearch-server.mjs`, `claudeBridge.ts`, `gateway_health`, `followUpPrompt.ts`?**
   _High betweenness centrality (0.035) - this node is a cross-community bridge._
 - **Why does `_TextExtractor` connect `crew_provider_health_check` to `Message`, `audit_service.rs`?**
   _High betweenness centrality (0.023) - this node is a cross-community bridge._
 - **What connects `ProductSurface`, `PRODUCT_SURFACES`, `VIEWPORTS` to the rest of the system?**
-  _1284 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1295 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Result` be split into smaller, more focused modules?**
-  _Cohesion score 0.038314176245210725 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.045224817009410945 - nodes in this community are weakly interconnected._
 - **Should `lib.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.04524076147816349 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07878787878787878 - nodes in this community are weakly interconnected._
 - **Should `crewStore.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.05126452494873548 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.1067193675889328 - nodes in this community are weakly interconnected._

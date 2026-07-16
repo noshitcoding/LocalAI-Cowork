@@ -18,7 +18,7 @@ dataSource: crewStore.crews[].tasks; workTasksStore.upsertMany
 accessibility: Native select and text button; button disabled when no importable crew is selected.
 tests: TaskPanels.test.tsx, crew-task-import.md flow doc, i18n:audit
 codeRefs: app/src/components/TasksView.tsx, app/src/components/tasks/TaskListPane.tsx
-screenshots: C:/Users/Riege/AppData/Local/Temp/open-cowork-qa/tasks-desktop.png
+screenshots: app/e2e/ui-quality.spec.ts-snapshots/tasks-wide-chromium-win32.png
 rationale: This replaces the old automatic crew-task cloning effect.
 ---
 

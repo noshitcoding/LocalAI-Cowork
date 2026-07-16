@@ -1,0 +1,18 @@
+title = "Open Cowork secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated graph data and vendored Python runtime are scanned at their source, not as duplicated/generated artifacts"
+paths = [
+  '''^graphify-out/''',
+  '''^app/src-tauri/resources/python/''',
+]
+
+[[allowlists]]
+description = "Synthetic values used by security and persistence tests"
+regexTarget = "match"
+regexes = [
+  '''(?i)(sk-test|example\.test|must-not-reach-disk|top-secret-value|url-secret|provider-secret|environment-secret)''',
+]

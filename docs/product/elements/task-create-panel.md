@@ -18,7 +18,7 @@ dataSource: workTasksStore.addTask; crewStore.crews for crew options; configStor
 accessibility: Labels wrap all form controls; create button disables until prompt and runner requirements are valid.
 tests: TaskPanels.test.tsx covers invalid workDir behavior through detail; TasksView create flow is covered by typecheck and integration store tests.
 codeRefs: app/src/components/tasks/TaskCreatePanel.tsx
-screenshots: C:/Users/Riege/AppData/Local/Temp/open-cowork-qa/tasks-desktop.png
+screenshots: app/e2e/ui-quality.spec.ts-snapshots/tasks-wide-chromium-win32.png
 rationale: Creation is separated from list/detail so TasksView can orchestrate state without owning the form markup.
 ---
 
