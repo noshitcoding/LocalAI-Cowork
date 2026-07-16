@@ -152,6 +152,91 @@ describe('crewStore', () => {
       ],
     })
 
+    expect(crew).toBeTruthy()
+    expect(state.activeCrewId).toBe(crewId)
+    expect(crew?.agents).toHaveLength(3)
+    expect(crew?.tasks).toHaveLength(3)
+    expect(crew?.tasks[0].dependencies).toEqual([])
+    expect(crew?.tasks[1].dependencies).toEqual([crew?.tasks[0].id])
+    expect(crew?.tasks[2].dependencies).toEqual([crew?.tasks[1].id])
+    expect(crew?.knowledgeFocus).toBe('Prepare and verify the release candidate')
+  })
+
+  it('syncs global profile fields while preserving crew-specific permissions', () => {
+    const localA = { ...duplicateAgent, id: 'agent-a', personalityId: 'pers-shared', tools: ['read_file'], enabled: true }
+    const localB = { ...duplicateAgent, id: 'agent-b', personalityId: 'pers-shared', tools: ['edit_file'], enabled: false }
+    useCrewStore.setState({
+      agents: [localA],
+      crews: [
+        {
+          id: 'crew-a',
+          name: 'Crew A',
+          description: '',
+          executionSubject: 'workspace-user',
+          executionGuidelines: '',
+          knowledgeFocus: '',
+          governanceMode: 'allow-all',
+          outputMode: 'standard',
+          stopOnFailure: false,
+          retryCount: 0,
+          managerReviewEnabled: true,
+          managerReviewGuidelines: '',
+          shareAllTaskOutputs: true,
+          sharedOutputCharLimit: 0,
+          defaultProvider: 'ollama',
+          defaultModel: '',
+          providerProfiles: {
+            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+          },
+          agents: [localA],
+          tasks: [],
+          runtimeConfig: { enabled: false, baseUrl: '', model: '', timeoutMs: 600000 },
+          process: 'sequential',
+          managerAgentId: null,
+          verbose: true,
+          maxRpm: 10,
+          maxParallelTasks: 3,
+          status: 'idle',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'crew-b',
+          name: 'Crew B',
+          description: '',
+          executionSubject: 'workspace-user',
+          executionGuidelines: '',
+          knowledgeFocus: '',
+          governanceMode: 'allow-all',
+          outputMode: 'standard',
+          stopOnFailure: false,
+          retryCount: 0,
+          managerReviewEnabled: true,
+          managerReviewGuidelines: '',
+          shareAllTaskOutputs: true,
+          sharedOutputCharLimit: 0,
+          defaultProvider: 'ollama',
+          defaultModel: '',
+          providerProfiles: {
+            openAICompatible: { enabled: false, baseUrl: '', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+            openRouter: { enabled: false, baseUrl: 'https://openrouter.ai/api/v1', model: '', apiKey: '', timeoutMs: 600000, verifyTlsCertificates: true },
+          },
+          agents: [localB],
+          tasks: [],
+          runtimeConfig: { enabled: false, baseUrl: '', model: '', timeoutMs: 600000 },
+          process: 'sequential',
+          managerAgentId: null,
+          verbose: true,
+          maxRpm: 10,
+          maxParallelTasks: 3,
+          status: 'idle',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    })
+
     useCrewStore.getState().syncAgentsFromPersonalityProfiles([{
       id: 'pers-shared',
       name: 'Shared Analyst',

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Open Cowork",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
     "beforeDevCommand": "npm run dev:tauri",

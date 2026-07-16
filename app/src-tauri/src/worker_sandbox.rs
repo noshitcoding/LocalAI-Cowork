@@ -74,6 +74,40 @@ pub fn prepare_workspace_snapshot(
     if sandbox_root.exists() {
         fs::remove_dir_all(&sandbox_root).map_err(|err| err.to_string())?;
     }
+    if !sandbox_id
+        .bytes()
+        .all(|value| value.is_ascii_alphanumeric() || value == b'-' || value == b'_')
+    {
+        return Err("sandbox id contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
+pub fn sandbox_root(app_data_dir: &Path, sandbox_id: &str) -> Result<PathBuf, String> {
+    validate_sandbox_id(sandbox_id)?;
+    let container_root = app_data_dir.join("worker_sandboxes");
+    fs::create_dir_all(&container_root).map_err(|err| err.to_string())?;
+    let canonical_container = container_root
+        .canonicalize()
+        .map_err(|err| err.to_string())?;
+    let candidate = canonical_container.join(sandbox_id);
+    if !candidate.starts_with(&canonical_container) {
+        return Err("sandbox path escapes its container".to_string());
+    }
+    Ok(candidate)
+}
+
+pub fn prepare_workspace_snapshot(
+    app_data_dir: &Path,
+    sandbox_id: &str,
+    source_root: &Path,
+) -> Result<WorkspacePrepareResult, String> {
+    let sandbox_root = sandbox_root(app_data_dir, sandbox_id)?;
+    let workspace_root = sandbox_root.join("workspace");
+
+    if sandbox_root.exists() {
+        fs::remove_dir_all(&sandbox_root).map_err(|err| err.to_string())?;
+    }
 
     fs::create_dir_all(&workspace_root).map_err(|err| err.to_string())?;
 

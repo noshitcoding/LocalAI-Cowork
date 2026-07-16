@@ -28,6 +28,19 @@ Erwartung:
 
 ```powershell
 cd app
+npm install
+npm run test:ci
+npm run build
+```
+
+Erwartung:
+- Frontend-Tests grün
+- Produktions-Build erfolgreich
+
+## Smoke-Start
+
+```powershell
+cd app
 npm run smoke:desktop
 ```
 

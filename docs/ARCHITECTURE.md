@@ -1,5 +1,7 @@
 # Architektur
 
+> Superseded: This historical architecture snapshot is no longer the source of truth. Use [ARCHITECTURE_CURRENT.md](ARCHITECTURE_CURRENT.md) and [SOURCE_OF_TRUTH.md](SOURCE_OF_TRUTH.md) for current architecture and documentation precedence.
+
 ## Uebersicht
 
 Open_Cowork verwendet eine lokale Desktop-Architektur mit klarer Trennung zwischen UI und privilegierten Operationen.

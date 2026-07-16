@@ -32,6 +32,17 @@ Frontend:
 
 ```powershell
 cd app
+npm run verify
+```
+
+`verify` ist das kanonische lokale und CI-Gate. Es prueft Toolchain, Release-Scripts,
+TypeScript, ESLint, i18n, Frontend-Tests, Produktionsbuild, Bundle-Budgets sowie
+`cargo check`, Rust-Tests und Clippy.
+
+Frontend:
+
+```powershell
+cd app
 npm run test:ci
 ```
 
@@ -68,6 +79,16 @@ Desktop-Steuerung und Computer Use:
 - Semgrep Security Scan muss erfolgreich sein
 - Trivy Filesystem Scan muss erfolgreich sein
 - Tag-Releases muessen CycloneDX-SBOM, Drittanbieterhinweise, Provenienz, SHA256SUMS und GitHub-Attestierungen erzeugen
+
+Lokale Supply-Chain-Pruefung:
+
+```powershell
+cd app
+npm run supply-chain:check
+npm run security:npm
+cd src-tauri
+cargo audit
+```
 
 Lokale Supply-Chain-Pruefung:
 

@@ -217,6 +217,137 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
 
+export function buildAllCommands(): SlashCommand[] {
+  const commands: SlashCommand[] = [
+    // ===== Core commands (single source for help, palette, and autocomplete) =====
+    {
+      id: 'help', command: '/help', label: 'Help', description: 'Show all available slash commands',
+      category: 'session', execute: () => {
+        const commands = useCommandRegistry.getState().commands
+        addCommandMessage(['Available slash commands:', ...commands.map((command) => `${command.command} - ${command.description}`)].join('\n'))
+      },
+    },
+    {
+      id: 'tools', command: '/tools', label: 'Tools', description: 'Show active tool configuration',
+      category: 'tools', execute: () => {
+        const cowork = useCoworkStore.getState()
+        addCommandMessage(`Active tools: ${cowork.enabledClaudeToolIds.join(', ') || '(none)'}`)
+      },
+    },
+    {
+      id: 'mode', command: '/mode', label: 'Execution mode', description: 'Set plan or execute mode',
+      category: 'agent', execute: (args) => {
+        const target = args?.trim().toLowerCase()
+        if (target !== 'plan' && target !== 'execute') {
+          addCommandMessage('Usage: /mode plan | execute')
+          return
+        }
+        useCoworkStore.getState().setClaudePlanMode(target === 'plan')
+        addCommandMessage(`Mode set to ${target}.`)
+      },
+    },
+    {
+      id: 'permissions', command: '/permissions', label: 'Permissions', description: 'Show or change the permission mode',
+      category: 'security', execute: (args) => {
+        const target = args?.trim() as ClaudePermissionMode | undefined
+        const valid: ClaudePermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'dontAsk', 'plan']
+        if (!target) {
+          addCommandMessage(`Permission mode: ${useCoworkStore.getState().claudePermissionMode}`)
+          return
+        }
+        if (!valid.includes(target)) {
+          addCommandMessage(`Invalid permission mode. Allowed: ${valid.join(', ')}`)
+          return
+        }
+        useCoworkStore.getState().setClaudePermissionMode(target)
+        addCommandMessage(`Permission mode set to ${target}.`)
+      },
+    },
+    {
+      id: 'plan', command: '/plan', label: 'Plan request', description: 'Run the next prompt in plan mode',
+      category: 'agent', execute: (args) => {
+        useCoworkStore.getState().setClaudePlanMode(true)
+        addCommandMessage(args?.trim() ? `Plan mode enabled for: ${args.trim()}` : 'Plan mode enabled.')
+      },
+    },
+    {
+      id: 'fetch', command: '/fetch', label: 'Fetch URL', description: 'Fetch a URL and show a text excerpt',
+      category: 'tools', execute: async (args) => {
+        const url = args?.trim()
+        if (!url) {
+          addCommandMessage('Usage: /fetch https://example.com')
+          return
+        }
+        const response = await safeInvoke<{ url: string; status: number; title?: string; content: string }>('web_fetch_url', {
+          request: { url, maxChars: 4000 },
+        })
+        addCommandMessage([`Web fetch: ${response.url}`, `Status: ${response.status}`, response.title ?? '', '', response.content].filter(Boolean).join('\n'))
+      },
+    },
+    {
+      id: 'tool', command: '/tool', label: 'Tool dispatcher', description: 'Dispatch read_file or web_fetch directly',
+      category: 'tools', execute: async (args) => {
+        const [name = '', ...rest] = args?.trim().split(/\s+/) ?? []
+        const value = rest.join(' ').trim()
+        if (name === 'read_file' && value) {
+          const content = await safeInvoke<string>('fs_extract_text', { path: value })
+          addCommandMessage(`File read: ${value}\n\n${content.slice(0, 5000)}`)
+          return
+        }
+        if (name === 'web_fetch' && value) {
+          const response = await safeInvoke<{ url: string; status: number; content: string }>('web_fetch_url', {
+            request: { url: value, maxChars: 4000 },
+          })
+          addCommandMessage(`Web fetch: ${response.url}\nStatus: ${response.status}\n\n${response.content}`)
+          return
+        }
+        addCommandMessage('Usage: /tool read_file <path> | /tool web_fetch <url>')
+      },
+    },
+    {
+      id: 'todo', command: '/todo', label: 'Todo', description: 'Add or list tasks',
+      category: 'agent', execute: async (args) => {
+        const [action = 'list', ...rest] = args?.trim().split(/\s+/) ?? []
+        if (action.toLowerCase() === 'add' && rest.length > 0) {
+          const title = rest.join(' ')
+          useTaskStore.getState().createTask(title, title, useChatStore.getState().activeThreadId)
+          addCommandMessage(`Todo created: ${title}`)
+          return
+        }
+        await useTaskStore.getState().loadFromDb()
+        addCommandMessage('Todo list refreshed.')
+      },
+    },
+    {
+      id: 'settings', command: '/settings', label: 'Open settings', description: 'Alias for /config',
+      category: 'config', execute: () => useUiStore.getState().setActiveMode('settings'),
+    },
+    // ===== Navigation =====
+    {
+      id: 'switch-work', command: '/ide', label: 'Go to workspace', description: 'Switches to the main workspace',
+      category: 'navigation', execute: () => useUiStore.getState().setActiveMode('work'),
+    },
+    {
+      id: 'switch-settings', command: '/config', label: 'Open settings', description: 'All settings and configuration',
+      category: 'config', execute: () => useUiStore.getState().setActiveMode('settings'),
+    },
+    {
+      id: 'toggle-sidebar', command: '/focus', label: 'Focus mode', description: 'Show or hide sidebars for focused work',
+      category: 'display', execute: () => {
+        const ui = useUiStore.getState()
+        ui.toggleLeftSidebar()
+      },
+    },
+    {
+      id: 'toggle-theme', command: '/theme', label: 'Switch theme', description: 'Switch between light and dark theme',
+      category: 'display', execute: (args) => {
+        const ui = useUiStore.getState()
+        if (args === 'dark') ui.setTheme('dark')
+        else if (args === 'light') ui.setTheme('light')
+        else ui.toggleTheme()
+      },
+    },
+
     // ===== Workspace =====
     {
       id: 'add-dir', command: '/add-dir', label: 'Add folder', description: 'Add a new working folder to the allowlist',

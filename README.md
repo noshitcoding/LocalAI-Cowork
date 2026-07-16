@@ -156,8 +156,8 @@ npm run smoke:desktop
 The GitHub Actions workflow in `.github/workflows/windows-installer.yml` builds the Windows installer and attaches it to a GitHub Release when a version tag is pushed.
 
 ```powershell
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
 The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `OPEN_COWORK_CODESIGN_PFX_BASE64`, `OPEN_COWORK_CODESIGN_PASSWORD`, and `OPEN_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. Manual release builds are also available through the workflow dispatch input.
