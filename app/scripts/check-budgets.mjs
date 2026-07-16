@@ -8,11 +8,12 @@ const distDir = join(root, 'dist')
 const assetsDir = join(distDir, 'assets')
 const indexHtmlPath = join(distDir, 'index.html')
 
-// Current-app baseline after route lazy-loading and the optional terminal bundle.
+// Current-app baseline after route lazy-loading, the optional terminal bundle,
+// and the settings provider dashboard. Keep the CSS allowance deliberately tight.
 // Keep headroom tight so the check still catches accidental bundle growth.
 const budgets = {
   initialGzipBytes: 300 * 1024,
-  cssGzipBytes: 28 * 1024,
+  cssGzipBytes: 29 * 1024,
   totalJsGzipBytes: 420 * 1024,
   largestJsChunkGzipBytes: 120 * 1024,
 }

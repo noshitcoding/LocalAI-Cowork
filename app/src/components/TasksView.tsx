@@ -165,9 +165,30 @@ export default function TasksView() {
   }, [crews, searchParams, setSearchParams, tasks])
 
   useEffect(() => {
+    if (searchParams.has('crew')) return
+    const linkedTaskId = searchParams.get('task')?.trim() ?? ''
+    if (!linkedTaskId) return
+
+    const linkedTask = tasks.find((task) => task.id === linkedTaskId)
+    if (!linkedTask) {
+      if (tasks.length === 0) return
+      const nextSearchParams = new URLSearchParams(searchParams)
+      nextSearchParams.delete('task')
+      setSearchParams(nextSearchParams, { replace: true })
+      return
+    }
+
+    setSelectedTaskId(linkedTask.id)
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.delete('task')
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [searchParams, setSearchParams, tasks])
+
+  useEffect(() => {
+    if (searchParams.has('task')) return
     if (selectedTaskId && tasks.some((task) => task.id === selectedTaskId)) return
     setSelectedTaskId(tasks[0]?.id ?? null)
-  }, [selectedTaskId, tasks])
+  }, [searchParams, selectedTaskId, tasks])
 
   useEffect(() => {
     if (tasks.length === 0) return

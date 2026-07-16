@@ -231,6 +231,21 @@ describe('SettingsView', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'AI & model' })).toBeInTheDocument()
   })
 
+  it('summarizes provider readiness and highlights OpenRouter free models', () => {
+    useConfigStore.getState().updateLlmProfile('default-openrouter', {
+      model: 'nvidia/nemotron-3-super-120b-a12b:free',
+    })
+
+    renderSettingsView()
+
+    const overview = screen.getByRole('group', { name: 'Provider overview' })
+    expect(within(overview).getAllByRole('button')).toHaveLength(3)
+    expect(within(overview).getByText('Free model')).toBeInTheDocument()
+    const openRouter = within(overview).getByRole('button', { name: 'Open OpenRouter settings' })
+    expect(within(openRouter).getByText('API key needed')).toBeInTheDocument()
+    expect(openRouter).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('opens a category from the section query parameter', () => {
     renderSettingsView(['/settings?section=security'])
     expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
@@ -384,8 +399,10 @@ describe('SettingsView', () => {
     })
 
     renderSettingsView()
-    const profileCards = screen.getAllByText('OpenAI-compatible', { selector: 'strong' })
-    const profileCard = profileCards[1].closest('.card') as HTMLElement
+    fireEvent.click(screen.getByRole('button', { name: 'Open OpenAI-compatible settings' }))
+    const profileName = screen.getAllByText('OpenAI-compatible', { selector: 'strong' })
+      .find((element) => element.closest('.llm-profile-card'))
+    const profileCard = profileName?.closest('.llm-profile-card') as HTMLElement
     fireEvent.click(within(profileCard).getByRole('button', { name: 'Load models' }))
 
     await waitFor(() => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -202,5 +202,77 @@ describe('TasksView crew mission flow', () => {
       profileId: 'openrouter-free',
     })
     expect(screen.getByRole('button', { name: 'Mission created' })).toBeDisabled()
+  })
+
+  it('selects a task from a chat deep link', async () => {
+    const baseTask = {
+      prompt: 'Complete the selected mission.',
+      expectedOutput: 'A verified result.',
+      workDir: '',
+      threadId: null,
+      runner: 'model' as const,
+      crewId: null,
+      model: freeModel,
+      scheduleExpr: '',
+      scheduleEnabled: false,
+      status: 'idle' as const,
+      output: null,
+      error: null,
+      lastRunAt: null,
+      createdAt: 100,
+      updatedAt: 100,
+    }
+    useWorkTasksStore.setState({
+      tasks: [
+        { ...baseTask, id: 'task-first', title: 'First mission' },
+        { ...baseTask, id: 'task-linked', title: 'Linked mission', createdAt: 200, updatedAt: 200 },
+      ],
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-linked']}>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    const detail = await screen.findByRole('region', { name: 'Task detail' })
+    await waitFor(() => {
+      expect(within(detail).getByLabelText('Title')).toHaveValue('Linked mission')
+    })
+  })
+
+  it('falls back to the first task when a deep link is stale', async () => {
+    useWorkTasksStore.setState({
+      tasks: [{
+        id: 'task-current',
+        title: 'Current mission',
+        prompt: 'Continue the current mission.',
+        expectedOutput: 'A verified result.',
+        workDir: '',
+        threadId: null,
+        runner: 'model',
+        crewId: null,
+        model: freeModel,
+        scheduleExpr: '',
+        scheduleEnabled: false,
+        status: 'idle',
+        output: null,
+        error: null,
+        lastRunAt: null,
+        createdAt: 100,
+        updatedAt: 100,
+      }],
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=deleted-task']}>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    const detail = await screen.findByRole('region', { name: 'Task detail' })
+    await waitFor(() => {
+      expect(within(detail).getByLabelText('Title')).toHaveValue('Current mission')
+    })
   })
 })

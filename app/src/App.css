@@ -598,6 +598,31 @@
   gap: 8px;
 }
 
+.cowork-runbar-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(360px, 34vw);
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border-color));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-light) 30%, var(--bg-white));
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.cowork-runbar-task:hover { border-color: var(--accent); color: var(--text-primary); }
+.cowork-runbar-task-copy { min-width: 0; }
+.cowork-runbar-task-copy small,
+.cowork-runbar-task-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cowork-runbar-task-copy small { color: var(--text-muted); font-size: 9px; }
+.cowork-runbar-task-copy strong { font-size: 11px; }
+.cowork-runbar-task-status { margin-left: auto; padding: 3px 6px; border-radius: 999px; background: var(--bg-white); color: var(--text-muted); font-size: 9px; font-weight: 750; white-space: nowrap; }
+.cowork-runbar-task-status.status-running { color: var(--info); }
+.cowork-runbar-task-status.status-completed { color: var(--success); }
+.cowork-runbar-task-status.status-failed { color: var(--danger); }
+
 .cowork-runbar-meta span + span::before {
   content: '·';
   margin-right: 8px;
@@ -1000,6 +1025,7 @@
 
 @media (max-width: 1040px) {
   .cowork-runbar-meta { display: none; }
+  .cowork-runbar-task-status { display: none; }
   .cowork-runbar-actions .btn-sm:last-child { display: none; }
 }
 
@@ -1008,6 +1034,8 @@
   .cowork-runbar-state small { max-width: 150px; }
   .cowork-runbar-actions .btn-sm:first-child { display: none; }
   .cowork-context-toggle { font-size: 0; }
+  .cowork-runbar-task { max-width: 120px; padding-inline: 7px; }
+  .cowork-runbar-task-copy small { display: none; }
 }
 
 /* Operational feature workbench */
@@ -8343,6 +8371,62 @@ button.compact-send-btn {
   white-space: nowrap;
 }
 
+.llm-profile-add-actions,
+.llm-provider-overview-head,
+.llm-provider-overview-meta,
+.llm-provider-section-toggle,
+.llm-provider-default-row label {
+  display: flex;
+  align-items: center;
+}
+
+.llm-profile-add-actions { gap: 8px; flex-wrap: wrap; }
+.llm-provider-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.settings-view .llm-provider-overview-card {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-view .llm-provider-overview-card:hover,
+.settings-view .llm-provider-overview-card.active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-color)); background: color-mix(in srgb, var(--accent-light) 42%, var(--bg-white)); color: var(--text-primary); }
+.llm-provider-overview-head,
+.llm-provider-overview-meta { justify-content: space-between; gap: 8px; }
+.llm-provider-model { display: block; margin: 9px 0; overflow: hidden; color: var(--text-secondary); font: 11px 'SF Mono', Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.llm-provider-overview-meta { color: var(--text-muted); font-size: 10px; }
+.llm-provider-state,
+.llm-provider-free-badge,
+.llm-profile-default-badge { padding: 3px 7px; border-radius: 999px; font-size: 9px; font-weight: 750; white-space: nowrap; }
+.llm-provider-state { background: var(--bg-white); color: var(--text-muted); }
+.llm-provider-state.tone-success { background: color-mix(in srgb, var(--success) 11%, var(--bg-white)); color: var(--success); }
+.llm-provider-state.tone-warning { background: color-mix(in srgb, var(--warning) 13%, var(--bg-white)); color: var(--warning); }
+.llm-provider-free-badge,
+.llm-profile-default-badge { background: var(--accent-light); color: var(--accent); }
+.llm-provider-accordion,
+.llm-profile-list { display: flex; flex-direction: column; gap: 10px; }
+.llm-provider-section { overflow: hidden; border: 1px solid var(--border-color); border-radius: 13px; background: var(--bg-white); }
+.settings-view .llm-provider-section-toggle { width: 100%; justify-content: space-between; padding: 12px 14px; border: 0; border-radius: 0; background: transparent; color: var(--text-primary); font-size: inherit; font-weight: inherit; text-align: left; cursor: pointer; }
+.llm-provider-section-toggle div { display: flex; align-items: baseline; gap: 8px; }
+.llm-provider-section-toggle span { color: var(--text-muted); font-size: 10px; }
+.llm-provider-section-toggle svg { transition: transform var(--transition); }
+.llm-provider-section.open .llm-provider-section-toggle svg { transform: rotate(180deg); }
+.llm-provider-section-content { padding: 0 12px 12px; }
+.llm-provider-default-row { justify-content: flex-end; padding: 10px 2px; border-top: 1px solid var(--border-light); }
+.llm-provider-default-row label { gap: 10px; color: var(--text-muted); font-size: 11px; }
+.llm-provider-default-row select { min-width: 180px; }
+.llm-profile-card { border: 1px solid var(--border-color); }
+.llm-profile-card.is-default { border-color: var(--accent); }
+.llm-profile-card-header { margin-bottom: 10px; }
+.llm-profile-default-badge { margin-left: 8px; }
+.llm-profile-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.llm-profile-actions { margin-top: 12px; }
+
 @media (max-width: 1180px) {
   .settings-layout {
     flex-direction: column;
@@ -8521,6 +8605,12 @@ button.compact-send-btn {
   .session-search-actions {
     width: 100%;
   }
+
+  .llm-provider-overview,
+  .llm-profile-fields { grid-template-columns: 1fr; }
+  .llm-provider-default-row { justify-content: stretch; }
+  .llm-provider-default-row label { width: 100%; align-items: stretch; flex-direction: column; }
+  .llm-provider-default-row select { width: 100%; min-width: 0; }
 }
 
 /* ================================================================

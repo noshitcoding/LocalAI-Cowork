@@ -5,10 +5,11 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { CheckCircle2, ChevronDown, Clock3, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, ListTodo, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
+import { formatWorkTaskStatus } from '../engine/tasks/workTaskExecutionService'
 import { useLogStore } from '../stores/logStore'
 import { useCoworkStore, type ClaudePermissionMode } from '../stores/coworkStore'
 import { useMemoryStore } from '../stores/memoryStore'
@@ -868,6 +869,10 @@ export default function CoworkView() {
   const isTaskChat = useMemo(() => {
     if (!activeThread?.id) return false
     return workTasks.some((task) => task.threadId === activeThread.id)
+  }, [activeThread?.id, workTasks])
+  const activeWorkTask = useMemo(() => {
+    if (!activeThread?.id) return null
+    return workTasks.find((task) => task.threadId === activeThread.id) ?? null
   }, [activeThread?.id, workTasks])
   const contextTask = useMemo(() => (
     tasks
@@ -3313,6 +3318,23 @@ export default function CoworkView() {
               <span aria-hidden="true" />
               <div><strong>{runStatusLabel}</strong><small>{providerState.label} · {providerState.model || tr('no model set')}</small></div>
             </div>
+            {activeWorkTask ? (
+              <button
+                type="button"
+                className="cowork-runbar-task"
+                aria-label={`${tr('Open current task')}: ${activeWorkTask.title}`}
+                onClick={() => navigate(`/tasks?task=${encodeURIComponent(activeWorkTask.id)}`)}
+              >
+                <ListTodo size={15} aria-hidden="true" />
+                <span className="cowork-runbar-task-copy">
+                  <small>{tr('Current task')}</small>
+                  <strong>{activeWorkTask.title}</strong>
+                </span>
+                <span className={`cowork-runbar-task-status status-${activeWorkTask.status}`}>
+                  {formatWorkTaskStatus(activeWorkTask.status)}
+                </span>
+              </button>
+            ) : null}
             <div className="cowork-runbar-meta">
               <span>{currentSessionId ? tr('Saved session') : tr('Unsaved session')}</span>
               <span>{contextWarning.level === 'none' ? tr('Context stable') : `${tr('Context')} · ${tr(contextWarning.level)}`}</span>

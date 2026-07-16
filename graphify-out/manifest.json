@@ -30,8 +30,8 @@
     "semantic_hash": ""
   },
   "app/scripts/check-budgets.mjs": {
-    "mtime": 1783001462.0987039,
-    "ast_hash": "34d38817f0778ca6b58d879774a88484",
+    "mtime": 1784187292.759813,
+    "ast_hash": "179950dd55abaecc4aa4cca411ddf991",
     "semantic_hash": ""
   },
   "app/scripts/desktop-smoke.mjs": {
@@ -240,8 +240,8 @@
     "semantic_hash": ""
   },
   "app/src/components/CoworkView.tsx": {
-    "mtime": 1784132489.5569284,
-    "ast_hash": "2e4ac88f21ec1d71d4e75dc9bf1e6fad",
+    "mtime": 1784137600.3583064,
+    "ast_hash": "fa4138f5d17e2c7cbac200420da7a6a4",
     "semantic_hash": ""
   },
   "app/src/components/CrewLiveMonitor.test.tsx": {
@@ -310,8 +310,8 @@
     "semantic_hash": ""
   },
   "app/src/components/LlmProfilesPanel.tsx": {
-    "mtime": 1783875841.5550134,
-    "ast_hash": "d8943b1acbb9dce90de08528da0089a3",
+    "mtime": 1784137723.6561174,
+    "ast_hash": "9b04d67d82d772c42030c15c0dd6c6b3",
     "semantic_hash": ""
   },
   "app/src/components/McpView.tsx": {
@@ -390,8 +390,8 @@
     "semantic_hash": ""
   },
   "app/src/components/SettingsView.test.tsx": {
-    "mtime": 1784132629.0491583,
-    "ast_hash": "e245b1814dd0ada153aa8d115a0c3464",
+    "mtime": 1784137723.657118,
+    "ast_hash": "68f74de32f46a755a5cc406ca3579bad",
     "semantic_hash": ""
   },
   "app/src/components/SettingsView.tsx": {
@@ -410,8 +410,8 @@
     "semantic_hash": ""
   },
   "app/src/components/TasksView.tsx": {
-    "mtime": 1784135777.0166388,
-    "ast_hash": "c60bb6266e3f34c5d5ff44aef4eb12a3",
+    "mtime": 1784187878.1822376,
+    "ast_hash": "4847e81b30b18a06fe26888ab0b5fc90",
     "semantic_hash": ""
   },
   "app/src/components/TerminalDock.test.tsx": {
@@ -640,8 +640,8 @@
     "semantic_hash": ""
   },
   "app/src/i18n.ts": {
-    "mtime": 1784135455.7775044,
-    "ast_hash": "949ac8a286956731d7504aca38030693",
+    "mtime": 1784186439.9071684,
+    "ast_hash": "459b3049ea1d7879ff1a364318274983",
     "semantic_hash": ""
   },
   "app/src/lib/utils.ts": {
@@ -1675,8 +1675,8 @@
     "semantic_hash": ""
   },
   "app/src/components/TasksView.flow.test.tsx": {
-    "mtime": 1784135787.92216,
-    "ast_hash": "823613a938830bbbaf08bf0b3580639b",
+    "mtime": 1784187878.1842377,
+    "ast_hash": "8d4fe18d1b65e37ffaecd395ec53d18b",
     "semantic_hash": ""
   },
   "app/src/engine/tasks/workTaskExecutionService.test.ts": {
