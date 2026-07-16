@@ -171,6 +171,25 @@ export function getAssistantFailureSettingsPath(content: string): string {
   return '/settings'
 }
 
+export function findPreviousUserMessage(
+  messages: readonly ChatMessage[],
+  assistantMessageId: string,
+): ChatMessage | null {
+  const assistantIndex = messages.findIndex((message) => message.id === assistantMessageId)
+  if (assistantIndex < 0) return null
+
+  for (let index = assistantIndex - 1; index >= 0; index -= 1) {
+    const candidate = messages[index]
+    if (candidate?.role === 'user') return candidate
+  }
+  return null
+}
+
+export function appendStoppedAssistantContent(content: string): string {
+  const notice = tr('Stopped')
+  return content.trim() ? `${content}\n\n${notice}` : notice
+}
+
 type McpCallResponse = {
   serverName: string
   toolName: string
@@ -3142,13 +3161,10 @@ export default function CoworkView() {
         (message) => message.role === 'assistant' && message.streaming,
       )
       if (streamingMessage) {
-        const content = streamingMessage.content?.trim()
-          ? `${streamingMessage.content}\n\nGenerierung abgebrochen.`
-          : 'Generierung abgebrochen.'
         updateMessage(
           activeThreadId,
           streamingMessage.id,
-          { content, streaming: false },
+          { content: appendStoppedAssistantContent(streamingMessage.content), streaming: false },
           { persist: true },
         )
       }
@@ -3318,21 +3334,8 @@ export default function CoworkView() {
     })
   }
 
-  const findPreviousUserMessage = (assistantMessageId: string): ChatMessage | null => {
-    const assistantIndex = visibleMessages.findIndex((message) => message.id === assistantMessageId)
-    if (assistantIndex < 0) return null
-
-    for (let index = assistantIndex - 1; index >= 0; index -= 1) {
-      const candidate = visibleMessages[index]
-      if (candidate?.role === 'user') {
-        return candidate
-      }
-    }
-    return null
-  }
-
   const handleRegenerate = async (assistantMessageId: string) => {
-    const previousUser = findPreviousUserMessage(assistantMessageId)
+    const previousUser = findPreviousUserMessage(visibleMessages, assistantMessageId)
     if (!previousUser) return
     const prompt = typeof previousUser.content === 'string' ? previousUser.content.trim() : ''
     const promptAttachments = Array.isArray(previousUser.attachments) ? previousUser.attachments : []
@@ -3435,7 +3438,10 @@ export default function CoworkView() {
                 },
               )
               const rawDisplayedContent = resolveDisplayedAssistantContent(content, displayedThinkingContent)
-              const canRegenerate = msg.role === 'assistant' && findPreviousUserMessage(msg.id) !== null
+              const previousUserMessage = msg.role === 'assistant'
+                ? findPreviousUserMessage(visibleMessages, msg.id)
+                : null
+              const canRegenerate = previousUserMessage !== null
               const assistantFailure = msg.role === 'assistant' && isAssistantFailureContent(rawDisplayedContent)
               const displayedContent = assistantFailure ? formatAssistantFailureContent(rawDisplayedContent) : rawDisplayedContent
 
@@ -3498,9 +3504,24 @@ export default function CoworkView() {
                       {assistantFailure ? (
                         <div className="msg-error-header">
                           <span><ShieldAlert size={16} aria-hidden="true" /><strong>{tr('Response needs attention')}</strong></span>
-                          <button type="button" onClick={() => navigate(getAssistantFailureSettingsPath(rawDisplayedContent))}>
-                            <Settings2 size={14} aria-hidden="true" />{tr('Open settings')}
-                          </button>
+                          <span className="msg-error-actions">
+                            <button type="button" onClick={() => navigate(getAssistantFailureSettingsPath(rawDisplayedContent))}>
+                              <Settings2 size={14} aria-hidden="true" />{tr('Open settings')}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={uiLocked || !previousUserMessage}
+                              onClick={() => {
+                                if (!previousUserMessage) return
+                                applyPromptToInput(previousUserMessage.content, previousUserMessage.attachments ?? [])
+                              }}
+                            >{tr('Reuse')}</button>
+                            <button
+                              type="button"
+                              disabled={uiLocked || !canRegenerate}
+                              onClick={() => void handleRegenerate(msg.id)}
+                            >{tr('Regenerate')}</button>
+                          </span>
                         </div>
                       ) : null}
                       {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
@@ -3570,13 +3591,17 @@ export default function CoworkView() {
                         >{tr("Reuse")}</button>
                       ) : (
                         <>
-                          <button type="button" className="btn-msg-action" onClick={() => applyPromptToInput(content)}>{tr("Als Prompt nutzen")}</button>
-                          <button
-                            type="button"
-                            className="btn-msg-action"
-                            onClick={() => void handleRegenerate(msg.id)}
-                            disabled={uiLocked || !canRegenerate}
-                          >{tr("Regenerate")}</button>
+                          {!assistantFailure ? (
+                            <>
+                              <button type="button" className="btn-msg-action" onClick={() => applyPromptToInput(content)}>{tr("Als Prompt nutzen")}</button>
+                              <button
+                                type="button"
+                                className="btn-msg-action"
+                                onClick={() => void handleRegenerate(msg.id)}
+                                disabled={uiLocked || !canRegenerate}
+                              >{tr("Regenerate")}</button>
+                            </>
+                          ) : null}
                         </>
                       )}
                     </div>

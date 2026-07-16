@@ -3132,6 +3132,7 @@ body.sidebar-resize-active * {
 
 .msg-error-header {
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   margin: -2px 0 10px;
   padding-bottom: 9px;
@@ -3140,6 +3141,7 @@ body.sidebar-resize-active * {
 }
 
 .msg-error-header > span { gap: 7px; }
+.msg-error-actions { flex-wrap: wrap; justify-content: flex-end; }
 .msg-error-header button {
   gap: 6px;
   min-height: 30px;
