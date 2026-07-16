@@ -1075,8 +1075,8 @@
     "semantic_hash": ""
   },
   ".github/workflows/ci.yml": {
-    "mtime": 1784214866.839387,
-    "ast_hash": "5f2d3be4cc518c18903d47336b49d936",
+    "mtime": 1784217048.4680982,
+    "ast_hash": "39b0fde255c9d80c0da3885482f0af06",
     "semantic_hash": ""
   },
   ".github/workflows/windows-installer.yml": {
@@ -1805,8 +1805,8 @@
     "semantic_hash": ""
   },
   "scripts/scan-secrets.mjs": {
-    "mtime": 1784215831.149266,
-    "ast_hash": "c646b77d9f887ff6b8cf204ebd1cef52",
+    "mtime": 1784216776.9758763,
+    "ast_hash": "c025491d3ac0627c423d61925fa0a452",
     "semantic_hash": ""
   },
   "SECURITY.md": {
