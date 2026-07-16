@@ -127,7 +127,7 @@ export function createAskRule(pattern: string, source: string): ToolPermissionRu
 export function getDefaultSecurityRules(): ToolPermissionRule[] {
   return [
     // Always allow read-only operations
-    createAllowRule('Read|Glob|Grep|WebFetch|WebSearch|TaskList|MemoryRead', 'default-security'),
+    createAllowRule('Read|Glob|Grep|WebFetch|WebSearch|TaskList|MemoryRead|SessionSearch', 'default-security'),
     // Ask for write operations
     createAskRule('Write|Edit|Bash|Agent|MCPTool', 'default-security'),
     // Ask for destructive operations

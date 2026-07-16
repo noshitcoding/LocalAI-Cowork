@@ -9,13 +9,14 @@ const assetsDir = join(distDir, 'assets')
 const indexHtmlPath = join(distDir, 'index.html')
 
 // Current-app baseline after route lazy-loading, the optional terminal bundle,
-// the settings provider dashboard, and bilingual crew launch diagnostics.
+// the settings provider dashboard, bilingual crew launch diagnostics, and the
+// Hermes-style memory/session-search contracts plus the validated command registry.
 // Keep the CSS allowance deliberately tight.
 // Keep headroom tight so the check still catches accidental bundle growth.
 const budgets = {
   initialGzipBytes: 300 * 1024,
   cssGzipBytes: 29 * 1024,
-  totalJsGzipBytes: 421 * 1024,
+  totalJsGzipBytes: 425 * 1024,
   largestJsChunkGzipBytes: 120 * 1024,
 }
 

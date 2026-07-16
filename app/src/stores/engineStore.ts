@@ -9,7 +9,11 @@ import { QueryEngine, type EngineBackend, type EngineConfig, type EngineEvent } 
 import { getAllCommands, registerBuiltinCommands } from '../engine/commands/registry'
 import { listOllamaModels, checkOllamaConnection } from '../engine/api/ollamaClient'
 import { DEFAULT_AGENTS } from '../engine/coordinator/agentCoordinator'
-import { buildSystemPromptWithMemory } from '../engine/memory/memorySystem'
+import {
+  buildSystemPromptWithMemory,
+  captureAutomaticMemoryDraft,
+  loadFrozenMemorySnapshot,
+} from '../engine/memory/memorySystem'
 import type { ContextSnapshot } from '../engine/services/contextManager'
 import {
   createAssistantMessage,
@@ -54,6 +58,8 @@ Important rules:
 5. Ask follow-up questions only when required.
    If the target is clear, complete it autonomously and ask only when critical information is missing or a destructive step is involved.
 6. Do not create files that are not needed.
+7. Proactively preserve only durable, high-signal facts. Use MemoryWrite for stable user preferences, environment facts, corrections, conventions, and completed-work lessons. Never store secrets, raw logs, or temporary details.
+8. Curated memory is a frozen session-start snapshot. A write is persisted for future sessions; use SessionSearch when exact details from older conversations are needed.
 
 You work in a Windows environment with PowerShell.`
 
@@ -574,19 +580,45 @@ export const useEngineStore = create<EngineStoreState>()(
               set({ conversationThreadId: historySeed.threadId })
             }
 
+            let sessionId = get().currentSessionId
+            if (!sessionId) {
+              sessionId = crypto.randomUUID()
+              try {
+                await createSession({
+                  id: sessionId,
+                  threadId: historySeed?.threadId ?? get().conversationThreadId ?? undefined,
+                  title: userInputText.slice(0, 60) || 'New session',
+                  model: providerState.model,
+                  provider: providerState.provider,
+                })
+              } catch {
+                // Browser/dev fallback has no Tauri session table.
+              }
+              set({ currentSessionId: sessionId })
+            }
+
+            const frozenSnapshot = await loadFrozenMemorySnapshot(sessionId)
+
             // Load project memory and build enhanced system prompt
             try {
               const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
                 cwd,
                 latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-                { userInput: userInputText },
+                { userInput: userInputText, frozenSnapshot },
               )
               engine.updateConfig({
                 systemPrompt,
                 memoryContent,
+                sessionId,
               })
             } catch {
               // Memory loading is optional — fall back to default prompt
+            }
+
+            try {
+              await captureAutomaticMemoryDraft(cwd, userInputText, sessionId)
+            } catch {
+              // Automatic draft capture must never block the user turn.
             }
 
             void invoke('engine_run_create', {

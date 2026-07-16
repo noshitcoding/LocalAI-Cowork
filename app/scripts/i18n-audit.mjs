@@ -80,6 +80,9 @@ function isAllowedGermanMatch(file, line) {
   if (normalized === 'src/engine/crew/workTaskCrewRuntime.ts') {
     return /(?:RESEARCH|PRESENTATION)_TASK_PATTERN/.test(line)
   }
+  if (normalized === 'src/engine/memory/memorySystem.ts') {
+    return /(?:explicitMatch|isPreference|isReusableFact)/.test(line)
+  }
   if (normalized === 'src-tauri/src/scheduler.rs') {
     return /\.replace\('\u00e4'|\.replace\('\u00f6'|\.replace\('\u00fc'/.test(line)
   }

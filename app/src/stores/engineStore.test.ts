@@ -4,10 +4,12 @@ import type { SessionRecord } from '../engine/services/sessionPersistence'
 const invokeMock = vi.fn(async (_command?: string, _args?: unknown): Promise<unknown> => undefined)
 const autoSaveSessionMock = vi.fn(async () => undefined)
 const loadSessionMock = vi.fn(async (_sessionId?: string): Promise<SessionRecord | null> => null)
-const buildSystemPromptWithMemoryMock = vi.fn(async (_cwd: string, systemPrompt: string) => ({
+const buildSystemPromptWithMemoryMock = vi.fn(async (_cwd: string, systemPrompt: string, _options?: unknown) => ({
   systemPrompt,
   memoryContent: '',
 }))
+const loadFrozenMemorySnapshotMock = vi.fn(async (_sessionId?: string) => null)
+const captureAutomaticMemoryDraftMock = vi.fn(async (_cwd: string, _input: string, _sessionId?: string) => [])
 const queryCalls: Array<{ messages: unknown[]; userInput?: string }> = []
 const queryBarriers: Array<Promise<void>> = []
 
@@ -112,7 +114,9 @@ vi.mock('../engine/services/sessionPersistence', () => ({
 }))
 
 vi.mock('../engine/memory/memorySystem', () => ({
-  buildSystemPromptWithMemory: (cwd: string, systemPrompt: string) => buildSystemPromptWithMemoryMock(cwd, systemPrompt),
+  buildSystemPromptWithMemory: (cwd: string, systemPrompt: string, options?: unknown) => buildSystemPromptWithMemoryMock(cwd, systemPrompt, options),
+  loadFrozenMemorySnapshot: (sessionId: string) => loadFrozenMemorySnapshotMock(sessionId),
+  captureAutomaticMemoryDraft: (cwd: string, input: string, sessionId: string) => captureAutomaticMemoryDraftMock(cwd, input, sessionId),
 }))
 
 describe('engineStore history seeding', () => {
@@ -123,6 +127,8 @@ describe('engineStore history seeding', () => {
     autoSaveSessionMock.mockClear()
     loadSessionMock.mockClear()
     buildSystemPromptWithMemoryMock.mockClear()
+    loadFrozenMemorySnapshotMock.mockClear()
+    captureAutomaticMemoryDraftMock.mockClear()
     localStorage.clear()
     const { useEngineStore } = await import('./engineStore')
     useEngineStore.getState().clearMessages()
@@ -154,6 +160,17 @@ describe('engineStore history seeding', () => {
     expect(queryCalls).toHaveLength(1)
     expect(queryCalls[0]?.messages).toHaveLength(2)
     expect(queryCalls[0]?.userInput).toBe('alphabetisch')
+    expect(loadFrozenMemorySnapshotMock).toHaveBeenCalledWith(expect.any(String))
+    expect(captureAutomaticMemoryDraftMock).toHaveBeenCalledWith(
+      'C:/workspace',
+      'alphabetisch',
+      expect.any(String),
+    )
+    expect(buildSystemPromptWithMemoryMock).toHaveBeenCalledWith(
+      'C:/workspace',
+      expect.any(String),
+      expect.objectContaining({ frozenSnapshot: null }),
+    )
 
     const firstSeededMessage = queryCalls[0]?.messages[0] as { type: string; content: Array<{ type: string; text: string }> }
     expect(firstSeededMessage.type).toBe('user')

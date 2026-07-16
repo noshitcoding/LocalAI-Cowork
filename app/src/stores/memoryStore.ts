@@ -51,10 +51,18 @@ export type FrozenSnapshot = {
 }
 
 export type MemoryHint = {
-  key: string
-  content: string
-  scope: string
-  relevance: string
+  hintType: string
+  message: string
+  suggestedKey: string | null
+  suggestedCategory: string | null
+}
+
+type BackendFrozenSnapshot = {
+  sessionId: string
+  agentEntries: MemoryEntry[]
+  sharedEntries: MemoryEntry[]
+  userProfile: UserProfileEntry[]
+  createdAt: string
 }
 
 /* ── Local fallback storage (when Tauri is not available) ─────────────── */
@@ -172,7 +180,10 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       // Fallback: save locally
       const local = getLocalEntries()
       const now = new Date().toISOString()
-      const existing = local.findIndex(e => e.id === entry.id)
+      const existing = local.findIndex(e =>
+        e.id === entry.id
+        || (e.scope === entry.scope && e.category === entry.category && e.key === entry.key)
+      )
       const full: MemoryEntry = {
         id: entry.id,
         scope: entry.scope,
@@ -217,10 +228,14 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
 
   compactEntries: async (scope, minConfidence) => {
     try {
-      return await safeInvoke<{ removed: number; remaining: number }>('memory_compact', {
+      const response = await safeInvoke<{ scope: string; deletedCount: number }>('memory_compact', {
         scope,
         minConfidence,
-      }, { removed: 0, remaining: get().entries.length })
+      }, { scope, deletedCount: 0 })
+      return {
+        removed: response.deletedCount,
+        remaining: Math.max(0, get().entries.filter((entry) => entry.scope === scope).length - response.deletedCount),
+      }
     } catch {
       return { removed: 0, remaining: get().entries.length }
     }
@@ -228,14 +243,15 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
 
   createSnapshot: async () => {
     try {
-      const json = await safeInvoke<string>('memory_snapshot', undefined, JSON.stringify({
-        timestamp: new Date().toISOString(),
-        entries: getLocalEntries(),
-        profile: getLocalProfile(),
-        total_entries: getLocalEntries().length,
-        total_profile_keys: getLocalProfile().length,
-      }))
-      const snapshot = JSON.parse(json) as FrozenSnapshot
+      const backend = await safeInvoke<BackendFrozenSnapshot>('memory_snapshot')
+      const entries = [...backend.agentEntries, ...backend.sharedEntries]
+      const snapshot: FrozenSnapshot = {
+        timestamp: backend.createdAt,
+        entries,
+        profile: backend.userProfile,
+        total_entries: entries.length,
+        total_profile_keys: backend.userProfile.length,
+      }
       set({ lastSnapshot: snapshot })
       return snapshot
     } catch {

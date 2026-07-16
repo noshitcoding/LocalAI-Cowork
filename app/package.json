@@ -1,7 +1,7 @@
 {
   "name": "open-cowork",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local-first desktop workspace for agentic work with Ollama, MCP, tasks, and tools.",
   "type": "module",
   "license": "Apache-2.0",

@@ -459,7 +459,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Researcher',
     description: 'Specialized in research and analysis.',
     type: 'research',
-    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead'],
+    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'SessionSearch'],
     maxTurns: 10,
   },
   {
@@ -475,7 +475,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Planner',
     description: 'Specialized in project planning and task decomposition.',
     type: 'planning',
-    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite'],
+    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'SessionSearch'],
     maxTurns: 5,
   },
 ]

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,6 +19,7 @@ import crew_tools
 import main as crew_runtime
 
 TEST_OPENROUTER_NEMOTRON_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
+TEST_OPENROUTER_COMPLEX_NEMOTRON_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
 
 class CrewRuntimeStatusTests(unittest.TestCase):
@@ -126,6 +128,29 @@ class CrewRuntimeToolTests(unittest.TestCase):
         self.assertIn("outside the authorized working directory", escape_result)
         self.assertFalse((self.root.parent / "escape.txt").exists())
 
+    def test_bash_uses_runtime_python_without_inheriting_pythonhome(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PYTHONHOME": str(self.root / "incompatible-python-home"),
+                "PYTHONPATH": str(self.root / "incompatible-python-path"),
+                "OPENROUTER_API_KEY": "must-not-reach-child",
+            },
+            clear=False,
+        ):
+            environment = crew_tools._subprocess_environment()
+            result = self._tools()["bash"]._run(
+                "python -c \"import json; print(json.dumps({'verified': True}))\"",
+                30,
+            )
+
+        self.assertNotIn("PYTHONHOME", environment)
+        self.assertNotIn("PYTHONPATH", environment)
+        self.assertNotIn("OPENROUTER_API_KEY", environment)
+        self.assertEqual(Path(environment["PATH"].split(os.pathsep)[0]), Path(sys.executable).resolve().parent)
+        self.assertIn("Exit code: 0", result)
+        self.assertIn('"verified": true', result)
+
     def test_web_fetch_blocks_private_network_destinations(self) -> None:
         result = self._tools()["web_fetch"]._run("http://127.0.0.1:11434/api/tags")
 
@@ -226,7 +251,7 @@ class CrewRuntimeTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "OpenRouter API key is missing"):
             crew_runtime.validate_runtime_provider_models(payload, agents)
 
-    def test_free_openrouter_crews_are_serialized(self) -> None:
+    def test_free_openrouter_crews_are_bounded_to_two_parallel_tasks(self) -> None:
         payload = {
             "providerConfigs": {
                 "openRouter": {
@@ -240,7 +265,8 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
         crew_runtime.validate_runtime_provider_models(payload, agents)
 
-        self.assertEqual(payload["maxParallelTasks"], 1)
+        self.assertEqual(payload["maxParallelTasks"], 2)
+        self.assertIn("bounded parallel execution", payload["_rateLimitPolicyReason"])
 
     def test_external_provider_timeout_and_free_retry_policy_are_applied(self) -> None:
         request = {
@@ -268,7 +294,10 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
         self.assertEqual(crew_runtime.resolve_agent_timeout_ms(request, agent), 180_000)
         self.assertEqual(llm.timeout, 180)
-        self.assertEqual(llm.max_retries, 4)
+        self.assertTrue(llm.is_litellm)
+        self.assertTrue(llm.supports_function_calling())
+        self.assertEqual(llm.additional_params.get("max_retries"), 4)
+        self.assertIs(llm.additional_params.get("_skip_mcp_handler"), True)
         self.assertEqual(built_agent.max_execution_time, 180)
 
     def test_configured_retry_count_can_raise_provider_default(self) -> None:
@@ -278,6 +307,197 @@ class CrewRuntimeTaskTests(unittest.TestCase):
             crew_runtime.resolve_llm_max_retries(request, "openrouter/paid-model"),
             5,
         )
+
+    def test_recovered_provider_limit_is_reported_as_warning_after_success(self) -> None:
+        logs = [{
+            "action": "runtime_stderr",
+            "result": "ResourceExhausted: Worker local total request limit reached (32/32)",
+        }]
+
+        crew_runtime.mark_recovered_provider_logs(logs, "completed")
+
+        self.assertEqual(logs[0]["action"], "provider_retry_recovered")
+        self.assertEqual(logs[0]["severity"], "warning")
+        self.assertEqual(logs[0]["phase"], "status")
+
+    def test_textual_named_tool_call_is_bridged_to_native_crewai_shape(self) -> None:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }]
+
+        bridged = crew_runtime.bridge_textual_tool_call(
+            '<tool_call>{"name":"edit_file","arguments":{"path":"artifacts/proof.py","content":"ok"}}</tool_call>',
+            tools,
+        )
+
+        self.assertIsInstance(bridged, list)
+        self.assertEqual(bridged[0]["function"]["name"], "edit_file")
+        self.assertEqual(
+            json.loads(bridged[0]["function"]["arguments"]),
+            {"path": "artifacts/proof.py", "content": "ok"},
+        )
+
+    def test_textual_bare_arguments_are_bridged_only_for_a_unique_schema(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            },
+        ]
+
+        bridged = crew_runtime.bridge_textual_tool_call(
+            '{"path":"artifacts/proof.py","content":"print(1)"}',
+            tools,
+        )
+        ambiguous = crew_runtime.bridge_textual_tool_call('{"path":"artifacts/proof.py"}', tools)
+
+        self.assertEqual(bridged[0]["function"]["name"], "edit_file")
+        self.assertEqual(ambiguous, '{"path":"artifacts/proof.py"}')
+
+    def test_normal_json_answer_is_not_mistaken_for_a_tool_call(self) -> None:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }]
+        answer = '{"workflow":"complex-crew","verified":true}'
+
+        self.assertEqual(crew_runtime.bridge_textual_tool_call(answer, tools), answer)
+
+    def test_textual_tool_sequence_bridges_only_the_first_dependent_call(self) -> None:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                },
+            },
+        ]
+
+        bridged = crew_runtime.bridge_textual_tool_call(
+            '{"path":"artifacts/proof.py","content":"print(1)"}\n\n'
+            '{"command":"python artifacts/proof.py"}',
+            tools,
+        )
+
+        self.assertEqual(len(bridged), 1)
+        self.assertEqual(bridged[0]["function"]["name"], "edit_file")
+
+    def test_required_office_artifact_must_exist_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = {"cwd": str(root)}
+            agent = {"tools": ["office_workflow"]}
+            task = {
+                "description": "Create artifacts/verified-output.pptx with office_workflow.",
+                "expectedOutput": "The exact path to artifacts/verified-output.pptx.",
+            }
+
+            expected = crew_runtime.expected_office_artifact_paths(request, task, agent)
+
+            self.assertEqual(expected, [root / "artifacts" / "verified-output.pptx"])
+            self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
+
+            expected[0].parent.mkdir(parents=True)
+            expected[0].write_bytes(b"valid-artifact")
+            self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), [])
+
+    def test_required_edit_artifact_must_exist_inside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            request = {"cwd": str(root)}
+            agent = {"tools": ["edit_file", "bash"]}
+            task = {
+                "description": "Create artifacts/verified-script.py and execute it.",
+                "expectedOutput": "The verified-script.py path and command output.",
+            }
+
+            expected = crew_runtime.expected_edit_artifact_paths(request, task, agent)
+
+            self.assertEqual(expected, [root / "artifacts" / "verified-script.py"])
+            self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
+
+            expected[0].parent.mkdir(parents=True)
+            expected[0].write_text("print('verified')\n", encoding="utf-8")
+            self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), [])
+
+    def test_deterministic_office_fallback_builds_slides_from_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "report.md").write_text(
+                "# Evidence\n- Source A\n# Implementation Proof\n- JSON verified\n"
+                "# Collaboration\n- Handoffs verified\n# Limitations\n- Free concurrency is capped at two\n",
+                encoding="utf-8",
+            )
+            request = {"cwd": str(root), "name": "Fallback Test"}
+            agent = {"tools": ["office_workflow"]}
+            task = {
+                "description": (
+                    "Read artifacts/report.md and create artifacts/fallback.pptx "
+                    "with title 'Verified Fallback'."
+                ),
+                "expectedOutput": "The exact path to artifacts/fallback.pptx.",
+            }
+            missing = crew_runtime.missing_required_artifacts(request, task, agent)
+
+            result = crew_runtime.deterministic_office_fallback(request, task, agent, missing)
+
+            from pptx import Presentation
+
+            output = artifacts / "fallback.pptx"
+            self.assertIsNotNone(result)
+            self.assertTrue(output.is_file())
+            self.assertEqual(len(Presentation(output).slides), 5)
 
     def test_tasks_are_stably_topologically_ordered(self) -> None:
         tasks = [
@@ -290,7 +510,7 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
         self.assertEqual([task["id"] for task in ordered], ["plan", "implement", "review"])
 
-    def test_parallel_batches_always_end_synchronously(self) -> None:
+    def test_parallel_batches_group_independent_tasks(self) -> None:
         tasks = [{"id": f"task-{index}"} for index in range(5)]
 
         process, normalized = crew_runtime.normalize_task_concurrency(tasks, "parallel", 2)
@@ -298,7 +518,27 @@ class CrewRuntimeTaskTests(unittest.TestCase):
         self.assertEqual(process, "parallel")
         self.assertEqual(
             [task["asyncExecution"] for task in normalized],
-            [True, False, True, False, False],
+            [True, True, True, True, False],
+        )
+        self.assertEqual(
+            [task["_parallelBatch"] for task in normalized],
+            [0, 0, 1, 1, 2],
+        )
+
+    def test_parallel_batches_wait_for_dependencies(self) -> None:
+        tasks = [
+            {"id": "research", "dependencies": []},
+            {"id": "code", "dependencies": []},
+            {"id": "synthesis", "dependencies": ["research", "code"]},
+            {"id": "verify", "dependencies": ["synthesis"]},
+            {"id": "present", "dependencies": ["synthesis"]},
+        ]
+
+        _, normalized = crew_runtime.normalize_task_concurrency(tasks, "parallel", 2)
+
+        self.assertEqual(
+            [(task["id"], task["_parallelBatch"]) for task in normalized],
+            [("research", 0), ("code", 0), ("synthesis", 1), ("verify", 2), ("present", 2)],
         )
 
     def test_single_task_parallel_run_is_synchronous(self) -> None:
@@ -459,6 +699,153 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
+    os.environ.get("OPEN_COWORK_RUN_PARALLEL_CREW_INTEGRATION") == "1"
+    and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
+    "Set OPEN_COWORK_RUN_PARALLEL_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live parallel Crew test.",
+)
+class CrewRuntimeParallelIntegrationTests(unittest.TestCase):
+    def test_two_free_model_agents_start_llm_requests_concurrently(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            barrier = threading.Barrier(2)
+            lock = threading.Lock()
+            active_calls = 0
+            max_active_calls = 0
+            first_calls: set[int] = set()
+            llm_class = crew_runtime.runtime_llm_class()
+            original_llm_call = llm_class.call
+
+            def synchronized_llm_call(llm, *args, **kwargs):
+                nonlocal active_calls, max_active_calls
+                with lock:
+                    llm_id = id(llm)
+                    is_first_call = llm_id not in first_calls
+                    first_calls.add(llm_id)
+                    if is_first_call:
+                        active_calls += 1
+                        max_active_calls = max(max_active_calls, active_calls)
+                if not is_first_call:
+                    return original_llm_call(llm, *args, **kwargs)
+                try:
+                    barrier.wait(timeout=30)
+                    return original_llm_call(llm, *args, **kwargs)
+                finally:
+                    with lock:
+                        active_calls -= 1
+
+            agents = [
+                {
+                    "id": "probe-a",
+                    "name": "Parallel Probe A",
+                    "role": "executor",
+                    "goal": "Execute the exact probe command.",
+                    "backstory": "A minimal concurrency probe agent.",
+                    "providerKind": "openrouter",
+                    "tools": ["bash"],
+                    "allowDelegation": False,
+                    "maxIterations": 3,
+                },
+                {
+                    "id": "probe-b",
+                    "name": "Parallel Probe B",
+                    "role": "executor",
+                    "goal": "Execute the exact probe command.",
+                    "backstory": "A minimal concurrency probe agent.",
+                    "providerKind": "openrouter",
+                    "tools": ["bash"],
+                    "allowDelegation": False,
+                    "maxIterations": 3,
+                },
+            ]
+            tasks = [
+                {
+                    "id": "probe-a-task",
+                    "description": "Call bash exactly once with command python -c \"print('PARALLEL_A')\" and return its output.",
+                    "expectedOutput": "PARALLEL_A from the bash result.",
+                    "agentId": "probe-a",
+                    "context": [],
+                    "dependencies": [],
+                    "asyncExecution": False,
+                },
+                {
+                    "id": "probe-b-task",
+                    "description": "Call bash exactly once with command python -c \"print('PARALLEL_B')\" and return its output.",
+                    "expectedOutput": "PARALLEL_B from the bash result.",
+                    "agentId": "probe-b",
+                    "context": [],
+                    "dependencies": [],
+                    "asyncExecution": False,
+                },
+            ]
+            payload = {
+                "id": "parallel-integration-smoke",
+                "name": "Parallel Integration Crew",
+                "executionGuidelines": "Call bash immediately and finish after its successful result.",
+                "outputMode": "standard",
+                "retryCount": 1,
+                "process": "parallel",
+                "maxParallelTasks": 2,
+                "maxRpm": 0,
+                "verbose": False,
+                "cwd": str(root),
+                "config": {
+                    "baseUrl": "http://127.0.0.1:11434",
+                    "model": "unused-for-openrouter",
+                    "timeoutMs": 60_000,
+                },
+                "providerConfigs": {
+                    "openRouter": {
+                        "baseUrl": "https://openrouter.ai/api/v1",
+                        "model": TEST_OPENROUTER_NEMOTRON_MODEL,
+                        "apiKey": os.environ["OPENROUTER_API_KEY"],
+                        "timeoutMs": 300_000,
+                        "verifyTlsCertificates": True,
+                    }
+                },
+                "agents": agents,
+                "tasks": tasks,
+                "governance": {
+                    "subject": "parallel-integration-test",
+                    "subjectRoles": ["owner"],
+                    "pendingApprovalTypes": [],
+                    "agentAccess": [
+                        {
+                            "agentId": agent["id"],
+                            "allowedTools": ["bash"],
+                            "blockedTools": [],
+                            "allowedMcpServerNames": [],
+                            "blockedMcpServerNames": [],
+                            "delegationAllowed": False,
+                            "gatewayHints": [],
+                        }
+                        for agent in agents
+                    ],
+                },
+                "memoryContext": {},
+            }
+
+            with mock.patch.object(llm_class, "call", synchronized_llm_call):
+                response = crew_runtime.execute_definition(payload)
+
+            self.assertEqual(response["status"], "completed", response.get("error"))
+            self.assertEqual(max_active_calls, 2, "Both LLM requests must be active at the same time.")
+            self.assertFalse(barrier.broken)
+            outputs = {result["taskId"]: str(result.get("output") or "") for result in response["taskResults"]}
+            self.assertIn("PARALLEL_A", outputs["probe-a-task"])
+            self.assertIn("PARALLEL_B", outputs["probe-b-task"])
+            self.assertTrue(any(
+                log.get("action") == "rate_limit_policy"
+                and "max 2" in str(log.get("result") or "")
+                for log in response["logs"]
+            ))
+            first_handoff = next(
+                log for log in response["logs"]
+                if log.get("action") == "task_handoff" and log.get("taskId") == "probe-a-task"
+            )
+            self.assertIn("Async: yes", str(first_handoff.get("result") or ""))
+
+
+@unittest.skipUnless(
     os.environ.get("OPEN_COWORK_RUN_COMPLEX_CREW_INTEGRATION") == "1"
     and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
     "Set OPEN_COWORK_RUN_COMPLEX_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the complex live Crew test.",
@@ -475,9 +862,10 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "goal": "Collect current, verifiable primary sources.",
                     "backstory": "A careful web researcher who never invents citations.",
                     "providerKind": "openrouter",
+                    "modelOverride": TEST_OPENROUTER_NEMOTRON_MODEL,
                     "tools": ["web_search", "web_fetch"],
                     "allowDelegation": False,
-                    "maxIterations": 5,
+                    "maxIterations": 4,
                 },
                 {
                     "id": "coder",
@@ -488,7 +876,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "providerKind": "openrouter",
                     "tools": ["create_directory", "edit_file", "read_file", "bash"],
                     "allowDelegation": False,
-                    "maxIterations": 6,
+                    "maxIterations": 4,
                 },
                 {
                     "id": "analyst",
@@ -499,7 +887,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "providerKind": "openrouter",
                     "tools": ["edit_file", "read_file"],
                     "allowDelegation": False,
-                    "maxIterations": 5,
+                    "maxIterations": 4,
                 },
                 {
                     "id": "verifier",
@@ -510,7 +898,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "providerKind": "openrouter",
                     "tools": ["read_file", "grep", "bash"],
                     "allowDelegation": False,
-                    "maxIterations": 5,
+                    "maxIterations": 4,
                 },
                 {
                     "id": "presenter",
@@ -521,7 +909,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "providerKind": "openrouter",
                     "tools": ["read_file", "office_workflow"],
                     "allowDelegation": False,
-                    "maxIterations": 5,
+                    "maxIterations": 4,
                 },
             ]
             tasks = [
@@ -585,8 +973,8 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     ),
                     "expectedOutput": "The exact path to a valid PowerPoint file with at least five total slides.",
                     "agentId": "presenter",
-                    "context": ["synthesis", "verification"],
-                    "dependencies": ["synthesis", "verification"],
+                    "context": ["synthesis"],
+                    "dependencies": ["synthesis"],
                     "asyncExecution": False,
                 },
             ]
@@ -601,7 +989,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                 ),
                 "knowledgeFocus": "CrewAI runtime collaboration verification",
                 "outputMode": "standard",
-                "retryCount": 3,
+                "retryCount": 1,
                 "process": "parallel",
                 "maxParallelTasks": 2,
                 "maxRpm": 0,
@@ -615,7 +1003,10 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                 "providerConfigs": {
                     "openRouter": {
                         "baseUrl": "https://openrouter.ai/api/v1",
-                        "model": TEST_OPENROUTER_NEMOTRON_MODEL,
+                        "model": os.environ.get(
+                            "OPEN_COWORK_CREW_TEST_MODEL",
+                            TEST_OPENROUTER_COMPLEX_NEMOTRON_MODEL,
+                        ),
                         "apiKey": os.environ["OPENROUTER_API_KEY"],
                         "timeoutMs": 300_000,
                         "verifyTlsCertificates": True,
@@ -656,6 +1047,19 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                 {log.get("agentId") for log in response["logs"] if log.get("action") == "task_handoff"},
                 {"researcher", "coder", "analyst", "verifier", "presenter"},
             )
+            parallel_handoffs = {
+                log.get("taskId")
+                for log in response["logs"]
+                if log.get("action") == "task_handoff"
+                and "Async: yes" in str(log.get("result") or "")
+            }
+            self.assertEqual(parallel_handoffs, {"research", "code", "verification", "presentation"})
+            outputs = {result["taskId"]: str(result.get("output") or "") for result in response["taskResults"]}
+            self.assertGreaterEqual(outputs["research"].count("https://"), 3)
+            self.assertIn("verified", outputs["code"].lower())
+            self.assertNotIn("exit code: 1", outputs["code"].lower())
+            self.assertNotIn("execution failed", outputs["code"].lower())
+            self.assertIn("VERIFICATION_OK", outputs["verification"])
 
             metrics_path = root / "artifacts" / "metrics.py"
             report_path = root / "artifacts" / "complex-report.md"

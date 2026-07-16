@@ -4172,7 +4172,59 @@ impl Database {
         rows.collect()
     }
 
-    pub fn search_memory_entries(&self, query: &str, limit: i64) -> SqlResult<Vec<MemoryEntryRow>> {
+    pub fn list_all_memory_entries(
+        &self,
+        category: Option<&str>,
+        limit: i64,
+    ) -> SqlResult<Vec<MemoryEntryRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(
+            category,
+        ) = category
+        {
+            (
+                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                     FROM memory_entries WHERE category = ?1 ORDER BY updated_at DESC LIMIT ?2",
+                    vec![Box::new(category.to_string()), Box::new(limit)],
+                )
+        } else {
+            (
+                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                     FROM memory_entries ORDER BY updated_at DESC LIMIT ?1",
+                    vec![Box::new(limit)],
+                )
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|value| value.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(MemoryEntryRow {
+                id: row.get(0)?,
+                scope: row.get(1)?,
+                category: row.get(2)?,
+                key: row.get(3)?,
+                content: row.get(4)?,
+                source_session_id: row.get(5)?,
+                confidence: row.get(6)?,
+                access_count: row.get(7)?,
+                last_accessed_at: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_memory_entries(
+        &self,
+        query: &str,
+        scope: Option<&str>,
+        category: Option<&str>,
+        limit: i64,
+    ) -> SqlResult<Vec<MemoryEntryRow>> {
         let conn = self
             .conn
             .lock()
@@ -4245,6 +4297,8 @@ impl Database {
         let entries = rows.collect::<SqlResult<Vec<_>>>()?;
         let mut ranked = entries
             .into_iter()
+            .filter(|entry| scope.is_none_or(|value| entry.scope == value))
+            .filter(|entry| category.is_none_or(|value| entry.category == value))
             .filter_map(|entry| {
                 let key = entry.key.to_lowercase();
                 let category = entry.category.to_lowercase();
@@ -4569,7 +4623,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO sessions (id, thread_id, title, memory_snapshot_json, model_used, provider, personality, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+             ON CONFLICT(id) DO NOTHING",
             params![id, thread_id, title, memory_snapshot_json, model_used, provider, personality],
         )?;
         Ok(())
@@ -6427,6 +6482,78 @@ mod tests {
     }
 
     #[test]
+    fn session_search_finds_linked_persisted_chat_messages() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_thread(
+            "thread-memory",
+            "Memory thread",
+            "2026-07-16T10:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+        db.insert_message(
+            "message-memory",
+            "thread-memory",
+            "assistant",
+            "The project selected SQLite for durable local memory.",
+            1_752_660_000,
+        )
+        .unwrap();
+        db.insert_session(
+            "session-memory",
+            Some("thread-memory"),
+            "Memory decision",
+            Some("{\"sessionId\":\"session-memory\"}"),
+            Some("test-model"),
+            Some("ollama"),
+            None,
+        )
+        .unwrap();
+
+        let matches = db.fulltext_search_sessions("SQLite", 10).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].session_id, "session-memory");
+        assert_eq!(
+            matches[0].matched_content.as_deref(),
+            Some("The project selected SQLite for durable local memory.")
+        );
+    }
+
+    #[test]
+    fn creating_an_existing_session_does_not_replace_its_frozen_snapshot() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_session(
+            "session-frozen",
+            None,
+            "Original",
+            Some("{\"version\":1}"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.insert_session(
+            "session-frozen",
+            None,
+            "Later title",
+            Some("{\"version\":2}"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.get_session_memory_snapshot("session-frozen")
+                .unwrap()
+                .as_deref(),
+            Some("{\"version\":1}")
+        );
+    }
+
+    #[test]
     fn task_lifecycle() {
         let db = Database::open_in_memory().unwrap();
         db.insert_task(
@@ -7279,6 +7406,8 @@ mod tests {
         let results = db
             .search_memory_entries(
                 "latest API contracts and scheduler retry behavior for this crew task",
+                None,
+                None,
                 5,
             )
             .unwrap();
@@ -7287,5 +7416,39 @@ mod tests {
         assert_eq!(results[0].id, "memory-api-contract");
         assert!(results.iter().any(|entry| entry.id == "memory-scheduler"));
         assert!(!results.iter().any(|entry| entry.id == "memory-unrelated"));
+    }
+
+    #[test]
+    fn memory_search_applies_scope_and_category_before_limiting_results() {
+        let db = Database::open_in_memory().unwrap();
+        for index in 0..8 {
+            db.upsert_memory_entry(
+                &format!("agent-{index}"),
+                "agent",
+                "notes",
+                &format!("agent-key-{index}"),
+                "shared search term",
+                None,
+                1.0,
+            )
+            .unwrap();
+        }
+        db.upsert_memory_entry(
+            "shared-match",
+            "shared",
+            "knowledge",
+            "shared-key",
+            "shared search term",
+            None,
+            1.0,
+        )
+        .unwrap();
+
+        let results = db
+            .search_memory_entries("shared search term", Some("shared"), Some("knowledge"), 1)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "shared-match");
     }
 }

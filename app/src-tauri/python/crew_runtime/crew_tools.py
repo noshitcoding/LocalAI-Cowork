@@ -10,6 +10,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import urllib.request
@@ -627,6 +628,25 @@ class BashInput(BaseModel):
     timeout_seconds: int = Field(default=60, ge=1, le=120)
 
 
+def _subprocess_environment() -> dict[str, str]:
+    blocked_python_variables = {
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONEXECUTABLE",
+        "__PYVENV_LAUNCHER__",
+    }
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not re.search(r"(?i)(api[_-]?key|token|secret|password|credential)", key)
+        and key.upper() not in blocked_python_variables
+    }
+    runtime_bin = str(Path(sys.executable).resolve().parent)
+    existing_path = environment.get("PATH", "")
+    environment["PATH"] = runtime_bin + (os.pathsep + existing_path if existing_path else "")
+    return environment
+
+
 class BashTool(BaseTool):
     name: str = "bash"
     description: str = "Run a bounded, non-interactive PowerShell command on Windows or POSIX shell command elsewhere, from the working directory."
@@ -652,15 +672,10 @@ class BashTool(BaseTool):
                 if os.name == "nt"
                 else ["/bin/sh", "-lc", normalized]
             )
-            environment = {
-                key: value
-                for key, value in os.environ.items()
-                if not re.search(r"(?i)(api[_-]?key|token|secret|password|credential)", key)
-            }
             completed = subprocess.run(
                 args,
                 cwd=self._root,
-                env=environment,
+                env=_subprocess_environment(),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -741,7 +756,11 @@ def _parse_office_sections(value: str) -> list[dict[str, Any]]:
 
 class OfficeWorkflowTool(BaseTool):
     name: str = "office_workflow"
-    description: str = "Create a real PowerPoint (.pptx) or Word (.docx) artifact in the working directory from structured sections."
+    description: str = (
+        "Create a real PowerPoint (.pptx) or Word (.docx) artifact. Call the tool directly with output_path, title, "
+        "and sections_json. sections_json must be a JSON array such as "
+        "[{\"title\":\"Evidence\",\"bullets\":[\"Verified fact\"]}]. Do not return a proposed tool call as text."
+    )
     args_schema: type[BaseModel] = OfficeWorkflowInput
     _root: Path = PrivateAttr()
 

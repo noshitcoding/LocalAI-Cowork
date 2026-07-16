@@ -1,7 +1,8 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
+  ArrowLeft,
   Blocks,
   Command,
   FolderKanban,
@@ -26,7 +27,7 @@ import LeftSidebar from './LeftSidebar'
 import CommandPalette from './CommandPalette'
 import LanguageSwitcher from './LanguageSwitcher'
 import { tr } from '../i18n'
-import { PRODUCT_ROUTES, getProductRouteByShortcutKey, type ProductRoute } from '../product/routeRegistry'
+import { PRODUCT_ROUTES, getProductRouteById, getProductRouteByShortcutKey, type ProductRoute } from '../product/routeRegistry'
 
 const COMPACT_SIDEBAR_MEDIA_QUERY = '(max-width: 900px)'
 
@@ -55,6 +56,8 @@ function ViewLoadingState() {
 export default function Layout() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
+  const location = useLocation()
+  const settingsFocused = location.pathname === getProductRouteById('settings').path
   
   const {
     leftSidebarOpen,
@@ -81,6 +84,7 @@ export default function Layout() {
   const [compactSidebarOpen, setCompactSidebarOpen] = useState(false)
   const resolvedLeftSidebarWidth = clampLeftSidebarWidth(leftSidebarWidth)
   const resolvedLeftSidebarOpen = compactSidebar ? compactSidebarOpen : leftSidebarOpen
+  const workspaceSidebarVisible = resolvedLeftSidebarOpen && !focusMode && !settingsFocused
   const leftSidebarFrameStyle = {
     '--left-sidebar-width': `${resolvedLeftSidebarWidth}px`,
   } as CSSProperties
@@ -93,12 +97,13 @@ export default function Layout() {
   }, [navigate, setActiveMode])
 
   const handleToggleLeftSidebar = useCallback(() => {
+    if (settingsFocused) return
     if (compactSidebar) {
       setCompactSidebarOpen((open) => !open)
       return
     }
     toggleLeftSidebar()
-  }, [compactSidebar, toggleLeftSidebar])
+  }, [compactSidebar, settingsFocused, toggleLeftSidebar])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return undefined
@@ -232,18 +237,31 @@ export default function Layout() {
     <div className="app-shell" data-doc-id="element:/app/shell">
       <div className="top-bar">
         <div className="top-bar-brand">
-          <button
-            type="button"
-            className="top-icon-button"
-            data-doc-id="button:/app/shell/toggle-sidebar"
-            onClick={handleToggleLeftSidebar}
-            title={t('layout.sidebarShortcut')}
-            aria-label={t('layout.toggleSidebar')}
-            aria-controls="workspace-sidebar-frame"
-            aria-expanded={resolvedLeftSidebarOpen && !focusMode}
-          >
-            <Menu size={17} strokeWidth={2} />
-          </button>
+          {settingsFocused ? (
+            <button
+              type="button"
+              className="top-icon-button"
+              data-doc-id="button:/app/shell/back-to-cowork"
+              onClick={() => navigateToProductRoute(getProductRouteById('cowork'))}
+              title={t('layout.backToCowork')}
+              aria-label={t('layout.backToCowork')}
+            >
+              <ArrowLeft size={17} strokeWidth={2} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="top-icon-button"
+              data-doc-id="button:/app/shell/toggle-sidebar"
+              onClick={handleToggleLeftSidebar}
+              title={t('layout.sidebarShortcut')}
+              aria-label={t('layout.toggleSidebar')}
+              aria-controls="workspace-sidebar-frame"
+              aria-expanded={workspaceSidebarVisible}
+            >
+              <Menu size={17} strokeWidth={2} />
+            </button>
+          )}
           <span className="brand-mark" aria-hidden="true"><PanelsTopLeft size={16} strokeWidth={2.2} /></span>
           <span className="brand-name">{t('app.name')}</span>
         </div>
@@ -287,7 +305,7 @@ export default function Layout() {
       </div>
 
       <div className="app-body">
-        {compactSidebar && compactSidebarOpen && !focusMode && (
+        {compactSidebar && compactSidebarOpen && !focusMode && !settingsFocused && (
           <button
             type="button"
             className="sidebar-backdrop"
@@ -295,7 +313,7 @@ export default function Layout() {
             aria-label={t('layout.closeSidebar')}
           />
         )}
-        {resolvedLeftSidebarOpen && !focusMode && (
+        {workspaceSidebarVisible && (
           <div
             id="workspace-sidebar-frame"
             ref={leftSidebarFrameRef}

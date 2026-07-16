@@ -142,12 +142,12 @@ export default function CommandPalette() {
     setSelectedCategory(null)
   }, [setCommandPaletteOpen])
 
-  const handleExecute = useCallback((cmd: typeof filteredCommands[0]) => {
+  const handleExecute = useCallback(async (cmd: typeof filteredCommands[0]) => {
     const slashArgs = isSlashQuery ? query.replace(/^\/\S+\s*/, '').trim() : undefined
     if ('action' in cmd && typeof cmd.action === 'function') {
       (cmd as { action: () => void }).action()
     } else {
-      executeCommand(cmd.id, slashArgs || undefined)
+      await executeCommand(cmd.id, slashArgs || undefined)
     }
     setCommandPaletteOpen(false)
     setQuery('')

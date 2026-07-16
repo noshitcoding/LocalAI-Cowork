@@ -92,6 +92,21 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'New task' })).toBeInTheDocument()
   })
 
+  it('uses a focused settings layout and restores the workspace sidebar on return', async () => {
+    window.history.pushState({}, '', '/settings')
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'AI & model' })).toBeInTheDocument()
+    expect(screen.queryByRole('complementary', { name: 'Workspace sidebar' })).not.toBeInTheDocument()
+    expect(useUiStore.getState().leftSidebarOpen).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Cowork' }))
+
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    expect(await screen.findByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
+    expect(useUiStore.getState().leftSidebarOpen).toBe(true)
+  })
+
   it('maps number shortcuts to the top navigation order', async () => {
     render(<App />)
     await screen.findByRole('link', { name: 'Cowork' })

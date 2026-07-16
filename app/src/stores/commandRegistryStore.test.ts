@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getSlashCommandSuggestions, type SlashCommand } from './commandRegistryStore'
+import { buildAllCommands, getSlashCommandSuggestions, useCommandRegistry, type SlashCommand } from './commandRegistryStore'
+import { SLASH_COMMAND_DEFINITIONS } from '../utils/claudeBridge'
 
 vi.mock('./uiStore', () => ({
   useUiStore: {
@@ -7,6 +8,7 @@ vi.mock('./uiStore', () => ({
       setActiveMode: vi.fn(),
       toggleLeftSidebar: vi.fn(),
       setTheme: vi.fn(),
+      toggleTheme: vi.fn(),
       setShortcutsOverlayOpen: vi.fn(),
       setWorkingPath: vi.fn(),
     }),
@@ -51,6 +53,10 @@ vi.mock('./coworkStore', () => ({
       toggleConnector: vi.fn(),
       installPluginExamples: vi.fn(),
       upsertScheduledTask: vi.fn(),
+      enabledClaudeToolIds: ['Read', 'MemoryWrite', 'SessionSearch'],
+      claudePermissionMode: 'default',
+      setClaudePlanMode: vi.fn(),
+      setClaudePermissionMode: vi.fn(),
     }),
   },
 }))
@@ -114,7 +120,7 @@ vi.mock('./crewStore', () => ({
   useCrewStore: {
     getState: () => ({
       loadAgents: vi.fn(),
-      createCrew: vi.fn(),
+      createStarterCrew: vi.fn(),
     }),
   },
 }))
@@ -163,5 +169,71 @@ describe('getSlashCommandSuggestions', () => {
 
   it('returns no suggestions for non-command input', () => {
     expect(getSlashCommandSuggestions(commands, 'hello')).toEqual([])
+  })
+})
+
+describe('slash command registry integrity', () => {
+  it('contains unique valid commands and every model-facing Claude bridge command', () => {
+    const registered = buildAllCommands()
+    const ids = registered.map((command) => command.id)
+    const names = registered.map((command) => command.command)
+
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(new Set(names).size).toBe(names.length)
+    expect(names.every((command) => command.startsWith('/'))).toBe(true)
+    for (const definition of SLASH_COMMAND_DEFINITIONS) {
+      expect(names).toContain(definition.command)
+    }
+  })
+
+  it('can invoke every registered command without arguments without throwing', async () => {
+    for (const command of buildAllCommands()) {
+      try {
+        await command.execute()
+      } catch (error) {
+        throw new Error(`${command.command} threw during smoke execution: ${String(error)}`)
+      }
+    }
+  })
+
+  it('awaits async execution and does not record failed commands as successful', async () => {
+    const original = useCommandRegistry.getState().commands
+    let release = () => {}
+    const barrier = new Promise<void>((resolve) => { release = resolve })
+    useCommandRegistry.setState({
+      commands: [{
+        id: 'async-test',
+        command: '/async-test',
+        label: 'Async test',
+        description: 'Test command',
+        category: 'debug',
+        execute: () => barrier,
+      }],
+      lastExecuted: null,
+      executionLog: [],
+    })
+
+    const execution = useCommandRegistry.getState().executeCommand('/async-test')
+    expect(useCommandRegistry.getState().lastExecuted).toBeNull()
+    release()
+    await expect(execution).resolves.toBe(true)
+    expect(useCommandRegistry.getState().lastExecuted).toBe('async-test')
+
+    useCommandRegistry.setState({
+      commands: [{
+        id: 'fail-test',
+        command: '/fail-test',
+        label: 'Fail test',
+        description: 'Test failure',
+        category: 'debug',
+        execute: async () => { throw new Error('expected failure') },
+      }],
+      lastExecuted: null,
+      executionLog: [],
+    })
+    await expect(useCommandRegistry.getState().executeCommand('/fail-test')).rejects.toThrow('expected failure')
+    expect(useCommandRegistry.getState().lastExecuted).toBeNull()
+    expect(useCommandRegistry.getState().executionLog).toEqual([])
+    useCommandRegistry.setState({ commands: original })
   })
 })

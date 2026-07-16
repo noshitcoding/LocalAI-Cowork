@@ -1596,7 +1596,7 @@ fn collect_crew_memory_payload(
         Vec::new()
     } else {
         database
-            .search_memory_entries(&query, 8)
+            .search_memory_entries(&query, None, None, 8)
             .unwrap_or_default()
     };
 
@@ -9098,8 +9098,11 @@ fn canonical_policy_tool_id(tool: &str) -> String {
         "grep" | "search" => "grep".to_string(),
         "webfetch" | "web_fetch" => "web_fetch".to_string(),
         "websearch" | "web_search" => "web_search".to_string(),
-        "officeworkflow" | "office_workflow" | "generate_office_workflow"
-        | "pptx_template_workflow" | "docx_template_workflow" => "office_workflow".to_string(),
+        "officeworkflow"
+        | "office_workflow"
+        | "generate_office_workflow"
+        | "pptx_template_workflow"
+        | "docx_template_workflow" => "office_workflow".to_string(),
         "mcptool" | "mcp" | "mcp_call" => "mcp".to_string(),
         "askuser" | "ask_user" => "ask_user".to_string(),
         "taskcreate" | "tasklist" | "taskupdate" | "todo" => "todo".to_string(),
@@ -10227,6 +10230,26 @@ fn memory_upsert(
 }
 
 #[tauri::command]
+fn memory_mutate(
+    state: tauri::State<'_, Arc<Database>>,
+    action: String,
+    target: String,
+    content: Option<String>,
+    old_text: Option<String>,
+    source_session_id: Option<String>,
+) -> Result<memory_engine::MemoryMutationResponse, String> {
+    let db_arc = state.inner().clone();
+    memory_engine::mutate_curated_memory(
+        &db_arc,
+        &action,
+        &target,
+        content.as_deref(),
+        old_text.as_deref(),
+        source_session_id.as_deref(),
+    )
+}
+
+#[tauri::command]
 fn memory_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<(), String> {
     state.delete_memory_entry(&id).map_err(|e| e.to_string())
 }
@@ -10242,15 +10265,15 @@ fn memory_search(
     let lim = limit.unwrap_or(100);
     if let Some(ref kw) = keyword {
         state
-            .search_memory_entries(kw, lim)
+            .search_memory_entries(kw, scope.as_deref(), category.as_deref(), lim)
+            .map_err(|e| e.to_string())
+    } else if let Some(requested_scope) = scope {
+        state
+            .list_memory_entries(&requested_scope, category.as_deref(), lim)
             .map_err(|e| e.to_string())
     } else {
         state
-            .list_memory_entries(
-                &scope.unwrap_or_else(|| "agent".to_string()),
-                category.as_deref(),
-                lim,
-            )
+            .list_all_memory_entries(category.as_deref(), lim)
             .map_err(|e| e.to_string())
     }
 }
@@ -10420,17 +10443,43 @@ fn session_create(
     provider: Option<String>,
     personality: Option<String>,
 ) -> Result<(), String> {
+    let db_arc = state.inner().clone();
+    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
+    snapshot.session_id = id.clone();
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     state
         .insert_session(
             &id,
             thread_id.as_deref(),
             &title,
-            None,
+            Some(&snapshot_json),
             model_used.as_deref(),
             provider.as_deref(),
             personality.as_deref(),
         )
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn session_memory_snapshot(
+    state: tauri::State<'_, Arc<Database>>,
+    session_id: String,
+) -> Result<memory_engine::FrozenMemorySnapshot, String> {
+    if let Some(snapshot_json) = state
+        .get_session_memory_snapshot(&session_id)
+        .map_err(|error| error.to_string())?
+    {
+        return serde_json::from_str(&snapshot_json).map_err(|error| error.to_string());
+    }
+
+    let db_arc = state.inner().clone();
+    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
+    snapshot.session_id = session_id.clone();
+    let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
+    state
+        .save_session_snapshot(&session_id, &snapshot_json)
+        .map_err(|error| error.to_string())?;
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -10482,7 +10531,8 @@ fn session_freeze_snapshot(
     session_id: String,
 ) -> Result<String, String> {
     let db_arc = state.inner().clone();
-    let snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
+    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
+    snapshot.session_id = session_id.clone();
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| e.to_string())?;
     state
         .save_session_snapshot(&session_id, &snapshot_json)
@@ -11833,6 +11883,7 @@ pub fn run() {
             worker_sandbox_destroy,
             // Memory
             memory_upsert,
+            memory_mutate,
             memory_delete,
             memory_search,
             memory_compact,
@@ -11852,6 +11903,7 @@ pub fn run() {
             skill_auto_generate,
             // Sessions
             session_create,
+            session_memory_snapshot,
             session_end,
             session_list,
             session_search,

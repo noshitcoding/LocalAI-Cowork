@@ -110,6 +110,19 @@ test('guided onboarding stays discoverable and prepares a safe first task', asyn
   await expect(page.getByRole('complementary', { name: 'Run context' })).toBeHidden()
   await page.getByRole('button', { name: 'Dismiss onboarding' }).click()
   await page.getByRole('button', { name: 'Open getting started' }).click()
+  await page.evaluate(() => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {
+        invoke: async (command: string) => (
+          command === 'plugin:dialog|open' ? ['C:\\workspace'] : null
+        ),
+      },
+    })
+  })
+  await page.getByRole('button', { name: 'Context', exact: true }).click()
+  await page.getByRole('button', { name: 'Choose a working folder' }).click()
+  await expect(page.getByRole('button', { name: 'Choose another folder' })).toBeVisible()
   await page.getByRole('button', { name: 'Control' }).click()
   await page.getByRole('button', { name: 'Use starter task' }).click()
 

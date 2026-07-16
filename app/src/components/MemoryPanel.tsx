@@ -385,12 +385,12 @@ export default function MemoryPanel() {
           ) : (
             <div className="memory-list">
               {hints.map((hint, index) => (
-                <div key={`${hint.scope}-${hint.key}-${index}`} className="card memory-hint-card">
+                <div key={`${hint.hintType}-${hint.suggestedKey ?? 'general'}-${index}`} className="card memory-hint-card">
                   <div className="memory-entry-meta">
-                    {hint.scope} / {tr("Relevance")}: {hint.relevance}
+                    {hint.hintType}{hint.suggestedCategory ? ` / ${hint.suggestedCategory}` : ''}
                   </div>
-                  <div className="memory-entry-key">{hint.key}</div>
-                  <div className="memory-entry-content">{hint.content}</div>
+                  {hint.suggestedKey && <div className="memory-entry-key">{hint.suggestedKey}</div>}
+                  <div className="memory-entry-content">{hint.message}</div>
                 </div>
               ))}
             </div>

@@ -450,7 +450,11 @@ const TEXTUAL_TOOL_NAME_ALIASES: Record<string, string> = {
   recall: 'MemoryRead',
   memorywrite: 'MemoryWrite',
   memory_write: 'MemoryWrite',
+  memory: 'MemoryWrite',
   remember: 'MemoryWrite',
+  sessionsearch: 'SessionSearch',
+  session_search: 'SessionSearch',
+  search_sessions: 'SessionSearch',
   // Thinking
   think: 'Think',
   reasoning: 'Think',

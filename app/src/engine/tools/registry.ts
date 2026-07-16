@@ -1611,6 +1611,14 @@ const memoryReadTool: Tool<{ scope?: string; key?: string }> = {
   isConcurrencySafe: () => true,
   async call(input) {
     const scope = normalizeMemoryScope(input.scope)
+    if (scope === 'user') {
+      const profile = await invoke<Array<{ key: string; value: string; source: string; confidence: number }>>('user_profile_list')
+      const filtered = input.key
+        ? profile.filter((entry) => entry.key.includes(input.key ?? ''))
+        : profile
+      if (filtered.length === 0) return { data: 'No user-profile memories found.' }
+      return { data: filtered.map((entry) => `[user/${entry.key}]: ${entry.value}`).join('\n\n') }
+    }
     const entries = await invoke<MemoryEntry[]>('memory_search', {
       scope,
       category: null,
@@ -1623,39 +1631,123 @@ const memoryReadTool: Tool<{ scope?: string; key?: string }> = {
   },
 }
 
-const memoryWriteTool: Tool<{ scope: string; key: string; content: string }> = {
+type MemoryWriteInput = {
+  action?: 'add' | 'replace' | 'remove'
+  target?: 'memory' | 'user'
+  old_text?: string
+  content?: string
+  scope?: string
+  key?: string
+}
+
+type MemoryMutationResponse = {
+  success: boolean
+  changed: boolean
+  action: string
+  target: string
+  message: string
+  usageChars: number
+  limitChars: number
+  entries: string[]
+}
+
+const memoryWriteTool: Tool<MemoryWriteInput> = {
   name: 'MemoryWrite',
-  aliases: ['memory_write', 'remember'],
-  description: 'Stores an entry in the memory system.',
+  aliases: ['memory', 'memory_write', 'remember'],
+  description: 'Curates persistent memory with add, replace, or remove. Target memory for durable project/environment facts and user for stable user preferences. Writes are bounded, deduplicated, and visible from the next session snapshot.',
   category: 'memory',
   riskLevel: 'low',
   inputSchema: {
     type: 'object',
     properties: {
-      scope: { type: 'string', description: 'Scope: agent, user, session, shared', enum: ['agent', 'user', 'session', 'shared'] },
-      key: { type: 'string', description: 'Unique key' },
-      content: { type: 'string', description: 'Content to store' },
+      action: { type: 'string', description: 'Mutation action', enum: ['add', 'replace', 'remove'] },
+      target: { type: 'string', description: 'memory for agent notes, user for user profile', enum: ['memory', 'user'] },
+      old_text: { type: 'string', description: 'Unique substring for replace or remove' },
+      content: { type: 'string', description: 'New content for add or replace' },
+      scope: { type: 'string', description: 'Legacy scope for compatibility', enum: ['agent', 'user', 'session', 'shared'] },
+      key: { type: 'string', description: 'Legacy unique key for session/shared writes' },
     },
-    required: ['scope', 'key', 'content'],
+    required: ['action', 'target'],
   },
   isReadOnly: () => false,
   isConcurrencySafe: () => true,
   async call(input, context) {
-    const scope = normalizeMemoryScope(input.scope)
-    if (!scope) {
-      return { data: 'Error: scope ist erforderlich.' }
+    const action = input.action ?? 'add'
+    const target = input.target ?? (input.scope === 'user' ? 'user' : 'memory')
+
+    // Preserve compatibility for explicit session/shared keyed writes.
+    const legacyScope = normalizeMemoryScope(input.scope)
+    if (legacyScope === 'session' || legacyScope === 'shared') {
+      if (!input.key?.trim() || !input.content?.trim()) {
+        return { data: 'Error: key and content are required for session/shared memory.' }
+      }
+      await invoke('memory_upsert', {
+        id: createToolStreamId(),
+        scope: legacyScope,
+        category: legacyScope === 'shared' ? 'knowledge' : 'context',
+        key: input.key,
+        content: input.content,
+        sourceSessionId: context.sessionId ?? null,
+        confidence: 1.0,
+      })
+      return { data: `Memory saved: [${legacyScope}/${input.key}]` }
     }
 
-    await invoke('memory_upsert', {
-      id: createToolStreamId(),
-      scope,
-      category: 'user',
-      key: input.key,
-      content: input.content,
+    const response = await invoke<MemoryMutationResponse>('memory_mutate', {
+      action,
+      target,
+      oldText: input.old_text ?? null,
+      content: input.content ?? null,
       sourceSessionId: context.sessionId ?? null,
-      confidence: 1.0,
     })
-    return { data: `reminder saved: [${scope}/user/${input.key}]` }
+    return {
+      data: [
+        response.success ? response.message : `Error: memory mutation rejected: ${response.message}`,
+        `Usage: ${response.usageChars}/${response.limitChars} chars`,
+        response.changed ? 'Persisted for future sessions.' : 'No stored entry changed.',
+      ].join('\n'),
+    }
+  },
+}
+
+type SessionSearchRow = {
+  session_id: string
+  session_title: string
+  started_at: string
+  matched_content: string | null
+  matched_role: string | null
+}
+
+const sessionSearchTool: Tool<{ query: string; limit?: number }> = {
+  name: 'SessionSearch',
+  aliases: ['session_search', 'search_sessions'],
+  description: 'Searches persisted past conversations for exact details that are not in curated memory.',
+  category: 'memory',
+  riskLevel: 'low',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Full-text search query' },
+      limit: { type: 'number', description: 'Maximum number of matches' },
+    },
+    required: ['query'],
+  },
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  async call(input) {
+    const query = input.query.trim()
+    if (!query) return { data: 'Error: query is required.' }
+    const rows = await invoke<SessionSearchRow[]>('session_search', {
+      query,
+      limit: Math.max(1, Math.min(50, input.limit ?? 10)),
+    })
+    if (rows.length === 0) return { data: `No past-session matches for "${query}".` }
+    return {
+      data: rows.map((row) => [
+        `[${row.session_id}] ${row.session_title} (${row.started_at})`,
+        row.matched_content ? `${row.matched_role ?? 'message'}: ${row.matched_content}` : '',
+      ].filter(Boolean).join('\n')).join('\n\n'),
+    }
   },
 }
 
@@ -2172,6 +2264,7 @@ export function registerAllBuiltinTools(): void {
     taskUpdateTool,
     memoryReadTool,
     memoryWriteTool,
+    sessionSearchTool,
     enterPlanTool,
     exitPlanTool,
     skillTool,

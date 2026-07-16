@@ -1113,6 +1113,7 @@ export default function CoworkView() {
   }, [plugins])
 
   const registryCommands = useCommandRegistry((s) => s.commands)
+  const executeRegistryCommand = useCommandRegistry((s) => s.executeCommand)
 
   const slashCommandSuggestions = useMemo<SlashCommandSuggestion[]>(() => {
     const builtIn = registryCommands.map((cmd) => ({
@@ -2557,7 +2558,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'release-notes') {
-        appendAssistantMessage(tr("Open_Cowork v1.0:\n- 79+ slash commands (volle Claude Code compatibility)\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Memory Engine mit Suche\n- Plugin-System mit Skills\n- MCP-Integration\n- Sandbox & Security Controls"))
+        appendAssistantMessage(tr("Open_Cowork v1.0:\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Hermes-style memory and session search\n- Plugin-System with Skills\n- MCP integration\n- Sandbox & Security Controls"))
         return
       }
 
@@ -2605,14 +2606,13 @@ export default function CoworkView() {
         skillInvocationActive = true
       } else if (!skillPromptOverride && slash.command !== 'plan') {
         // Fall through to registry for any remaining commands
-        const registryCmd = registryCommands.find(
-          (c) => c.command === `/${slash.command}`
-        )
-        if (registryCmd) {
+        if (registryCommands.some((command) => command.command === `/${slash.command}`)) {
           try {
-            registryCmd.execute(slash.args || undefined)
-          } catch { /* best effort */ }
-          appendAssistantMessage(`/${slash.command} executed.`)
+            await executeRegistryCommand(`/${slash.command}`, slash.args || undefined)
+            appendAssistantMessage(`/${slash.command} executed.`)
+          } catch (error) {
+            appendAssistantMessage(`/${slash.command} failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
           return
         }
         appendAssistantMessage(
