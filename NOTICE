@@ -17,6 +17,10 @@ License, Version 2.0 permits reasonable and customary use of those names for
 attribution and origin description, but does not grant broader trademark or
 branding rights.
 
+LocalAI Cowork is an independent project and is not affiliated with or endorsed
+by Anthropic, Microsoft, or the separate LocalAI project at localai.io. All
+third-party product names and trademarks belong to their respective owners.
+
 LocalAI Cowork depends on third-party open source software, including components
 from the Tauri, React, Rust, npm, and PDFium ecosystems. Those components remain
 under their respective licenses. Bundled third-party license files, dependency
