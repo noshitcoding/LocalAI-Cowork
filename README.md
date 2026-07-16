@@ -2,7 +2,7 @@
 
 Local-first desktop workspace for AI-assisted work. Open Cowork combines chat, task planning, tool use, file context, MCP servers, and desktop automation controls in one Windows application.
 
-![Open Cowork desktop UI](site/assets/app-preview.jpg)
+![Open Cowork desktop UI](site/assets/app-preview.png)
 
 ## Why This Exists
 
