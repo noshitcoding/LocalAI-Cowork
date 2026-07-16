@@ -1,6 +1,4 @@
-use portable_pty::{
-    native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -105,11 +103,7 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-fn spawn_reader(
-    app: tauri::AppHandle,
-    session_id: String,
-    mut reader: Box<dyn Read + Send>,
-) {
+fn spawn_reader(app: tauri::AppHandle, session_id: String, mut reader: Box<dyn Read + Send>) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         loop {
@@ -183,7 +177,12 @@ pub fn create_terminal_session(
 
     let mut command = CommandBuilder::new(&shell);
     configure_shell_command(&mut command, &shell);
-    if let Some(cwd) = request.cwd.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(cwd) = request
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         command.cwd(cwd);
     }
 
@@ -205,7 +204,10 @@ pub fn create_terminal_session(
     spawn_waiter(app.clone(), session_id.clone(), child);
 
     {
-        let mut sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+        let mut sessions = registry
+            .sessions
+            .lock()
+            .map_err(|error| error.to_string())?;
         if let Some(mut existing) = sessions.remove(&session_id) {
             let _ = existing.killer.kill();
         }
@@ -247,7 +249,10 @@ pub fn write_terminal_session(
     registry: tauri::State<'_, TerminalSessionRegistry>,
     request: TerminalWriteRequest,
 ) -> Result<(), String> {
-    let mut sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+    let mut sessions = registry
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?;
     let session = sessions
         .get_mut(&request.session_id)
         .ok_or_else(|| format!("terminal session '{}' not found", request.session_id))?;
@@ -262,7 +267,10 @@ pub fn resize_terminal_session(
     registry: tauri::State<'_, TerminalSessionRegistry>,
     request: TerminalResizeRequest,
 ) -> Result<(), String> {
-    let sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+    let sessions = registry
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?;
     let session = sessions
         .get(&request.session_id)
         .ok_or_else(|| format!("terminal session '{}' not found", request.session_id))?;
@@ -276,7 +284,10 @@ pub fn interrupt_terminal_session(
     registry: tauri::State<'_, TerminalSessionRegistry>,
     request: TerminalSessionRequest,
 ) -> Result<(), String> {
-    let mut sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+    let mut sessions = registry
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?;
     let session = sessions
         .get_mut(&request.session_id)
         .ok_or_else(|| format!("terminal session '{}' not found", request.session_id))?;
@@ -291,7 +302,10 @@ pub fn kill_terminal_session(
     registry: tauri::State<'_, TerminalSessionRegistry>,
     request: TerminalSessionRequest,
 ) -> Result<(), String> {
-    let mut sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+    let mut sessions = registry
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut session = sessions
         .remove(&request.session_id)
         .ok_or_else(|| format!("terminal session '{}' not found", request.session_id))?;
@@ -302,7 +316,10 @@ pub fn close_terminal_session(
     registry: tauri::State<'_, TerminalSessionRegistry>,
     request: TerminalSessionRequest,
 ) -> Result<(), String> {
-    let mut sessions = registry.sessions.lock().map_err(|error| error.to_string())?;
+    let mut sessions = registry
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?;
     if let Some(mut session) = sessions.remove(&request.session_id) {
         let _ = session.writer.write_all(b"exit\n");
         let _ = session.writer.flush();

@@ -80,39 +80,38 @@ export default function RuntimeInstructionsPanel() {
   }
 
   return (
-    <div className="panel">
+    <div className="panel runtime-instructions-panel">
       <div className="panel-heading-row">
         <h2>{tr("Runtime instructions")}</h2>
         <button type="button" className="btn-sm" onClick={() => void loadItems()}>{tr("Refresh")}</button>
       </div>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="runtime-instructions-error">{error}</p>}
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 8 }}>
+      <div className="card runtime-instructions-form">
+        <div className="grid runtime-instructions-grid">
           <label>{tr("Title")}<input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} />
           </label>
           <label>{tr("Scope")}<select value={form.scopeType} onChange={(event) => setForm((current) => ({ ...current, scopeType: event.target.value }))}>
-              <option value="global">{tr("Global")}</option>
-              <option value="workspace">{tr("Workspace")}</option>
-              <option value="folder">{tr("Folder")}</option>
-            </select>
+            <option value="global">{tr("Global")}</option>
+            <option value="workspace">{tr("Workspace")}</option>
+            <option value="folder">{tr("Folder")}</option>
+          </select>
           </label>
-          <label style={{ gridColumn: '1 / -1' }}>{tr("Scope Ref")}<input
-              value={form.scopeRef}
-              onChange={(event) => setForm((current) => ({ ...current, scopeRef: event.target.value }))}
-              placeholder={tr("Optional, e.g. C:/path/to/project")}
-            />
+          <label className="runtime-instructions-full">{tr("Scope Ref")}<input
+            value={form.scopeRef}
+            onChange={(event) => setForm((current) => ({ ...current, scopeRef: event.target.value }))}
+            placeholder={tr("Optional, e.g. C:/path/to/project")}
+          />
           </label>
           <label>{tr("Priority")}<input value={form.priority} onChange={(event) => setForm((current) => ({ ...current, priority: event.target.value }))} />
           </label>
         </div>
-        <label style={{ display: 'block', marginBottom: 8 }}>{tr("Content")}<textarea
-            rows={4}
-            value={form.content}
-            onChange={(event) => setForm((current) => ({ ...current, content: event.target.value }))}
-            style={{ width: '100%', resize: 'vertical' }}
-          />
+        <label className="runtime-instructions-content">{tr("Content")}<textarea
+          rows={4}
+          value={form.content}
+          onChange={(event) => setForm((current) => ({ ...current, content: event.target.value }))}
+        />
         </label>
         <button type="button" className="btn-sm" onClick={handleSave}>{tr("Save")}</button>
       </div>
@@ -122,21 +121,21 @@ export default function RuntimeInstructionsPanel() {
       ) : items.length === 0 ? (
         <p className="panel-empty">{tr("No runtime instructions available.")}</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="runtime-instructions-list">
           {items.map((item) => (
-            <div key={item.id} className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                <div>
-                  <strong style={{ fontSize: 13 }}>{item.title}</strong>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                    {item.scopeType}
-                    {item.scopeRef ? ` • ${item.scopeRef}` : ''}
-                    {` • priority ${item.priority}`}
+            <div key={item.id} className="card runtime-instructions-card">
+              <div className="runtime-instructions-card-header">
+                <div className="runtime-instructions-card-main">
+                  <strong className="runtime-instructions-title">{item.title}</strong>
+                  <div className="runtime-instructions-meta">
+                    <span>{item.scopeType}</span>
+                    {item.scopeRef && <span>{item.scopeRef}</span>}
+                    <span>{tr("Priority")}: {item.priority}</span>
                   </div>
                 </div>
                 <button type="button" className="btn-sm" onClick={() => void handleDelete(item.id)}>{tr("Delete")}</button>
               </div>
-              <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8, fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)' }}>
+              <pre className="runtime-instructions-content-preview">
                 {item.content}
               </pre>
             </div>

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Cowork Product Flow",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "purpose",
+    "route",
+    "actors",
+    "domain_objects",
+    "steps",
+    "source_files",
+    "tests"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^flow:" },
+    "title": { "type": "string" },
+    "purpose": { "type": "string" },
+    "route": { "type": "string" },
+    "actors": { "type": "array", "items": { "type": "string" } },
+    "domain_objects": { "type": "array", "items": { "type": "string", "pattern": "^domain:" } },
+    "steps": { "type": "array", "items": { "type": "string" } },
+    "source_files": { "type": "array", "items": { "type": "string" } },
+    "tests": { "type": "array", "items": { "type": "string" } }
+  }
+}

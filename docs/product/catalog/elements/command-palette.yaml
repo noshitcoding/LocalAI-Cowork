@@ -1,0 +1,31 @@
+id: element:/app/command-palette
+route: /
+parent_view: view:/
+component: CommandPalette
+purpose: Search, filter, and execute navigation and registered slash commands.
+visible_text:
+  - Search command or / for commands...
+  - All
+  - Esc
+  - Commands available
+states:
+  - closed
+  - open
+  - slash query
+  - category selected
+  - empty results
+buttons:
+  - button:/app/command-palette/close
+  - button:/app/command-palette/select-category
+  - button:/app/command-palette/execute-command
+infos:
+  - info:/app/command-palette/no-results
+  - info:/app/command-palette/command-count
+layout_size: modal overlay
+accessibility: Uses role dialog with aria-modal; backdrop and Esc button close the palette; categories are labeled.
+source_files:
+  - app/src/components/CommandPalette.tsx
+  - app/src/stores/commandRegistryStore.ts
+tests:
+  - app/src/stores/commandRegistryStore.test.ts
+  - app/src/App.test.tsx

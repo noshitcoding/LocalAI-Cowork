@@ -5,12 +5,15 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { invoke } from '@tauri-apps/api/core'
-import type { EngineBackend, EngineConfig, QueryEngine } from '../engine/core/queryEngine'
-import type { EngineEvent } from '../engine/core/queryEngine'
+import { QueryEngine, type EngineBackend, type EngineConfig, type EngineEvent } from '../engine/core/queryEngine'
 import { getAllCommands, registerBuiltinCommands } from '../engine/commands/registry'
 import { listOllamaModels, checkOllamaConnection } from '../engine/api/ollamaClient'
 import { DEFAULT_AGENTS } from '../engine/coordinator/agentCoordinator'
-import { buildSystemPromptWithMemory } from '../engine/memory/memorySystem'
+import {
+  buildSystemPromptWithMemory,
+  captureAutomaticMemoryDraft,
+  loadFrozenMemorySnapshot,
+} from '../engine/memory/memorySystem'
 import type { ContextSnapshot } from '../engine/services/contextManager'
 import {
   createAssistantMessage,
@@ -41,6 +44,9 @@ import { useChatStore } from './chatStore'
 import { parsePersistedSessionMessage } from '../utils/sessionThreads'
 import { getChatProviderState, normalizeChatProvider, type ChatProviderKind, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
+import { useCoworkStore } from './coworkStore'
+import { setCredential } from '../security/credentialVault'
+import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the Open Cowork desktop app. You have access to tools for reading, writing, and searching files, running shell commands, and more.
 
@@ -52,6 +58,8 @@ Important rules:
 5. Ask follow-up questions only when required.
    If the target is clear, complete it autonomously and ask only when critical information is missing or a destructive step is involved.
 6. Do not create files that are not needed.
+7. Proactively preserve only durable, high-signal facts. Use MemoryWrite for stable user preferences, environment facts, corrections, conventions, and completed-work lessons. Never store secrets, raw logs, or temporary details.
+8. Curated memory is a frozen session-start snapshot. A write is persisted for future sessions; use SessionSearch when exact details from older conversations are needed.
 
 You work in a Windows environment with PowerShell.`
 
@@ -142,6 +150,33 @@ function extractSeedMessageText(message: ChatHistorySeedMessage): string {
   } as Message).trim()
 }
 
+function stringifyRunPayload(value: unknown, maxLength = 4000): string {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+  } catch {
+    return String(value).slice(0, maxLength)
+  }
+}
+
+async function appendRunEvent(
+  runId: string,
+  eventType: string,
+  summary: string,
+  payload: unknown,
+  redactionLevel = 'metadata',
+): Promise<void> {
+  await invoke('engine_run_event_append', {
+    request: {
+      runId,
+      eventType,
+      summary,
+      payloadJson: stringifyRunPayload(payload),
+      redactionLevel,
+    },
+  })
+}
+
 export type EngineStoreState = {
   // ── Engine State ───────────────────────────────────────────────────────
   status: EngineStatus
@@ -169,8 +204,8 @@ export type EngineStoreState = {
 
   // ── Configuration ──────────────────────────────────────────────────────
   config: EngineStoreConfig
-  setConfig: (patch: Partial<EngineStoreConfig>) => void
-  setApiKey: (apiKey: string) => void
+  setConfig: (patch: Partial<Omit<EngineStoreConfig, 'apiKey'>>) => void
+  setApiKey: (apiKey: string) => Promise<void>
 
   // ── Engine Actions ─────────────────────────────────────────────────────
   sendMessage: (
@@ -318,6 +353,7 @@ function buildChatEngineConfig(
   const configState = useConfigStore.getState()
   const providerState = getChatProviderState(configState, provider, providerSelection)
   const ollamaConfig = configState.ollama
+  const toolsetPolicyId = useCoworkStore.getState().activeToolsetPolicyId
   const effectiveThinkingEnabled = true
   const effectiveOllamaTimeoutMs = Math.max(providerState.timeoutMs, MIN_THINKING_TIMEOUT_MS)
 
@@ -359,6 +395,7 @@ function buildChatEngineConfig(
     appendSystemPrompt: config.appendSystemPrompt,
     runId,
     sessionId,
+    toolsetPolicyId,
   }
 }
 
@@ -411,13 +448,14 @@ export const useEngineStore = create<EngineStoreState>()(
       // ── Config ───────────────────────────────────────────────────────────
       setActiveProvider: (provider) => set({ activeProvider: normalizeChatProvider(provider) }),
       setConfig: (patch) => set((s) => ({ config: { ...s.config, ...patch } })),
-      setApiKey: (apiKey) => set((s) => ({ config: { ...s.config, apiKey } })),
+      setApiKey: async (apiKey) => {
+        await setCredential({ scope: 'engine', ownerId: 'legacy-engine', field: 'api_key' }, apiKey)
+        set((state) => ({ config: { ...state.config, apiKey } }))
+      },
 
       // ── Init Engine ──────────────────────────────────────────────────────
       _initEngine: async (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }): Promise<QueryEngine> => {
         ensureCommandsRegistered()
-
-        const { QueryEngine } = await import('../engine/core/queryEngine')
 
         const { config, activeProvider, currentRunId, currentSessionId } = get()
         const providerState = getChatProviderState(useConfigStore.getState(), activeProvider, providerSelection)
@@ -504,6 +542,7 @@ export const useEngineStore = create<EngineStoreState>()(
             const userInputText = extractUserInputText(userInput)
             const providerState = getChatProviderState(useConfigStore.getState(), latestStore.activeProvider, providerSelection)
             const provider = getResolvedProvider(providerState.provider)
+            const toolsetPolicyId = useCoworkStore.getState().activeToolsetPolicyId
             let engine = state._engine
             if (!engine) {
               engine = await state._initEngine(cwd, providerSelection, permissionConfig)
@@ -541,19 +580,45 @@ export const useEngineStore = create<EngineStoreState>()(
               set({ conversationThreadId: historySeed.threadId })
             }
 
+            let sessionId = get().currentSessionId
+            if (!sessionId) {
+              sessionId = crypto.randomUUID()
+              try {
+                await createSession({
+                  id: sessionId,
+                  threadId: historySeed?.threadId ?? get().conversationThreadId ?? undefined,
+                  title: userInputText.slice(0, 60) || 'New session',
+                  model: providerState.model,
+                  provider: providerState.provider,
+                })
+              } catch {
+                // Browser/dev fallback has no Tauri session table.
+              }
+              set({ currentSessionId: sessionId })
+            }
+
+            const frozenSnapshot = await loadFrozenMemorySnapshot(sessionId)
+
             // Load project memory and build enhanced system prompt
             try {
               const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
                 cwd,
                 latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-                { userInput: userInputText },
+                { userInput: userInputText, frozenSnapshot },
               )
               engine.updateConfig({
                 systemPrompt,
                 memoryContent,
+                sessionId,
               })
             } catch {
               // Memory loading is optional — fall back to default prompt
+            }
+
+            try {
+              await captureAutomaticMemoryDraft(cwd, userInputText, sessionId)
+            } catch {
+              // Automatic draft capture must never block the user turn.
             }
 
             void invoke('engine_run_create', {
@@ -567,6 +632,7 @@ export const useEngineStore = create<EngineStoreState>()(
                 cwd,
                 model: providerState.model,
                 provider,
+                toolsetPolicyId,
                 metadataJson: JSON.stringify({
                   permissionMode: latestStore.config.permissionMode,
                   maxTurns: latestStore.config.maxTurns,
@@ -609,6 +675,16 @@ export const useEngineStore = create<EngineStoreState>()(
                         metadataJson: JSON.stringify({ activeTool: event.toolName, input: event.input }),
                       },
                     }).catch(() => {})
+                    void appendRunEvent(
+                      runId,
+                      'tool_start',
+                      `Tool started: ${event.toolName}`,
+                      {
+                        toolUseId: event.toolUseId,
+                        toolName: event.toolName,
+                        input: event.input,
+                      },
+                    ).catch(() => {})
                     set((s) => ({
                       status: 'tool_running',
                       activeTools: [...s.activeTools, {
@@ -622,6 +698,16 @@ export const useEngineStore = create<EngineStoreState>()(
                     break
 
                   case 'tool_use_complete':
+                    void appendRunEvent(
+                      runId,
+                      'tool_result',
+                      `Tool completed: ${event.toolName}`,
+                      {
+                        toolUseId: event.toolUseId,
+                        toolName: event.toolName,
+                        result: event.result,
+                      },
+                    ).catch(() => {})
                     set((s) => ({
                       activeTools: s.activeTools.map(t =>
                         t.id === event.toolUseId
@@ -632,6 +718,12 @@ export const useEngineStore = create<EngineStoreState>()(
                     break
 
                   case 'approval_required':
+                    void appendRunEvent(
+                      runId,
+                      'approval_requested',
+                      'Approval requested',
+                      { request: event.request },
+                    ).catch(() => {})
                     set({ status: 'waiting_approval' })
                     break
 
@@ -683,6 +775,12 @@ export const useEngineStore = create<EngineStoreState>()(
                         error: event.error,
                       },
                     }).catch(() => {})
+                    void appendRunEvent(
+                      runId,
+                      'error',
+                      event.error.slice(0, 240),
+                      { error: event.error },
+                    ).catch(() => {})
                     set({ error: event.error, status: 'error', currentRunId: null })
                     break
 
@@ -816,8 +914,16 @@ export const useEngineStore = create<EngineStoreState>()(
 
       // ── Approval ─────────────────────────────────────────────────────────
       resolveApproval: (result) => {
-        const engine = get()._engine
+        const { _engine: engine, currentRunId } = get()
         if (engine) {
+          if (currentRunId) {
+            void appendRunEvent(
+              currentRunId,
+              'approval_decided',
+              result.allowed ? 'Approval allowed' : 'Approval denied',
+              result,
+            ).catch(() => {})
+          }
           engine.resolveApproval(result)
           set({ status: 'streaming', currentToolUI: null })
         }
@@ -912,7 +1018,7 @@ export const useEngineStore = create<EngineStoreState>()(
       // Only persist config and provider, not runtime state
       partialize: (state) => ({
         activeProvider: state.activeProvider,
-        config: state.config,
+        config: sanitizeEngineConfigForPersistence(state.config),
         currentSessionId: state.currentSessionId,
         currentRunId: state.currentRunId,
       }),

@@ -15,9 +15,7 @@ fn prepare_webview2_loader() {
         Some(value) => PathBuf::from(value),
         None => return,
     };
-    let destination = manifest_dir
-        .join("resources")
-        .join("WebView2Loader.dll");
+    let destination = manifest_dir.join("resources").join("WebView2Loader.dll");
 
     if destination.exists() {
         println!("cargo:rerun-if-changed={}", destination.display());

@@ -1,9 +1,31 @@
 import { useEffect, useState } from 'react'
+import { BookOpen, Camera, Plus, Trash2, Upload } from 'lucide-react'
 import { useMemoryStore, type MemoryEntry } from '../stores/memoryStore'
-import { tr } from '../i18n'
+import i18n, { tr } from '../i18n'
+
+type MemoryTab = 'knowledge' | 'entries' | 'profile' | 'providers' | 'hints'
 
 function randomId() {
   return `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function getTabLabel(tab: MemoryTab): string {
+  switch (tab) {
+    case 'knowledge': return tr('Knowledge base')
+    case 'entries': return tr('Entries')
+    case 'profile': return tr('Profile')
+    case 'providers': return tr('Provider')
+    case 'hints': return tr('Hints')
+  }
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')
 }
 
 export default function MemoryPanel() {
@@ -11,12 +33,13 @@ export default function MemoryPanel() {
     entries, searchResults, profileEntries, providers, hints, lastSnapshot,
     loading, error,
     loadEntries, searchEntries, upsertEntry, deleteEntry,
+    importKnowledgeText,
     compactEntries, createSnapshot, loadHints,
     loadProfile, upsertProfile, deleteProfile,
     loadProviders, upsertProvider, deleteProvider,
   } = useMemoryStore()
 
-  const [tab, setTab] = useState<'entries' | 'profile' | 'providers' | 'hints'>('entries')
+  const [tab, setTab] = useState<MemoryTab>('knowledge')
   const [searchQuery, setSearchQuery] = useState('')
   const [filterScope, setFilterScope] = useState('')
   const [showAdd, setShowAdd] = useState(false)
@@ -27,19 +50,23 @@ export default function MemoryPanel() {
   const [profileKey, setProfileKey] = useState('')
   const [profileValue, setProfileValue] = useState('')
   const [providerForm, setProviderForm] = useState({ name: '', type: 'mem0', config: '{}' })
+  const [knowledgeTitle, setKnowledgeTitle] = useState('')
+  const [knowledgeText, setKnowledgeText] = useState('')
+  const [knowledgeBusy, setKnowledgeBusy] = useState(false)
+  const [knowledgeResult, setKnowledgeResult] = useState<string | null>(null)
 
   useEffect(() => {
-    loadEntries(filterScope || undefined, undefined, 200)
+    void loadEntries(filterScope || undefined, undefined, 200)
   }, [filterScope, loadEntries])
 
   useEffect(() => {
-    if (tab === 'profile') loadProfile()
-    if (tab === 'providers') loadProviders()
-    if (tab === 'hints') loadHints()
+    if (tab === 'profile') void loadProfile()
+    if (tab === 'providers') void loadProviders()
+    if (tab === 'hints') void loadHints()
   }, [tab, loadProfile, loadProviders, loadHints])
 
   const handleSearch = () => {
-    if (searchQuery.trim()) searchEntries(searchQuery.trim())
+    if (searchQuery.trim()) void searchEntries(searchQuery.trim())
   }
 
   const handleAdd = async () => {
@@ -47,50 +74,154 @@ export default function MemoryPanel() {
     await upsertEntry({ id: randomId(), ...newEntry })
     setShowAdd(false)
     setNewEntry({ scope: 'agent', category: 'general', key: '', content: '' })
-    loadEntries(filterScope || undefined)
+    void loadEntries(filterScope || undefined)
   }
 
   const handleCompact = async () => {
-    const r = await compactEntries(compactScope, compactMinConf)
-    setCompactResult(`${r.removed} entfernt, ${r.remaining} verbleibend`)
-    loadEntries(filterScope || undefined)
+    const result = await compactEntries(compactScope, compactMinConf)
+    setCompactResult(`${result.removed} ${tr('removed')}, ${result.remaining} ${tr('remaining')}`)
+    void loadEntries(filterScope || undefined)
   }
 
   const handleSnapshot = async () => {
     await createSnapshot()
   }
 
+  const handleAddProfile = async () => {
+    if (!profileKey.trim() || !profileValue.trim()) return
+    await upsertProfile(profileKey.trim(), profileValue.trim())
+    setProfileKey('')
+    setProfileValue('')
+    void loadProfile()
+  }
+
+  const handleAddProvider = async () => {
+    if (!providerForm.name.trim()) return
+    const id = `prov-${Date.now()}`
+    const saved = await upsertProvider({ id, name: providerForm.name, provider_type: providerForm.type, config_json: providerForm.config })
+    if (!saved) return
+    setProviderForm({ name: '', type: 'mem0', config: '{}' })
+    void loadProviders()
+  }
+
+  const handleDeleteProfile = async (key: string) => {
+    await deleteProfile(key)
+    void loadProfile()
+  }
+
+  const handleDeleteProvider = async (id: string) => {
+    await deleteProvider(id)
+    void loadProviders()
+  }
+
+  const handleKnowledgeFiles = async (files: FileList | null) => {
+    const selected = Array.from(files ?? [])
+    if (selected.length === 0) return
+    try {
+      const sources = await Promise.all(selected.map(async (file) => ({
+        name: file.name,
+        text: await file.text(),
+      })))
+      setKnowledgeTitle(selected.length === 1 ? selected[0].name : `${selected.length} files`)
+      setKnowledgeText(sources.map((source) => `# ${source.name}\n\n${source.text}`).join('\n\n---\n\n'))
+      setKnowledgeResult(null)
+    } catch {
+      setKnowledgeResult(tr('Could not read selected files'))
+    }
+  }
+
+  const handleKnowledgeImport = async () => {
+    if (!knowledgeText.trim()) return
+    setKnowledgeBusy(true)
+    setKnowledgeResult(null)
+    try {
+      const count = await importKnowledgeText(knowledgeTitle.trim() || tr('Knowledge import'), knowledgeText)
+      const importedLabel = count === 1 ? tr('knowledge chunk imported') : tr('knowledge chunks imported')
+      setKnowledgeResult(count > 0 ? `${count} ${importedLabel}` : tr('No readable text found'))
+      if (count > 0) {
+        setKnowledgeTitle('')
+        setKnowledgeText('')
+      }
+    } catch {
+      setKnowledgeResult(tr('Knowledge import failed'))
+    } finally {
+      setKnowledgeBusy(false)
+    }
+  }
+
   const displayEntries = searchQuery.trim() ? searchResults : entries
 
   return (
-    <div className="panel">
-      <h2>{tr("🧠 Agent memory")}</h2>
+    <div className="panel memory-panel">
+      <h2>{tr("Agent memory")}</h2>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        {(['entries', 'profile', 'providers', 'hints'] as const).map((t) => (
-          <button type="button" key={t} className={`btn-sm${tab === t ? ' active' : ''}`}
-            onClick={() => setTab(t)}>
-            {t === 'entries' ? tr('Entries') : t === 'profile' ? tr('Profile') : t === 'providers' ? tr('Provider') : tr('Hints')}
+      <div className="memory-tab-row" role="tablist" aria-label={tr("Agent memory")}>
+        {(['knowledge', 'entries', 'profile', 'providers', 'hints'] as const).map((entry) => (
+          <button
+            type="button"
+            key={entry}
+            role="tab"
+            aria-selected={tab === entry}
+            className={`btn-sm${tab === entry ? ' active' : ''}`}
+            onClick={() => setTab(entry)}
+          >
+            {getTabLabel(entry)}
           </button>
         ))}
       </div>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="memory-error">{error}</p>}
+
+      {tab === 'knowledge' && (
+        <section className="memory-knowledge-import">
+          <div className="memory-knowledge-heading">
+            <BookOpen size={18} aria-hidden="true" />
+            <div>
+              <h3>{tr('Knowledge base')}</h3>
+              <p className="hint-text">{tr('Import text or files into shared knowledge. Relevant chunks are recalled automatically for chat and crew runs.')}</p>
+            </div>
+          </div>
+          <label className="memory-label">{tr('Source title')}
+            <input type="text" value={knowledgeTitle} onChange={(event) => setKnowledgeTitle(event.target.value)} placeholder={tr('e.g. API handbook')} />
+          </label>
+          <label className="memory-label">{tr('Content')}
+            <textarea rows={10} value={knowledgeText} onChange={(event) => setKnowledgeText(event.target.value)} placeholder={tr('Paste source text here...')} />
+          </label>
+          <div className="memory-knowledge-actions">
+            <label className="btn-sm memory-file-button">
+              <Upload size={14} aria-hidden="true" />
+              {tr('Choose files')}
+              <input
+                type="file"
+                multiple
+                accept=".txt,.md,.markdown,.csv,.json,.yaml,.yml,.xml,.html,.log"
+                onChange={(event) => {
+                  void handleKnowledgeFiles(event.target.files)
+                  event.target.value = ''
+                }}
+              />
+            </label>
+            <button type="button" className="btn-sm" disabled={knowledgeBusy || !knowledgeText.trim()} onClick={() => void handleKnowledgeImport()}>
+              {knowledgeBusy ? tr('Importing...') : tr('Import knowledge')}
+            </button>
+            {knowledgeResult && <span className="memory-success" role="status">{knowledgeResult}</span>}
+          </div>
+        </section>
+      )}
 
       {tab === 'entries' && (
         <>
-          {/* Search bar */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <div className="memory-toolbar">
             <input
               type="text"
+              className="memory-input memory-search-input"
+              aria-label={tr("Search memory...")}
               placeholder={tr("Search memory...")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              style={{ flex: 1, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', fontSize: 13 }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
             />
-            <select value={filterScope} onChange={(e) => setFilterScope(e.target.value)}
-              style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }}>
+            <select className="memory-select" value={filterScope} onChange={(e) => setFilterScope(e.target.value)} aria-label={tr("Scope")}>
               <option value="">{tr("All Scopes")}</option>
               <option value="agent">{tr("Agent")}</option>
               <option value="user">{tr("User")}</option>
@@ -100,74 +231,79 @@ export default function MemoryPanel() {
             <button type="button" className="btn-sm" onClick={() => setShowAdd(!showAdd)}>{tr("New")}</button>
           </div>
 
-          {/* Add form */}
           {showAdd && (
-            <div className="card" style={{ marginBottom: 12 }}>
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 8 }}>
+            <div className="card memory-form-card">
+              <div className="grid memory-form-grid">
                 <label>{tr("Scope")}<select value={newEntry.scope} onChange={(e) => setNewEntry({ ...newEntry, scope: e.target.value })}>
-                    <option value="agent">{tr("Agent")}</option>
-                    <option value="user">{tr("User")}</option>
-                    <option value="session">{tr("Session")}</option>
-                    <option value="shared">{tr("Shared")}</option>
-                  </select>
+                  <option value="agent">{tr("Agent")}</option>
+                  <option value="user">{tr("User")}</option>
+                  <option value="session">{tr("Session")}</option>
+                  <option value="shared">{tr("Shared")}</option>
+                </select>
                 </label>
                 <label>{tr("Category")}<input type="text" value={newEntry.category} onChange={(e) => setNewEntry({ ...newEntry, category: e.target.value })} />
                 </label>
               </div>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Key")}<input type="text" value={newEntry.key} onChange={(e) => setNewEntry({ ...newEntry, key: e.target.value })}
-                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
+              <label className="memory-label">{tr("Key")}<input type="text" value={newEntry.key} onChange={(e) => setNewEntry({ ...newEntry, key: e.target.value })} />
               </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Content")}<textarea value={newEntry.content} onChange={(e) => setNewEntry({ ...newEntry, content: e.target.value })} rows={3}
-                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, resize: 'vertical' }} />
+              <label className="memory-label">{tr("Content")}<textarea value={newEntry.content} onChange={(e) => setNewEntry({ ...newEntry, content: e.target.value })} rows={3} />
               </label>
               <button type="button" className="btn-sm" onClick={handleAdd}>{tr("Save")}</button>
             </div>
           )}
 
-          {/* Compact & Snapshot */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select value={compactScope} onChange={(e) => setCompactScope(e.target.value)}
-              style={{ padding: '4px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 12 }}>
+          <div className="memory-compact-row">
+            <select className="memory-select memory-compact-select" value={compactScope} onChange={(e) => setCompactScope(e.target.value)} aria-label={tr("Scope")}>
               <option value="agent">{tr("Agent")}</option>
               <option value="user">{tr("User")}</option>
               <option value="session">{tr("Session")}</option>
             </select>
-            <input type="number" value={compactMinConf} onChange={(e) => setCompactMinConf(Number(e.target.value))} min={0} max={1} step={0.1}
-              style={{ width: 60, padding: '4px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 12 }} />
+            <input
+              type="number"
+              className="memory-confidence-input"
+              aria-label={tr("Confidence")}
+              value={compactMinConf}
+              onChange={(e) => setCompactMinConf(Number(e.target.value))}
+              min={0}
+              max={1}
+              step={0.1}
+            />
             <button type="button" className="btn-sm" onClick={handleCompact}>{tr("Compact")}</button>
-            <button type="button" className="btn-sm" onClick={handleSnapshot}>{tr("📸 Snapshot")}</button>
-            {compactResult && <span style={{ fontSize: 11, color: 'var(--success)' }}>{compactResult}</span>}
+            <button type="button" className="btn-sm" onClick={handleSnapshot}>
+              <Camera size={14} aria-hidden="true" /> {tr("Snapshot")}
+            </button>
+            {compactResult && <span className="memory-success">{compactResult}</span>}
           </div>
 
-          {/* Entries list */}
           {loading ? (
             <p className="panel-empty">{tr("Loading...")}</p>
           ) : displayEntries.length === 0 ? (
             <p className="panel-empty">{tr("No entries found")}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div className="memory-list">
               {displayEntries.map((entry: MemoryEntry) => (
-                <div key={entry.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
-                      {entry.scope} / {entry.category}{tr("&middot; Conf:")}{entry.confidence.toFixed(2)}{tr("&middot; Zugriffe:")}{entry.access_count}
+                <div key={entry.id} className="card memory-entry-card">
+                  <div className="memory-entry-main">
+                    <div className="memory-entry-meta">
+                      {entry.scope} / {entry.category} / {tr("Confidence")}: {entry.confidence.toFixed(2)} / {tr("Accesses")}: {entry.access_count}
                     </div>
-                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{entry.key}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {entry.content.length > 200 ? `${entry.content.slice(0, 200)}...` : entry.content}
+                    <div className="memory-entry-key">{entry.key}</div>
+                    <div className="memory-entry-content">
+                      {truncateText(entry.content, 200)}
                     </div>
                   </div>
-                  <button type="button" onClick={() => deleteEntry(entry.id)} title={tr("Delete")}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 14 }}>{tr("×")}</button>
+                  <button type="button" className="memory-danger-button" onClick={() => void deleteEntry(entry.id)} title={tr("Delete memory entry")} aria-label={tr("Delete memory entry")}>
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
                 </div>
               ))}
             </div>
           )}
 
           {lastSnapshot && (
-            <div className="card" style={{ marginTop: 12, fontSize: 12 }}>
-              <strong>{tr("Last snapshot:")}</strong> {lastSnapshot.total_entries}{tr("entries,")}{lastSnapshot.total_profile_keys}{tr("profile keys")}<br />
-              <span style={{ color: 'var(--text-muted)' }}>{tr("Created:")}{lastSnapshot.timestamp}</span>
+            <div className="card memory-snapshot-card">
+              <div><strong>{tr("Last snapshot:")}</strong> {lastSnapshot.total_entries}{tr("entries,")}{lastSnapshot.total_profile_keys}{tr("profile keys")}</div>
+              <span className="memory-muted">{tr("Created:")}{formatDateTime(lastSnapshot.timestamp)}</span>
             </div>
           )}
         </>
@@ -175,33 +311,27 @@ export default function MemoryPanel() {
 
       {tab === 'profile' && (
         <>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <input type="text" placeholder={tr("Key")} value={profileKey} onChange={(e) => setProfileKey(e.target.value)}
-              style={{ flex: 1, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
-            <input type="text" placeholder={tr("Wert")} value={profileValue} onChange={(e) => setProfileValue(e.target.value)}
-              style={{ flex: 2, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
-            <button type="button" className="btn-sm" onClick={async () => {
-              if (profileKey.trim() && profileValue.trim()) {
-                await upsertProfile(profileKey.trim(), profileValue.trim())
-                setProfileKey('')
-                setProfileValue('')
-                loadProfile()
-              }
-            }}>+</button>
+          <div className="memory-inline-form">
+            <input className="memory-input" type="text" placeholder={tr("Key")} aria-label={tr("Key")} value={profileKey} onChange={(e) => setProfileKey(e.target.value)} />
+            <input className="memory-input memory-grow-input" type="text" placeholder={tr("Wert")} aria-label={tr("Wert")} value={profileValue} onChange={(e) => setProfileValue(e.target.value)} />
+            <button type="button" className="btn-sm" onClick={handleAddProfile} aria-label={tr("Add")}>
+              <Plus size={14} aria-hidden="true" />
+            </button>
           </div>
           {profileEntries.length === 0 ? (
             <p className="panel-empty">{tr("No profile created")}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {profileEntries.map((p) => (
-                <div key={p.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <strong style={{ fontSize: 13 }}>{p.key}:</strong>{' '}
-                    <span style={{ fontSize: 12 }}>{p.value}</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>({p.source}, {p.confidence.toFixed(1)})</span>
+            <div className="memory-list">
+              {profileEntries.map((profile) => (
+                <div key={profile.id} className="card memory-profile-card">
+                  <div className="memory-profile-main">
+                    <strong className="memory-profile-key">{profile.key}:</strong>
+                    <span className="memory-profile-value">{profile.value}</span>
+                    <span className="memory-muted">({profile.source}, {profile.confidence.toFixed(1)})</span>
                   </div>
-                  <button type="button" onClick={() => { deleteProfile(p.key); loadProfile() }} title={tr("Delete")}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 14 }}>{tr("×")}</button>
+                  <button type="button" className="memory-danger-button" onClick={() => void handleDeleteProfile(profile.key)} title={tr("Delete profile entry")} aria-label={tr("Delete profile entry")}>
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -211,42 +341,36 @@ export default function MemoryPanel() {
 
       {tab === 'providers' && (
         <>
-          <div className="card" style={{ marginBottom: 12 }}>
-            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 2fr' }}>
+          <div className="card memory-form-card">
+            <div className="grid memory-provider-grid">
               <label>{tr("Name")}<input type="text" value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} />
               </label>
               <label>{tr("Type")}<select value={providerForm.type} onChange={(e) => setProviderForm({ ...providerForm, type: e.target.value })}>
-                  <option value="mem0">{tr("Mem0")}</option>
-                  <option value="honcho">{tr("Honcho")}</option>
-                  <option value="supermemory">{tr("Supermemory")}</option>
-                  <option value="custom">{tr("Custom")}</option>
-                </select>
+                <option value="mem0">{tr("Mem0")}</option>
+                <option value="honcho">{tr("Honcho")}</option>
+                <option value="supermemory">{tr("Supermemory")}</option>
+                <option value="custom">{tr("Custom")}</option>
+              </select>
               </label>
-              <label>{tr("Config (JSON)")}<input type="text" value={providerForm.config} onChange={(e) => setProviderForm({ ...providerForm, config: e.target.value })} />
+              <label>{tr("Protected config (JSON)")}<input type="text" value={providerForm.config} onChange={(e) => setProviderForm({ ...providerForm, config: e.target.value })} />
               </label>
             </div>
-            <button type="button" className="btn-sm" style={{ marginTop: 8 }} onClick={async () => {
-              if (providerForm.name.trim()) {
-                const id = `prov-${Date.now()}`
-                await upsertProvider({ id, name: providerForm.name, provider_type: providerForm.type, config_json: providerForm.config })
-                setProviderForm({ name: '', type: 'mem0', config: '{}' })
-                loadProviders()
-              }
-            }}>{tr("Provider add")}</button>
+            <button type="button" className="btn-sm memory-spaced-button" onClick={handleAddProvider}>{tr("Provider add")}</button>
           </div>
           {providers.length === 0 ? (
             <p className="panel-empty">{tr("No Provider configured")}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {providers.map((p) => (
-                <div key={p.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <strong>{p.name}</strong>{' '}
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>({p.provider_type})</span>
-                    {!p.enabled && <span style={{ fontSize: 11, color: 'var(--warning)', marginLeft: 6 }}>{tr("disabled")}</span>}
+            <div className="memory-list">
+              {providers.map((provider) => (
+                <div key={provider.id} className="card memory-provider-card">
+                  <div className="memory-provider-main">
+                    <strong>{provider.name}</strong>
+                    <span className="memory-muted">({provider.provider_type})</span>
+                    {!provider.enabled && <span className="memory-provider-disabled">{tr("disabled")}</span>}
                   </div>
-                  <button type="button" onClick={() => { deleteProvider(p.id); loadProviders() }} title={tr("Delete")}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 14 }}>{tr("×")}</button>
+                  <button type="button" className="memory-danger-button" onClick={() => void handleDeleteProvider(provider.id)} title={tr("Delete provider")} aria-label={tr("Delete provider")}>
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -259,14 +383,14 @@ export default function MemoryPanel() {
           {hints.length === 0 ? (
             <p className="panel-empty">{tr("No notes available")}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {hints.map((h, i) => (
-                <div key={i} className="card">
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
-                    {h.scope}{tr("&middot; Relevanz:")}{h.relevance}
+            <div className="memory-list">
+              {hints.map((hint, index) => (
+                <div key={`${hint.hintType}-${hint.suggestedKey ?? 'general'}-${index}`} className="card memory-hint-card">
+                  <div className="memory-entry-meta">
+                    {hint.hintType}{hint.suggestedCategory ? ` / ${hint.suggestedCategory}` : ''}
                   </div>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{h.key}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{h.content}</div>
+                  {hint.suggestedKey && <div className="memory-entry-key">{hint.suggestedKey}</div>}
+                  <div className="memory-entry-content">{hint.message}</div>
                 </div>
               ))}
             </div>

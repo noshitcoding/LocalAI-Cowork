@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import CrewLiveMonitor from './CrewLiveMonitor'
 import type { CrewLiveState, CrewLiveEntry } from '../stores/chatStore'
+
+vi.mock('../i18n', () => ({
+  tr: (key: string) => key,
+}))
 
 const AGENT_COLORS = {
   'agent-architect': '#2563eb',

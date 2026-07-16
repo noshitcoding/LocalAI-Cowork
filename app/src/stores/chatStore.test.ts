@@ -30,6 +30,16 @@ describe('chatStore', () => {
     expect(state.activeThreadId).toBe(id)
   })
 
+  it('reconstructs a missing task thread without changing its persisted id', () => {
+    const first = useChatStore.getState().ensureThread('task-thread-stable', 'Stable task chat')
+    const second = useChatStore.getState().ensureThread('task-thread-stable', 'Stable task chat')
+
+    expect(first).toEqual({ id: 'task-thread-stable', created: true })
+    expect(second).toEqual({ id: 'task-thread-stable', created: false })
+    expect(useChatStore.getState().threads).toHaveLength(1)
+    expect(useChatStore.getState().threads[0]?.id).toBe('task-thread-stable')
+  })
+
   it('adds messages to a thread', () => {
     const id = useChatStore.getState().addThread('Test')
     useChatStore.getState().addMessage(id, {

@@ -162,7 +162,7 @@ fn analyze_single_path(path: PathBuf) -> SubAgentItemResult {
 
     match text_result {
         Ok(text) => {
-            let compact = text.replace('\n', " ").replace('\r', " ");
+            let compact = text.replace(['\n', '\r'], " ");
             let trimmed = compact.split_whitespace().collect::<Vec<_>>().join(" ");
             let preview: String = trimmed.chars().take(220).collect();
             let word_count = trimmed.split_whitespace().count();
@@ -418,7 +418,10 @@ fn build_workflow_rows(request: &OfficeWorkflowRequest) -> Vec<Vec<String>> {
     for (index, paragraph) in request.paragraphs.iter().enumerate() {
         let trimmed = paragraph.trim();
         if !trimmed.is_empty() {
-            rows.push(vec![format!("paragraph_{}", index + 1), trimmed.to_string()]);
+            rows.push(vec![
+                format!("paragraph_{}", index + 1),
+                trimmed.to_string(),
+            ]);
         }
     }
 
@@ -1093,7 +1096,7 @@ fn write_pptx(
     for (idx, (slide_title, slide_body)) in slides.iter().enumerate() {
         let slide_num = idx + 1;
 
-        zip.start_file(&format!("ppt/slides/slide{}.xml", slide_num), options)
+        zip.start_file(format!("ppt/slides/slide{}.xml", slide_num), options)
             .map_err(|err| err.to_string())?;
 
         let mut tx_body = String::new();
@@ -1155,7 +1158,7 @@ fn write_pptx(
             .map_err(|err| err.to_string())?;
 
         zip.start_file(
-            &format!("ppt/slides/_rels/slide{}.xml.rels", slide_num),
+            format!("ppt/slides/_rels/slide{}.xml.rels", slide_num),
             options,
         )
         .map_err(|err| err.to_string())?;

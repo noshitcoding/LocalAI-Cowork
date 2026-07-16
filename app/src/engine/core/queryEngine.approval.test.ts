@@ -1,4 +1,5 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+/* eslint-disable require-yield */
+import { describe, expect, it, vi } from 'vitest'
 import type { Tool, ToolResult } from '../types'
 
 const streamOllamaMessagesMock = vi.fn()

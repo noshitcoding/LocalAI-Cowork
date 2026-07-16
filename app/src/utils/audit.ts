@@ -5,6 +5,7 @@
  */
 
 import { safeInvokeVoid } from './safeInvoke'
+import { redactRecord } from '../security/redaction'
 
 export async function writeAuditEvent(
   area: string,
@@ -14,6 +15,6 @@ export async function writeAuditEvent(
   await safeInvokeVoid('audit_event', {
     area,
     action,
-    details: details ?? null,
+    details: details ? redactRecord(details) : null,
   })
 }

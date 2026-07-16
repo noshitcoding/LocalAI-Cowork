@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Cowork Product Element",
+  "type": "object",
+  "required": [
+    "id",
+    "route",
+    "parent_view",
+    "component",
+    "purpose",
+    "visible_text",
+    "states",
+    "buttons",
+    "infos",
+    "layout_size",
+    "accessibility",
+    "source_files",
+    "tests"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^element:" },
+    "route": { "type": "string" },
+    "parent_view": { "type": "string", "pattern": "^view:" },
+    "component": { "type": "string" },
+    "purpose": { "type": "string" },
+    "visible_text": { "type": "array", "items": { "type": "string" } },
+    "states": { "type": "array", "items": { "type": "string" } },
+    "buttons": { "type": "array", "items": { "type": "string", "pattern": "^button:" } },
+    "infos": { "type": "array", "items": { "type": "string", "pattern": "^info:" } },
+    "layout_size": { "type": "string" },
+    "accessibility": { "type": "string" },
+    "source_files": { "type": "array", "items": { "type": "string" } },
+    "tests": { "type": "array", "items": { "type": "string" } }
+  }
+}

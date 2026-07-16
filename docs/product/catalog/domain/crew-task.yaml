@@ -1,0 +1,20 @@
+id: domain:crew-task
+title: CrewTask
+purpose: Crew-internal template or runtime step that may be imported into WorkTask only through explicit user action.
+canonical_definition: A CrewTask belongs to a crew definition or runtime plan and describes a step for agents; it is not directly listed as a /tasks WorkTask unless imported.
+allowed_ui_surfaces:
+  - crew editor and runtime panels
+  - explicit import strip on /tasks
+disallowed_meanings:
+  - automatic user-facing task
+  - scheduler identity
+source_of_truth:
+  - app/src/stores/crewStore.ts
+  - app/src/engine/crew/workTaskCrewRuntime.ts
+source_files:
+  - app/src/stores/crewStore.ts
+  - app/src/engine/crew/workTaskCrewRuntime.ts
+  - app/src/components/CrewPanel.tsx
+tests:
+  - app/src/stores/crewStore.test.ts
+  - app/src/components/CrewPanel.test.tsx

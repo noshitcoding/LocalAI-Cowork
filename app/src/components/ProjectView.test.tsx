@@ -97,9 +97,20 @@ describe('ProjectView', () => {
     fireEvent.click(screen.getByTitle('Delete project'))
     expect(screen.getByRole('dialog', { name: 'Delete project' })).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete project and chats' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete project and assigned chats' }))
 
     expect(useProjectStore.getState().projects).toEqual([])
     expect(useChatStore.getState().threads).toEqual([])
+  })
+
+  it('guides an empty workspace into a first project', () => {
+    useProjectStore.setState({ projects: [], activeProjectId: null })
+    renderProjectView()
+
+    expect(screen.getByRole('heading', { name: 'Give focused work a permanent home' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create first project' }))
+
+    expect(useProjectStore.getState().projects).toHaveLength(1)
+    expect(screen.getByLabelText('Project name')).toHaveValue('Project 1')
   })
 })

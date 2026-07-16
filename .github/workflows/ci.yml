@@ -1,5 +1,8 @@
 name: ci
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -12,22 +15,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
         with:
+          toolchain: 1.89.0
           components: clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: app/src-tauri
 
@@ -36,50 +40,13 @@ jobs:
           cd app
           npm ci
 
-      - name: Toolchain doctor
-        run: |
-          cd app
-          npm run doctor:ci
+      - name: Install Chromium for UI quality gates
+        working-directory: app
+        run: npm exec -- playwright install --with-deps chromium
 
-      - name: Frontend lint
-        run: |
-          cd app
-          npm run lint:ci
-
-      - name: TypeScript type check
-        run: |
-          cd app
-          npm run typecheck
-
-      - name: Frontend tests
-        run: |
-          cd app
-          npm run test:ci
-
-      - name: Frontend production build
-        run: |
-          cd app
-          npm run build
-
-      - name: Frontend build budgets
-        run: |
-          cd app
-          npm run budgets:build
-
-      - name: Rust check
-        run: |
-          cd app/src-tauri
-          cargo check
-
-      - name: Rust tests
-        run: |
-          cd app/src-tauri
-          cargo test
-
-      - name: Rust clippy
-        run: |
-          cd app/src-tauri
-          cargo clippy -- -D warnings
+      - name: Quality gates
+        working-directory: app
+        run: npm run verify
 
       - name: Tauri production build
         run: |
@@ -91,33 +58,45 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.89.0
+
+      - name: Install locked frontend dependencies
+        working-directory: app
+        run: npm ci
 
       - name: cargo-audit
         run: |
-          cargo install cargo-audit
+          cargo install cargo-audit --locked --version 0.22.2
           cd app/src-tauri
           cargo audit
 
       - name: npm audit
         run: |
           cd app
-          npm ci
-          npm audit --omit=dev || true
+          npm audit --audit-level=high
 
       - name: Semgrep scan
-        uses: returntocorp/semgrep-action@v1
+        uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
         with:
           config: p/default
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           format: table
           exit-code: '1'
-          ignore-unfixed: true
+          ignore-unfixed: false

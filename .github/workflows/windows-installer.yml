@@ -17,7 +17,9 @@ on:
         type: boolean
 
 permissions:
+  attestations: write
   contents: write
+  id-token: write
 
 jobs:
   build-installer:
@@ -29,28 +31,57 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
         with:
+          toolchain: 1.89.0
           targets: x86_64-pc-windows-msvc
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: app/src-tauri
 
       - name: Install dependencies
         working-directory: app
         run: npm ci
+
+      - name: Verify release source
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          npm run verify
+          npm run supply-chain:check -- --tag "$env:RELEASE_TAG"
+          npm audit --audit-level=high
+
+      - name: Audit Rust dependencies
+        shell: pwsh
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file app/src-tauri/Cargo.lock
 
       - name: Build Windows installer
         working-directory: app
@@ -64,30 +95,44 @@ jobs:
         run: |
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
           Copy-Item -LiteralPath dist-installers\Open-Cowork-Setup.exe -Destination release-assets\Open-Cowork-Setup-x64.exe -Force
-          Get-FileHash release-assets\Open-Cowork-Setup-x64.exe -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash)  Open-Cowork-Setup-x64.exe" } |
-            Set-Content release-assets\Open-Cowork-Setup-x64.exe.sha256
+
+      - name: Sign and verify Windows installer
+        shell: pwsh
+        env:
+          OPEN_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
+          OPEN_COWORK_CODESIGN_PASSWORD: ${{ secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
+          OPEN_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
+        run: |
+          .\app\scripts\sign-windows-installer.ps1 -InstallerPath release-assets\Open-Cowork-Setup-x64.exe
+
+      - name: Generate SBOM, notices, provenance, and checksums
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          npm run supply-chain:sbom -- --output ..\release-assets --tag "$env:RELEASE_TAG"
+          npm run supply-chain:release -- --output ..\release-assets --tag "$env:RELEASE_TAG"
+
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release-assets/*
+
+      - name: Attest installer SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: release-assets/Open-Cowork-Setup-x64.exe
+          sbom-path: release-assets/open-cowork.cdx.json
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Open-Cowork-Windows-Installer
           path: release-assets/*
           if-no-files-found: error
 
-      - name: Resolve release tag
-        id: release
-        shell: pwsh
-        run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ inputs.tag }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
-          }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
           name: Open Cowork ${{ steps.release.outputs.tag }}

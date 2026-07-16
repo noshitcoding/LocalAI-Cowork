@@ -15,29 +15,24 @@ export default function ModelSwitcher() {
   const effectiveModel = activePersonality?.model_override || ollama.model
 
   return (
-    <div className="panel">
-      <h2>{tr("🔄 Model &amp; Ollama")}</h2>
+    <div className="panel model-switcher-panel">
+      <h2>{tr("Model & Ollama")}</h2>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* Active model display */}
-        <div className="card" style={{ background: 'var(--bg-tertiary)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{tr("Active model")}</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{effectiveModel}</div>
+      <div className="model-switcher-stack">
+        <div className="card model-switcher-active-card">
+          <div className="model-switcher-label">{tr("Active model")}</div>
+          <div className="model-switcher-active-model">{effectiveModel}</div>
           {activePersonality?.model_override && (
-            <div style={{ fontSize: 11, color: 'var(--info)', marginTop: 2 }}>{tr("overridden by personality &quot;")}{activePersonality.name}{tr("&quot;")}</div>
+            <div className="model-switcher-note">{tr("overridden by personality &quot;")}{activePersonality.name}{tr("&quot;")}</div>
           )}
         </div>
 
-        {/* Model selector */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: 'block' }}>{tr("Default model")}</label>
+        <div className="model-switcher-field">
+          <label className="model-switcher-label">{tr("Default model")}</label>
           <select
+            className="model-switcher-control"
             value={ollama.model}
             onChange={(e) => setOllama({ model: e.target.value })}
-            style={{
-              width: '100%', padding: '6px 10px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', fontSize: 13,
-            }}
           >
             {availableModels.length === 0 && <option value={ollama.model}>{ollama.model}</option>}
             {availableModels.map((m) => (
@@ -46,50 +41,49 @@ export default function ModelSwitcher() {
           </select>
         </div>
 
-        {/* Base URL */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: 'block' }}>{tr("Ollama-URL")}</label>
+        <div className="model-switcher-field">
+          <label className="model-switcher-label">{tr("Ollama-URL")}</label>
           <input
+            className="model-switcher-control"
             type="text"
             value={ollama.baseUrl}
             onChange={(e) => setOllama({ baseUrl: e.target.value })}
-            style={{
-              width: '100%', padding: '6px 10px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', fontSize: 13,
-            }}
           />
         </div>
 
-        {/* Temperature */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: 'block' }}>{tr("Temperature:")}{ollama.temperature.toFixed(2)}
+        <div className="model-switcher-field">
+          <label className="model-switcher-label">{tr("Temperature:")}{ollama.temperature.toFixed(2)}
           </label>
           <input
-            type="range" min={0} max={2} step={0.05}
+            className="model-switcher-range"
+            type="range"
+            min={0}
+            max={2}
+            step={0.05}
             value={ollama.temperature}
             onChange={(e) => setOllama({ temperature: parseFloat(e.target.value) })}
-            style={{ width: '100%' }}
           />
         </div>
 
-        {/* Context window */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: 'block' }}>{tr("Context-Window:")}{ollama.contextWindow.toLocaleString('en-US')}
+        <div className="model-switcher-field">
+          <label className="model-switcher-label">{tr("Context-Window:")}{ollama.contextWindow.toLocaleString()}
           </label>
           <input
-            type="range" min={2048} max={131072} step={1024}
+            className="model-switcher-range"
+            type="range"
+            min={2048}
+            max={131072}
+            step={1024}
             value={ollama.contextWindow}
             onChange={(e) => setOllama({ contextWindow: parseInt(e.target.value) })}
-            style={{ width: '100%' }}
           />
         </div>
 
-        {/* Personality quick switch */}
         {personalities.length > 0 && (
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: 'block' }}>{tr("Quick personality switch")}</label>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{tr("Select the active personality. Full management is available below in the &quot;Personalities&quot; section.")}</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div className="model-switcher-field">
+            <label className="model-switcher-label">{tr("Quick personality switch")}</label>
+            <div className="model-switcher-help">{tr("Select the active personality. Full management is available below in the &quot;Personalities&quot; section.")}</div>
+            <div className="model-switcher-personality-list">
               <button
                 type="button"
                 className={`btn-sm${activeId == null ? ' active' : ''}`}
@@ -101,9 +95,9 @@ export default function ModelSwitcher() {
                   type="button"
                   className={`btn-sm${activeId === p.id ? ' active' : ''}`}
                   onClick={() => setActive(p.id)}
-                  title={p.model_override ? `Model: ${p.model_override}` : undefined}
+                  title={p.model_override ? `${tr("Model:")} ${p.model_override}` : undefined}
                 >
-                  {p.icon || '🤖'} {p.name}
+                  {p.icon || 'AG'} {p.name}
                 </button>
               ))}
             </div>

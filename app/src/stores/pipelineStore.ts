@@ -1,6 +1,12 @@
 import { create } from 'zustand'
-import { safeInvoke } from '../utils/safeInvoke'
-import type { OllamaConfig } from '../stores/configStore'
+import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
+import {
+  getVolatileToolGateways,
+  migrateLegacyToolGatewayConfigs,
+  setVolatileToolGateways,
+} from '../security/legacyConfigMigration'
+import { useConfigStore } from './configStore'
+import type { OllamaConfig } from './configStore'
 
 export type RpcPipeline = {
   id: string
@@ -55,28 +61,95 @@ type PipelineState = {
   upsertToolGateway: (t: {
     id: string; toolType: string; name: string
     configJson: string; enabled?: boolean
-  }) => Promise<void>
+  }) => Promise<boolean>
   deleteToolGateway: (id: string) => Promise<void>
 
   executePipeline: (id: string, ollamaUrl: string, model: string) => Promise<PipelineExecutionResult>
 }
 
-/* ── Local fallback storage ─────────────────────────────────────────── */
-
 const LOCAL_PIPELINES_KEY = 'open-cowork-pipelines'
-const LOCAL_GATEWAY_KEY = 'open-cowork-gateway'
+
+type ParsedPipelineStep = {
+  tool: string
+  prompt: string
+}
+
+type RawStoreValue = Record<string, unknown>
+
+function hasString(value: unknown): value is string {
+  return typeof value === 'string'
+}
+
+function isRecord(value: unknown): value is RawStoreValue {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function normalizeRpcPipeline(value: unknown): RpcPipeline | null {
+  if (!isRecord(value)) return null
+
+  const id = hasString(value.id) ? value.id : ''
+  if (!id) return null
+
+  return {
+    id,
+    name: hasString(value.name) ? value.name : '',
+    description: hasString(value.description) ? value.description : null,
+    steps_json: hasString(value.steps_json) ? value.steps_json : '',
+    zero_context: typeof value.zero_context === 'boolean' ? value.zero_context : false,
+    created_at: hasString(value.created_at) ? value.created_at : new Date().toISOString(),
+    updated_at: hasString(value.updated_at) ? value.updated_at : new Date().toISOString(),
+  }
+}
 
 function getLocalPipelines(): RpcPipeline[] {
-  try { return JSON.parse(localStorage.getItem(LOCAL_PIPELINES_KEY) ?? '[]') } catch { return [] }
+  const raw = localStorage.getItem(LOCAL_PIPELINES_KEY) ?? '[]'
+  return parseJsonArray(raw).map(normalizeRpcPipeline).filter((pipeline): pipeline is RpcPipeline => pipeline !== null)
 }
-function setLocalPipelines(p: RpcPipeline[]): void {
-  try { localStorage.setItem(LOCAL_PIPELINES_KEY, JSON.stringify(p)) } catch { /* noop */ }
+
+function setLocalPipelines(pipelines: RpcPipeline[]): void {
+  try {
+    localStorage.setItem(LOCAL_PIPELINES_KEY, JSON.stringify(pipelines))
+  } catch {
+    /* noop */
+  }
 }
-function getLocalGateway(): ToolGatewayEntry[] {
-  try { return JSON.parse(localStorage.getItem(LOCAL_GATEWAY_KEY) ?? '[]') } catch { return [] }
-}
-function setLocalGateway(g: ToolGatewayEntry[]): void {
-  try { localStorage.setItem(LOCAL_GATEWAY_KEY, JSON.stringify(g)) } catch { /* noop */ }
+
+function readSafePipelineSteps(rawSteps: string): ParsedPipelineStep[] {
+  const parsed = parseJsonArray(rawSteps)
+
+  if (parsed.length === 0 && rawSteps.trim() !== '[]') {
+    throw new Error('Steps muss ein gueltiges JSON-Array enthalten.')
+  }
+
+  return parsed.map((entry, index) => {
+    if (!isRecord(entry)) {
+      return {
+        tool: 'ollama',
+        prompt: `Schritt ${index + 1}: ${String(entry)}`,
+      }
+    }
+
+    const tool = hasString(entry.tool) && entry.tool.trim().length > 0
+      ? entry.tool.trim()
+      : 'ollama'
+
+    const prompt = hasString(entry.prompt)
+      ? entry.prompt.trim()
+      : hasString(entry.args)
+        ? entry.args.trim()
+        : JSON.stringify(entry) ?? `Schritt ${index + 1}: Unbekannte Step-Struktur`
+
+    return { tool, prompt }
+  })
 }
 
 export const usePipelineStore = create<PipelineState>()((set, get) => ({
@@ -97,27 +170,35 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
     }
   },
 
-  upsertPipeline: async (p) => {
+  upsertPipeline: async (pipeline) => {
     const now = new Date().toISOString()
     try {
       await safeInvoke('pipeline_upsert', {
-        id: p.id,
-        name: p.name,
-        description: p.description ?? null,
-        stepsJson: p.stepsJson,
-        zeroContext: p.zeroContext ?? false,
+        id: pipeline.id,
+        name: pipeline.name,
+        description: pipeline.description ?? null,
+        stepsJson: pipeline.stepsJson,
+        zeroContext: pipeline.zeroContext ?? false,
       }, undefined)
       await get().loadPipelines()
     } catch {
-      // Fallback: save locally
       const local = getLocalPipelines()
       const full: RpcPipeline = {
-        id: p.id, name: p.name, description: p.description ?? null,
-        steps_json: p.stepsJson, zero_context: p.zeroContext ?? false,
-        created_at: now, updated_at: now,
+        id: pipeline.id,
+        name: pipeline.name,
+        description: pipeline.description ?? null,
+        steps_json: pipeline.stepsJson,
+        zero_context: pipeline.zeroContext ?? false,
+        created_at: now,
+        updated_at: now,
       }
-      const idx = local.findIndex(x => x.id === p.id)
-      if (idx >= 0) local[idx] = full; else local.unshift(full)
+
+      const idx = local.findIndex((entry) => entry.id === pipeline.id)
+      if (idx >= 0) {
+        local[idx] = full
+      } else {
+        local.unshift(full)
+      }
       setLocalPipelines(local)
       set({ pipelines: local })
     }
@@ -126,128 +207,158 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
   deletePipeline: async (id) => {
     try {
       await safeInvoke('pipeline_delete', { id }, undefined)
-      set((s) => ({ pipelines: s.pipelines.filter((p) => p.id !== id) }))
+      set((state) => ({ pipelines: state.pipelines.filter((pipeline) => pipeline.id !== id) }))
     } catch {
-      const local = getLocalPipelines().filter(p => p.id !== id)
+      const local = getLocalPipelines().filter((pipeline) => pipeline.id !== id)
       setLocalPipelines(local)
-      set((s) => ({ pipelines: s.pipelines.filter((p) => p.id !== id) }))
+      set((state) => ({ pipelines: state.pipelines.filter((pipeline) => pipeline.id !== id) }))
     }
   },
 
   loadToolGateway: async () => {
     set({ loading: true, error: null })
     try {
-      const toolGateway = await safeInvoke<ToolGatewayEntry[]>('tool_gateway_list', undefined, getLocalGateway())
+      await migrateLegacyToolGatewayConfigs()
+      const toolGateway = hasTauriRuntime()
+        ? await safeInvoke<ToolGatewayEntry[]>('tool_gateway_list')
+        : getVolatileToolGateways()
       set({ toolGateway, loading: false })
     } catch (e) {
       set({ error: String(e), loading: false })
     }
   },
 
-  upsertToolGateway: async (t) => {
+  upsertToolGateway: async (toolGateway) => {
     const now = new Date().toISOString()
     try {
       await safeInvoke('tool_gateway_upsert', {
-        id: t.id,
-        toolType: t.toolType,
-        name: t.name,
-        configJson: t.configJson,
-        enabled: t.enabled ?? true,
+        id: toolGateway.id,
+        toolType: toolGateway.toolType,
+        name: toolGateway.name,
+        configJson: toolGateway.configJson,
+        enabled: toolGateway.enabled ?? true,
       }, undefined)
       await get().loadToolGateway()
-    } catch {
-      const local = getLocalGateway()
-      const full: ToolGatewayEntry = {
-        id: t.id, tool_type: t.toolType, name: t.name,
-        config_json: t.configJson, enabled: t.enabled ?? true,
-        created_at: now, updated_at: now,
+      return true
+    } catch (error) {
+      if (hasTauriRuntime()) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+        return false
       }
-      const idx = local.findIndex(x => x.id === t.id)
-      if (idx >= 0) local[idx] = full; else local.unshift(full)
-      setLocalGateway(local)
+      const local = [...getVolatileToolGateways()]
+      const full: ToolGatewayEntry = {
+        id: toolGateway.id,
+        tool_type: toolGateway.toolType,
+        name: toolGateway.name,
+        config_json: toolGateway.configJson,
+        enabled: toolGateway.enabled ?? true,
+        created_at: now,
+        updated_at: now,
+      }
+
+      const idx = local.findIndex((entry) => entry.id === toolGateway.id)
+      if (idx >= 0) {
+        local[idx] = full
+      } else {
+        local.unshift(full)
+      }
+      setVolatileToolGateways(local)
       set({ toolGateway: local })
+      return true
     }
   },
 
   deleteToolGateway: async (id) => {
     try {
       await safeInvoke('tool_gateway_delete', { id }, undefined)
-      set((s) => ({ toolGateway: s.toolGateway.filter((t) => t.id !== id) }))
-    } catch {
-      const local = getLocalGateway().filter(t => t.id !== id)
-      setLocalGateway(local)
-      set((s) => ({ toolGateway: s.toolGateway.filter((t) => t.id !== id) }))
+      set((state) => ({ toolGateway: state.toolGateway.filter((gateway) => gateway.id !== id) }))
+    } catch (error) {
+      if (hasTauriRuntime()) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      const local = getVolatileToolGateways().filter((gateway) => gateway.id !== id)
+      setVolatileToolGateways(local)
+      set((state) => ({ toolGateway: state.toolGateway.filter((gateway) => gateway.id !== id) }))
     }
   },
 
   executePipeline: async (id, ollamaUrl, model) => {
     const executeLocally = async (): Promise<PipelineExecutionResult> => {
-    const pipeline = get().pipelines.find(p => p.id === id)
-    if (!pipeline) {
-      const result: PipelineExecutionResult = {
-        pipelineId: id, status: 'failed', stepResults: [],
-        error: 'Pipeline not found.',
-      }
-      set({ lastResult: result })
-      return result
-    }
-
-    set({ executing: id, error: null })
-
-    let steps: Array<{ tool?: string; prompt?: string; args?: string }>
-    try {
-      steps = JSON.parse(pipeline.steps_json)
-      if (!Array.isArray(steps)) throw new Error('Steps muss ein Array sein')
-    } catch (e) {
-      const result: PipelineExecutionResult = {
-        pipelineId: id, status: 'failed', stepResults: [],
-        error: `Unvalide Steps-JSON: ${e}`,
-      }
-      set({ executing: null, lastResult: result })
-      return result
-    }
-
-    const stepResults: PipelineExecutionResult['stepResults'] = []
-
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]
-      const toolName = step.tool ?? 'ollama'
-      const prompt = step.prompt ?? step.args ?? `Schritt ${i + 1}: ${JSON.stringify(step)}`
-
-      try {
-        // Execute via Ollama
-        const previousContext = stepResults.map(r => `[${r.tool}]: ${r.result}`).join('\n')
-        const fullPrompt = previousContext
-          ? `Context bisheriger Schritte:\n${previousContext}\n\nAktuelle Task:\n${prompt}`
-          : prompt
-
-        const response = await fetch(`${ollamaUrl}/api/generate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model, prompt: fullPrompt, stream: false }),
-        })
-
-        if (!response.ok) {
-          stepResults.push({ step: i + 1, tool: toolName, result: `HTTP ${response.status}`, success: false })
-          continue
+      const pipeline = get().pipelines.find((entry) => entry.id === id)
+      if (!pipeline) {
+        const missingPipelineResult: PipelineExecutionResult = {
+          pipelineId: id,
+          status: 'failed',
+          stepResults: [],
+          error: 'Pipeline not found.',
         }
-
-        const data = await response.json() as { response?: string }
-        stepResults.push({ step: i + 1, tool: toolName, result: data.response ?? '', success: true })
-      } catch (e) {
-        stepResults.push({ step: i + 1, tool: toolName, result: String(e), success: false })
+        set({ lastResult: missingPipelineResult })
+        return missingPipelineResult
       }
-    }
 
-    const hasFailure = stepResults.some(r => !r.success)
-    const result: PipelineExecutionResult = {
-      pipelineId: id,
-      status: hasFailure ? 'failed' : 'completed',
-      stepResults,
-    }
+      set({ executing: id, error: null })
 
-    set({ executing: null, lastResult: result })
-    return result
+      let steps: ParsedPipelineStep[]
+      try {
+        steps = readSafePipelineSteps(pipeline.steps_json)
+      } catch (error) {
+        const parseResult: PipelineExecutionResult = {
+          pipelineId: id,
+          status: 'failed',
+          stepResults: [],
+          error: `Ungueltiges Steps-JSON: ${(error as Error).message}`,
+        }
+        set({ executing: null, lastResult: parseResult })
+        return parseResult
+      }
+
+      const stepResults: PipelineExecutionResult['stepResults'] = []
+
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i]
+        const toolName = step.tool
+
+        try {
+          const previousContext = stepResults
+            .map((entry) => `[${entry.tool}]: ${entry.result}`)
+            .join('\n')
+          const fullPrompt = previousContext
+            ? `Context bisheriger Schritte:\n${previousContext}\n\nAktuelle Task:\n${step.prompt}`
+            : step.prompt
+
+          const response = await fetch(`${ollamaUrl}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, prompt: fullPrompt, stream: false }),
+          })
+
+          if (!response.ok) {
+            stepResults.push({ step: i + 1, tool: toolName, result: `HTTP ${response.status}`, success: false })
+            continue
+          }
+
+          const data = await response.json() as { response?: string }
+          stepResults.push({
+            step: i + 1,
+            tool: toolName,
+            result: data.response ?? '',
+            success: true,
+          })
+        } catch (error) {
+          stepResults.push({ step: i + 1, tool: toolName, result: String(error), success: false })
+        }
+      }
+
+      const hasFailure = stepResults.some((result) => !result.success)
+      const executionResult: PipelineExecutionResult = {
+        pipelineId: id,
+        status: hasFailure ? 'failed' : 'completed',
+        stepResults,
+      }
+
+      set({ executing: null, lastResult: executionResult })
+      return executionResult
     }
 
     set({ executing: id, error: null })
@@ -260,11 +371,8 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
         contextWindow: 128_000,
         temperature: 0.1,
       }
-      try {
-        const { useConfigStore } = await import('./configStore')
+      if (typeof useConfigStore.getState === 'function') {
         config = useConfigStore.getState().ollama
-      } catch {
-        // keep passed values as fallback
       }
 
       const response = await safeInvoke<BackendPipelineExecutionResult>('pipeline_execute', {
@@ -276,7 +384,11 @@ export const usePipelineStore = create<PipelineState>()((set, get) => ({
 
       const result: PipelineExecutionResult = {
         pipelineId: response.pipelineId,
-        status: response.status === 'completed' ? 'completed' : response.status === 'running' ? 'running' : 'failed',
+        status: response.status === 'completed'
+          ? 'completed'
+          : response.status === 'running'
+            ? 'running'
+            : 'failed',
         stepResults: response.stepResults,
         error: response.error ?? undefined,
       }

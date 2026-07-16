@@ -18,11 +18,6 @@ function runStep(name, command, args, options = {}) {
   }
 }
 
-function commandExists(command) {
-  const result = spawnSync(command, ['--version'], { encoding: 'utf8' })
-  return result.status === 0
-}
-
 function localBin(...segments) {
   return join(root, 'node_modules', ...segments)
 }
@@ -32,6 +27,7 @@ const requiredBins = [
   localBin('eslint', 'bin', 'eslint.js'),
   localBin('vitest', 'vitest.mjs'),
   localBin('vite', 'bin', 'vite.js'),
+  localBin('@tauri-apps', 'cli', 'tauri.js'),
 ]
 
 for (const bin of requiredBins) {
@@ -41,17 +37,17 @@ for (const bin of requiredBins) {
 }
 
 runStep('Doctor', node, [join(root, 'scripts', 'doctor.mjs')])
-runStep('TypeScript', node, [localBin('typescript', 'bin', 'tsc'), '-b'])
 runStep('ESLint', node, [localBin('eslint', 'bin', 'eslint.js'), '.', '--max-warnings', '0'])
 runStep('Vitest', node, [localBin('vitest', 'vitest.mjs'), 'run'])
-runStep('Vite build', node, [localBin('vite', 'bin', 'vite.js'), 'build'])
+runStep('Tauri release build', node, [localBin('@tauri-apps', 'cli', 'tauri.js'), 'build', '--no-bundle', '--ci'])
 runStep('Build budgets', node, [join(root, 'scripts', 'check-budgets.mjs')])
-
-if (commandExists('cargo')) {
-  runStep('Rust cargo check', 'cargo', ['check'], { cwd: join(root, 'src-tauri') })
-} else {
-  console.log('\n== Rust cargo check ==')
-  console.log('Skipped: cargo is not available in PATH.')
-}
+runStep('Native Windows launch', 'powershell', [
+  '-NoProfile',
+  '-NonInteractive',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-File',
+  join(root, 'scripts', 'native-desktop-launch-smoke.ps1'),
+])
 
 console.log('\nDesktop smoke completed.')

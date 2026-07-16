@@ -1,5 +1,5 @@
 use chrono::Utc;
-use notify::{Event, EventKind, event::ModifyKind};
+use notify::{event::ModifyKind, Event, EventKind};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]

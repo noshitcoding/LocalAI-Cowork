@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { ChevronDown } from 'lucide-react'
 import { checkOllamaConnection, listOllamaModels } from '../engine/api/ollamaClient'
 import { useConfigStore, type LlmProfile, type LlmProviderKind } from '../stores/configStore'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { tr } from '../i18n'
+import SecureCredentialInput from './SecureCredentialInput'
 
 type ExternalProviderHealthCheckResult = {
   reachable: boolean
@@ -33,6 +36,10 @@ type ProfileModelsState = {
 }
 
 const PROVIDER_ORDER: LlmProviderKind[] = ['ollama', 'openai-compatible', 'openrouter']
+
+function isLlmProviderKind(value: string | null): value is LlmProviderKind {
+  return PROVIDER_ORDER.some((provider) => provider === value)
+}
 
 const PROVIDER_LABELS: Record<LlmProviderKind, string> = {
   ollama: 'Ollama',
@@ -94,10 +101,16 @@ export default function LlmProfilesPanel() {
     llmProfileModels,
     addLlmProfile,
     updateLlmProfile,
+    setLlmProfileApiKey,
     deleteLlmProfile,
     setDefaultLlmProfile,
     setLlmProfileModels,
   } = useConfigStore()
+
+  const [searchParams] = useSearchParams()
+  const requestedProviderParam = searchParams.get('provider')
+  const requestedProvider = isLlmProviderKind(requestedProviderParam) ? requestedProviderParam : null
+  const appliedRequestedProvider = useRef<LlmProviderKind | null>(null)
 
   const [healthChecks, setHealthChecks] = useState<Record<string, ProfileHealthState>>({})
   const [modelStates, setModelStates] = useState<Record<string, ProfileModelsState>>({})
@@ -109,6 +122,51 @@ export default function LlmProfilesPanel() {
     })),
     [llmProfiles],
   )
+  const [expandedProvider, setExpandedProvider] = useState<LlmProviderKind | null>(() => {
+    if (requestedProvider) return requestedProvider
+    const openRouterProfile = llmProfiles.find((profile) => (
+      profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter'
+    ))
+    return openRouterProfile?.model.trim() ? 'openrouter' : 'ollama'
+  })
+
+  useEffect(() => {
+    if (!requestedProvider || appliedRequestedProvider.current === requestedProvider) return
+    appliedRequestedProvider.current = requestedProvider
+    setExpandedProvider(requestedProvider)
+
+    const frame = window.requestAnimationFrame(() => {
+      const section = document.getElementById(`llm-provider-${requestedProvider}`)
+      if (typeof section?.scrollIntoView === 'function') {
+        section.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+      section?.querySelector<HTMLInputElement>('.llm-profile-api-key-field input')?.focus({ preventScroll: true })
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [requestedProvider])
+
+  const openProvider = (provider: LlmProviderKind) => {
+    setExpandedProvider(provider)
+    window.requestAnimationFrame(() => {
+      const section = document.getElementById(`llm-provider-${provider}`)
+      if (typeof section?.scrollIntoView === 'function') {
+        section.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      }
+    })
+  }
+
+  const getProfileStatus = (profile: LlmProfile | undefined) => {
+    if (!profile) return { label: tr('Not configured'), tone: 'warning' }
+
+    const health = healthChecks[profile.id]
+    if (health?.loading) return { label: tr('Checking...'), tone: 'neutral' }
+    if (health?.reachable === true) return { label: tr('Connected'), tone: 'success' }
+    if (health?.reachable === false) return { label: tr('Action needed'), tone: 'warning' }
+    if (!profile.baseUrl.trim() || !profile.model.trim()) return { label: tr('Setup needed'), tone: 'warning' }
+    if (supportsApiKey(profile.provider) && !profile.apiKey.trim()) return { label: tr('API key needed'), tone: 'warning' }
+    return { label: tr('Configured'), tone: 'neutral' }
+  }
 
   const handleAddProfile = (provider: LlmProviderKind) => {
     addLlmProfile(provider)
@@ -341,10 +399,10 @@ export default function LlmProfilesPanel() {
   }
 
   return (
-    <div className="panel">
+    <div className="panel llm-profiles-panel">
       <div className="panel-heading-row">
-        <h2>{tr("🧩 LLM-Profile")}</h2>
-        <div className="actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <h2>{tr("LLM profiles")}</h2>
+        <div className="actions llm-profile-add-actions">
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('ollama')}>{tr("+ Ollama")}</button>
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('openai-compatible')}>{tr("+ OpenAI-compatible")}</button>
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('openrouter')}>{tr("+ OpenRouter")}</button>
@@ -352,29 +410,80 @@ export default function LlmProfilesPanel() {
       </div>
       <p className="hint-text">{tr("Maintain multiple endpoints in parallel and set one global default profile per provider for dropdowns and fallbacks.")}</p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="llm-provider-overview" role="group" aria-label={tr('Provider overview')}>
+        {profilesByProvider.map(({ provider, profiles }) => {
+          const defaultProfile = profiles.find((profile) => profile.id === defaultLlmProfileIds[provider]) ?? profiles[0]
+          const status = getProfileStatus(defaultProfile)
+          const isFreeModel = provider === 'openrouter' && defaultProfile?.model.trim().endsWith(':free')
+
+          return (
+            <button
+              key={provider}
+              type="button"
+              className={`llm-provider-overview-card${expandedProvider === provider ? ' active' : ''}`}
+              aria-label={tr('Open {{provider}} settings', { provider: PROVIDER_LABELS[provider] })}
+              aria-expanded={expandedProvider === provider}
+              aria-controls={`llm-provider-${provider}`}
+              onClick={() => openProvider(provider)}
+            >
+              <span className="llm-provider-overview-head">
+                <strong>{PROVIDER_LABELS[provider]}</strong>
+                <span className={`llm-provider-state tone-${status.tone}`}>{status.label}</span>
+              </span>
+              <span className="llm-provider-model">{defaultProfile?.model.trim() || tr('no model set')}</span>
+              <span className="llm-provider-overview-meta">
+                <span>{profiles.length} {tr(profiles.length === 1 ? 'profile' : 'profiles')}</span>
+                {isFreeModel ? <span className="llm-provider-free-badge">{tr('Free model')}</span> : null}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      <div className="llm-provider-accordion">
         {profilesByProvider.map(({ provider, profiles }) => (
-          <div key={provider} className="card">
-            <div className="panel-heading-row" style={{ marginBottom: 12 }}>
+          <section
+            key={provider}
+            id={`llm-provider-${provider}`}
+            className={`llm-provider-section${expandedProvider === provider ? ' open' : ''}`}
+          >
+            <button
+              type="button"
+              className="llm-provider-section-toggle"
+              aria-expanded={expandedProvider === provider}
+              aria-controls={`llm-provider-content-${provider}`}
+              onClick={() => setExpandedProvider((current) => current === provider ? null : provider)}
+            >
               <div>
                 <strong>{PROVIDER_LABELS[provider]}</strong>
-                <div className="hint-text">{tr("Global default profile for this provider")}</div>
+                <span>{profiles.length} {tr(profiles.length === 1 ? 'profile' : 'profiles')}</span>
               </div>
-              <select
-                value={defaultLlmProfileIds[provider]}
-                onChange={(event) => setDefaultLlmProfile(provider, event.target.value)}
-                disabled={profiles.length === 0}
-              >
-                {profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.name}</option>
-                ))}
-              </select>
-            </div>
+              <ChevronDown size={17} aria-hidden="true" />
+            </button>
 
-            {profiles.length === 0 ? (
-              <p className="panel-empty">{tr("No profile for")}{PROVIDER_LABELS[provider]}{tr("angelegt.")}</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {expandedProvider === provider ? (
+              <div id={`llm-provider-content-${provider}`} className="llm-provider-section-content">
+                <div className="llm-provider-default-row">
+                  <label htmlFor={`llm-provider-default-${provider}`}>
+                    <span>{tr("Global default profile for this provider")}</span>
+                    <select
+                      id={`llm-provider-default-${provider}`}
+                      aria-label={`${PROVIDER_LABELS[provider]} ${tr('Global default profile for this provider')}`}
+                      value={defaultLlmProfileIds[provider]}
+                      onChange={(event) => setDefaultLlmProfile(provider, event.target.value)}
+                      disabled={profiles.length === 0}
+                    >
+                      {profiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>{profile.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                {profiles.length === 0 ? (
+                  <p className="panel-empty">{tr("No profile for")}{PROVIDER_LABELS[provider]}{tr("angelegt.")}</p>
+                ) : (
+                  <div className="llm-profile-list">
                 {profiles.map((profile) => {
                   const isDefault = defaultLlmProfileIds[provider] === profile.id
                   const health = healthChecks[profile.id]
@@ -385,13 +494,12 @@ export default function LlmProfilesPanel() {
                   return (
                     <div
                       key={profile.id}
-                      className="card"
-                      style={{ border: isDefault ? '1px solid var(--accent)' : '1px solid var(--border-color)' }}
+                      className={`card llm-profile-card${isDefault ? ' is-default' : ''}`}
                     >
-                      <div className="panel-heading-row" style={{ marginBottom: 10 }}>
+                      <div className="panel-heading-row llm-profile-card-header">
                         <div>
                           <strong>{profile.name}</strong>
-                          {isDefault && <span style={{ fontSize: 11, color: 'var(--accent)', marginLeft: 8 }}>{tr("Default profile")}</span>}
+                          {isDefault && <span className="llm-profile-default-badge">{tr("Default profile")}</span>}
                         </div>
                         <button
                           type="button"
@@ -402,7 +510,7 @@ export default function LlmProfilesPanel() {
                         >{tr("Delete")}</button>
                       </div>
 
-                      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+                      <div className="grid llm-profile-fields">
                         <label>{tr("Profile name")}<input
                             value={profile.name}
                             onChange={(event) => updateLlmProfile(profile.id, { name: event.target.value })}
@@ -430,12 +538,12 @@ export default function LlmProfilesPanel() {
                           )}
                         </label>
                         {supportsApiKey(profile.provider) && (
-                          <label>{tr("API Key")}<input
-                              type="password"
+                          <label className="llm-profile-api-key-field">{tr("API Key")}<SecureCredentialInput
                               value={profile.apiKey}
-                              onChange={(event) => updateLlmProfile(profile.id, { apiKey: event.target.value })}
+                              onCommit={(value) => setLlmProfileApiKey(profile.id, value)}
                               placeholder={tr("sk?...")}
                               style={{ fontFamily: 'monospace' }}
+                              ariaLabel={`${PROVIDER_LABELS[profile.provider]} ${tr('API Key')}`}
                             />
                           </label>
                         )}
@@ -487,7 +595,7 @@ export default function LlmProfilesPanel() {
                         )}
                       </div>
 
-                      <div className="actions" style={{ marginTop: 12 }}>
+                      <div className="actions llm-profile-actions">
                         <button type="button" className="btn-sm" onClick={() => void handleHealthCheck(profile)}>
                           {health?.loading ? tr('Testing...') : tr('Health check')}
                         </button>
@@ -518,9 +626,11 @@ export default function LlmProfilesPanel() {
                     </div>
                   )
                 })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            ) : null}
+          </section>
         ))}
       </div>
     </div>

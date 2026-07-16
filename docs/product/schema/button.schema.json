@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Cowork Product Button",
+  "type": "object",
+  "required": [
+    "id",
+    "owner_element",
+    "label_key",
+    "visible_label",
+    "selector",
+    "handler",
+    "enabled_when",
+    "disabled_when",
+    "side_effects",
+    "confirmation",
+    "destructive",
+    "size",
+    "variant",
+    "accessibility",
+    "tests"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^button:" },
+    "owner_element": { "type": "string", "pattern": "^element:" },
+    "label_key": { "type": "string" },
+    "visible_label": { "type": "string" },
+    "selector": { "type": "string" },
+    "handler": { "type": "string" },
+    "enabled_when": { "type": "string" },
+    "disabled_when": { "type": "string" },
+    "side_effects": { "type": "string" },
+    "confirmation": { "type": "string" },
+    "destructive": { "type": "boolean" },
+    "size": { "type": "string" },
+    "variant": { "type": "string" },
+    "accessibility": { "type": "string" },
+    "source_files": { "type": "array", "items": { "type": "string" } },
+    "tests": { "type": "array", "items": { "type": "string" } }
+  }
+}

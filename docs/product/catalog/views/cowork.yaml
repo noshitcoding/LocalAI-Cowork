@@ -1,0 +1,46 @@
+id: view:/
+route: /
+title: Cowork
+purpose: Primary chat workspace for model and crew-assisted work with attachments, project context, approvals, and terminal access.
+user_story: As a user I can converse with the active assistant, attach context, answer approvals, and keep the active chat tied to project context.
+layout_regions:
+  - app shell
+  - chat transcript
+  - live tool call area
+  - approval and ask-user banners
+  - project context strip
+  - composer and compact controls
+owned_elements:
+  - element:/cowork/transcript
+  - element:/cowork/composer
+  - element:/cowork/approval-banner
+  - element:/cowork/project-context-strip
+primary_actions:
+  - button:/cowork/composer/send
+  - button:/cowork/composer/stop
+  - button:/cowork/composer/attach-files
+  - button:/cowork/composer/attach-folder
+empty_states:
+  - Empty thread shows the composer and no transcript rows.
+loading_states:
+  - Streaming assistant response shows typing and live tool states.
+error_states:
+  - Runtime errors render as cowork-error text.
+data_dependencies:
+  - chat threads from chatStore and SQLite
+  - active provider and model settings from configStore and engineStore
+  - project membership and resources from projectStore
+  - permission and approval state from engineStore
+permissions:
+  - file and folder attachment uses Tauri dialogs when available
+  - tool execution follows permission engine approval state
+source_files:
+  - app/src/components/CoworkView.tsx
+  - app/src/stores/chatStore.ts
+  - app/src/stores/coworkStore.ts
+  - app/src/stores/projectStore.ts
+  - app/src/engine/core/queryEngine.ts
+tests:
+  - app/src/components/CoworkView.test.ts
+  - app/src/stores/chatStore.test.ts
+  - app/src/App.test.tsx

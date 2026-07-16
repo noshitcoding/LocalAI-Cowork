@@ -1,9 +1,40 @@
 import { useEffect } from 'react'
 import { useInsightsStore } from '../stores/insightsStore'
-import { tr } from '../i18n'
+import i18n, { tr } from '../i18n'
+
+type MetricTone = 'accent' | 'info' | 'success' | 'warning' | 'primary'
+
+function getLocale(): string {
+  return i18n.resolvedLanguage ?? i18n.language ?? 'en'
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(getLocale())
+}
+
+function MetricCard({
+  value,
+  label,
+  tone = 'primary',
+  compact = false,
+}: {
+  value: string | number
+  label: string
+  tone?: MetricTone
+  compact?: boolean
+}) {
+  return (
+    <div className="card insights-metric-card">
+      <div className={`insights-metric-value tone-${tone}${compact ? ' compact' : ''}`}>{value}</div>
+      <div className="insights-metric-label">{label}</div>
+    </div>
+  )
+}
 
 export default function InsightsPanel() {
   const { summary, events, loading, error, loadSummary, loadEvents } = useInsightsStore()
+  const locale = getLocale()
 
   useEffect(() => {
     loadSummary()
@@ -16,102 +47,75 @@ export default function InsightsPanel() {
   const avgSessionDurationMin = summary?.avgSessionDurationMin ?? 0
 
   return (
-    <div className="panel">
-      <h2>{tr("📊 Insights Dashboard")}</h2>
+    <div className="panel insights-panel">
+      <h2>{tr("Insights dashboard")}</h2>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="insights-error">{error}</p>}
 
       {loading && <p className="panel-empty">{tr("Loading...")}</p>}
 
       {summary && (
         <>
-          {/* Key metrics */}
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 20 }}>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--accent)' }}>{summary.totalSessions}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Sessions")}</div>
-            </div>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--info)' }}>{summary.skillUsageCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Skill uses")}</div>
-            </div>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--success)' }}>{summary.memoryEntryCount}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Memory")}</div>
-            </div>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--warning)' }}>{summary.totalEvents}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Events")}</div>
-            </div>
+          <div className="insights-metric-grid">
+            <MetricCard value={summary.totalSessions} label={tr("Sessions")} tone="accent" />
+            <MetricCard value={summary.skillUsageCount} label={tr("Skill uses")} tone="info" />
+            <MetricCard value={summary.memoryEntryCount} label={tr("Memory")} tone="success" />
+            <MetricCard value={summary.totalEvents} label={tr("Events")} tone="warning" />
           </div>
 
-          {/* Additional stats */}
-          <div className="grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 20 }}>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>{summary.totalMessagesSent}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Messages")}</div>
-            </div>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>{totalTokensEst.toLocaleString('en-US')}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Tokens (est.)")}</div>
-            </div>
-            <div className="card" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>{avgSessionDurationMin.toFixed(1)}{tr("min")}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("Avg. duration")}</div>
-            </div>
+          <div className="insights-metric-grid insights-metric-grid-compact">
+            <MetricCard value={summary.totalMessagesSent} label={tr("Messages")} compact />
+            <MetricCard value={totalTokensEst.toLocaleString(locale)} label={tr("Tokens (est.)")} compact />
+            <MetricCard value={`${avgSessionDurationMin.toFixed(1)}${tr("min")}`} label={tr("Avg. duration")} compact />
           </div>
 
-          {/* Recent events from summary */}
           {recentSummaryEvents.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>{tr("Latest events")}</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {recentSummaryEvents.slice(0, 10).map((ev, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border-light)' }}>
-                    <span>{ev.eventType} <span style={{ color: 'var(--text-muted)' }}>({ev.category})</span></span>
-                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                      {new Date(ev.createdAt).toLocaleString('en-US')}
+            <section className="insights-section" aria-labelledby="insights-summary-events-title">
+              <h3 id="insights-summary-events-title" className="insights-section-heading">{tr("Latest events")}</h3>
+              <div className="insights-event-list">
+                {recentSummaryEvents.slice(0, 10).map((event, index) => (
+                  <div key={`${event.eventType}-${event.createdAt}-${index}`} className="insights-event-row">
+                    <span className="insights-event-main">
+                      <span className="insights-event-type">{event.eventType}</span>
+                      <span className="insights-event-category">({event.category})</span>
                     </span>
+                    <span className="insights-event-time">{formatDateTime(event.createdAt)}</span>
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
 
-          {/* Categories */}
           {topCategories.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>{tr("Top categories")}</h3>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {topCategories.map((cat) => (
-                  <span key={cat.category} className="card" style={{ padding: '4px 10px', fontSize: 12 }}>
-                    {cat.category}: {cat.count}
+            <section className="insights-section" aria-labelledby="insights-top-categories-title">
+              <h3 id="insights-top-categories-title" className="insights-section-heading">{tr("Top categories")}</h3>
+              <div className="insights-category-list">
+                {topCategories.map((category) => (
+                  <span key={category.category} className="card insights-category-pill">
+                    {category.category}: {category.count}
                   </span>
                 ))}
               </div>
-            </div>
+            </section>
           )}
         </>
       )}
 
-      {/* Recent events */}
       {events.length > 0 && (
-        <div>
-          <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>{tr("Latest events")}</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 300, overflowY: 'auto' }}>
-            {events.slice(0, 30).map((ev) => (
-              <div key={ev.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border-light)' }}>
-                <div>
-                  <span style={{ fontWeight: 500 }}>{ev.event_type}</span>
-                  <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{ev.category}</span>
+        <section className="insights-section" aria-labelledby="insights-events-title">
+          <h3 id="insights-events-title" className="insights-section-heading">{tr("Latest events")}</h3>
+          <div className="insights-event-list insights-event-list-scroll">
+            {events.slice(0, 30).map((event) => (
+              <div key={event.id} className="insights-event-row">
+                <div className="insights-event-main">
+                  <span className="insights-event-type">{event.event_type}</span>
+                  <span className="insights-event-category">{event.category}</span>
                 </div>
-                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                  {new Date(ev.created_at).toLocaleString('en-US')}
-                </span>
+                <span className="insights-event-time">{formatDateTime(event.created_at)}</span>
               </div>
             ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   )

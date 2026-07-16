@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { connectorLocator, setCredential } from '../security/credentialVault'
+import { sanitizeConnectorsForPersistence } from '../security/credentialPersistence'
 import { safeInvoke } from '../utils/safeInvoke'
 import { parseBackendDate } from '../utils/schedulerUtils'
 
@@ -83,6 +85,14 @@ export type ClaudeToolCapability = {
   description: string
 }
 
+export type ToolsetPolicy = {
+  id: string
+  label: string
+  description: string
+  riskLevel: 'low' | 'medium' | 'high' | string
+  toolIds: string[]
+}
+
 export type CoworkPolicyFlags = {
   strictPolicyEnforcement: boolean
   allowToolDispatcher: boolean
@@ -98,6 +108,7 @@ type PolicySyncRequest = {
   flags: CoworkPolicyFlags
   denyRules: string[]
   enabledToolIds: string[]
+  activeToolsetPolicyId: string
 }
 
 type BackendConnectorTestResponse = {
@@ -121,12 +132,16 @@ type CoworkState = {
   enabledClaudeToolIds: string[]
   toolDenyRules: string[]
   policyFlags: CoworkPolicyFlags
+  activeToolsetPolicyId: string
+  toolsetPolicies: ToolsetPolicy[]
   setGlobalInstruction: (instruction: string) => void
   upsertFolderInstruction: (item: FolderInstruction) => void
   removeFolderInstruction: (id: string) => void
   toggleConnector: (key: ConnectorKey, enabled: boolean) => void
   setConnectorNote: (key: ConnectorKey, note: string) => void
-  updateConnectorConfig: (key: ConnectorKey, patch: Partial<ConnectorConfig>) => void
+  updateConnectorConfig: (key: ConnectorKey, patch: Partial<Omit<ConnectorConfig, 'apiKey' | 'webhookUrl'>>) => void
+  setConnectorApiKey: (key: ConnectorKey, apiKey: string) => Promise<void>
+  setConnectorWebhookUrl: (key: ConnectorKey, webhookUrl: string) => Promise<void>
   testConnector: (key: ConnectorKey) => Promise<void>
   upsertPlugin: (plugin: Plugin) => void
   togglePlugin: (id: string, enabled: boolean) => void
@@ -146,7 +161,14 @@ type CoworkState = {
   addToolDenyRule: (rule: string) => void
   removeToolDenyRule: (rule: string) => void
   setPolicyFlag: <K extends keyof CoworkPolicyFlags>(key: K, value: CoworkPolicyFlags[K]) => void
-  setPolicySnapshot: (flags: Partial<CoworkPolicyFlags>, denyRules: string[], enabledToolIds: string[]) => void
+  setActiveToolsetPolicy: (policyId: string) => void
+  setPolicySnapshot: (
+    flags: Partial<CoworkPolicyFlags>,
+    denyRules: string[],
+    enabledToolIds: string[],
+    activeToolsetPolicyId?: string,
+    toolsetPolicies?: ToolsetPolicy[]
+  ) => void
 }
 
 const DEFAULT_CONNECTORS: ConnectorConfig[] = [
@@ -167,6 +189,7 @@ const CLAUDE_TOOL_CAPABILITIES: ClaudeToolCapability[] = [
   { id: 'grep', label: 'Text search', description: 'Regex/string search across files' },
   { id: 'web_fetch', label: 'Web Fetch', description: 'load the contents of a URL' },
   { id: 'web_search', label: 'Web Search', description: 'Web search over search queries' },
+  { id: 'office_workflow', label: 'Office / PowerPoint', description: 'Create PPTX and DOCX artifacts' },
   { id: 'todo', label: 'Task/Todo', description: 'Maintain todo list and work plan' },
   { id: 'delegate_task', label: 'Delegate task', description: 'Delegate tasks to other crew members' },
   { id: 'ask_user', label: 'Ask questions', description: 'Gezielte Ask questions for Klarheit' },
@@ -180,6 +203,46 @@ const TOOL_PRESET_MAP: Record<ClaudeToolPreset, string[]> = {
   safe: ['read_file', 'glob', 'grep', 'todo', 'ask_user', 'web_fetch', 'web_search'],
   extended: DEFAULT_ENABLED_CLAUDE_TOOLS,
 }
+
+const CUSTOM_TOOLSET_POLICY_ID = 'custom'
+
+const DEFAULT_TOOLSET_POLICIES: ToolsetPolicy[] = [
+  {
+    id: 'host_full',
+    label: 'Host full',
+    description: 'Full local agent profile for trusted workspace automation.',
+    riskLevel: 'high',
+    toolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
+  },
+  {
+    id: 'safe_research',
+    label: 'Safe research',
+    description: 'Read-only workspace and web research without shell, file edits, MCP, or delegation.',
+    riskLevel: 'low',
+    toolIds: ['read_file', 'glob', 'grep', 'web_fetch', 'web_search', 'todo', 'ask_user'],
+  },
+  {
+    id: 'code_edit',
+    label: 'Code edit',
+    description: 'Local development profile with filesystem edits and shell, without web, MCP, or delegation.',
+    riskLevel: 'medium',
+    toolIds: ['bash', 'read_file', 'edit_file', 'create_directory', 'move_path', 'copy_path', 'glob', 'grep', 'office_workflow', 'todo', 'ask_user'],
+  },
+  {
+    id: 'remote_mcp',
+    label: 'Remote MCP',
+    description: 'Connector-oriented profile for remote tools and web research, without local shell or file edits.',
+    riskLevel: 'medium',
+    toolIds: ['web_fetch', 'web_search', 'todo', 'ask_user', 'mcp'],
+  },
+  {
+    id: 'supervisor',
+    label: 'Supervisor',
+    description: 'Coordination profile for planning, asking the user, delegation, and read-only context gathering.',
+    riskLevel: 'medium',
+    toolIds: ['read_file', 'glob', 'grep', 'todo', 'delegate_task', 'ask_user', 'mcp'],
+  },
+]
 
 const DEFAULT_POLICY_FLAGS: CoworkPolicyFlags = {
   strictPolicyEnforcement: true,
@@ -282,15 +345,67 @@ function normalizeEnabledClaudeToolIds(enabledToolIds: string[]): string[] {
     })
 }
 
+function toolIdsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((toolId, index) => toolId === right[index])
+}
+
+function normalizeToolsetPolicies(toolsetPolicies?: ToolsetPolicy[]): ToolsetPolicy[] {
+  const source = toolsetPolicies && toolsetPolicies.length > 0
+    ? toolsetPolicies
+    : DEFAULT_TOOLSET_POLICIES
+  const seen = new Set<string>()
+
+  return source
+    .map((policy) => ({
+      ...policy,
+      id: policy.id.trim(),
+      label: policy.label.trim() || policy.id.trim(),
+      description: policy.description.trim(),
+      riskLevel: policy.riskLevel || 'medium',
+      toolIds: normalizeEnabledClaudeToolIds(policy.toolIds),
+    }))
+    .filter((policy) => {
+      if (!policy.id || seen.has(policy.id)) return false
+      seen.add(policy.id)
+      return true
+    })
+}
+
+function inferToolsetPolicyId(
+  enabledToolIds: string[],
+  activeToolsetPolicyId: string | undefined,
+  toolsetPolicies: ToolsetPolicy[]
+): string {
+  const normalizedEnabledToolIds = normalizeEnabledClaudeToolIds(enabledToolIds)
+  const requestedPolicyId = activeToolsetPolicyId?.trim()
+
+  if (requestedPolicyId === CUSTOM_TOOLSET_POLICY_ID) {
+    return CUSTOM_TOOLSET_POLICY_ID
+  }
+
+  if (requestedPolicyId) {
+    const requestedPolicy = toolsetPolicies.find((policy) => policy.id === requestedPolicyId)
+    if (requestedPolicy && toolIdsEqual(requestedPolicy.toolIds, normalizedEnabledToolIds)) {
+      return requestedPolicy.id
+    }
+  }
+
+  return toolsetPolicies.find((policy) => toolIdsEqual(policy.toolIds, normalizedEnabledToolIds))?.id
+    ?? CUSTOM_TOOLSET_POLICY_ID
+}
+
 function buildPolicySyncRequest(
   policyFlags: CoworkPolicyFlags,
   toolDenyRules: string[],
-  enabledToolIds: string[]
+  enabledToolIds: string[],
+  activeToolsetPolicyId: string
 ): PolicySyncRequest {
   return {
     flags: policyFlags,
     denyRules: normalizePolicyDenyRules(toolDenyRules),
     enabledToolIds: normalizeEnabledClaudeToolIds(enabledToolIds),
+    activeToolsetPolicyId: activeToolsetPolicyId.trim() || CUSTOM_TOOLSET_POLICY_ID,
   }
 }
 
@@ -445,6 +560,8 @@ export const useCoworkStore = create<CoworkState>()(
       enabledClaudeToolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
       toolDenyRules: [],
       policyFlags: DEFAULT_POLICY_FLAGS,
+      activeToolsetPolicyId: 'host_full',
+      toolsetPolicies: DEFAULT_TOOLSET_POLICIES,
       setGlobalInstruction: (instruction) => set({ globalInstruction: instruction }),
       upsertFolderInstruction: (item) =>
         set((state) => {
@@ -478,6 +595,22 @@ export const useCoworkStore = create<CoworkState>()(
             connector.key === key ? { ...connector, ...patch } : connector
           ),
         })),
+      setConnectorApiKey: async (key, apiKey) => {
+        await setCredential(connectorLocator(key, 'api_key'), apiKey)
+        set((state) => ({
+          connectors: state.connectors.map((connector) => (
+            connector.key === key ? { ...connector, apiKey } : connector
+          )),
+        }))
+      },
+      setConnectorWebhookUrl: async (key, webhookUrl) => {
+        await setCredential(connectorLocator(key, 'webhook_url'), webhookUrl)
+        set((state) => ({
+          connectors: state.connectors.map((connector) => (
+            connector.key === key ? { ...connector, webhookUrl } : connector
+          )),
+        }))
+      },
       testConnector: async (key) => {
         const connector = get().connectors.find((entry) => entry.key === key)
         if (!connector) return
@@ -661,7 +794,7 @@ export const useCoworkStore = create<CoworkState>()(
         await Promise.all([get().loadScheduledTasks(), get().loadScheduledRuns()])
       },
       removeScheduledTask: async (id) => {
-        await safeInvoke('scheduler_delete_task', { id }, undefined)
+        await safeInvoke<null>('scheduler_delete_task', { id }, null)
         set((state) => ({
           scheduledTasks: state.scheduledTasks.filter((task) => task.id !== id),
           scheduledRuns: state.scheduledRuns.filter((run) => run.taskId !== id),
@@ -670,10 +803,18 @@ export const useCoworkStore = create<CoworkState>()(
       setClaudePlanMode: (enabled) => set({ claudePlanMode: enabled }),
       setClaudePermissionMode: (mode) => set({ claudePermissionMode: mode }),
       setClaudeToolPreset: (preset) =>
-        set(() => ({
-          claudeToolPreset: preset,
-          enabledClaudeToolIds: [...TOOL_PRESET_MAP[preset]],
-        })),
+        set((state) => {
+          const enabledClaudeToolIds = [...TOOL_PRESET_MAP[preset]]
+          return {
+            claudeToolPreset: preset,
+            enabledClaudeToolIds,
+            activeToolsetPolicyId: inferToolsetPolicyId(
+              enabledClaudeToolIds,
+              preset === 'safe' ? 'safe_research' : undefined,
+              state.toolsetPolicies
+            ),
+          }
+        }),
       toggleClaudeTool: (toolId, enabled) =>
         set((state) => {
           const isKnownTool = state.claudeTools.some((tool) => tool.id === toolId)
@@ -684,12 +825,14 @@ export const useCoworkStore = create<CoworkState>()(
             return {
               enabledClaudeToolIds: [...state.enabledClaudeToolIds, toolId],
               claudeToolPreset: 'default' as ClaudeToolPreset,
+              activeToolsetPolicyId: CUSTOM_TOOLSET_POLICY_ID,
             }
           }
 
           return {
             enabledClaudeToolIds: state.enabledClaudeToolIds.filter((id) => id !== toolId),
             claudeToolPreset: 'default' as ClaudeToolPreset,
+            activeToolsetPolicyId: CUSTOM_TOOLSET_POLICY_ID,
           }
         }),
       addToolDenyRule: (rule) =>
@@ -712,21 +855,53 @@ export const useCoworkStore = create<CoworkState>()(
             [key]: value,
           },
         })),
-      setPolicySnapshot: (flags, denyRules, enabledToolIds) => {
+      setActiveToolsetPolicy: (policyId) =>
+        set((state) => {
+          const normalizedPolicyId = policyId.trim() || CUSTOM_TOOLSET_POLICY_ID
+          if (normalizedPolicyId === CUSTOM_TOOLSET_POLICY_ID) {
+            return {
+              activeToolsetPolicyId: CUSTOM_TOOLSET_POLICY_ID,
+              claudeToolPreset: 'default' as ClaudeToolPreset,
+            }
+          }
+
+          const policy = state.toolsetPolicies.find((entry) => entry.id === normalizedPolicyId)
+          if (!policy) return {}
+
+          return {
+            activeToolsetPolicyId: policy.id,
+            enabledClaudeToolIds: [...policy.toolIds],
+            claudeToolPreset: policy.id === 'safe_research' ? 'safe' as ClaudeToolPreset : 'default' as ClaudeToolPreset,
+          }
+        }),
+      setPolicySnapshot: (flags, denyRules, enabledToolIds, activeToolsetPolicyId, toolsetPolicies) => {
         suppressPolicySync = true
         set((state) => {
+          const normalizedToolsetPolicies = normalizeToolsetPolicies(toolsetPolicies)
           const policyFlags = {
             ...state.policyFlags,
             ...flags,
           }
           const toolDenyRules = normalizePolicyDenyRules(denyRules)
           const normalizedEnabledToolIds = normalizeEnabledClaudeToolIds(enabledToolIds)
-          markPolicySyncAsCurrent(buildPolicySyncRequest(policyFlags, toolDenyRules, normalizedEnabledToolIds))
+          const nextActiveToolsetPolicyId = inferToolsetPolicyId(
+            normalizedEnabledToolIds,
+            activeToolsetPolicyId,
+            normalizedToolsetPolicies
+          )
+          markPolicySyncAsCurrent(buildPolicySyncRequest(
+            policyFlags,
+            toolDenyRules,
+            normalizedEnabledToolIds,
+            nextActiveToolsetPolicyId
+          ))
           return {
             policyFlags,
             toolDenyRules,
             enabledClaudeToolIds: normalizedEnabledToolIds,
-            claudeToolPreset: 'default',
+            activeToolsetPolicyId: nextActiveToolsetPolicyId,
+            toolsetPolicies: normalizedToolsetPolicies,
+            claudeToolPreset: nextActiveToolsetPolicyId === 'safe_research' ? 'safe' : 'default',
           }
         })
         suppressPolicySync = false
@@ -734,12 +909,17 @@ export const useCoworkStore = create<CoworkState>()(
     }),
     {
       name: 'open-cowork-features',
+      partialize: (state) => ({
+        ...state,
+        connectors: sanitizeConnectorsForPersistence(state.connectors),
+      }),
       onRehydrateStorage: () => () => {
         policySyncReady = true
         queuePolicySync(buildPolicySyncRequest(
           useCoworkStore.getState().policyFlags,
           useCoworkStore.getState().toolDenyRules,
           useCoworkStore.getState().enabledClaudeToolIds,
+          useCoworkStore.getState().activeToolsetPolicyId,
         ))
       },
       merge: (persisted, current) => {
@@ -747,6 +927,13 @@ export const useCoworkStore = create<CoworkState>()(
         const hasPersistedTools = Array.isArray(state.enabledClaudeToolIds)
         const persistedTools = hasPersistedTools ? state.enabledClaudeToolIds ?? [] : DEFAULT_ENABLED_CLAUDE_TOOLS
         const normalizedTools = normalizeEnabledClaudeToolIds(persistedTools)
+        const normalizedToolsetPolicies = normalizeToolsetPolicies(state.toolsetPolicies)
+        const enabledClaudeToolIds = hasPersistedTools ? normalizedTools : DEFAULT_ENABLED_CLAUDE_TOOLS
+        const activeToolsetPolicyId = inferToolsetPolicyId(
+          enabledClaudeToolIds,
+          state.activeToolsetPolicyId,
+          normalizedToolsetPolicies
+        )
         return {
           ...current,
           ...state,
@@ -756,7 +943,9 @@ export const useCoworkStore = create<CoworkState>()(
           scheduledTasks: Array.isArray(state.scheduledTasks) ? state.scheduledTasks : [],
           scheduledRuns: Array.isArray(state.scheduledRuns) ? state.scheduledRuns : [],
           claudeTools: CLAUDE_TOOL_CAPABILITIES,
-          enabledClaudeToolIds: hasPersistedTools ? normalizedTools : DEFAULT_ENABLED_CLAUDE_TOOLS,
+          enabledClaudeToolIds,
+          activeToolsetPolicyId,
+          toolsetPolicies: normalizedToolsetPolicies,
           toolDenyRules: Array.isArray(state.toolDenyRules) ? state.toolDenyRules : [],
           policyFlags: {
             ...DEFAULT_POLICY_FLAGS,
@@ -774,10 +963,16 @@ useCoworkStore.subscribe((state, previousState) => {
   if (
     state.policyFlags === previousState.policyFlags &&
     state.toolDenyRules === previousState.toolDenyRules &&
-    state.enabledClaudeToolIds === previousState.enabledClaudeToolIds
+    state.enabledClaudeToolIds === previousState.enabledClaudeToolIds &&
+    state.activeToolsetPolicyId === previousState.activeToolsetPolicyId
   ) {
     return
   }
 
-  queuePolicySync(buildPolicySyncRequest(state.policyFlags, state.toolDenyRules, state.enabledClaudeToolIds))
+  queuePolicySync(buildPolicySyncRequest(
+    state.policyFlags,
+    state.toolDenyRules,
+    state.enabledClaudeToolIds,
+    state.activeToolsetPolicyId
+  ))
 })

@@ -133,12 +133,13 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
   }, [activeSession?.id, activeSession?.output])
 
   useEffect(() => {
-    if (!activeSession) return
+    const activeSessionId = activeSession?.id
+    if (!activeSessionId) return
     const frame = window.requestAnimationFrame(() => {
       fitAddonRef.current?.fit()
       const terminal = terminalRef.current
       if (!terminal) return
-      void resizeSession(activeSession.id, terminal.cols, terminal.rows)
+      void resizeSession(activeSessionId, terminal.cols, terminal.rows)
     })
     return () => window.cancelAnimationFrame(frame)
   }, [activeSession?.id, height, resizeSession])
@@ -245,6 +246,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
               key={session.id}
               type="button"
               role="tab"
+              aria-selected={session.id === activeSession?.id}
               className={`terminal-tab${session.id === activeSession?.id ? ' active' : ''}${session.hidden ? ' hidden-activity' : ''}`}
               onClick={() => setActiveSession(threadId, session.id)}
               title={session.cwd}

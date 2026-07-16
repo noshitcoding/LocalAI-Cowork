@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -88,6 +88,8 @@ pub enum McpError {
     SpawnFailed(String),
     #[error("failed to communicate with process: {0}")]
     IoFailed(String),
+    #[error("MCP server rejected the request: {0}")]
+    RpcFailed(String),
     #[error("timed out waiting for MCP response")]
     Timeout,
 }
@@ -229,7 +231,7 @@ fn runtime_send_rpc(
                         .and_then(|entry| entry.as_str())
                         .unwrap_or("unknown MCP error")
                         .to_string();
-                    return Err(McpError::IoFailed(message));
+                    return Err(McpError::RpcFailed(message));
                 }
 
                 return Ok(value
@@ -259,31 +261,23 @@ fn runtime_send_initialized_notification(server: &mut RuntimeMcpServer) -> Resul
         .map_err(|error| McpError::IoFailed(error.to_string()))
 }
 
-fn runtime_initialize(server: &mut RuntimeMcpServer) -> Result<(), McpError> {
-    let _ = runtime_send_rpc(
+fn runtime_initialize(server: &mut RuntimeMcpServer) -> Result<serde_json::Value, McpError> {
+    let result = runtime_send_rpc(
         server,
         "initialize",
         serde_json::json!({
             "protocolVersion": "2024-11-05",
             "clientInfo": {
                 "name": "Open_Cowork",
-                "version": "0.1.0"
+                "version": env!("CARGO_PKG_VERSION")
             },
             "capabilities": {}
         }),
         Duration::from_secs(8),
     )?;
 
-    let _ = runtime_send_initialized_notification(server);
-
-    let _ = runtime_send_rpc(
-        server,
-        "tools/list",
-        serde_json::json!({}),
-        Duration::from_secs(8),
-    )?;
-
-    Ok(())
+    runtime_send_initialized_notification(server)?;
+    Ok(result)
 }
 
 fn runtime_shutdown_server(server: &mut RuntimeMcpServer) {
@@ -355,7 +349,15 @@ pub fn runtime_start_server(req: McpServerRequest) -> Result<McpRuntimeServerSta
     }
 
     let mut server = spawn_runtime_server(&req)?;
-    if let Err(error) = runtime_initialize(&mut server) {
+    if let Err(error) = runtime_initialize(&mut server).and_then(|_| {
+        runtime_send_rpc(
+            &mut server,
+            "tools/list",
+            serde_json::json!({}),
+            Duration::from_secs(8),
+        )
+        .map(|_| ())
+    }) {
         server.last_error = Some(error.to_string());
         runtime_shutdown_server(&mut server);
         return Err(error);
@@ -450,144 +452,39 @@ pub fn probe_server(req: McpServerRequest) -> Result<McpProbeResponse, McpError>
         return Err(McpError::InvalidCommand);
     }
 
-    let mut child = spawn_process(&req.command, &req.args, &req.env)?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| McpError::IoFailed("missing stdin pipe".to_string()))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| McpError::IoFailed("missing stdout pipe".to_string()))?;
-
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "clientInfo": {
-                "name": "Open_Cowork",
-                "version": "0.1.0"
-            },
-            "capabilities": {}
-        }
-    });
-
-    let list_tools = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list",
-        "params": {}
-    });
-
-    writeln!(stdin, "{}", init).map_err(|error| McpError::IoFailed(error.to_string()))?;
-    writeln!(stdin, "{}", list_tools).map_err(|error| McpError::IoFailed(error.to_string()))?;
-    stdin
-        .flush()
-        .map_err(|error| McpError::IoFailed(error.to_string()))?;
-
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-
-    let start = Instant::now();
-    let timeout = Duration::from_secs(8);
-
-    let mut protocol_version: Option<String> = None;
-    let mut server_info: Option<String> = None;
-    let mut tools: Vec<McpTool> = vec![];
-    let mut have_init = false;
-    let mut have_tools = false;
-
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        let wait_for = remaining.min(Duration::from_millis(400));
-
-        match rx.recv_timeout(wait_for) {
-            Ok(line) => {
-                let value: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(parsed) => parsed,
-                    Err(_) => continue,
-                };
-
-                if value.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                    have_init = true;
-                    protocol_version = value
-                        .get("result")
-                        .and_then(|result| result.get("protocolVersion"))
-                        .and_then(|entry| entry.as_str())
-                        .map(ToString::to_string);
-
-                    server_info = value
-                        .get("result")
-                        .and_then(|result| result.get("serverInfo"))
-                        .map(|info| {
-                            let name = info
-                                .get("name")
-                                .and_then(|entry| entry.as_str())
-                                .unwrap_or("unknown");
-                            let version = info
-                                .get("version")
-                                .and_then(|entry| entry.as_str())
-                                .unwrap_or("unknown");
-                            format!("{} {}", name, version)
-                        });
-                }
-
-                if value.get("id").and_then(|id| id.as_i64()) == Some(2) {
-                    have_tools = true;
-                    if let Some(array) = value
-                        .get("result")
-                        .and_then(|result| result.get("tools"))
-                        .and_then(|entry| entry.as_array())
-                    {
-                        for tool in array {
-                            let name = tool
-                                .get("name")
-                                .and_then(|entry| entry.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let description = tool
-                                .get("description")
-                                .and_then(|entry| entry.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            tools.push(McpTool { name, description });
-                        }
-                    }
-                }
-
-                if have_init && have_tools {
-                    break;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(_) => break,
-        }
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-
-    if !have_init {
-        return Err(McpError::Timeout);
-    }
-
-    Ok(McpProbeResponse {
-        server_name: req.name,
-        protocol_version,
-        server_info,
-        tools,
-    })
+    let mut server = spawn_runtime_server(&req)?;
+    let result = (|| {
+        let initialized = runtime_initialize(&mut server)?;
+        let listed = runtime_send_rpc(
+            &mut server,
+            "tools/list",
+            serde_json::json!({}),
+            Duration::from_secs(8),
+        )?;
+        let protocol_version = initialized
+            .get("protocolVersion")
+            .and_then(|entry| entry.as_str())
+            .map(ToString::to_string);
+        let server_info = initialized.get("serverInfo").map(|info| {
+            let name = info
+                .get("name")
+                .and_then(|entry| entry.as_str())
+                .unwrap_or("unknown");
+            let version = info
+                .get("version")
+                .and_then(|entry| entry.as_str())
+                .unwrap_or("unknown");
+            format!("{} {}", name, version)
+        });
+        Ok(McpProbeResponse {
+            server_name: req.name,
+            protocol_version,
+            server_info,
+            tools: parse_tools_from_result(&listed),
+        })
+    })();
+    runtime_shutdown_server(&mut server);
+    result
 }
 
 pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
@@ -595,124 +492,118 @@ pub fn call_tool(req: McpCallRequest) -> Result<McpCallResponse, McpError> {
         return Err(McpError::InvalidCommand);
     }
 
-    let mut child = spawn_process(&req.command, &req.args, &req.env)?;
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| McpError::IoFailed("missing stdin".to_string()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| McpError::IoFailed("missing stdout".to_string()))?;
-
-    let init = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "clientInfo": { "name": "Open_Cowork", "version": "0.1.0" },
-            "capabilities": {}
+    let server_name = req.name;
+    let tool_name = req.tool_name;
+    let tool_args = req.tool_args;
+    let mut server = spawn_runtime_server(&McpServerRequest {
+        name: server_name.clone(),
+        command: req.command,
+        args: req.args,
+        env: req.env,
+    })?;
+    let result = (|| {
+        runtime_initialize(&mut server)?;
+        match runtime_send_rpc(
+            &mut server,
+            "tools/call",
+            serde_json::json!({
+                "name": tool_name,
+                "arguments": tool_args,
+            }),
+            Duration::from_secs(15),
+        ) {
+            Ok(value) => Ok(McpCallResponse {
+                server_name: server_name.clone(),
+                tool_name: tool_name.clone(),
+                success: true,
+                result: format_call_result(&value),
+                error: None,
+            }),
+            Err(McpError::RpcFailed(message)) => Ok(McpCallResponse {
+                server_name: server_name.clone(),
+                tool_name: tool_name.clone(),
+                success: false,
+                result: String::new(),
+                error: Some(message),
+            }),
+            Err(error) => Err(error),
         }
-    });
+    })();
+    runtime_shutdown_server(&mut server);
+    result
+}
 
-    let tool_call = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {
-            "name": req.tool_name,
-            "arguments": req.tool_args
-        }
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    writeln!(stdin, "{}", init).map_err(|error| McpError::IoFailed(error.to_string()))?;
-    writeln!(stdin, "{}", tool_call).map_err(|error| McpError::IoFailed(error.to_string()))?;
-    stdin
-        .flush()
-        .map_err(|error| McpError::IoFailed(error.to_string()))?;
+    const STRICT_SERVER: &str = r#"
+const readline = require('node:readline');
+let initialized = false;
+const rl = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\n');
+rl.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2024-11-05', serverInfo: { name: 'strict-test', version: '1.0.0' }, capabilities: { tools: {} } } });
+    return;
+  }
+  if (request.method === 'notifications/initialized') { initialized = true; return; }
+  if (!initialized) { send({ jsonrpc: '2.0', id: request.id, error: { code: -32002, message: 'client not initialized' } }); return; }
+  if (request.method === 'tools/list') { send({ jsonrpc: '2.0', id: request.id, result: { tools: [{ name: 'echo', description: 'Echo input' }] } }); return; }
+  if (request.method === 'tools/call') { send({ jsonrpc: '2.0', id: request.id, result: { content: [{ type: 'text', text: String(request.params.arguments.value || '') }] } }); }
+});
+"#;
 
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    fn node_available() -> bool {
+        Command::new("node")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 
-    let start = Instant::now();
-    let timeout = Duration::from_secs(15);
-    let mut have_init = false;
-    let mut result_text = String::new();
-    let mut have_result = false;
-    let mut error_text: Option<String> = None;
-
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        let wait_for = remaining.min(Duration::from_millis(400));
-
-        match rx.recv_timeout(wait_for) {
-            Ok(line) => {
-                let value: serde_json::Value = match serde_json::from_str(&line) {
-                    Ok(parsed) => parsed,
-                    Err(_) => continue,
-                };
-
-                if value.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                    have_init = true;
-                }
-
-                if value.get("id").and_then(|id| id.as_i64()) == Some(2) {
-                    have_result = true;
-                    if let Some(error) = value.get("error") {
-                        error_text = Some(
-                            error
-                                .get("message")
-                                .and_then(|entry| entry.as_str())
-                                .unwrap_or("unknown error")
-                                .to_string(),
-                        );
-                    } else if let Some(result) = value.get("result") {
-                        if let Some(content) =
-                            result.get("content").and_then(|entry| entry.as_array())
-                        {
-                            let texts: Vec<&str> = content
-                                .iter()
-                                .filter_map(|entry| {
-                                    entry.get("text").and_then(|text| text.as_str())
-                                })
-                                .collect();
-                            result_text = texts.join("\n");
-                        } else {
-                            result_text = serde_json::to_string_pretty(result).unwrap_or_default();
-                        }
-                    }
-                }
-
-                if have_init && have_result {
-                    break;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(_) => break,
+    fn server_request() -> McpServerRequest {
+        McpServerRequest {
+            name: "strict-test".to_string(),
+            command: "node".to_string(),
+            args: vec!["-e".to_string(), STRICT_SERVER.to_string()],
+            env: HashMap::new(),
         }
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
-
-    if !have_init {
-        return Err(McpError::Timeout);
+    #[test]
+    fn one_shot_probe_completes_the_mcp_initialization_handshake() {
+        if !node_available() {
+            return;
+        }
+        let response = probe_server(server_request()).unwrap();
+        assert_eq!(response.protocol_version.as_deref(), Some("2024-11-05"));
+        assert_eq!(response.server_info.as_deref(), Some("strict-test 1.0.0"));
+        assert_eq!(response.tools.len(), 1);
+        assert_eq!(response.tools[0].name, "echo");
     }
 
-    Ok(McpCallResponse {
-        server_name: req.name,
-        tool_name: req.tool_name,
-        success: error_text.is_none() && have_result,
-        result: result_text,
-        error: error_text,
-    })
+    #[test]
+    fn one_shot_tool_call_runs_only_after_initialized_notification() {
+        if !node_available() {
+            return;
+        }
+        let request = McpCallRequest {
+            name: "strict-test".to_string(),
+            command: "node".to_string(),
+            args: vec!["-e".to_string(), STRICT_SERVER.to_string()],
+            env: HashMap::new(),
+            tool_name: "echo".to_string(),
+            tool_args: HashMap::from([(
+                "value".to_string(),
+                serde_json::Value::String("handshake-ok".to_string()),
+            )]),
+        };
+        let response = call_tool(request).unwrap();
+        assert!(response.success);
+        assert_eq!(response.result, "handshake-ok");
+    }
 }

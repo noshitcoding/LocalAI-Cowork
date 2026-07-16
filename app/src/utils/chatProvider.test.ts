@@ -17,6 +17,13 @@ const openAiProfile = {
   temperature: null,
 }
 
+const secondOpenAiProfile = {
+  ...openAiProfile,
+  id: 'secondary-openai-compatible',
+  name: 'OpenAI-compatible 2',
+  model: 'custom/manual-model',
+}
+
 function createContext(): ChatProviderContext {
   return {
     ollama: {
@@ -74,5 +81,58 @@ describe('getChatProviderState', () => {
     })
 
     expect(state.model).toBe('0xSero/Hy3-preview-nvfp4')
+  })
+
+  it('lists configured models from every profile for the selected external provider', () => {
+    const context = createContext()
+    context.llmProfiles = [openAiProfile, secondOpenAiProfile]
+    context.llmProfileModels[secondOpenAiProfile.id] = ['custom/loaded-model']
+
+    const state = getChatProviderState(context, 'openai-compatible')
+
+    expect(state.selectableModels).toEqual([
+      '0xSero/Hy3-preview-nvfp4',
+      'custom/loaded-model',
+      'custom/manual-model',
+    ])
+  })
+
+  it('keeps a selected model from another profile when it is present in the dropdown list', () => {
+    const context = createContext()
+    context.llmProfiles = [openAiProfile, secondOpenAiProfile]
+    context.llmProfileModels[secondOpenAiProfile.id] = ['google/gemma-4-31B-it']
+
+    const state = getChatProviderState(context, 'openai-compatible', {
+      provider: 'openai-compatible',
+      profileId: openAiProfile.id,
+      model: 'google/gemma-4-31B-it',
+    })
+
+    expect(state.model).toBe('google/gemma-4-31B-it')
+    expect(state.selectableModels).toContain('google/gemma-4-31B-it')
+  })
+
+  it('lists configured Ollama profile models alongside loaded Ollama models', () => {
+    const context = createContext()
+    context.availableModels = ['llama3.1:8b']
+    context.llmProfiles = [
+      ...context.llmProfiles,
+      {
+        id: 'default-ollama',
+        name: 'Lokales Ollama',
+        provider: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        model: 'qwen2.5:14b',
+        apiKey: '',
+        timeoutMs: 600000,
+        verifyTlsCertificates: true,
+        contextWindow: 128000,
+        temperature: 0.1,
+      },
+    ]
+
+    const state = getChatProviderState(context, 'ollama')
+
+    expect(state.selectableModels).toEqual(['llama3.1:8b', 'qwen2.5:14b'])
   })
 })

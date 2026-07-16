@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Play, Trash2 } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTerminalStore, type TerminalBackend } from '../stores/terminalStore'
 import { tr } from '../i18n'
@@ -19,15 +20,16 @@ export default function TerminalPanel() {
   const [execLoading, setExecLoading] = useState(false)
 
   useEffect(() => {
-    loadBackends()
+    void loadBackends()
   }, [loadBackends])
 
   const handleAdd = async () => {
     if (!form.name.trim()) return
-    await upsertBackend({ id: randomId(), name: form.name.trim(), backendType: form.type, configJson: form.config })
+    const saved = await upsertBackend({ id: randomId(), name: form.name.trim(), backendType: form.type, configJson: form.config })
+    if (!saved) return
     setForm({ name: '', type: 'local', config: '{}' })
     setShowAdd(false)
-    loadBackends()
+    void loadBackends()
   }
 
   const handleExec = async () => {
@@ -38,30 +40,38 @@ export default function TerminalPanel() {
       setExecResult(result as { stdout: string; stderr: string; exitCode: number | null })
     } catch (e) {
       setExecResult({ stdout: '', stderr: String(e), exitCode: -1 })
+    } finally {
+      setExecLoading(false)
     }
-    setExecLoading(false)
   }
 
   const handleEnsureLocal = async () => {
     await ensureLocalBackend()
-    loadBackends()
+    void loadBackends()
   }
 
+  const handleDeleteBackend = async (backendId: string) => {
+    await deleteBackend(backendId)
+    void loadBackends()
+  }
+
+  const selectedBackend = backends.find((backend) => backend.id === execBackendId)
+
   return (
-    <div className="panel">
+    <div className="panel terminal-panel">
       <div className="panel-heading-row">
-        <h2>{tr("🖥️ Terminal backends")}</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <h2>{tr("Terminal backends")}</h2>
+        <div className="terminal-panel-actions">
           <button type="button" className="btn-sm" onClick={handleEnsureLocal}>{tr("Ensure local")}</button>
           <button type="button" className="btn-sm" onClick={() => setShowAdd(!showAdd)}>{tr("New")}</button>
         </div>
       </div>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="terminal-panel-error">{error}</p>}
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tr("Terminal-Dock")}</h3>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
+      <div className="card terminal-panel-card">
+        <h3 className="terminal-panel-title">{tr("Terminal-Dock")}</h3>
+        <label className="terminal-panel-label">
           {tr("Persistence")}
           <select
             value={terminalPersistenceMode}
@@ -75,19 +85,19 @@ export default function TerminalPanel() {
       </div>
 
       {showAdd && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 2fr', marginBottom: 8 }}>
+        <div className="card terminal-panel-card">
+          <div className="grid terminal-add-grid">
             <label>{tr("Name")}<input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </label>
             <label>{tr("Type")}<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                <option value="local">{tr("Local")}</option>
-                <option value="container">{tr("Container")}</option>
-                <option value="ssh">{tr("SSH")}</option>
-                <option value="hpc">{tr("HPC")}</option>
-                <option value="serverless">{tr("Serverless")}</option>
-              </select>
+              <option value="local">{tr("Local")}</option>
+              <option value="container">{tr("Container")}</option>
+              <option value="ssh">{tr("SSH")}</option>
+              <option value="hpc">{tr("HPC")}</option>
+              <option value="serverless">{tr("Serverless")}</option>
+            </select>
             </label>
-            <label>{tr("Config (JSON)")}<input type="text" value={form.config} onChange={(e) => setForm({ ...form, config: e.target.value })} />
+            <label>{tr("Protected config (JSON)")}<input type="text" value={form.config} onChange={(e) => setForm({ ...form, config: e.target.value })} />
             </label>
           </div>
           <button type="button" className="btn-sm" onClick={handleAdd}>{tr("Create backend")}</button>
@@ -99,50 +109,57 @@ export default function TerminalPanel() {
       ) : backends.length === 0 ? (
         <p className="panel-empty">{tr("No Backends configured")}</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
-          {backends.map((b: TerminalBackend) => (
-            <div key={b.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <strong style={{ fontSize: 13 }}>{b.name}</strong>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>({b.backend_type})</span>
+        <div className="terminal-backend-list">
+          {backends.map((backend: TerminalBackend) => (
+            <div key={backend.id} className="card terminal-backend-card">
+              <div className="terminal-backend-info">
+                <strong className="terminal-backend-name">{backend.name}</strong>
+                <span className="terminal-backend-type">({backend.backend_type})</span>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button type="button" className="btn-sm" onClick={() => setExecBackendId(b.id)} title={tr("Command execute")}>▶</button>
-                <button type="button" onClick={() => { deleteBackend(b.id); loadBackends() }}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 14 }}>{tr("×")}</button>
+              <div className="terminal-backend-actions">
+                <button type="button" className="btn-sm" onClick={() => setExecBackendId(backend.id)} title={tr("Execute command")} aria-label={tr("Execute command")}>
+                  <Play size={14} aria-hidden="true" />
+                </button>
+                <button type="button" className="terminal-danger-icon" onClick={() => void handleDeleteBackend(backend.id)} title={tr("Delete backend")} aria-label={tr("Delete backend")}>
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Command execution */}
       {execBackendId && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{tr("Command execute (")}{backends.find((b) => b.id === execBackendId)?.name})</h3>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input type="text" value={execCmd} onChange={(e) => setExecCmd(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleExec()}
+        <div className="card terminal-panel-card">
+          <h3 className="terminal-panel-title">{tr("Command execute (")}{selectedBackend?.name})</h3>
+          <div className="terminal-exec-row">
+            <input
+              type="text"
+              className="terminal-command-input"
+              value={execCmd}
+              onChange={(e) => setExecCmd(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleExec() }}
               placeholder={tr("Enter command...")}
-              style={{ flex: 1, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, fontFamily: 'monospace' }} />
+            />
             <button type="button" className="btn-sm" onClick={handleExec} disabled={execLoading}>
-              {execLoading ? '...' : tr('Execute')}
+              {execLoading ? tr("Loading...") : tr("Execute")}
             </button>
             <button type="button" className="btn-sm" onClick={() => { setExecBackendId(''); setExecResult(null) }}>{tr("Close")}</button>
           </div>
           {execResult && (
-            <div>
+            <div className="terminal-exec-result">
               {execResult.stdout && (
-                <pre style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)', overflowX: 'auto', maxHeight: 200 }}>
+                <pre className="terminal-output">
                   {execResult.stdout}
                 </pre>
               )}
               {execResult.stderr && (
-                <pre style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)', overflowX: 'auto', maxHeight: 100, color: 'var(--danger)' }}>
+                <pre className="terminal-output terminal-output-error">
                   {execResult.stderr}
                 </pre>
               )}
-              <div style={{ fontSize: 11, color: execResult.exitCode === 0 ? 'var(--success)' : 'var(--danger)', marginTop: 4 }}>{tr("Exit-Code:")}{execResult.exitCode ?? 'N/A'}
+              <div className={`terminal-exit-code ${execResult.exitCode === 0 ? 'success' : 'error'}`}>
+                {tr("Exit-Code:")}{execResult.exitCode ?? 'N/A'}
               </div>
             </div>
           )}

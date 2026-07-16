@@ -397,6 +397,7 @@ describe('filesystem tool extensions', () => {
     expect(invokeMock).toHaveBeenCalledWith('fs_delete_file', {
       path: 'C:\\workspace\\temp.txt',
       confirmToken: 'DELETE',
+      runId: 'run-delete',
     })
   })
 

@@ -1,0 +1,33 @@
+id: element:/app/shell
+route: /
+parent_view: view:/
+component: Layout
+purpose: Provide persistent desktop shell, top navigation, sidebar frame, route outlet, command palette, and shortcuts overlay.
+visible_text:
+  - Open Cowork
+  - Cowork
+  - Tasks
+  - Crew
+  - Projects
+  - Features
+  - Settings
+states:
+  - left sidebar open
+  - left sidebar closed
+  - focus mode
+  - command palette open
+  - shortcuts overlay open
+buttons:
+  - button:/app/shell/toggle-sidebar
+  - button:/app/shell/toggle-theme
+  - button:/app/shell/open-command-palette
+infos:
+  - info:/app/shell/view-loading
+layout_size: full app shell with resizable left sidebar and main content outlet
+accessibility: Top navigation is a nav landmark; resize handle is a keyboard reachable separator; overlays use modal dialog semantics.
+source_files:
+  - app/src/components/Layout.tsx
+  - app/src/stores/uiStore.ts
+tests:
+  - app/src/App.test.tsx
+  - app/src/components/LeftSidebar.test.tsx

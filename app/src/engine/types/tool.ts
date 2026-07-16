@@ -44,6 +44,7 @@ export type ToolInputSchema = {
     default?: unknown
     items?: {
       type: string
+      description?: string
       properties?: Record<string, unknown>
       required?: string[]
     }

@@ -1,11 +1,59 @@
-use rusqlite::{Connection, OptionalExtension, Result as SqlResult, params, params_from_iter};
+use rusqlite::{
+    params, params_from_iter, Connection, DatabaseName, OptionalExtension, Result as SqlResult,
+    TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
+
+use crate::sensitive_data::{
+    diagnostic_label, redact_and_bound_json_text, redact_and_bound_optional_json,
+    redact_and_bound_optional_text, redact_and_bound_text, MAX_LOG_JSON_BYTES,
+    MAX_LOG_SUMMARY_BYTES, MAX_LOG_TEXT_BYTES,
+};
+
+const LATEST_SCHEMA_VERSION: i64 = 23;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PRE_MIGRATION_BACKUPS: usize = 3;
+const MAX_ENGINE_EVENTS_PER_RUN: i64 = 2_000;
+const MAX_CREW_EVENTS_PER_RUN: i64 = 2_000;
+const MAX_CREW_LOGS_PER_RUN: i64 = 5_000;
+const MAX_SCHEDULED_RUNS_PER_TASK: i64 = 500;
+const MAX_AUDIT_EVENTS: i64 = 10_000;
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupRecoveryReport {
+    pub recovered_at: String,
+    pub engine_runs: usize,
+    pub legacy_tasks: usize,
+    pub task_steps: usize,
+    pub work_tasks: usize,
+    pub scheduled_runs: usize,
+    pub crew_runs: usize,
+    pub worker_sandboxes: usize,
+    pub managed_processes: usize,
+    pub terminal_backends: usize,
+}
+
+impl StartupRecoveryReport {
+    pub fn total(&self) -> usize {
+        self.engine_runs
+            + self.legacy_tasks
+            + self.task_steps
+            + self.work_tasks
+            + self.scheduled_runs
+            + self.crew_runs
+            + self.worker_sandboxes
+            + self.managed_processes
+            + self.terminal_backends
+    }
 }
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> SqlResult<bool> {
@@ -34,6 +82,141 @@ fn add_column_if_missing(
     Ok(())
 }
 
+fn database_error(code: i32, message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), Some(message.into()))
+}
+
+fn configure_connection(conn: &Connection, persistent: bool) -> SqlResult<()> {
+    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         PRAGMA synchronous=FULL;
+         PRAGMA temp_store=MEMORY;",
+    )?;
+    if persistent {
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=1000;
+             PRAGMA journal_size_limit=67108864;",
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_database_integrity(conn: &Connection) -> SqlResult<()> {
+    let result: String = conn.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+    if !result.eq_ignore_ascii_case("ok") {
+        return Err(database_error(
+            rusqlite::ffi::SQLITE_CORRUPT,
+            format!("database integrity check failed: {result}"),
+        ));
+    }
+
+    let foreign_key_violation = conn
+        .query_row("PRAGMA foreign_key_check", [], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .optional()?;
+    if let Some((table, row_id, parent)) = foreign_key_violation {
+        return Err(database_error(
+            rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY,
+            format!(
+                "foreign key integrity check failed for table {table}, row {row_id:?}, parent {parent}"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn current_schema_version(conn: &Connection) -> SqlResult<Option<i64>> {
+    let has_schema_version = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_version'
+         )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !has_schema_version {
+        return Ok(None);
+    }
+
+    let (row_count, version) = conn.query_row(
+        "SELECT COUNT(*), MAX(version) FROM schema_version",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )?;
+    match (row_count, version) {
+        (0, _) => Ok(None),
+        (1, Some(version)) => Ok(Some(version)),
+        _ => Err(database_error(
+            rusqlite::ffi::SQLITE_CORRUPT,
+            "schema_version must contain exactly one integer row",
+        )),
+    }
+}
+
+fn ensure_supported_schema_version(version: i64) -> SqlResult<()> {
+    if (0..=LATEST_SCHEMA_VERSION).contains(&version) {
+        Ok(())
+    } else {
+        Err(database_error(
+            rusqlite::ffi::SQLITE_ERROR,
+            format!("unsupported database schema version {version}; this build supports versions 0 through {LATEST_SCHEMA_VERSION}"),
+        ))
+    }
+}
+
+fn create_pre_migration_backup(
+    conn: &Connection,
+    app_data_dir: &Path,
+    source_version: i64,
+) -> SqlResult<PathBuf> {
+    let backup_dir = app_data_dir.join("database-backups");
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|_| rusqlite::Error::InvalidPath(backup_dir.clone()))?;
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let backup_path = backup_dir.join(format!(
+        "pre-migration-v{source_version}-to-v{LATEST_SCHEMA_VERSION}-{timestamp}-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+
+    conn.backup(DatabaseName::Main, &backup_path, None)?;
+    let backup = Connection::open(&backup_path)?;
+    ensure_database_integrity(&backup)?;
+    prune_pre_migration_backups(&backup_dir, MAX_PRE_MIGRATION_BACKUPS);
+    Ok(backup_path)
+}
+
+fn prune_pre_migration_backups(backup_dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(backup_dir) else {
+        return;
+    };
+    let mut backups = entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("pre-migration-")
+                && entry.path().extension().and_then(|value| value.to_str()) == Some("db")
+        })
+        .collect::<Vec<_>>();
+    backups.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+    for entry in backups.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRow {
     pub id: String,
@@ -52,6 +235,27 @@ pub struct ProjectResourceRow {
     pub label: Option<String>,
     pub enabled: bool,
     pub added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkTaskRow {
+    pub id: String,
+    pub title: String,
+    pub prompt: String,
+    pub expected_output: String,
+    pub work_dir: String,
+    pub thread_id: Option<String>,
+    pub runner: String,
+    pub crew_id: Option<String>,
+    pub model: String,
+    pub schedule_expr: String,
+    pub schedule_enabled: bool,
+    pub status: String,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub last_run_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,11 +446,18 @@ pub struct EngineRunRow {
     pub session_id: Option<String>,
     pub title: String,
     pub input_summary: Option<String>,
+    pub source: String,
     pub status: String,
     pub phase: String,
     pub cwd: Option<String>,
+    pub workspace_path: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    pub provider_profile_id: Option<String>,
+    pub runtime_mode: String,
+    pub toolset_policy_id: Option<String>,
+    pub channel_kind: Option<String>,
+    pub channel_ref: Option<String>,
     pub retry_count: i32,
     pub resumed_from_run_id: Option<String>,
     pub checkpoint_json: Option<String>,
@@ -258,6 +469,29 @@ pub struct EngineRunRow {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub canceled_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineRunEventRow {
+    pub id: String,
+    pub run_id: String,
+    pub sequence: i64,
+    pub event_type: String,
+    pub summary: String,
+    pub payload_json: Option<String>,
+    pub redaction_level: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineRunArtifactRow {
+    pub id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub path: String,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,6 +602,65 @@ pub struct CrewRunEventRow {
     pub created_at: String,
 }
 
+fn map_engine_run_row(row: &rusqlite::Row) -> SqlResult<EngineRunRow> {
+    Ok(EngineRunRow {
+        id: row.get(0)?,
+        parent_run_id: row.get(1)?,
+        thread_id: row.get(2)?,
+        session_id: row.get(3)?,
+        title: row.get(4)?,
+        input_summary: row.get(5)?,
+        status: row.get(6)?,
+        phase: row.get(7)?,
+        cwd: row.get(8)?,
+        model: row.get(9)?,
+        provider: row.get(10)?,
+        retry_count: row.get(11)?,
+        resumed_from_run_id: row.get(12)?,
+        checkpoint_json: row.get(13)?,
+        result_summary: row.get(14)?,
+        error: row.get(15)?,
+        metadata_json: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+        started_at: row.get(19)?,
+        ended_at: row.get(20)?,
+        canceled_at: row.get(21)?,
+        source: row.get(22)?,
+        workspace_path: row.get(23)?,
+        provider_profile_id: row.get(24)?,
+        runtime_mode: row.get(25)?,
+        toolset_policy_id: row.get(26)?,
+        channel_kind: row.get(27)?,
+        channel_ref: row.get(28)?,
+    })
+}
+
+fn map_engine_run_event_row(row: &rusqlite::Row) -> SqlResult<EngineRunEventRow> {
+    Ok(EngineRunEventRow {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        sequence: row.get(2)?,
+        event_type: row.get(3)?,
+        summary: row.get(4)?,
+        payload_json: row.get(5)?,
+        redaction_level: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+fn map_engine_run_artifact_row(row: &rusqlite::Row) -> SqlResult<EngineRunArtifactRow> {
+    Ok(EngineRunArtifactRow {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        kind: row.get(2)?,
+        path: row.get(3)?,
+        title: row.get(4)?,
+        summary: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
 fn map_insights_row(row: &rusqlite::Row) -> SqlResult<InsightsEventRow> {
     Ok(InsightsEventRow {
         id: row.get(0)?,
@@ -408,26 +701,47 @@ fn map_worker_sandbox_row(row: &rusqlite::Row) -> SqlResult<WorkerSandboxRow> {
 
 impl Database {
     pub fn open(app_data_dir: PathBuf) -> SqlResult<Self> {
-        std::fs::create_dir_all(&app_data_dir).ok();
+        std::fs::create_dir_all(&app_data_dir)
+            .map_err(|_| rusqlite::Error::InvalidPath(app_data_dir.clone()))?;
         let db_path = app_data_dir.join("open_cowork.db");
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        let should_backup = db_path
+            .metadata()
+            .map(|metadata| metadata.is_file() && metadata.len() > 0)
+            .unwrap_or(false);
+        let conn = Connection::open(&db_path)?;
+        configure_connection(&conn, true)?;
+        ensure_database_integrity(&conn)?;
+        let source_version = current_schema_version(&conn)?.unwrap_or(0);
+        ensure_supported_schema_version(source_version)?;
+        if should_backup && source_version < LATEST_SCHEMA_VERSION {
+            create_pre_migration_backup(&conn, &app_data_dir, source_version)?;
+        }
         let db = Self {
             conn: Mutex::new(conn),
         };
         db.migrate()?;
+        db.ensure_integrity()?;
         Ok(db)
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> SqlResult<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        configure_connection(&conn, false)?;
         let db = Self {
             conn: Mutex::new(conn),
         };
         db.migrate()?;
+        db.ensure_integrity()?;
         Ok(db)
+    }
+
+    fn ensure_integrity(&self) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        ensure_database_integrity(&conn)
     }
 
     fn migrate(&self) -> SqlResult<()> {
@@ -435,6 +749,8 @@ impl Database {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let transaction =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (
                 version INTEGER NOT NULL
@@ -448,6 +764,7 @@ impl Database {
             conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
                 row.get(0)
             })?;
+        ensure_supported_schema_version(version)?;
 
         if version < 1 {
             conn.execute_batch(
@@ -1209,7 +1526,125 @@ impl Database {
             conn.execute("UPDATE schema_version SET version = 20", [])?;
         }
 
-        Ok(())
+        if version < 21 {
+            add_column_if_missing(
+                &conn,
+                "engine_runs",
+                "source",
+                "source TEXT NOT NULL DEFAULT 'desktop'",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "engine_runs",
+                "workspace_path",
+                "workspace_path TEXT",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "engine_runs",
+                "provider_profile_id",
+                "provider_profile_id TEXT",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "engine_runs",
+                "runtime_mode",
+                "runtime_mode TEXT NOT NULL DEFAULT 'host'",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "engine_runs",
+                "toolset_policy_id",
+                "toolset_policy_id TEXT",
+            )?;
+            add_column_if_missing(&conn, "engine_runs", "channel_kind", "channel_kind TEXT")?;
+            add_column_if_missing(&conn, "engine_runs", "channel_ref", "channel_ref TEXT")?;
+            add_column_if_missing(&conn, "engine_run_events", "sequence", "sequence INTEGER")?;
+            add_column_if_missing(
+                &conn,
+                "engine_run_events",
+                "summary",
+                "summary TEXT NOT NULL DEFAULT ''",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "engine_run_events",
+                "redaction_level",
+                "redaction_level TEXT NOT NULL DEFAULT 'none'",
+            )?;
+            conn.execute(
+                "UPDATE engine_run_events SET sequence = rowid WHERE sequence IS NULL",
+                [],
+            )?;
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_engine_run_events_run_sequence
+                    ON engine_run_events(run_id, sequence);
+
+                CREATE TABLE IF NOT EXISTS engine_run_artifacts (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    title TEXT,
+                    summary TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES engine_runs(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_engine_run_artifacts_run
+                    ON engine_run_artifacts(run_id, created_at DESC);
+
+                UPDATE schema_version SET version = 21;",
+            )?;
+        }
+
+        if version < 22 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS policy_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                UPDATE schema_version SET version = 22;",
+            )?;
+        }
+
+        if version < 23 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS work_tasks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    prompt TEXT NOT NULL,
+                    expected_output TEXT NOT NULL DEFAULT '',
+                    work_dir TEXT NOT NULL DEFAULT '',
+                    thread_id TEXT,
+                    runner TEXT NOT NULL CHECK(runner IN ('crew', 'model')),
+                    crew_id TEXT,
+                    model TEXT NOT NULL DEFAULT '',
+                    schedule_expr TEXT NOT NULL DEFAULT '',
+                    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    output TEXT,
+                    error TEXT,
+                    last_run_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_work_tasks_created
+                    ON work_tasks(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_work_tasks_status
+                    ON work_tasks(status, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_work_tasks_thread
+                    ON work_tasks(thread_id);
+
+                UPDATE schema_version SET version = 23;",
+            )?;
+        }
+
+        transaction.commit()
     }
 
     // -- Projects --
@@ -1577,13 +2012,25 @@ impl Database {
         started_at: &str,
         finished_at: Option<&str>,
     ) -> SqlResult<()> {
+        let error = redact_and_bound_optional_text(error, MAX_LOG_TEXT_BYTES);
+        let crew_snapshot_json = redact_and_bound_json_text(crew_snapshot_json, MAX_LOG_JSON_BYTES);
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO crew_runs (id, crew_id, crew_name, process, status, manager_agent_id, error, crew_snapshot_json, started_at, finished_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+             ON CONFLICT(id) DO UPDATE SET
+               crew_id = excluded.crew_id,
+               crew_name = excluded.crew_name,
+               process = excluded.process,
+               status = excluded.status,
+               manager_agent_id = excluded.manager_agent_id,
+               error = excluded.error,
+               crew_snapshot_json = excluded.crew_snapshot_json,
+               started_at = excluded.started_at,
+               finished_at = excluded.finished_at",
             params![id, crew_id, crew_name, process, status, manager_agent_id, error, crew_snapshot_json, started_at, finished_at],
         )?;
         Ok(())
@@ -1604,19 +2051,35 @@ impl Database {
         )?;
 
         for log in logs {
-            let metadata_json = serde_json::to_string(log).ok();
+            let action = redact_and_bound_text(&log.action, MAX_LOG_SUMMARY_BYTES);
+            let result = redact_and_bound_text(&log.result, MAX_LOG_TEXT_BYTES);
+            let metadata_json = serde_json::to_string(log)
+                .ok()
+                .map(|value| redact_and_bound_json_text(&value, MAX_LOG_JSON_BYTES));
             stmt.execute(params![
                 log.id,
                 run_id,
                 log.crew_id,
                 log.agent_id,
                 log.task_id,
-                log.action,
-                log.result,
+                action,
+                result,
                 log.timestamp,
                 metadata_json,
             ])?;
         }
+
+        conn.execute(
+            "DELETE FROM crew_run_logs
+             WHERE run_id = ?1
+               AND id NOT IN (
+                 SELECT id FROM crew_run_logs
+                 WHERE run_id = ?1
+                 ORDER BY timestamp DESC, rowid DESC
+                 LIMIT ?2
+               )",
+            params![run_id, MAX_CREW_LOGS_PER_RUN],
+        )?;
 
         Ok(())
     }
@@ -2116,6 +2579,7 @@ impl Database {
         event_type: &str,
         payload_json: Option<&str>,
     ) -> SqlResult<()> {
+        let payload_json = redact_and_bound_optional_json(payload_json, MAX_LOG_JSON_BYTES);
         let conn = self
             .conn
             .lock()
@@ -2124,6 +2588,17 @@ impl Database {
             "INSERT INTO crew_run_events (id, run_id, crew_id, event_type, payload_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
             params![id, run_id, crew_id, event_type, payload_json],
+        )?;
+        conn.execute(
+            "DELETE FROM crew_run_events
+             WHERE run_id = ?1
+               AND id NOT IN (
+                 SELECT id FROM crew_run_events
+                 WHERE run_id = ?1
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT ?2
+               )",
+            params![run_id, MAX_CREW_EVENTS_PER_RUN],
         )?;
         Ok(())
     }
@@ -2180,8 +2655,7 @@ impl Database {
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -2352,6 +2826,163 @@ impl Database {
         rows.collect()
     }
 
+    // -- Work Tasks --
+
+    pub fn upsert_work_task(&self, task: &WorkTaskRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO work_tasks (
+                id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
+                schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                prompt = excluded.prompt,
+                expected_output = excluded.expected_output,
+                work_dir = excluded.work_dir,
+                thread_id = excluded.thread_id,
+                runner = excluded.runner,
+                crew_id = excluded.crew_id,
+                model = excluded.model,
+                schedule_expr = excluded.schedule_expr,
+                schedule_enabled = excluded.schedule_enabled,
+                status = excluded.status,
+                output = excluded.output,
+                error = excluded.error,
+                last_run_at = excluded.last_run_at,
+                updated_at = excluded.updated_at",
+            params![
+                &task.id,
+                &task.title,
+                &task.prompt,
+                &task.expected_output,
+                &task.work_dir,
+                &task.thread_id,
+                &task.runner,
+                &task.crew_id,
+                &task.model,
+                &task.schedule_expr,
+                task.schedule_enabled as i32,
+                &task.status,
+                &task.output,
+                &task.error,
+                &task.last_run_at,
+                &task.created_at,
+                &task.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_work_task(&self, id: &str) -> SqlResult<Option<WorkTaskRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+             FROM work_tasks
+             WHERE id = ?1
+             LIMIT 1",
+            params![id],
+            |row| {
+                let schedule_enabled: i32 = row.get(10)?;
+                Ok(WorkTaskRow {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    prompt: row.get(2)?,
+                    expected_output: row.get(3)?,
+                    work_dir: row.get(4)?,
+                    thread_id: row.get(5)?,
+                    runner: row.get(6)?,
+                    crew_id: row.get(7)?,
+                    model: row.get(8)?,
+                    schedule_expr: row.get(9)?,
+                    schedule_enabled: schedule_enabled != 0,
+                    status: row.get(11)?,
+                    output: row.get(12)?,
+                    error: row.get(13)?,
+                    last_run_at: row.get(14)?,
+                    created_at: row.get(15)?,
+                    updated_at: row.get(16)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn list_work_tasks(&self) -> SqlResult<Vec<WorkTaskRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+             FROM work_tasks
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let schedule_enabled: i32 = row.get(10)?;
+            Ok(WorkTaskRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                prompt: row.get(2)?,
+                expected_output: row.get(3)?,
+                work_dir: row.get(4)?,
+                thread_id: row.get(5)?,
+                runner: row.get(6)?,
+                crew_id: row.get(7)?,
+                model: row.get(8)?,
+                schedule_expr: row.get(9)?,
+                schedule_enabled: schedule_enabled != 0,
+                status: row.get(11)?,
+                output: row.get(12)?,
+                error: row.get(13)?,
+                last_run_at: row.get(14)?,
+                created_at: row.get(15)?,
+                updated_at: row.get(16)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn update_work_task_status(
+        &self,
+        id: &str,
+        status: &str,
+        output: Option<&str>,
+        error: Option<&str>,
+        last_run_at: Option<&str>,
+        updated_at: &str,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE work_tasks
+             SET status = ?2, output = ?3, error = ?4, last_run_at = ?5, updated_at = ?6
+             WHERE id = ?1",
+            params![id, status, output, error, last_run_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_work_task(&self, id: &str) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute("DELETE FROM scheduled_tasks WHERE id = ?1", params![id])?;
+        conn.execute("DELETE FROM work_tasks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     // -- Audit --
 
     #[allow(dead_code)]
@@ -2364,6 +2995,7 @@ impl Database {
         resource_id: Option<&str>,
         details_json: Option<&str>,
     ) -> SqlResult<()> {
+        let details_json = redact_and_bound_optional_json(details_json, MAX_LOG_JSON_BYTES);
         let conn = self
             .conn
             .lock()
@@ -2371,6 +3003,13 @@ impl Database {
         conn.execute(
             "INSERT INTO audit_events (id, ts, event_type, resource_type, resource_id, details_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, ts, event_type, resource_type, resource_id, details_json],
+        )?;
+        conn.execute(
+            "DELETE FROM audit_events
+             WHERE id NOT IN (
+               SELECT id FROM audit_events ORDER BY ts DESC, rowid DESC LIMIT ?1
+             )",
+            params![MAX_AUDIT_EVENTS],
         )?;
         Ok(())
     }
@@ -2514,6 +3153,41 @@ impl Database {
             Ok((row.get(0)?, enabled != 0))
         })?;
         rows.collect()
+    }
+
+    pub fn set_policy_setting(&self, key: &str, value: &str) -> SqlResult<()> {
+        let normalized_key = key.trim();
+        if normalized_key.is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO policy_settings (key, value, updated_at)
+             VALUES (?1, ?2, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at",
+            params![normalized_key, value.trim()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_policy_setting(&self, key: &str) -> SqlResult<Option<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare("SELECT value FROM policy_settings WHERE key = ?1 LIMIT 1")?;
+        let mut rows = stmt.query(params![key.trim()])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
     }
 
     // -- Artifact Versions --
@@ -2846,7 +3520,7 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, prompt, schedule_expr, next_run_at, task_kind, crew_id, crew_snapshot_json, model_config_json, priority, depends_on_task_ids_json, last_run_at
+            "SELECT id, name, prompt, schedule_expr, task_kind, crew_id, crew_snapshot_json, model_config_json, priority, depends_on_task_ids_json, active, last_run_at, next_run_at, created_at, updated_at
              FROM scheduled_tasks
              ORDER BY priority DESC, created_at DESC"
         )?;
@@ -2992,6 +3666,45 @@ impl Database {
         Ok(())
     }
 
+    pub fn begin_scheduled_run(
+        &self,
+        id: &str,
+        task_id: &str,
+        started_at: &str,
+        next_run_at: Option<&str>,
+    ) -> SqlResult<bool> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let already_running = transaction.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM scheduled_runs WHERE task_id = ?1 AND status = 'running'
+             )",
+            params![task_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if already_running {
+            transaction.rollback()?;
+            return Ok(false);
+        }
+
+        transaction.execute(
+            "INSERT INTO scheduled_runs (id, task_id, status, started_at)
+             VALUES (?1, ?2, 'running', ?3)",
+            params![id, task_id, started_at],
+        )?;
+        transaction.execute(
+            "UPDATE scheduled_tasks
+             SET last_run_at = ?2, next_run_at = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![task_id, started_at, next_run_at],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn insert_scheduled_run(
         &self,
         id: &str,
@@ -3002,14 +3715,33 @@ impl Database {
         result: Option<&str>,
         error: Option<&str>,
     ) -> SqlResult<()> {
+        let result = redact_and_bound_optional_text(result, MAX_LOG_TEXT_BYTES);
+        let error = redact_and_bound_optional_text(error, MAX_LOG_TEXT_BYTES);
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO scheduled_runs (id, task_id, status, started_at, finished_at, result, error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+               status = excluded.status,
+               started_at = excluded.started_at,
+               finished_at = excluded.finished_at,
+               result = excluded.result,
+               error = excluded.error",
             params![id, task_id, status, started_at, finished_at, result, error],
+        )?;
+        conn.execute(
+            "DELETE FROM scheduled_runs
+             WHERE task_id = ?1
+               AND id NOT IN (
+                 SELECT id FROM scheduled_runs
+                 WHERE task_id = ?1
+                 ORDER BY started_at DESC, rowid DESC
+                 LIMIT ?2
+               )",
+            params![task_id, MAX_SCHEDULED_RUNS_PER_TASK],
         )?;
         Ok(())
     }
@@ -3052,6 +3784,283 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+
+    pub fn recover_after_unclean_shutdown(
+        &self,
+        recovered_at: &str,
+    ) -> SqlResult<StartupRecoveryReport> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let engine_run_ids = {
+            let mut stmt = transaction.prepare(
+                "SELECT id FROM engine_runs WHERE status = 'running' ORDER BY created_at",
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+        let crew_runs = {
+            let mut stmt = transaction.prepare(
+                "SELECT id, crew_id FROM crew_runs WHERE status = 'running' ORDER BY started_at",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+
+        let engine_runs = transaction.execute(
+            "UPDATE engine_runs
+             SET status = 'interrupted', phase = 'interrupted',
+                 error = COALESCE(error, 'Application exited before the run completed.'),
+                 ended_at = ?1, updated_at = ?1
+             WHERE status = 'running'",
+            params![recovered_at],
+        )?;
+        let legacy_tasks = transaction.execute(
+            "UPDATE tasks
+             SET status = 'failed',
+                 error = COALESCE(error, 'Application exited before the task completed.'),
+                 updated_at = ?1
+             WHERE status = 'running'",
+            params![recovered_at],
+        )?;
+        let task_steps = transaction.execute(
+            "UPDATE task_steps
+             SET state = 'failed',
+                 output = COALESCE(output, 'Application exited before the step completed.')
+             WHERE state = 'running'",
+            [],
+        )?;
+        let work_tasks = transaction.execute(
+            "UPDATE work_tasks
+             SET status = 'failed',
+                 error = COALESCE(error, 'Application exited before the task completed.'),
+                 updated_at = ?1
+             WHERE status = 'running'",
+            params![recovered_at],
+        )?;
+        let scheduled_runs = transaction.execute(
+            "UPDATE scheduled_runs
+             SET status = 'interrupted', finished_at = ?1,
+                 error = COALESCE(error, 'Application exited before the scheduled run completed.')
+             WHERE status = 'running'",
+            params![recovered_at],
+        )?;
+        let recovered_crew_runs = transaction.execute(
+            "UPDATE crew_runs
+             SET status = 'interrupted', finished_at = ?1,
+                 error = COALESCE(error, 'Application exited before the crew run completed.')
+             WHERE status = 'running'",
+            params![recovered_at],
+        )?;
+        let worker_sandboxes = transaction.execute(
+            "UPDATE worker_sandboxes
+             SET status = 'interrupted', ended_at = ?1, updated_at = ?1
+             WHERE status = 'active'",
+            params![recovered_at],
+        )?;
+        let managed_processes = transaction.execute(
+            "UPDATE managed_processes
+             SET status = 'interrupted', pid = NULL, stopped_at = ?1
+             WHERE status IN ('starting', 'running')",
+            params![recovered_at],
+        )?;
+        let terminal_backends = transaction.execute(
+            "UPDATE terminal_backends
+             SET status = 'disconnected', updated_at = ?1
+             WHERE status IN ('connecting', 'connected')",
+            params![recovered_at],
+        )?;
+
+        let engine_payload = serde_json::json!({
+            "reason": "unclean_shutdown",
+            "recoveredAt": recovered_at,
+        })
+        .to_string();
+        for run_id in &engine_run_ids {
+            transaction.execute(
+                "INSERT INTO engine_run_events (
+                    id, run_id, sequence, event_type, summary, payload_json, redaction_level, created_at
+                 ) VALUES (
+                    ?1, ?2,
+                    (SELECT COALESCE(MAX(sequence), 0) + 1 FROM engine_run_events WHERE run_id = ?2),
+                    'run_interrupted', 'Run interrupted during startup recovery', ?3, 'metadata', ?4
+                 )",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    run_id,
+                    engine_payload,
+                    recovered_at
+                ],
+            )?;
+            transaction.execute(
+                "DELETE FROM engine_run_events
+                 WHERE run_id = ?1
+                   AND id NOT IN (
+                     SELECT id FROM engine_run_events
+                     WHERE run_id = ?1 ORDER BY sequence DESC LIMIT ?2
+                   )",
+                params![run_id, MAX_ENGINE_EVENTS_PER_RUN],
+            )?;
+        }
+
+        let crew_payload = serde_json::json!({
+            "reason": "unclean_shutdown",
+            "recoveredAt": recovered_at,
+        })
+        .to_string();
+        for (run_id, crew_id) in &crew_runs {
+            transaction.execute(
+                "INSERT INTO crew_run_events (
+                    id, run_id, crew_id, event_type, payload_json, created_at
+                 ) VALUES (?1, ?2, ?3, 'run_interrupted', ?4, ?5)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    run_id,
+                    crew_id,
+                    crew_payload,
+                    recovered_at
+                ],
+            )?;
+            transaction.execute(
+                "DELETE FROM crew_run_events
+                 WHERE run_id = ?1
+                   AND id NOT IN (
+                     SELECT id FROM crew_run_events
+                     WHERE run_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2
+                   )",
+                params![run_id, MAX_CREW_EVENTS_PER_RUN],
+            )?;
+        }
+
+        let report = StartupRecoveryReport {
+            recovered_at: recovered_at.to_string(),
+            engine_runs,
+            legacy_tasks,
+            task_steps,
+            work_tasks,
+            scheduled_runs,
+            crew_runs: recovered_crew_runs,
+            worker_sandboxes,
+            managed_processes,
+            terminal_backends,
+        };
+        transaction.commit()?;
+        Ok(report)
+    }
+
+    pub fn support_diagnostics_snapshot(&self) -> SqlResult<serde_json::Value> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let schema_version = current_schema_version(&conn)?.unwrap_or(0);
+        let counts = conn.query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM chat_threads),
+               (SELECT COUNT(*) FROM engine_runs),
+               (SELECT COUNT(*) FROM engine_run_events),
+               (SELECT COUNT(*) FROM scheduled_tasks),
+               (SELECT COUNT(*) FROM scheduled_runs),
+               (SELECT COUNT(*) FROM crew_runs),
+               (SELECT COUNT(*) FROM crew_run_logs),
+               (SELECT COUNT(*) FROM crew_run_events),
+               (SELECT COUNT(*) FROM audit_events)",
+            [],
+            |row| {
+                Ok(serde_json::json!({
+                    "chatThreads": row.get::<_, i64>(0)?,
+                    "engineRuns": row.get::<_, i64>(1)?,
+                    "engineRunEvents": row.get::<_, i64>(2)?,
+                    "scheduledTasks": row.get::<_, i64>(3)?,
+                    "scheduledRuns": row.get::<_, i64>(4)?,
+                    "crewRuns": row.get::<_, i64>(5)?,
+                    "crewRunLogs": row.get::<_, i64>(6)?,
+                    "crewRunEvents": row.get::<_, i64>(7)?,
+                    "auditEvents": row.get::<_, i64>(8)?,
+                }))
+            },
+        )?;
+
+        let recent_engine_runs = {
+            let mut stmt = conn.prepare(
+                "SELECT status, phase, created_at, updated_at, ended_at, error IS NOT NULL
+                 FROM engine_runs ORDER BY updated_at DESC LIMIT 50",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(serde_json::json!({
+                    "status": diagnostic_label(&row.get::<_, String>(0)?),
+                    "phase": diagnostic_label(&row.get::<_, String>(1)?),
+                    "createdAt": row.get::<_, String>(2)?,
+                    "updatedAt": row.get::<_, String>(3)?,
+                    "endedAt": row.get::<_, Option<String>>(4)?,
+                    "hasError": row.get::<_, i64>(5)? != 0,
+                }))
+            })?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+
+        let recent_engine_events = {
+            let mut stmt = conn.prepare(
+                "SELECT event_type, redaction_level, created_at
+                 FROM engine_run_events ORDER BY created_at DESC, rowid DESC LIMIT 100",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(serde_json::json!({
+                    "eventType": diagnostic_label(&row.get::<_, String>(0)?),
+                    "redactionLevel": diagnostic_label(&row.get::<_, String>(1)?),
+                    "createdAt": row.get::<_, String>(2)?,
+                }))
+            })?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+
+        let recent_scheduled_runs = {
+            let mut stmt = conn.prepare(
+                "SELECT status, started_at, finished_at, error IS NOT NULL
+                 FROM scheduled_runs ORDER BY started_at DESC, rowid DESC LIMIT 50",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(serde_json::json!({
+                    "status": diagnostic_label(&row.get::<_, String>(0)?),
+                    "startedAt": row.get::<_, String>(1)?,
+                    "finishedAt": row.get::<_, Option<String>>(2)?,
+                    "hasError": row.get::<_, i64>(3)? != 0,
+                }))
+            })?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+
+        let recent_crew_runs = {
+            let mut stmt = conn.prepare(
+                "SELECT process, status, started_at, finished_at, error IS NOT NULL
+                 FROM crew_runs ORDER BY started_at DESC, rowid DESC LIMIT 50",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(serde_json::json!({
+                    "process": diagnostic_label(&row.get::<_, String>(0)?),
+                    "status": diagnostic_label(&row.get::<_, String>(1)?),
+                    "startedAt": row.get::<_, String>(2)?,
+                    "finishedAt": row.get::<_, Option<String>>(3)?,
+                    "hasError": row.get::<_, i64>(4)? != 0,
+                }))
+            })?;
+            rows.collect::<SqlResult<Vec<_>>>()?
+        };
+
+        Ok(serde_json::json!({
+            "schemaVersion": schema_version,
+            "counts": counts,
+            "recentEngineRuns": recent_engine_runs,
+            "recentEngineEvents": recent_engine_events,
+            "recentScheduledRuns": recent_scheduled_runs,
+            "recentCrewRuns": recent_crew_runs,
+        }))
     }
 
     // -- Memory Entries --
@@ -3163,17 +4172,35 @@ impl Database {
         rows.collect()
     }
 
-    pub fn search_memory_entries(&self, query: &str, limit: i64) -> SqlResult<Vec<MemoryEntryRow>> {
+    pub fn list_all_memory_entries(
+        &self,
+        category: Option<&str>,
+        limit: i64,
+    ) -> SqlResult<Vec<MemoryEntryRow>> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let pattern = format!("%{}%", query);
-        let mut stmt = conn.prepare(
-            "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
-             FROM memory_entries WHERE content LIKE ?1 OR key LIKE ?1 ORDER BY updated_at DESC LIMIT ?2"
-        )?;
-        let rows = stmt.query_map(params![pattern, limit], |row| {
+        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(
+            category,
+        ) = category
+        {
+            (
+                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                     FROM memory_entries WHERE category = ?1 ORDER BY updated_at DESC LIMIT ?2",
+                    vec![Box::new(category.to_string()), Box::new(limit)],
+                )
+        } else {
+            (
+                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                     FROM memory_entries ORDER BY updated_at DESC LIMIT ?1",
+                    vec![Box::new(limit)],
+                )
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|value| value.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok(MemoryEntryRow {
                 id: row.get(0)?,
                 scope: row.get(1)?,
@@ -3189,6 +4216,130 @@ impl Database {
             })
         })?;
         rows.collect()
+    }
+
+    pub fn search_memory_entries(
+        &self,
+        query: &str,
+        scope: Option<&str>,
+        category: Option<&str>,
+        limit: i64,
+    ) -> SqlResult<Vec<MemoryEntryRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let normalized_query = query.trim().to_lowercase();
+        if normalized_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut terms = normalized_query
+            .split(|character: char| {
+                !character.is_alphanumeric() && character != '_' && character != '-'
+            })
+            .filter(|term| term.chars().count() >= 3)
+            .filter(|term| {
+                !matches!(
+                    *term,
+                    "and"
+                        | "the"
+                        | "for"
+                        | "this"
+                        | "that"
+                        | "with"
+                        | "from"
+                        | "into"
+                        | "und"
+                        | "der"
+                        | "die"
+                        | "das"
+                        | "den"
+                        | "dem"
+                        | "ein"
+                        | "eine"
+                        | "mit"
+                        | "von"
+                        | "crew"
+                        | "task"
+                )
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        terms.sort();
+        terms.dedup();
+        terms.truncate(12);
+        if terms.is_empty() {
+            terms.push(normalized_query.clone());
+        }
+
+        // Keep retrieval bounded, then rank in Rust. This supports natural-language
+        // queries without requiring every query term to occur as one exact phrase.
+        let mut stmt = conn.prepare(
+            "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+             FROM memory_entries ORDER BY updated_at DESC LIMIT 5000"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryEntryRow {
+                id: row.get(0)?,
+                scope: row.get(1)?,
+                category: row.get(2)?,
+                key: row.get(3)?,
+                content: row.get(4)?,
+                source_session_id: row.get(5)?,
+                confidence: row.get(6)?,
+                access_count: row.get(7)?,
+                last_accessed_at: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        let entries = rows.collect::<SqlResult<Vec<_>>>()?;
+        let mut ranked = entries
+            .into_iter()
+            .filter(|entry| scope.is_none_or(|value| entry.scope == value))
+            .filter(|entry| category.is_none_or(|value| entry.category == value))
+            .filter_map(|entry| {
+                let key = entry.key.to_lowercase();
+                let category = entry.category.to_lowercase();
+                let content = entry.content.to_lowercase();
+                let mut score = 0_i64;
+
+                if key == normalized_query {
+                    score += 140;
+                } else if key.contains(&normalized_query) {
+                    score += 90;
+                }
+                if content.contains(&normalized_query) {
+                    score += 60;
+                }
+                for term in &terms {
+                    if key.contains(term) {
+                        score += 24;
+                    }
+                    if category.contains(term) {
+                        score += 12;
+                    }
+                    if content.contains(term) {
+                        score += 6;
+                    }
+                }
+                if score == 0 {
+                    return None;
+                }
+
+                score += (entry.confidence.clamp(0.0, 1.0) * 8.0).round() as i64;
+                score += i64::from(entry.access_count.clamp(0, 10));
+                Some((score, entry))
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+        });
+        ranked.truncate(limit.clamp(1, 200) as usize);
+        Ok(ranked.into_iter().map(|(_, entry)| entry).collect())
     }
 
     pub fn delete_memory_entry(&self, id: &str) -> SqlResult<()> {
@@ -3472,7 +4623,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO sessions (id, thread_id, title, memory_snapshot_json, model_used, provider, personality, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+             ON CONFLICT(id) DO NOTHING",
             params![id, thread_id, title, memory_snapshot_json, model_used, provider, personality],
         )?;
         Ok(())
@@ -3639,6 +4791,7 @@ impl Database {
 
     // -- Engine Runs --
 
+    #[allow(dead_code)]
     pub fn insert_engine_run(
         &self,
         id: &str,
@@ -3657,6 +4810,62 @@ impl Database {
         checkpoint_json: Option<&str>,
         metadata_json: Option<&str>,
     ) -> SqlResult<()> {
+        self.insert_engine_run_with_gateway_metadata(
+            id,
+            parent_run_id,
+            thread_id,
+            session_id,
+            title,
+            input_summary,
+            status,
+            phase,
+            cwd,
+            model,
+            provider,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            retry_count,
+            resumed_from_run_id,
+            checkpoint_json,
+            metadata_json,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_engine_run_with_gateway_metadata(
+        &self,
+        id: &str,
+        parent_run_id: Option<&str>,
+        thread_id: Option<&str>,
+        session_id: Option<&str>,
+        title: &str,
+        input_summary: Option<&str>,
+        status: &str,
+        phase: &str,
+        cwd: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        source: Option<&str>,
+        workspace_path: Option<&str>,
+        provider_profile_id: Option<&str>,
+        runtime_mode: Option<&str>,
+        toolset_policy_id: Option<&str>,
+        channel_kind: Option<&str>,
+        channel_ref: Option<&str>,
+        retry_count: i32,
+        resumed_from_run_id: Option<&str>,
+        checkpoint_json: Option<&str>,
+        metadata_json: Option<&str>,
+    ) -> SqlResult<()> {
+        let title = redact_and_bound_text(title, MAX_LOG_SUMMARY_BYTES);
+        let input_summary = redact_and_bound_optional_text(input_summary, MAX_LOG_SUMMARY_BYTES);
+        let checkpoint_json = redact_and_bound_optional_json(checkpoint_json, MAX_LOG_JSON_BYTES);
+        let metadata_json = redact_and_bound_optional_json(metadata_json, MAX_LOG_JSON_BYTES);
         let conn = self
             .conn
             .lock()
@@ -3664,12 +4873,14 @@ impl Database {
         conn.execute(
             "INSERT INTO engine_runs (
                 id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
-                cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
+                cwd, model, provider, source, workspace_path, provider_profile_id, runtime_mode,
+                toolset_policy_id, channel_kind, channel_ref, retry_count, resumed_from_run_id, checkpoint_json,
                 metadata_json, created_at, updated_at, started_at
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12, ?13, ?14,
-                ?15, datetime('now'), datetime('now'),
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20, ?21,
+                ?22, datetime('now'), datetime('now'),
                 CASE WHEN ?7 = 'running' THEN datetime('now') ELSE NULL END
              )",
             params![
@@ -3684,6 +4895,13 @@ impl Database {
                 cwd,
                 model,
                 provider,
+                source.unwrap_or("desktop"),
+                workspace_path,
+                provider_profile_id,
+                runtime_mode.unwrap_or("host"),
+                toolset_policy_id,
+                channel_kind,
+                channel_ref,
                 retry_count,
                 resumed_from_run_id,
                 checkpoint_json,
@@ -3701,35 +4919,14 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
                     cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
-                    result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at
+                    result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
+                    source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
+                    channel_kind, channel_ref
              FROM engine_runs WHERE id = ?1 LIMIT 1"
         )?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(EngineRunRow {
-                id: row.get(0)?,
-                parent_run_id: row.get(1)?,
-                thread_id: row.get(2)?,
-                session_id: row.get(3)?,
-                title: row.get(4)?,
-                input_summary: row.get(5)?,
-                status: row.get(6)?,
-                phase: row.get(7)?,
-                cwd: row.get(8)?,
-                model: row.get(9)?,
-                provider: row.get(10)?,
-                retry_count: row.get(11)?,
-                resumed_from_run_id: row.get(12)?,
-                checkpoint_json: row.get(13)?,
-                result_summary: row.get(14)?,
-                error: row.get(15)?,
-                metadata_json: row.get(16)?,
-                created_at: row.get(17)?,
-                updated_at: row.get(18)?,
-                started_at: row.get(19)?,
-                ended_at: row.get(20)?,
-                canceled_at: row.get(21)?,
-            }))
+            Ok(Some(map_engine_run_row(row)?))
         } else {
             Ok(None)
         }
@@ -3748,74 +4945,28 @@ impl Database {
             let mut stmt = conn.prepare(
                 "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
                         cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
-                        result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at
+                        result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
+                        source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
+                        channel_kind, channel_ref
                  FROM engine_runs
                  WHERE status = ?1
                  ORDER BY updated_at DESC
                  LIMIT ?2"
             )?;
-            let mapped = stmt.query_map(params![status_filter, limit], |row| {
-                Ok(EngineRunRow {
-                    id: row.get(0)?,
-                    parent_run_id: row.get(1)?,
-                    thread_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    title: row.get(4)?,
-                    input_summary: row.get(5)?,
-                    status: row.get(6)?,
-                    phase: row.get(7)?,
-                    cwd: row.get(8)?,
-                    model: row.get(9)?,
-                    provider: row.get(10)?,
-                    retry_count: row.get(11)?,
-                    resumed_from_run_id: row.get(12)?,
-                    checkpoint_json: row.get(13)?,
-                    result_summary: row.get(14)?,
-                    error: row.get(15)?,
-                    metadata_json: row.get(16)?,
-                    created_at: row.get(17)?,
-                    updated_at: row.get(18)?,
-                    started_at: row.get(19)?,
-                    ended_at: row.get(20)?,
-                    canceled_at: row.get(21)?,
-                })
-            })?;
+            let mapped = stmt.query_map(params![status_filter, limit], map_engine_run_row)?;
             mapped.collect::<SqlResult<Vec<_>>>()?
         } else {
             let mut stmt = conn.prepare(
                 "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
                         cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
-                        result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at
+                        result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
+                        source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
+                        channel_kind, channel_ref
                  FROM engine_runs
                  ORDER BY updated_at DESC
                  LIMIT ?1"
             )?;
-            let mapped = stmt.query_map(params![limit], |row| {
-                Ok(EngineRunRow {
-                    id: row.get(0)?,
-                    parent_run_id: row.get(1)?,
-                    thread_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    title: row.get(4)?,
-                    input_summary: row.get(5)?,
-                    status: row.get(6)?,
-                    phase: row.get(7)?,
-                    cwd: row.get(8)?,
-                    model: row.get(9)?,
-                    provider: row.get(10)?,
-                    retry_count: row.get(11)?,
-                    resumed_from_run_id: row.get(12)?,
-                    checkpoint_json: row.get(13)?,
-                    result_summary: row.get(14)?,
-                    error: row.get(15)?,
-                    metadata_json: row.get(16)?,
-                    created_at: row.get(17)?,
-                    updated_at: row.get(18)?,
-                    started_at: row.get(19)?,
-                    ended_at: row.get(20)?,
-                    canceled_at: row.get(21)?,
-                })
-            })?;
+            let mapped = stmt.query_map(params![limit], map_engine_run_row)?;
             mapped.collect::<SqlResult<Vec<_>>>()?
         };
         Ok(rows)
@@ -3840,10 +4991,20 @@ impl Database {
 
         let next_status = status.unwrap_or(existing.status.as_str()).to_string();
         let next_phase = phase.unwrap_or(existing.phase.as_str()).to_string();
-        let next_checkpoint = checkpoint_json.or(existing.checkpoint_json.as_deref());
-        let next_result = result_summary.or(existing.result_summary.as_deref());
-        let next_error = error.or(existing.error.as_deref());
-        let next_metadata = metadata_json.or(existing.metadata_json.as_deref());
+        let next_checkpoint = redact_and_bound_optional_json(
+            checkpoint_json.or(existing.checkpoint_json.as_deref()),
+            MAX_LOG_JSON_BYTES,
+        );
+        let next_result = redact_and_bound_optional_text(
+            result_summary.or(existing.result_summary.as_deref()),
+            MAX_LOG_TEXT_BYTES,
+        );
+        let next_error =
+            redact_and_bound_optional_text(error.or(existing.error.as_deref()), MAX_LOG_TEXT_BYTES);
+        let next_metadata = redact_and_bound_optional_json(
+            metadata_json.or(existing.metadata_json.as_deref()),
+            MAX_LOG_JSON_BYTES,
+        );
         let started_at = if existing.started_at.is_none() && next_status == "running" {
             Some(chrono::Utc::now().to_rfc3339())
         } else {
@@ -3900,16 +5061,127 @@ impl Database {
         event_type: &str,
         payload_json: Option<&str>,
     ) -> SqlResult<()> {
+        self.insert_engine_run_event_with_details(id, run_id, event_type, None, payload_json, None)
+    }
+
+    pub fn insert_engine_run_event_with_details(
+        &self,
+        id: &str,
+        run_id: &str,
+        event_type: &str,
+        summary: Option<&str>,
+        payload_json: Option<&str>,
+        redaction_level: Option<&str>,
+    ) -> SqlResult<()> {
+        let original_summary = summary.unwrap_or(event_type);
+        let summary = redact_and_bound_text(original_summary, MAX_LOG_SUMMARY_BYTES);
+        let payload = redact_and_bound_optional_json(payload_json, MAX_LOG_JSON_BYTES);
+        let content_changed = summary != original_summary || payload.as_deref() != payload_json;
+        let redaction_level = if content_changed {
+            "automatic"
+        } else {
+            redaction_level.unwrap_or("none")
+        };
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO engine_run_events (id, run_id, event_type, payload_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-            params![id, run_id, event_type, payload_json],
+            "INSERT INTO engine_run_events (
+                id, run_id, sequence, event_type, summary, payload_json, redaction_level, created_at
+             ) VALUES (
+                ?1,
+                ?2,
+                (SELECT COALESCE(MAX(sequence), 0) + 1 FROM engine_run_events WHERE run_id = ?2),
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                datetime('now')
+             )",
+            params![id, run_id, event_type, summary, payload, redaction_level],
+        )?;
+        conn.execute(
+            "DELETE FROM engine_run_events
+             WHERE run_id = ?1
+               AND id NOT IN (
+                 SELECT id FROM engine_run_events
+                 WHERE run_id = ?1
+                 ORDER BY sequence DESC
+                 LIMIT ?2
+               )",
+            params![run_id, MAX_ENGINE_EVENTS_PER_RUN],
+        )?;
+        conn.execute(
+            "UPDATE engine_runs SET updated_at = datetime('now') WHERE id = ?1",
+            params![run_id],
         )?;
         Ok(())
+    }
+
+    pub fn list_engine_run_events(
+        &self,
+        run_id: &str,
+        limit: i64,
+    ) -> SqlResult<Vec<EngineRunEventRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, sequence, event_type, summary, payload_json, redaction_level, created_at
+             FROM engine_run_events
+             WHERE run_id = ?1
+             ORDER BY sequence ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![run_id, limit], map_engine_run_event_row)?;
+        rows.collect()
+    }
+
+    pub fn insert_engine_run_artifact(
+        &self,
+        id: &str,
+        run_id: &str,
+        kind: &str,
+        path: &str,
+        title: Option<&str>,
+        summary: Option<&str>,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO engine_run_artifacts (id, run_id, kind, path, title, summary, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+            params![id, run_id, kind, path, title, summary],
+        )?;
+        conn.execute(
+            "UPDATE engine_runs SET updated_at = datetime('now') WHERE id = ?1",
+            params![run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_engine_run_artifacts(
+        &self,
+        run_id: &str,
+        limit: i64,
+    ) -> SqlResult<Vec<EngineRunArtifactRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, kind, path, title, summary, created_at
+             FROM engine_run_artifacts
+             WHERE run_id = ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![run_id, limit], map_engine_run_artifact_row)?;
+        rows.collect()
     }
 
     pub fn insert_engine_run_checkpoint(
@@ -3919,6 +5191,8 @@ impl Database {
         label: &str,
         snapshot_json: &str,
     ) -> SqlResult<()> {
+        let label = redact_and_bound_text(label, MAX_LOG_SUMMARY_BYTES);
+        let snapshot_json = redact_and_bound_json_text(snapshot_json, MAX_LOG_JSON_BYTES);
         let conn = self
             .conn
             .lock()
@@ -4233,7 +5507,15 @@ impl Database {
         };
         let next_status = status.unwrap_or(existing.status.as_str());
         let next_metadata = metadata_json.or(existing.metadata_json.as_deref());
-        let ended_at = if ["completed", "failed", "canceled", "destroyed"].contains(&next_status) {
+        let ended_at = if [
+            "completed",
+            "failed",
+            "canceled",
+            "destroyed",
+            "interrupted",
+        ]
+        .contains(&next_status)
+        {
             Some(chrono::Utc::now().to_rfc3339())
         } else {
             None
@@ -4251,6 +5533,20 @@ impl Database {
                  updated_at = datetime('now')
              WHERE id = ?1",
             params![id, next_status, next_metadata, ended_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_worker_sandbox_env(&self, id: &str, env_json: Option<&str>) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE worker_sandboxes
+             SET env_json = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, env_json],
         )?;
         Ok(())
     }
@@ -4432,6 +5728,25 @@ impl Database {
             params![id, status, pid, exit_code],
         )?;
         Ok(())
+    }
+
+    pub fn update_process_exit_if_running(
+        &self,
+        id: &str,
+        status: &str,
+        exit_code: Option<i32>,
+    ) -> SqlResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let changed = conn.execute(
+            "UPDATE managed_processes
+             SET status = ?2, pid = NULL, exit_code = ?3, stopped_at = datetime('now')
+             WHERE id = ?1 AND status = 'running'",
+            params![id, status, exit_code],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn approve_process_admin(&self, id: &str) -> SqlResult<()> {
@@ -4891,6 +6206,34 @@ impl Database {
 mod tests {
     use super::*;
 
+    fn database_test_dir(label: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("open-cowork-db-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("database test directory should be created");
+        root
+    }
+
+    fn insert_test_engine_run(db: &Database, id: &str) {
+        db.insert_engine_run(
+            id,
+            None,
+            None,
+            None,
+            "Test Run",
+            Some("test input"),
+            "pending",
+            "queued",
+            Some("C:/workspace"),
+            Some("gpt-test"),
+            Some("openai"),
+            0,
+            None,
+            None,
+            Some("{}"),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn migration_creates_tables() {
         let db = Database::open_in_memory().unwrap();
@@ -4909,6 +6252,221 @@ mod tests {
     }
 
     #[test]
+    fn connection_pragmas_enforce_integrity_and_contention_policy() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        let busy_timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        let temp_store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(busy_timeout, SQLITE_BUSY_TIMEOUT.as_millis() as i64);
+        assert_eq!(synchronous, 2, "FULL synchronous mode must remain enabled");
+        assert_eq!(temp_store, 2, "temporary data must stay in memory");
+    }
+
+    #[test]
+    fn persistent_database_uses_wal_and_survives_reopen() {
+        let root = database_test_dir("wal");
+        {
+            let db = Database::open(root.clone()).unwrap();
+            let conn = db.conn.lock().unwrap();
+            let journal_mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            let version: i64 = conn
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+            assert_eq!(version, LATEST_SCHEMA_VERSION);
+        }
+
+        let reopened = Database::open(root.clone()).unwrap();
+        reopened.ensure_integrity().unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upgrade_creates_a_verified_pre_migration_backup() {
+        let root = database_test_dir("backup");
+        let db_path = root.join("open_cowork.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys=ON;
+                 CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (22);
+                 CREATE TABLE chat_threads (id TEXT PRIMARY KEY);",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(root.clone()).unwrap();
+        let current_version: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(current_version, LATEST_SCHEMA_VERSION);
+        drop(db);
+
+        let backup_dir = root.join("database-backups");
+        let backups = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("db"))
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        ensure_database_integrity(&backup).unwrap();
+        let backup_version: i64 = backup
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        let backup_has_work_tasks: i64 = backup
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'work_tasks'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backup_version, 22);
+        assert_eq!(backup_has_work_tasks, 0);
+        drop(backup);
+
+        Database::open(root.clone()).unwrap();
+        assert_eq!(std::fs::read_dir(&backup_dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_partial_schema_changes() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn, false).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (22);
+             CREATE TABLE work_tasks (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
+
+        assert!(db.migrate().is_err());
+        let conn = db.conn.lock().unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        let partial_index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_work_tasks_created'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 22);
+        assert_eq!(partial_index_count, 0);
+    }
+
+    #[test]
+    fn newer_schema_versions_are_rejected_without_modification() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn, false).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (24);",
+        )
+        .unwrap();
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
+
+        let error = db.migrate().unwrap_err().to_string();
+        assert!(error.contains("unsupported database schema version"));
+        let version: i64 = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 24);
+    }
+
+    #[test]
+    fn integrity_check_detects_foreign_key_violations() {
+        let db = Database::open_in_memory().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 INSERT INTO project_resources (
+                    id, project_id, kind, path, label, enabled, added_at
+                 ) VALUES (
+                    'orphan', 'missing-project', 'file', 'C:/missing.txt', NULL, 1, datetime('now')
+                 );
+                 PRAGMA foreign_keys=ON;",
+            )
+            .unwrap();
+        }
+
+        let error = db.ensure_integrity().unwrap_err().to_string();
+        assert!(error.contains("foreign key integrity check failed"));
+        assert!(error.contains("project_resources"));
+    }
+
+    #[test]
+    fn malformed_schema_version_tables_are_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (22), (23);",
+        )
+        .unwrap();
+
+        let error = current_schema_version(&conn).unwrap_err().to_string();
+        assert!(error.contains("exactly one integer row"));
+        assert!(ensure_supported_schema_version(-1).is_err());
+    }
+
+    #[test]
+    fn corrupt_database_files_and_invalid_data_directories_are_rejected() {
+        let corrupt_root = database_test_dir("corrupt");
+        std::fs::write(
+            corrupt_root.join("open_cowork.db"),
+            b"not a sqlite database",
+        )
+        .unwrap();
+        assert!(Database::open(corrupt_root.clone()).is_err());
+
+        let invalid_parent = database_test_dir("invalid-path");
+        let invalid_path = invalid_parent.join("app-data-file");
+        std::fs::write(&invalid_path, b"file, not directory").unwrap();
+        assert!(Database::open(invalid_path).is_err());
+
+        let _ = std::fs::remove_dir_all(corrupt_root);
+        let _ = std::fs::remove_dir_all(invalid_parent);
+    }
+
+    #[test]
     fn messages_round_trip() {
         let db = Database::open_in_memory().unwrap();
         db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
@@ -4921,6 +6479,78 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].1, "user");
         assert_eq!(msgs[1].1, "assistant");
+    }
+
+    #[test]
+    fn session_search_finds_linked_persisted_chat_messages() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_thread(
+            "thread-memory",
+            "Memory thread",
+            "2026-07-16T10:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+        db.insert_message(
+            "message-memory",
+            "thread-memory",
+            "assistant",
+            "The project selected SQLite for durable local memory.",
+            1_752_660_000,
+        )
+        .unwrap();
+        db.insert_session(
+            "session-memory",
+            Some("thread-memory"),
+            "Memory decision",
+            Some("{\"sessionId\":\"session-memory\"}"),
+            Some("test-model"),
+            Some("ollama"),
+            None,
+        )
+        .unwrap();
+
+        let matches = db.fulltext_search_sessions("SQLite", 10).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].session_id, "session-memory");
+        assert_eq!(
+            matches[0].matched_content.as_deref(),
+            Some("The project selected SQLite for durable local memory.")
+        );
+    }
+
+    #[test]
+    fn creating_an_existing_session_does_not_replace_its_frozen_snapshot() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_session(
+            "session-frozen",
+            None,
+            "Original",
+            Some("{\"version\":1}"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.insert_session(
+            "session-frozen",
+            None,
+            "Later title",
+            Some("{\"version\":2}"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.get_session_memory_snapshot("session-frozen")
+                .unwrap()
+                .as_deref(),
+            Some("{\"version\":1}")
+        );
     }
 
     #[test]
@@ -4960,6 +6590,110 @@ mod tests {
         let steps = db.list_steps("task1").unwrap();
         assert_eq!(steps.len(), 2);
         assert!(steps[1].4); // requires_approval
+    }
+
+    #[test]
+    fn work_task_lifecycle_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let mut row = WorkTaskRow {
+            id: "work-1".to_string(),
+            title: "Weekly Report".to_string(),
+            prompt: "Summarize the week".to_string(),
+            expected_output: "Bullet report".to_string(),
+            work_dir: "C:/workspace".to_string(),
+            thread_id: None,
+            runner: "model".to_string(),
+            crew_id: None,
+            model: "qwen3".to_string(),
+            schedule_expr: "daily 09:00".to_string(),
+            schedule_enabled: true,
+            status: "idle".to_string(),
+            output: None,
+            error: None,
+            last_run_at: None,
+            created_at: "2026-07-02T08:00:00Z".to_string(),
+            updated_at: "2026-07-02T08:00:00Z".to_string(),
+        };
+
+        db.upsert_work_task(&row).unwrap();
+        let listed = db.list_work_tasks().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "work-1");
+        assert!(listed[0].schedule_enabled);
+
+        db.update_work_task_status(
+            "work-1",
+            "completed",
+            Some("done"),
+            None,
+            Some("2026-07-02T08:10:00Z"),
+            "2026-07-02T08:10:00Z",
+        )
+        .unwrap();
+        let completed = db.get_work_task("work-1").unwrap().unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.output.as_deref(), Some("done"));
+        assert_eq!(
+            completed.last_run_at.as_deref(),
+            Some("2026-07-02T08:10:00Z")
+        );
+
+        row.title = "Weekly Report Updated".to_string();
+        row.status = "idle".to_string();
+        row.schedule_enabled = false;
+        row.updated_at = "2026-07-02T08:20:00Z".to_string();
+        db.upsert_work_task(&row).unwrap();
+        let updated = db.get_work_task("work-1").unwrap().unwrap();
+        assert_eq!(updated.title, "Weekly Report Updated");
+        assert!(!updated.schedule_enabled);
+        assert_eq!(updated.created_at, "2026-07-02T08:00:00Z");
+    }
+
+    #[test]
+    fn delete_work_task_removes_matching_schedule() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_work_task(&WorkTaskRow {
+            id: "work-1".to_string(),
+            title: "Scheduled Work".to_string(),
+            prompt: "Run me".to_string(),
+            expected_output: "".to_string(),
+            work_dir: "".to_string(),
+            thread_id: None,
+            runner: "crew".to_string(),
+            crew_id: Some("crew-1".to_string()),
+            model: "".to_string(),
+            schedule_expr: "daily 09:00".to_string(),
+            schedule_enabled: true,
+            status: "idle".to_string(),
+            output: None,
+            error: None,
+            last_run_at: None,
+            created_at: "2026-07-02T08:00:00Z".to_string(),
+            updated_at: "2026-07-02T08:00:00Z".to_string(),
+        })
+        .unwrap();
+        db.upsert_scheduled_task(
+            "work-1",
+            "Scheduled Work",
+            "Run me",
+            "daily 09:00",
+            "crew",
+            Some("crew-1"),
+            Some("{}"),
+            None,
+            100,
+            "[]",
+            true,
+            None,
+            Some("2026-07-03T09:00:00Z"),
+            "2026-07-02T08:00:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(db.list_scheduled_tasks().unwrap().len(), 1);
+        db.delete_work_task("work-1").unwrap();
+        assert!(db.get_work_task("work-1").unwrap().is_none());
+        assert!(db.list_scheduled_tasks().unwrap().is_empty());
     }
 
     #[test]
@@ -5015,11 +6749,9 @@ mod tests {
 
         let resources = db.list_project_resources().unwrap();
         assert_eq!(resources.len(), 2);
-        assert!(
-            resources
-                .iter()
-                .any(|resource| resource.kind == "link" && !resource.enabled)
-        );
+        assert!(resources
+            .iter()
+            .any(|resource| resource.kind == "link" && !resource.enabled));
 
         let threads = db.list_project_threads().unwrap();
         assert_eq!(threads, vec![("p1".to_string(), "t1".to_string())]);
@@ -5129,5 +6861,594 @@ mod tests {
         assert_eq!(rows[0].0, "e1");
         assert_eq!(rows[0].1, "v1");
         assert_eq!(rows[0].2, "json");
+    }
+
+    #[test]
+    fn policy_settings_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+
+        assert_eq!(
+            db.get_policy_setting("activeToolsetPolicyId").unwrap(),
+            None
+        );
+
+        db.set_policy_setting("activeToolsetPolicyId", "safe_research")
+            .unwrap();
+        assert_eq!(
+            db.get_policy_setting("activeToolsetPolicyId")
+                .unwrap()
+                .as_deref(),
+            Some("safe_research")
+        );
+
+        db.set_policy_setting("activeToolsetPolicyId", "code_edit")
+            .unwrap();
+        assert_eq!(
+            db.get_policy_setting("activeToolsetPolicyId")
+                .unwrap()
+                .as_deref(),
+            Some("code_edit")
+        );
+    }
+
+    #[test]
+    fn engine_runs_capture_gateway_metadata() {
+        let db = Database::open_in_memory().unwrap();
+        insert_test_engine_run(&db, "run-defaults");
+
+        let defaults = db.get_engine_run("run-defaults").unwrap().unwrap();
+        assert_eq!(defaults.source, "desktop");
+        assert_eq!(defaults.runtime_mode, "host");
+        assert_eq!(defaults.workspace_path, None);
+        assert_eq!(defaults.provider_profile_id, None);
+        assert_eq!(defaults.toolset_policy_id, None);
+
+        db.insert_thread(
+            "thread-1",
+            "Gateway Thread",
+            "2025-01-01T00:00:00",
+            None,
+            None,
+        )
+        .unwrap();
+
+        db.insert_engine_run_with_gateway_metadata(
+            "run-gateway",
+            None,
+            Some("thread-1"),
+            None,
+            "Gateway Run",
+            None,
+            "running",
+            "planning",
+            Some("C:/workspace"),
+            Some("claude-sonnet"),
+            Some("anthropic"),
+            Some("cli"),
+            Some("C:/workspace"),
+            Some("anthropic-default"),
+            Some("subprocess"),
+            Some("policy-strict"),
+            Some("desktop-thread"),
+            Some("thread-1"),
+            1,
+            None,
+            Some("{\"step\":1}"),
+            Some("{\"gateway\":true}"),
+        )
+        .unwrap();
+
+        let run = db.get_engine_run("run-gateway").unwrap().unwrap();
+        assert_eq!(run.source, "cli");
+        assert_eq!(run.workspace_path.as_deref(), Some("C:/workspace"));
+        assert_eq!(
+            run.provider_profile_id.as_deref(),
+            Some("anthropic-default")
+        );
+        assert_eq!(run.runtime_mode, "subprocess");
+        assert_eq!(run.toolset_policy_id.as_deref(), Some("policy-strict"));
+        assert_eq!(run.channel_kind.as_deref(), Some("desktop-thread"));
+        assert_eq!(run.channel_ref.as_deref(), Some("thread-1"));
+        assert!(run.started_at.is_some());
+    }
+
+    #[test]
+    fn engine_run_events_are_ordered_and_summarized() {
+        let db = Database::open_in_memory().unwrap();
+        insert_test_engine_run(&db, "run-events");
+
+        db.insert_engine_run_event("event-1", "run-events", "started", None)
+            .unwrap();
+        db.insert_engine_run_event_with_details(
+            "event-2",
+            "run-events",
+            "tool_call",
+            Some("Shell command completed"),
+            Some("{\"exitCode\":0}"),
+            Some("metadata"),
+        )
+        .unwrap();
+
+        let events = db.list_engine_run_events("run-events", 10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].sequence, 1);
+        assert_eq!(events[0].event_type, "started");
+        assert_eq!(events[0].summary, "started");
+        assert_eq!(events[0].redaction_level, "none");
+        assert_eq!(events[1].sequence, 2);
+        assert_eq!(events[1].summary, "Shell command completed");
+        assert_eq!(events[1].payload_json.as_deref(), Some("{\"exitCode\":0}"));
+        assert_eq!(events[1].redaction_level, "metadata");
+    }
+
+    #[test]
+    fn engine_run_artifacts_round_trip_and_cascade() {
+        let db = Database::open_in_memory().unwrap();
+        insert_test_engine_run(&db, "run-artifacts");
+
+        db.insert_engine_run_artifact(
+            "artifact-1",
+            "run-artifacts",
+            "patch",
+            "C:/workspace/changes.diff",
+            Some("Proposed patch"),
+            Some("Patch generated by the agent"),
+        )
+        .unwrap();
+        db.insert_engine_run_event("event-1", "run-artifacts", "artifact_created", None)
+            .unwrap();
+
+        let artifacts = db.list_engine_run_artifacts("run-artifacts", 10).unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, "patch");
+        assert_eq!(artifacts[0].path, "C:/workspace/changes.diff");
+        assert_eq!(artifacts[0].title.as_deref(), Some("Proposed patch"));
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM engine_runs WHERE id = ?1",
+                rusqlite::params!["run-artifacts"],
+            )
+            .unwrap();
+        }
+
+        assert!(db
+            .list_engine_run_artifacts("run-artifacts", 10)
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .list_engine_run_events("run-artifacts", 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn diagnostic_database_sinks_redact_before_persistence() {
+        let db = Database::open_in_memory().unwrap();
+        insert_test_engine_run(&db, "run-redaction");
+
+        db.insert_engine_run_event_with_details(
+            "event-redaction",
+            "run-redaction",
+            "tool_result",
+            Some("Authorization: Bearer event-summary-secret"),
+            Some(r#"{"apiKey":"event-json-secret","stdout":"token=event-output-secret"}"#),
+            None,
+        )
+        .unwrap();
+        db.insert_audit_event(
+            "audit-redaction",
+            "2026-07-10T12:00:00Z",
+            "tool_result",
+            None,
+            None,
+            Some(r#"{"password":"audit-json-secret"}"#),
+        )
+        .unwrap();
+
+        let event = db
+            .list_engine_run_events("run-redaction", 10)
+            .unwrap()
+            .pop()
+            .expect("event persists");
+        let event_text = format!("{} {:?}", event.summary, event.payload_json);
+        assert!(!event_text.contains("event-summary-secret"));
+        assert!(!event_text.contains("event-json-secret"));
+        assert!(!event_text.contains("event-output-secret"));
+        assert_eq!(event.redaction_level, "automatic");
+
+        let audit_details: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT details_json FROM audit_events WHERE id = ?1",
+                params!["audit-redaction"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!audit_details.contains("audit-json-secret"));
+        assert!(audit_details.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn engine_event_retention_keeps_the_latest_bounded_window() {
+        let db = Database::open_in_memory().unwrap();
+        insert_test_engine_run(&db, "run-retention");
+
+        for index in 0..(MAX_ENGINE_EVENTS_PER_RUN + 5) {
+            db.insert_engine_run_event(
+                &format!("event-{index}"),
+                "run-retention",
+                "progress",
+                None,
+            )
+            .unwrap();
+        }
+
+        let events = db
+            .list_engine_run_events("run-retention", MAX_ENGINE_EVENTS_PER_RUN + 10)
+            .unwrap();
+        assert_eq!(events.len() as i64, MAX_ENGINE_EVENTS_PER_RUN);
+        assert_eq!(events.first().map(|event| event.sequence), Some(6));
+        assert_eq!(
+            events.last().map(|event| event.sequence),
+            Some(MAX_ENGINE_EVENTS_PER_RUN + 5)
+        );
+    }
+
+    #[test]
+    fn startup_recovery_reconciles_active_state_after_reopen_and_is_idempotent() {
+        let root = database_test_dir("startup-recovery");
+        {
+            let db = Database::open(root.clone()).unwrap();
+            db.insert_engine_run(
+                "engine-active",
+                None,
+                None,
+                None,
+                "Active run",
+                None,
+                "running",
+                "tool:shell",
+                None,
+                None,
+                None,
+                0,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute_batch(
+                    "INSERT INTO tasks (id, title, prompt, status, created_at, updated_at)
+                     VALUES ('legacy-active', 'Legacy active', 'prompt', 'running', '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z');
+                     INSERT INTO task_steps (id, task_id, idx, title, state)
+                     VALUES ('step-active', 'legacy-active', 0, 'Step', 'running');
+                     INSERT INTO tasks (id, title, prompt, status, created_at, updated_at)
+                     VALUES ('legacy-waiting', 'Legacy waiting', 'prompt', 'waiting_approval', '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z');
+                     INSERT INTO work_tasks (
+                       id, title, prompt, runner, status, created_at, updated_at
+                     ) VALUES (
+                       'work-active', 'Work active', 'prompt', 'model', 'running',
+                       '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z'
+                     );
+                     INSERT INTO scheduled_tasks (
+                       id, name, prompt, schedule_expr, active, created_at, updated_at
+                     ) VALUES (
+                       'schedule-active', 'Schedule', 'prompt', 'hourly', 1,
+                       '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z'
+                     );
+                     INSERT INTO terminal_backends (
+                       id, name, backend_type, config_json, status, created_at, updated_at
+                     ) VALUES (
+                       'backend-active', 'Backend', 'local', '{}', 'connected',
+                       '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z'
+                     );
+                     INSERT INTO sessions (id, title, started_at)
+                     VALUES ('session-open', 'Open session', '2026-07-10T10:00:00Z');
+                     INSERT INTO crew_approvals (
+                       id, approval_type, status, requested_at, created_at, updated_at
+                     ) VALUES (
+                       'approval-pending', 'run_gate', 'pending', '2026-07-10T10:00:00Z',
+                       '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z'
+                     );",
+                )
+                .unwrap();
+            }
+            db.insert_worker_sandbox(
+                "sandbox-active",
+                "engine-active",
+                None,
+                Some("backend-active"),
+                "active",
+                "workspace_copy",
+                "C:/workspace",
+                "C:/sandbox",
+                "[]",
+                None,
+                true,
+                true,
+                true,
+                false,
+                false,
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+            db.insert_crew_run(
+                "crew-active",
+                "crew-1",
+                "Crew",
+                "sequential",
+                "running",
+                None,
+                None,
+                "{}",
+                "2026-07-10T10:00:00Z",
+                None,
+            )
+            .unwrap();
+            assert!(db
+                .begin_scheduled_run(
+                    "scheduled-active",
+                    "schedule-active",
+                    "2026-07-10T10:00:00Z",
+                    Some("2026-07-10T11:00:00Z"),
+                )
+                .unwrap());
+            db.insert_managed_process(
+                "process-active",
+                "Process",
+                "test-command",
+                Some("backend-active"),
+                false,
+            )
+            .unwrap();
+            db.update_process_status("process-active", "running", Some(42), None)
+                .unwrap();
+        }
+
+        let db = Database::open(root.clone()).unwrap();
+        let recovered_at = "2026-07-10T12:00:00Z";
+        let report = db.recover_after_unclean_shutdown(recovered_at).unwrap();
+        assert_eq!(report.total(), 9);
+        assert_eq!(report.engine_runs, 1);
+        assert_eq!(report.legacy_tasks, 1);
+        assert_eq!(report.task_steps, 1);
+        assert_eq!(report.work_tasks, 1);
+        assert_eq!(report.scheduled_runs, 1);
+        assert_eq!(report.crew_runs, 1);
+        assert_eq!(report.worker_sandboxes, 1);
+        assert_eq!(report.managed_processes, 1);
+        assert_eq!(report.terminal_backends, 1);
+        assert_eq!(
+            db.recover_after_unclean_shutdown("2026-07-10T12:01:00Z")
+                .unwrap()
+                .total(),
+            0
+        );
+
+        let conn = db.conn.lock().unwrap();
+        for (table, id, expected) in [
+            ("engine_runs", "engine-active", "interrupted"),
+            ("tasks", "legacy-active", "failed"),
+            ("work_tasks", "work-active", "failed"),
+            ("scheduled_runs", "scheduled-active", "interrupted"),
+            ("crew_runs", "crew-active", "interrupted"),
+            ("worker_sandboxes", "sandbox-active", "interrupted"),
+            ("managed_processes", "process-active", "interrupted"),
+            ("terminal_backends", "backend-active", "disconnected"),
+        ] {
+            let status: String = conn
+                .query_row(
+                    &format!("SELECT status FROM {table} WHERE id = ?1"),
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, expected);
+        }
+        let step_state: String = conn
+            .query_row(
+                "SELECT state FROM task_steps WHERE id = 'step-active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(step_state, "failed");
+        let waiting_status: String = conn
+            .query_row(
+                "SELECT status FROM tasks WHERE id = 'legacy-waiting'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(waiting_status, "waiting_approval");
+        let session_ended: Option<String> = conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = 'session-open'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(session_ended.is_none());
+        let approval_status: String = conn
+            .query_row(
+                "SELECT status FROM crew_approvals WHERE id = 'approval-pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(approval_status, "pending");
+        let engine_recovery_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM engine_run_events
+                 WHERE run_id = 'engine-active' AND event_type = 'run_interrupted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let crew_recovery_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM crew_run_events
+                 WHERE run_id = 'crew-active' AND event_type = 'run_interrupted'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(engine_recovery_events, 1);
+        assert_eq!(crew_recovery_events, 1);
+        drop(conn);
+        drop(db);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_run_claim_prevents_overlap_and_completion_updates_the_same_row() {
+        let db = Database::open_in_memory().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO scheduled_tasks (
+                   id, name, prompt, schedule_expr, active, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                params![
+                    "schedule-claim",
+                    "Schedule",
+                    "prompt",
+                    "hourly",
+                    "2026-07-10T10:00:00Z"
+                ],
+            )
+            .unwrap();
+        }
+
+        assert!(db
+            .begin_scheduled_run(
+                "run-claim-1",
+                "schedule-claim",
+                "2026-07-10T10:00:00Z",
+                Some("2026-07-10T11:00:00Z"),
+            )
+            .unwrap());
+        assert!(!db
+            .begin_scheduled_run(
+                "run-claim-2",
+                "schedule-claim",
+                "2026-07-10T10:01:00Z",
+                Some("2026-07-10T11:00:00Z"),
+            )
+            .unwrap());
+        db.insert_scheduled_run(
+            "run-claim-1",
+            "schedule-claim",
+            "succeeded",
+            "2026-07-10T10:00:00Z",
+            Some("2026-07-10T10:02:00Z"),
+            Some("done"),
+            None,
+        )
+        .unwrap();
+        assert!(db
+            .begin_scheduled_run(
+                "run-claim-2",
+                "schedule-claim",
+                "2026-07-10T11:00:00Z",
+                Some("2026-07-10T12:00:00Z"),
+            )
+            .unwrap());
+
+        let runs = db.list_scheduled_runs(10).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs.iter().filter(|run| run.2 == "running").count(), 1);
+        assert_eq!(runs.iter().filter(|run| run.2 == "succeeded").count(), 1);
+    }
+
+    #[test]
+    fn memory_search_ranks_natural_language_terms_instead_of_requiring_exact_phrase() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_memory_entry(
+            "memory-api-contract",
+            "shared",
+            "knowledge",
+            "API contract policy",
+            "The scheduler API requires idempotent retries and explicit rollback behavior.",
+            None,
+            0.95,
+        )
+        .unwrap();
+        db.upsert_memory_entry(
+            "memory-scheduler",
+            "shared",
+            "knowledge",
+            "Scheduler operations",
+            "Nightly runs use bounded retries and preserve the previous successful result.",
+            None,
+            0.9,
+        )
+        .unwrap();
+        db.upsert_memory_entry(
+            "memory-unrelated",
+            "shared",
+            "knowledge",
+            "Brand colors",
+            "The interface uses neutral surfaces and green success indicators.",
+            None,
+            1.0,
+        )
+        .unwrap();
+
+        let results = db
+            .search_memory_entries(
+                "latest API contracts and scheduler retry behavior for this crew task",
+                None,
+                None,
+                5,
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, "memory-api-contract");
+        assert!(results.iter().any(|entry| entry.id == "memory-scheduler"));
+        assert!(!results.iter().any(|entry| entry.id == "memory-unrelated"));
+    }
+
+    #[test]
+    fn memory_search_applies_scope_and_category_before_limiting_results() {
+        let db = Database::open_in_memory().unwrap();
+        for index in 0..8 {
+            db.upsert_memory_entry(
+                &format!("agent-{index}"),
+                "agent",
+                "notes",
+                &format!("agent-key-{index}"),
+                "shared search term",
+                None,
+                1.0,
+            )
+            .unwrap();
+        }
+        db.upsert_memory_entry(
+            "shared-match",
+            "shared",
+            "knowledge",
+            "shared-key",
+            "shared search term",
+            None,
+            1.0,
+        )
+        .unwrap();
+
+        let results = db
+            .search_memory_entries("shared search term", Some("shared"), Some("knowledge"), 1)
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "shared-match");
     }
 }

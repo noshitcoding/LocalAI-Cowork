@@ -29,7 +29,8 @@ function Import-MsvcEnvironment {
         throw "MSVC linker not found. Install Visual Studio Build Tools with the C++ build tools workload, or set TAURI_BUILD_TARGET=x86_64-pc-windows-gnu to build the GNU variant."
     }
 
-    $installPath = & $vswhereCandidates[0] -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $vswhere = @($vswhereCandidates)[0]
+    $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
     if (-not $installPath) {
         throw "Visual Studio C++ build tools not found. Install the 'Desktop development with C++' workload, or set TAURI_BUILD_TARGET=x86_64-pc-windows-gnu to build the GNU variant."
     }

@@ -120,6 +120,7 @@ type ChatState = {
   error: string | null
   loadFromDb: () => Promise<void>
   addThread: (title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => string
+  ensureThread: (id: string, title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => { id: string; created: boolean }
   hydrateThread: (thread: ChatThread) => void
   setActiveThread: (id: string | null) => void
   setThreadProviderSettings: (threadId: string, providerSettings?: ChatProviderSelection) => void
@@ -389,6 +390,58 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     })
     
     return id
+  },
+
+  ensureThread: (id, title, providerSettings, permissionConfig, runner, crewId) => {
+    const normalizedId = id.trim()
+    const existing = get().threads.find((thread) => thread.id === normalizedId)
+    if (existing) {
+      return { id: existing.id, created: false }
+    }
+
+    const now = Date.now()
+    const normalizedProviderSettings = normalizeChatProviderSelection(providerSettings)
+    const systemMsg: ChatMessage = {
+      id: generateId(),
+      role: 'system',
+      content: 'Open_Cowork is ready. Send a task to start planning and execution in chat mode.',
+      timestamp: now,
+    }
+    const thread: ChatThread = {
+      id: normalizedId,
+      title,
+      messages: [systemMsg],
+      createdAt: now,
+      updatedAt: now,
+      providerSettings: normalizedProviderSettings,
+      permissionConfig,
+      runner,
+      crewId,
+    }
+
+    loadedThreadMessages.add(normalizedId)
+    set((state) => ({
+      threads: [thread, ...state.threads],
+      activeThreadId: normalizedId,
+    }))
+
+    const isoNow = new Date(now).toISOString()
+    void persistInvoke('db_save_thread', {
+      id: normalizedId,
+      title,
+      createdAt: isoNow,
+      providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
+      permissionConfigJson: serializePermissionConfig(permissionConfig),
+    }, 'db_save_thread restored task chat')
+    void persistInvoke('db_save_message', {
+      id: systemMsg.id,
+      threadId: normalizedId,
+      role: systemMsg.role,
+      content: serializeChatMessageForStorage(systemMsg),
+      timestamp: systemMsg.timestamp,
+    }, 'db_save_message restored task chat system')
+
+    return { id: normalizedId, created: true }
   },
 
   hydrateThread: (thread) => {

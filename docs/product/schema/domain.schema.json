@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Open Cowork Domain Object",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "purpose",
+    "canonical_definition",
+    "allowed_ui_surfaces",
+    "disallowed_meanings",
+    "source_of_truth",
+    "source_files",
+    "tests"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^domain:" },
+    "title": { "type": "string" },
+    "purpose": { "type": "string" },
+    "canonical_definition": { "type": "string" },
+    "allowed_ui_surfaces": { "type": "array", "items": { "type": "string" } },
+    "disallowed_meanings": { "type": "array", "items": { "type": "string" } },
+    "source_of_truth": { "type": "array", "items": { "type": "string" } },
+    "source_files": { "type": "array", "items": { "type": "string" } },
+    "tests": { "type": "array", "items": { "type": "string" } }
+  }
+}

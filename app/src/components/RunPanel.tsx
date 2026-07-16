@@ -1,19 +1,33 @@
 import { useEffect, useState } from 'react'
 import { useEngineStore } from '../stores/engineStore'
 import { safeInvoke } from '../utils/safeInvoke'
+import {
+  normalizeEngineRunArtifact,
+  normalizeEngineRunEvent,
+  type EngineRunArtifactRow,
+  type EngineRunEventRow,
+} from '../utils/engineRunRecords'
 import { tr } from '../i18n'
 
 type EngineRunRow = {
   id: string
   parentRunId: string | null
+  threadId: string | null
   sessionId: string | null
   title: string
   inputSummary: string | null
+  source: string
   status: string
   phase: string
   cwd: string | null
+  workspacePath: string | null
   model: string | null
   provider: string | null
+  providerProfileId: string | null
+  runtimeMode: string
+  toolsetPolicyId: string | null
+  channelKind: string | null
+  channelRef: string | null
   retryCount: number
   resumedFromRunId: string | null
   checkpointJson: string | null
@@ -51,6 +65,10 @@ type RawRecord = Record<string, unknown>
 
 const ISO_EPOCH = new Date(0).toISOString()
 
+const formatDateTime = (value: string) => new Date(value).toLocaleString('de-DE')
+
+const formatBool = (value: boolean) => tr(value ? "yes" : "no")
+
 const asRecord = (value: unknown): RawRecord =>
   value && typeof value === 'object' ? value as RawRecord : {}
 
@@ -85,14 +103,22 @@ const normalizeRun = (value: unknown): EngineRunRow | null => {
   return {
     id,
     parentRunId: asNullableString(row.parentRunId ?? row.parent_run_id),
+    threadId: asNullableString(row.threadId ?? row.thread_id),
     sessionId: asNullableString(row.sessionId ?? row.session_id),
     title: asString(row.title, 'Untitleder Run'),
     inputSummary: asNullableString(row.inputSummary ?? row.input_summary),
+    source: asString(row.source, 'desktop'),
     status: asString(row.status, 'unknown'),
     phase: asString(row.phase, 'unknown'),
     cwd: asNullableString(row.cwd),
+    workspacePath: asNullableString(row.workspacePath ?? row.workspace_path),
     model: asNullableString(row.model),
     provider: asNullableString(row.provider),
+    providerProfileId: asNullableString(row.providerProfileId ?? row.provider_profile_id),
+    runtimeMode: asString(row.runtimeMode ?? row.runtime_mode, 'host'),
+    toolsetPolicyId: asNullableString(row.toolsetPolicyId ?? row.toolset_policy_id),
+    channelKind: asNullableString(row.channelKind ?? row.channel_kind),
+    channelRef: asNullableString(row.channelRef ?? row.channel_ref),
     retryCount: asNumber(row.retryCount ?? row.retry_count),
     resumedFromRunId: asNullableString(row.resumedFromRunId ?? row.resumed_from_run_id),
     checkpointJson: asNullableString(row.checkpointJson ?? row.checkpoint_json),
@@ -143,6 +169,8 @@ export default function RunPanel() {
   const currentRunId = useEngineStore((state) => state.currentRunId)
   const [runs, setRuns] = useState<EngineRunRow[]>([])
   const [selectedRun, setSelectedRun] = useState<string | null>(null)
+  const [events, setEvents] = useState<EngineRunEventRow[]>([])
+  const [artifacts, setArtifacts] = useState<EngineRunArtifactRow[]>([])
   const [checkpoints, setCheckpoints] = useState<EngineRunCheckpointRow[]>([])
   const [sandbox, setSandbox] = useState<WorkerSandboxRow | null>(null)
   const [loading, setLoading] = useState(false)
@@ -185,6 +213,38 @@ export default function RunPanel() {
     }
   }
 
+  const refreshEvents = async (runId: string) => {
+    try {
+      const rows = await safeInvoke<unknown[] | null>('engine_run_event_list', {
+        runId,
+        limit: 200,
+      }, [])
+      setEvents(
+        Array.isArray(rows)
+          ? rows.map(normalizeEngineRunEvent).filter((event): event is EngineRunEventRow => event !== null)
+          : [],
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const refreshArtifacts = async (runId: string) => {
+    try {
+      const rows = await safeInvoke<unknown[] | null>('engine_run_artifact_list', {
+        runId,
+        limit: 100,
+      }, [])
+      setArtifacts(
+        Array.isArray(rows)
+          ? rows.map(normalizeEngineRunArtifact).filter((artifact): artifact is EngineRunArtifactRow => artifact !== null)
+          : [],
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const refreshSandbox = async (runId: string) => {
     try {
       const row = await safeInvoke<unknown>('worker_sandbox_get_for_run', { runId }, null)
@@ -196,14 +256,20 @@ export default function RunPanel() {
 
   useEffect(() => {
     void refreshRuns()
+    // Refresh once on mount; manual refresh and actions keep the list current.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     if (!selectedRun) {
+      setEvents([])
+      setArtifacts([])
       setCheckpoints([])
       setSandbox(null)
       return
     }
+    void refreshEvents(selectedRun)
+    void refreshArtifacts(selectedRun)
     void refreshCheckpoints(selectedRun)
     void refreshSandbox(selectedRun)
   }, [selectedRun])
@@ -222,6 +288,12 @@ export default function RunPanel() {
       }
       await refreshRuns()
       setSelectedRun(nextSelectedRun)
+      await Promise.all([
+        refreshEvents(nextSelectedRun),
+        refreshArtifacts(nextSelectedRun),
+        refreshCheckpoints(nextSelectedRun),
+        refreshSandbox(nextSelectedRun),
+      ])
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -267,7 +339,10 @@ export default function RunPanel() {
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  {new Date(run.updatedAt).toLocaleString('en-US')} • {run.phase}
+                  {formatDateTime(run.updatedAt)} - {run.source} - {run.phase}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  {run.runtimeMode} {run.provider ? `- ${run.provider}` : ''} {run.model ? `- ${run.model}` : ''}
                 </div>
                 {run.inputSummary && (
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
@@ -292,23 +367,31 @@ export default function RunPanel() {
                       </div>
                     </div>
                     <div style={{ fontSize: 12 }}>
-                      <div>{tr("Status:")}{run.status}</div>
-                      <div>{tr("Phase:")}{run.phase}</div>
-                      <div>{tr("Provider:")}{run.provider ?? 'n/a'}</div>
-                      <div>{tr("Model:")}{run.model ?? 'n/a'}</div>
-                      <div>{tr("Retry Count:")}{run.retryCount}</div>
-                      {run.parentRunId && <div>{tr("Parent:")}{run.parentRunId}</div>}
+                      <div>{tr("Status:")} {run.status}</div>
+                      <div>{tr("Phase:")} {run.phase}</div>
+                      <div>{tr("Source:")} {run.source}</div>
+                      <div>{tr("Runtime:")} {run.runtimeMode}</div>
+                      <div>{tr("Provider:")} {run.provider ?? 'n/a'}</div>
+                      <div>{tr("Profile:")} {run.providerProfileId ?? 'n/a'}</div>
+                      <div>{tr("Model:")} {run.model ?? 'n/a'}</div>
+                      <div>{tr("Tool Policy:")} {run.toolsetPolicyId ?? 'n/a'}</div>
+                      <div>{tr("Workspace:")} {run.workspacePath ?? run.cwd ?? 'n/a'}</div>
+                      {run.channelKind && <div>{tr("Channel:")} {run.channelKind}{run.channelRef ? ` / ${run.channelRef}` : ''}</div>}
+                      {run.threadId && <div>{tr("Thread:")} {run.threadId}</div>}
+                      <div>{tr("Retry Count:")} {run.retryCount}</div>
+                      {run.parentRunId && <div>{tr("Parent:")} {run.parentRunId}</div>}
                     </div>
                     {sandbox && (
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{tr("Sandbox")}</div>
                         <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                          <div>{tr("Status:")}{sandbox.status}</div>
-                          <div>{tr("Mode:")}{sandbox.mode}</div>
-                          <div>{tr("Backend:")}{sandbox.backendId ?? 'local'}</div>
-                          <div>{tr("Workspace:")}{sandbox.workspaceRoot}</div>
-                          <div>{tr("Source:")}{sandbox.sourceCwd}</div>
-                          <div>{tr("Permissions: read")}{String(sandbox.allowFileRead)}{tr("| write")}{String(sandbox.allowFileWrite)}{tr("| shell")}{String(sandbox.allowShellExecution)}{tr("| web")}{String(sandbox.allowWebFetch || sandbox.allowWebSearch)}{tr("| mcp")}{String(sandbox.allowMcp)}
+                          <div>{tr("Status:")} {sandbox.status}</div>
+                          <div>{tr("Mode:")} {sandbox.mode}</div>
+                          <div>{tr("Backend:")} {sandbox.backendId ?? 'local'}</div>
+                          <div>{tr("Workspace:")} {sandbox.workspaceRoot}</div>
+                          <div>{tr("Source:")} {sandbox.sourceCwd}</div>
+                          <div>
+                            {tr("Permissions:")} {tr("read")} {formatBool(sandbox.allowFileRead)} / {tr("write")} {formatBool(sandbox.allowFileWrite)} / {tr("shell")} {formatBool(sandbox.allowShellExecution)} / {tr("web")} {formatBool(sandbox.allowWebFetch || sandbox.allowWebSearch)} / {tr("mcp")} {formatBool(sandbox.allowMcp)}
                           </div>
                         </div>
                       </div>
@@ -335,6 +418,49 @@ export default function RunPanel() {
                       </div>
                     )}
                     <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{tr("Events")}</div>
+                      {events.length === 0 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("No events")}</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
+                          {events.map((event) => (
+                            <div key={event.id} style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                <strong>#{event.sequence} {event.eventType}</strong>
+                                <span style={{ color: 'var(--text-muted)' }}>{formatDateTime(event.createdAt)}</span>
+                              </div>
+                              <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>{event.summary}</div>
+                              {event.payloadJson && event.redactionLevel !== 'secret' && (
+                                <pre style={{ whiteSpace: 'pre-wrap', margin: '6px 0 0', maxHeight: 120, overflowY: 'auto' }}>
+                                  {event.payloadJson.slice(0, 800)}
+                                </pre>
+                              )}
+                              {event.redactionLevel === 'secret' && (
+                                <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>{tr("Payload hidden")}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{tr("Artifacts")}</div>
+                      {artifacts.length === 0 ? (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("No artifacts")}</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 160, overflowY: 'auto' }}>
+                          {artifacts.map((artifact) => (
+                            <div key={artifact.id} style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)' }}>
+                              <div style={{ fontWeight: 600 }}>{artifact.title ?? artifact.kind}</div>
+                              <div style={{ color: 'var(--text-muted)', marginTop: 3 }}>{artifact.kind} - {formatDateTime(artifact.createdAt)}</div>
+                              <div style={{ color: 'var(--text-secondary)', marginTop: 4, overflowWrap: 'anywhere' }}>{artifact.path}</div>
+                              {artifact.summary && <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>{artifact.summary}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
                       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{tr("Checkpoints")}</div>
                       {checkpoints.length === 0 ? (
                         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tr("No Checkpoints")}</div>
@@ -343,7 +469,7 @@ export default function RunPanel() {
                           {checkpoints.map((checkpoint) => (
                             <div key={checkpoint.id} style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)' }}>
                               <div style={{ fontWeight: 600 }}>{checkpoint.label}</div>
-                              <div style={{ color: 'var(--text-muted)', margin: '3px 0 6px' }}>{new Date(checkpoint.createdAt).toLocaleString('en-US')}</div>
+                              <div style={{ color: 'var(--text-muted)', margin: '3px 0 6px' }}>{formatDateTime(checkpoint.createdAt)}</div>
                               <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{checkpoint.snapshotJson.slice(0, 400)}</pre>
                             </div>
                           ))}

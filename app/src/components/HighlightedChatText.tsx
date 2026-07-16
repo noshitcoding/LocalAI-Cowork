@@ -1,22 +1,20 @@
 import type { ReactNode } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { extractWebSearchSources } from '../utils/webSearchSources'
+import { tr } from '../i18n'
 
 type HighlightedChatTextProps = {
   content: string
 }
-
-const COMMAND_TOKEN_PATTERN = /(^|[\s([{])\/[A-Za-z][A-Za-z0-9_-]*/g
 
 export function HighlightedChatText({ content }: HighlightedChatTextProps) {
   const extracted = extractWebSearchSources(content)
   const parts: ReactNode[] = []
   let lastIndex = 0
   let match: RegExpExecArray | null
+  const commandTokenPattern = /(^|[\s([{])\/[A-Za-z][A-Za-z0-9_-]*/g
 
-  COMMAND_TOKEN_PATTERN.lastIndex = 0
-
-  while ((match = COMMAND_TOKEN_PATTERN.exec(extracted.content)) !== null) {
+  while ((match = commandTokenPattern.exec(extracted.content)) !== null) {
     const prefix = match[1] ?? ''
     const commandStart = match.index + prefix.length
     const commandEnd = match.index + match[0].length
@@ -57,6 +55,7 @@ export function HighlightedChatText({ content }: HighlightedChatTextProps) {
               key={`${source.url}-${index}`}
               className="message-source-chip"
               title={source.url}
+              aria-label={`${tr("Open source")}: ${source.title}`}
               onClick={() => handleSourceClick(source.url)}
             >
               {source.title}

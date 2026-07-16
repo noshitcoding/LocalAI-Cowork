@@ -59,6 +59,24 @@ describe('crewStore', () => {
     expect(useCrewStore.getState().crews[0].agents[0].id).toBe('agent-researcher')
   })
 
+  it('creates a runnable starter crew with plan, execution, and review stages', () => {
+    const crewId = useCrewStore.getState().createStarterCrew(
+      'Release Crew',
+      'Prepare and verify the release candidate',
+    )
+    const state = useCrewStore.getState()
+    const crew = state.crews.find((entry) => entry.id === crewId)
+
+    expect(crew).toBeTruthy()
+    expect(state.activeCrewId).toBe(crewId)
+    expect(crew?.agents).toHaveLength(3)
+    expect(crew?.tasks).toHaveLength(3)
+    expect(crew?.tasks[0].dependencies).toEqual([])
+    expect(crew?.tasks[1].dependencies).toEqual([crew?.tasks[0].id])
+    expect(crew?.tasks[2].dependencies).toEqual([crew?.tasks[1].id])
+    expect(crew?.knowledgeFocus).toBe('Prepare and verify the release candidate')
+  })
+
   it('syncs global profile fields while preserving crew-specific permissions', () => {
     const localA = { ...duplicateAgent, id: 'agent-a', personalityId: 'pers-shared', tools: ['read_file'], enabled: true }
     const localB = { ...duplicateAgent, id: 'agent-b', personalityId: 'pers-shared', tools: ['edit_file'], enabled: false }

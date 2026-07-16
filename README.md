@@ -142,6 +142,9 @@ npm run smoke:desktop
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [OpenClaw and Hermes feature adoption deep spec](docs/OPENCLAW_HERMES_FEATURE_ADOPTION_DEEP_SPEC.md)
+- [OpenClaw and Hermes P0 implementation backlog](docs/OPENCLAW_HERMES_P0_IMPLEMENTATION_BACKLOG.md)
+- [OpenClaw and Hermes P0 smoke checklist](docs/OPENCLAW_HERMES_P0_SMOKE_CHECKLIST.md)
 - [Development and operations](docs/DEVELOPMENT_AND_OPERATIONS.md)
 - [Ollama configuration](docs/OLLAMA_CONFIGURATION.md)
 - [Desktop smoke test](docs/DESKTOP_SMOKE_TEST.md)
@@ -153,11 +156,11 @@ npm run smoke:desktop
 The GitHub Actions workflow in `.github/workflows/windows-installer.yml` builds the Windows installer and attaches it to a GitHub Release when a version tag is pushed.
 
 ```powershell
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.7
+git push origin v0.1.7
 ```
 
-Manual release builds are also available through the workflow dispatch input.
+The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `OPEN_COWORK_CODESIGN_PFX_BASE64`, `OPEN_COWORK_CODESIGN_PASSWORD`, and `OPEN_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. Manual release builds are also available through the workflow dispatch input.
 
 ## Contributing
 

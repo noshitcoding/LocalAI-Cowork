@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useCrewControlPlaneStore } from '../../stores/crewControlPlaneStore'
 import { useCrewStore, type CrewGovernanceMode } from '../../stores/crewStore'
-import { tr } from '../../i18n'
+import i18n, { tr } from '../../i18n'
 
 const GOVERNANCE_MODES: Array<{
   value: CrewGovernanceMode
@@ -35,9 +35,9 @@ type Props = {
 }
 
 function formatTimestamp(value: string | null): string {
-  if (!value) return '—'
+  if (!value) return '-'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('en-US')
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')
 }
 
 function formatApprovalType(value: string): string {
@@ -115,7 +115,7 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
 
       <div className="crew-stat-card crew-emphasis-card">
         <div className="crew-stat-label">{tr("Active mode")}</div>
-        <div className="crew-stat-value">{activeModeDefinition.title}</div>
+        <div className="crew-stat-value">{tr(activeModeDefinition.title)}</div>
         <div className="crew-stat-meta">{tr(activeModeDefinition.description)}</div>
       </div>
 
@@ -129,7 +129,7 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
               className={`crew-choice-card${selected ? ' is-active' : ''}`}
               onClick={() => handleModeSelect(mode.value)}
             >
-              <strong>{mode.title}</strong>
+              <strong>{tr(mode.title)}</strong>
               <span>{tr(mode.description)}</span>
             </button>
           )
@@ -137,7 +137,7 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
       </div>
 
       <div>
-        <div className="crew-stat-label" style={{ marginBottom: 8 }}>{tr("Open / latest approvals")}</div>
+        <div className="crew-stat-label crew-stat-label-spaced">{tr("Open / latest approvals")}</div>
         {approvals.length === 0 ? (
           <div className="crew-inline-feedback">{tr("No approvals available for this crew yet.")}</div>
         ) : (
@@ -146,7 +146,7 @@ export default function CrewGovernancePanel({ activeCrewId }: Props) {
               <div key={approval.id} className="crew-stack-card">
                 <div className="crew-stack-card-header">
                   <strong>{formatApprovalType(approval.approvalType)}</strong>
-                  <span style={{ color: approval.status === 'approved' ? 'var(--success)' : approval.status === 'rejected' ? 'var(--danger)' : 'var(--warning)' }}>{formatApprovalStatus(approval.status)}</span>
+                  <span className={`crew-approval-status ${approval.status}`}>{formatApprovalStatus(approval.status)}</span>
                 </div>
                 <div className="crew-stat-meta">{tr("Angefragt:")}{formatTimestamp(approval.requestedAt)}
                 </div>

@@ -1,9 +1,41 @@
 import { useEffect, useState } from 'react'
+import { Pencil, Trash2 } from 'lucide-react'
+import i18n, { tr } from '../i18n'
 import { useSkillStore, type Skill } from '../stores/skillStore'
-import { tr } from '../i18n'
+
+type SkillTab = 'skills' | 'learnings'
+
+const emptyForm = {
+  name: '',
+  description: '',
+  promptTemplate: '',
+  triggerPattern: '',
+  runMode: 'execute',
+}
+
+const runModeLabels: Record<string, string> = {
+  execute: 'Run',
+  plan: 'Plan',
+  hybrid: 'Hybrid',
+}
 
 function randomId() {
   return `skill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')
+}
+
+function getRunModeLabel(mode: string) {
+  return tr(runModeLabels[mode] ?? mode)
+}
+
+function getTabLabel(tab: SkillTab) {
+  return tab === 'skills' ? tr('Skills') : tr('Learning history')
 }
 
 export default function SkillPanel() {
@@ -13,19 +45,19 @@ export default function SkillPanel() {
     loadLearnings,
   } = useSkillStore()
 
-  const [tab, setTab] = useState<'skills' | 'learnings'>('skills')
+  const [tab, setTab] = useState<SkillTab>('skills')
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ name: '', description: '', promptTemplate: '', triggerPattern: '', runMode: 'execute' })
+  const [form, setForm] = useState(emptyForm)
   const [improveId, setImproveId] = useState<string | null>(null)
   const [improveTemplate, setImproveTemplate] = useState('')
   const [improveReason, setImproveReason] = useState('')
 
   useEffect(() => {
-    loadSkills()
+    void loadSkills()
   }, [loadSkills])
 
   useEffect(() => {
-    if (tab === 'learnings') loadLearnings()
+    if (tab === 'learnings') void loadLearnings()
   }, [tab, loadLearnings])
 
   const handleAdd = async () => {
@@ -38,9 +70,9 @@ export default function SkillPanel() {
       triggerPattern: form.triggerPattern || undefined,
       runMode: form.runMode,
     })
-    setForm({ name: '', description: '', promptTemplate: '', triggerPattern: '', runMode: 'execute' })
+    setForm(emptyForm)
     setShowAdd(false)
-    loadSkills()
+    void loadSkills()
   }
 
   const handleImprove = async () => {
@@ -49,97 +81,152 @@ export default function SkillPanel() {
     setImproveId(null)
     setImproveTemplate('')
     setImproveReason('')
-    loadSkills()
+    void loadSkills()
+  }
+
+  const handleDeleteSkill = async (id: string) => {
+    await deleteSkill(id)
+    void loadSkills()
   }
 
   return (
-    <div className="panel">
-      <h2>{tr("⚡ Skills & Learning history")}</h2>
+    <div className="panel skill-panel">
+      <h2>{tr('Skills and learning history')}</h2>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <button type="button" className={`btn-sm${tab === 'skills' ? ' active' : ''}`} onClick={() => setTab('skills')}>{tr("Skills")}</button>
-        <button type="button" className={`btn-sm${tab === 'learnings' ? ' active' : ''}`} onClick={() => setTab('learnings')}>{tr("Learning history")}</button>
+      <div className="skill-tab-row" role="tablist" aria-label={tr('Skills and learning history')}>
+        {(['skills', 'learnings'] as SkillTab[]).map((item) => (
+          <button
+            key={item}
+            type="button"
+            role="tab"
+            aria-selected={tab === item}
+            className={`btn-sm${tab === item ? ' active' : ''}`}
+            onClick={() => setTab(item)}
+          >
+            {getTabLabel(item)}
+          </button>
+        ))}
       </div>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="skill-error">{error}</p>}
 
       {tab === 'skills' && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{skills.length}{tr("Skills registriert")}</span>
-            <button type="button" className="btn-sm" onClick={() => setShowAdd(!showAdd)}>{tr("+ New skill")}</button>
+          <div className="skill-summary-row">
+            <span className="skill-count">
+              {skills.length} {tr('Skills registered')}
+            </span>
+            <button type="button" className="btn-sm" onClick={() => setShowAdd(!showAdd)}>
+              {tr('+ New skill')}
+            </button>
           </div>
 
           {showAdd && (
-            <div className="card" style={{ marginBottom: 12 }}>
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', marginBottom: 8 }}>
-                <label>{tr("Name")}<input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            <div className="card skill-form-card">
+              <div className="grid skill-form-grid">
+                <label className="skill-label">
+                  {tr('Name')}
+                  <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
                 </label>
-                <label>{tr("Mode")}<select value={form.runMode} onChange={(e) => setForm({ ...form, runMode: e.target.value })}>
-                    <option value="execute">{tr("Ausfuehren")}</option>
-                    <option value="plan">{tr("Planen")}</option>
-                    <option value="hybrid">{tr("Hybrid")}</option>
+                <label className="skill-label">
+                  {tr('Mode')}
+                  <select value={form.runMode} onChange={(e) => setForm({ ...form, runMode: e.target.value })}>
+                    <option value="execute">{tr('Run')}</option>
+                    <option value="plan">{tr('Plan')}</option>
+                    <option value="hybrid">{tr('Hybrid')}</option>
                   </select>
                 </label>
               </div>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Description")}<input type="text" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
+              <label className="skill-label">
+                {tr('Description')}
+                <input
+                  type="text"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
               </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Prompt-Template")}<textarea value={form.promptTemplate} onChange={(e) => setForm({ ...form, promptTemplate: e.target.value })} rows={3}
-                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, resize: 'vertical' }} />
+              <label className="skill-label">
+                {tr('Prompt-Template')}
+                <textarea
+                  value={form.promptTemplate}
+                  onChange={(e) => setForm({ ...form, promptTemplate: e.target.value })}
+                  rows={3}
+                />
               </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Trigger-Pattern (optional)")}<input type="text" value={form.triggerPattern} onChange={(e) => setForm({ ...form, triggerPattern: e.target.value })}
-                  placeholder={tr("e.g. *test*, *deploy*")}
-                  style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
+              <label className="skill-label">
+                {tr('Trigger-Pattern (optional)')}
+                <input
+                  type="text"
+                  value={form.triggerPattern}
+                  onChange={(e) => setForm({ ...form, triggerPattern: e.target.value })}
+                  placeholder={tr('e.g. *test*, *deploy*')}
+                />
               </label>
-              <button type="button" className="btn-sm" onClick={handleAdd}>{tr("Save")}</button>
+              <button type="button" className="btn-sm" onClick={handleAdd}>{tr('Save')}</button>
             </div>
           )}
 
           {loading ? (
-            <p className="panel-empty">{tr("Loading...")}</p>
+            <p className="panel-empty">{tr('Loading...')}</p>
           ) : skills.length === 0 ? (
-            <p className="panel-empty">{tr("No skills created yet")}</p>
+            <p className="panel-empty">{tr('No skills created yet')}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="skill-list">
               {skills.map((skill: Skill) => (
-                <div key={skill.id} className="card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>
-                        {skill.name}
-                        {skill.auto_generated && <span style={{ fontSize: 10, marginLeft: 6, color: 'var(--info)', fontWeight: 400 }}>{tr("auto")}</span>}
+                <div key={skill.id} className="card skill-card">
+                  <div className="skill-card-header">
+                    <div className="skill-main">
+                      <div className="skill-title-row">
+                        <span className="skill-name">{skill.name}</span>
+                        {skill.auto_generated && <span className="skill-auto-badge">{tr('auto')}</span>}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{skill.description}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                        <span>{tr("Mode:")}{skill.run_mode}</span>
-                        <span>{tr("Nutzung:")}{skill.usage_count}{tr("x")}</span>
-                        <span>{tr("Erfolg:")}{skill.success_count}/{skill.usage_count}</span>
-                        <span>{tr("quality:")}{skill.avg_quality.toFixed(1)}</span>
-                        {skill.trigger_pattern && <span>{tr("Trigger:")}{skill.trigger_pattern}</span>}
+                      <div className="skill-description">{skill.description}</div>
+                      <div className="skill-meta">
+                        <span>{tr('Mode:')} {getRunModeLabel(skill.run_mode)}</span>
+                        <span>{tr('Usage:')} {skill.usage_count}</span>
+                        <span>{tr('Success:')} {skill.success_count}/{skill.usage_count}</span>
+                        <span>{tr('Quality:')} {skill.avg_quality.toFixed(1)}</span>
+                        {skill.trigger_pattern && <span>{tr('Trigger:')} {skill.trigger_pattern}</span>}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      <button type="button" className="btn-sm" onClick={() => {
-                        setImproveId(skill.id)
-                        setImproveTemplate(skill.prompt_template)
-                      }} title={tr("Verbessern")}>✏️</button>
-                      <button type="button" onClick={() => { deleteSkill(skill.id); loadSkills() }}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 14 }}>{tr("×")}</button>
+                    <div className="skill-actions">
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        onClick={() => {
+                          setImproveId(skill.id)
+                          setImproveTemplate(skill.prompt_template)
+                        }}
+                        title={tr('Improve')}
+                        aria-label={tr('Improve skill')}
+                      >
+                        <Pencil size={14} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="skill-danger-button"
+                        onClick={() => { void handleDeleteSkill(skill.id) }}
+                        title={tr('Delete skill')}
+                        aria-label={tr('Delete skill')}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
                     </div>
                   </div>
 
                   {improveId === skill.id && (
-                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-light)' }}>
-                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("New prompt template")}<textarea value={improveTemplate} onChange={(e) => setImproveTemplate(e.target.value)} rows={3}
-                          style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13, resize: 'vertical' }} />
+                    <div className="skill-improve-panel">
+                      <label className="skill-label">
+                        {tr('New prompt template')}
+                        <textarea value={improveTemplate} onChange={(e) => setImproveTemplate(e.target.value)} rows={3} />
                       </label>
-                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginBottom: 8 }}>{tr("Grund")}<input type="text" value={improveReason} onChange={(e) => setImproveReason(e.target.value)}
-                          style={{ padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: 13 }} />
+                      <label className="skill-label">
+                        {tr('Reason')}
+                        <input type="text" value={improveReason} onChange={(e) => setImproveReason(e.target.value)} />
                       </label>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button type="button" className="btn-sm" onClick={handleImprove}>{tr("Uebernehmen")}</button>
-                        <button type="button" className="btn-sm" onClick={() => setImproveId(null)}>{tr("Cancel")}</button>
+                      <div className="skill-improve-actions">
+                        <button type="button" className="btn-sm" onClick={handleImprove}>{tr('Apply')}</button>
+                        <button type="button" className="btn-sm" onClick={() => setImproveId(null)}>{tr('Cancel')}</button>
                       </div>
                     </div>
                   )}
@@ -153,19 +240,23 @@ export default function SkillPanel() {
       {tab === 'learnings' && (
         <>
           {loading ? (
-            <p className="panel-empty">{tr("Loading...")}</p>
+            <p className="panel-empty">{tr('Loading...')}</p>
           ) : learnings.length === 0 ? (
-            <p className="panel-empty">{tr("No learning entries yet")}</p>
+            <p className="panel-empty">{tr('No learning entries yet')}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {learnings.map((l) => (
-                <div key={l.id} className="card">
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
-                    {l.outcome_type}{tr("&middot; Conf:")}{l.confidence.toFixed(2)}{tr("&middot;")}{new Date(l.created_at).toLocaleString('en-US')}
+            <div className="skill-list">
+              {learnings.map((learning) => (
+                <div key={learning.id} className="card skill-learning-card">
+                  <div className="skill-learning-meta">
+                    <span>{learning.outcome_type}</span>
+                    <span>{tr('Confidence')}: {learning.confidence.toFixed(2)}</span>
+                    <span>{formatDateTime(learning.created_at)}</span>
                   </div>
-                  <div style={{ fontSize: 13 }}>{l.description}</div>
-                  {l.learned_pattern && (
-                    <div style={{ fontSize: 12, color: 'var(--info)', marginTop: 4 }}>{tr("Pattern:")}{l.learned_pattern}</div>
+                  <div className="skill-learning-description">{learning.description}</div>
+                  {learning.learned_pattern && (
+                    <div className="skill-learning-pattern">
+                      {tr('Pattern:')} {learning.learned_pattern}
+                    </div>
                   )}
                 </div>
               ))}

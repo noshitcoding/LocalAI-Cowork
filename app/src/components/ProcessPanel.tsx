@@ -9,9 +9,9 @@ export default function ProcessPanel() {
   const [showForm, setShowForm] = useState(false)
 
   useEffect(() => {
-    loadProcesses()
-    const interval = setInterval(loadProcesses, 5000)
-    return () => clearInterval(interval)
+    void loadProcesses()
+    const interval = window.setInterval(() => void loadProcesses(), 5000)
+    return () => window.clearInterval(interval)
   }, [loadProcesses])
 
   const handleStart = async () => {
@@ -20,41 +20,41 @@ export default function ProcessPanel() {
     setLabel('')
     setCommand('')
     setShowForm(false)
-    loadProcesses()
-  }
-
-  const statusColor = (status: string) => {
-    switch (status) {
-      case 'running': return 'var(--success)'
-      case 'stopped': return 'var(--text-muted)'
-      case 'failed': return 'var(--danger)'
-      case 'pending_approval': return 'var(--warning)'
-      default: return 'var(--text-secondary)'
-    }
+    void loadProcesses()
   }
 
   const statusLabel = (status: string) => {
     switch (status) {
-      case 'running': return 'Running'
-      case 'stopped': return 'Gestoppt'
-      case 'failed': return 'Error'
-      case 'pending_approval': return 'Waiting for approval'
+      case 'running': return tr('Running')
+      case 'stopped': return tr('Stopped')
+      case 'failed': return tr('Failed')
+      case 'pending_approval': return tr('Waiting for approval')
       default: return status
     }
   }
 
+  const handleApproval = async (processId: string, approved: boolean) => {
+    await approveProcess(processId, approved)
+    void loadProcesses()
+  }
+
+  const handleStop = async (processId: string) => {
+    await stopProcess(processId)
+    void loadProcesses()
+  }
+
   return (
-    <div className="panel">
+    <div className="panel process-panel">
       <div className="panel-heading-row">
-        <h2>{tr("⚙️ Processes")}</h2>
+        <h2>{tr("Processes")}</h2>
         <button type="button" className="btn-sm" onClick={() => setShowForm(!showForm)}>{tr("Start")}</button>
       </div>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="process-panel-error">{error}</p>}
 
       {showForm && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div className="grid" style={{ gridTemplateColumns: '1fr 2fr', marginBottom: 8 }}>
+        <div className="card process-form-card">
+          <div className="grid process-form-grid">
             <label>{tr("Label")}<input type="text" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={tr("e.g. Dev Server")} />
             </label>
             <label>{tr("Command")}<input type="text" value={command} onChange={(e) => setCommand(e.target.value)} placeholder={tr("e.g. npm run dev")} />
@@ -69,30 +69,27 @@ export default function ProcessPanel() {
       ) : processes.length === 0 ? (
         <p className="panel-empty">{tr("No active Processes")}</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {processes.map((proc: ProcessStatusResult) => (
-            <div key={proc.processId} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{proc.label}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{proc.command}</div>
-                <div style={{ fontSize: 11, marginTop: 2 }}>
-                  <span style={{ color: statusColor(proc.status) }}>{statusLabel(proc.status)}</span>
-                  {proc.pid != null && <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>{tr("PID:")}{proc.pid}</span>}
-                  {proc.requiresAdmin && <span style={{ color: 'var(--warning)', marginLeft: 8 }}>{tr("Admin")}</span>}
+        <div className="process-list">
+          {processes.map((process: ProcessStatusResult) => (
+            <div key={process.processId} className="card process-card">
+              <div className="process-main">
+                <div className="process-label">{process.label}</div>
+                <div className="process-command">{process.command}</div>
+                <div className="process-meta">
+                  <span className={`process-status status-${process.status}`}>{statusLabel(process.status)}</span>
+                  {process.pid != null && <span className="process-muted-meta">{tr("PID:")}{process.pid}</span>}
+                  {process.requiresAdmin && <span className="process-admin-meta">{tr("Admin")}</span>}
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {proc.status === 'pending_approval' && (
+              <div className="process-actions">
+                {process.status === 'pending_approval' && (
                   <>
-                    <button type="button" className="btn-sm" onClick={async () => { await approveProcess(proc.processId, true); loadProcesses() }}
-                      style={{ color: 'var(--success)' }}>✓</button>
-                    <button type="button" className="btn-sm" onClick={async () => { await approveProcess(proc.processId, false); loadProcesses() }}
-                      style={{ color: 'var(--danger)' }}>✗</button>
+                    <button type="button" className="btn-sm process-approve" onClick={() => void handleApproval(process.processId, true)} aria-label={tr("Approve")}>{tr("Approve")}</button>
+                    <button type="button" className="btn-sm process-reject" onClick={() => void handleApproval(process.processId, false)} aria-label={tr("Reject")}>{tr("Reject")}</button>
                   </>
                 )}
-                {proc.status === 'running' && (
-                  <button type="button" className="btn-sm" onClick={async () => { await stopProcess(proc.processId); loadProcesses() }}
-                    style={{ color: 'var(--danger)' }}>{tr("Stop")}</button>
+                {process.status === 'running' && (
+                  <button type="button" className="btn-sm process-reject" onClick={() => void handleStop(process.processId)}>{tr("Stop")}</button>
                 )}
               </div>
             </div>

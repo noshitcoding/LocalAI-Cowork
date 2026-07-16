@@ -116,6 +116,6 @@ describe('SessionSearchPanel', () => {
     await act(async () => { render(<SessionSearchPanel />) })
 
     await waitFor(() => expect(screen.getByText('Valid')).toBeInTheDocument())
-    expect(screen.getByText('Untitlede Session')).toBeInTheDocument()
+    expect(screen.getByText('Untitled session')).toBeInTheDocument()
   })
 })

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { safeInvoke } from '../../utils/safeInvoke'
-import { tr } from '../../i18n'
+import i18n, { tr } from '../../i18n'
 
 type CrewRunHistoryRow = {
   id: string
@@ -44,9 +44,9 @@ type Props = {
 }
 
 function formatTimestamp(value: string | number | null): string {
-  if (!value) return '—'
+  if (!value) return '-'
   const date = typeof value === 'number' ? new Date(value) : new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('en-US')
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')
 }
 
 export default function CrewHistoryPanel({ activeCrewId }: Props) {
@@ -155,7 +155,7 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
               >
                 <div className="crew-stack-card-header">
                   <strong>{run.process}</strong>
-                  <span style={{ color: run.status === 'completed' ? 'var(--success)' : run.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{run.status}</span>
+                  <span className={`crew-run-status ${run.status}`}>{run.status}</span>
                 </div>
                 <div className="crew-stat-meta">{formatTimestamp(run.startedAt)}</div>
               </button>
@@ -167,9 +167,11 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
               <div className="crew-stack-card crew-emphasis-card">
                 <div className="crew-stack-card-header">
                   <strong>{selectedRun.crewName}</strong>
-                  <span style={{ color: selectedRun.status === 'completed' ? 'var(--success)' : selectedRun.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)' }}>{selectedRun.status}</span>
+                  <span className={`crew-run-status ${selectedRun.status}`}>{selectedRun.status}</span>
                 </div>
-                <div className="crew-stat-meta">{tr("Start:")}{formatTimestamp(selectedRun.startedAt)}{tr("· Ende:")}{formatTimestamp(selectedRun.finishedAt)}
+                <div className="crew-stat-meta crew-run-time-range">
+                  <span>{tr("Start:")}{formatTimestamp(selectedRun.startedAt)}</span>
+                  <span>{tr("End:")}{formatTimestamp(selectedRun.finishedAt)}</span>
                 </div>
                 {selectedRun.error && (
                   <div className="crew-inline-feedback error">{selectedRun.error}</div>
@@ -178,7 +180,7 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
             )}
 
             <div>
-              <div className="crew-stat-label" style={{ marginBottom: 8 }}>{tr("Events")}</div>
+              <div className="crew-stat-label crew-stat-label-spaced">{tr("Events")}</div>
               <div className="crew-stack-list crew-scroll-stack">
                 {events.length === 0 ? (
                   <div className="crew-inline-feedback">{tr("No events saved yet.")}</div>
@@ -194,14 +196,17 @@ export default function CrewHistoryPanel({ activeCrewId }: Props) {
             </div>
 
             <div>
-              <div className="crew-stat-label" style={{ marginBottom: 8 }}>{tr("Logs")}</div>
+              <div className="crew-stat-label crew-stat-label-spaced">{tr("Logs")}</div>
               <div className="crew-stack-list crew-scroll-stack">
                 {logs.length === 0 ? (
                   <div className="crew-inline-feedback">{tr("No logs for this run yet.")}</div>
                 ) : logs.slice(0, 8).map((log) => (
                   <div key={log.id} className="crew-stack-card">
                     <div className="crew-stat-value">{log.action}</div>
-                    <div className="crew-stat-meta">{log.agentId} • {log.taskId}</div>
+                    <div className="crew-stat-meta crew-log-meta">
+                      <span>{log.agentId}</span>
+                      <span>{log.taskId}</span>
+                    </div>
                     <div className="crew-stat-meta">{log.result.slice(0, 180)}</div>
                   </div>
                 ))}

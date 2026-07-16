@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Crew } from '../../stores/crewStore'
 import { useCrewControlPlaneStore } from '../../stores/crewControlPlaneStore'
-import { tr } from '../../i18n'
+import i18n, { tr } from '../../i18n'
 
 type Props = {
   activeCrew: Crew
@@ -9,7 +9,7 @@ type Props = {
 
 function formatTimestamp(value: string): string {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('en-US')
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')
 }
 
 export default function CrewControlPlanePanel({ activeCrew }: Props) {
@@ -46,7 +46,7 @@ export default function CrewControlPlanePanel({ activeCrew }: Props) {
         </div>
         <div className="crew-overview-actions">
           <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void validateCrew(activeCrew)}>
-            {loading ? 'Check…' : tr('Validate definition')}
+            {loading ? tr('Loading...') : tr('Validate definition')}
           </button>
           <button type="button" className="btn-sm crew-action-btn" disabled={loading} onClick={() => void saveCrewDefinition(activeCrew, changeSummary)}>
             {loading ? tr('Saving...') : tr('Save new version')}
@@ -75,8 +75,8 @@ export default function CrewControlPlanePanel({ activeCrew }: Props) {
           <div className="crew-stat-label">{tr("Validation")}</div>
           <div className="crew-stat-value">{validation ? (validation.valid ? 'valid' : tr('with problems')) : tr('not checked yet')}</div>
           {validation && validation.issues.length > 0 && (
-            <div className="crew-stat-meta" style={{ color: 'var(--warning)' }}>
-              {validation.issues.join(' • ')}
+            <div className="crew-stat-meta crew-stat-meta-warning">
+              {validation.issues.join(', ')}
             </div>
           )}
         </div>
@@ -88,7 +88,7 @@ export default function CrewControlPlanePanel({ activeCrew }: Props) {
       </div>
 
       <div>
-        <div className="crew-stat-label" style={{ marginBottom: 8 }}>{tr("Latest versions of this crew")}</div>
+        <div className="crew-stat-label crew-stat-label-spaced">{tr("Latest versions of this crew")}</div>
         {versions.length === 0 ? (
           <div className="crew-inline-feedback">{tr("No versions saved yet.")}</div>
         ) : (

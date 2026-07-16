@@ -1,5 +1,5 @@
-import { lazy, useEffect, type ReactNode } from 'react'
-import { MemoryRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { lazy, useEffect, useState, type ReactNode } from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog'
 import Layout from './components/Layout'
@@ -19,6 +19,8 @@ import { writeAuditEvent } from './utils/audit'
 import { seedDefaultPersonalities, seedDefaultMemory } from './utils/defaultSeeds'
 import { startScheduledWorker, stopScheduledWorker } from './engine/scheduledWorker'
 import { hasTauriRuntime, safeInvoke } from './utils/safeInvoke'
+import { PRODUCT_ROUTES, type ProductRouteId, type ProductRoutePath } from './product/routeRegistry'
+import { initializeCredentialVault } from './security/credentialMigration'
 import i18n from './i18n'
 import './App.css'
 
@@ -27,11 +29,20 @@ const SettingsView = lazy(() => import('./components/SettingsView'))
 const TasksView = lazy(() => import('./components/TasksView'))
 const CrewView = lazy(() => import('./components/CrewView'))
 const ProjectView = lazy(() => import('./components/ProjectView'))
+const FeaturesView = lazy(() => import('./components/FeaturesView'))
 
 type BackendPolicyState = {
   flags: Record<string, boolean>
   denyRules: string[]
   enabledToolIds: string[]
+  activeToolsetPolicyId?: string
+  toolsetPolicies?: Array<{
+    id: string
+    label: string
+    description: string
+    riskLevel: string
+    toolIds: string[]
+  }>
 }
 
 function hideBootLoader(): void {
@@ -49,6 +60,39 @@ function RouteReady({ children }: { children: ReactNode }) {
   }, [])
 
   return children
+}
+
+function nestedRoutePath(path: ProductRoutePath): string {
+  return path.replace(/^\//, '')
+}
+
+function ProductRouteReady({ routeId }: { routeId: ProductRouteId }) {
+  let content: ReactNode
+
+  switch (routeId) {
+    case 'cowork':
+      content = <CoworkView />
+      break
+    case 'settings':
+      content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><SettingsView /></div>
+      break
+    case 'tasks':
+      content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><TasksView /></div>
+      break
+    case 'crew':
+      content = <CrewView />
+      break
+    case 'projects':
+      content = <ProjectView />
+      break
+    case 'features':
+      content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><FeaturesView /></div>
+      break
+    default:
+      content = <CoworkView />
+  }
+
+  return <RouteReady>{content}</RouteReady>
 }
 
 function hasRunningWork(): boolean {
@@ -99,23 +143,11 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
-        <Route index element={<RouteReady><CoworkView /></RouteReady>} />
-        <Route path="settings" element={
-          <RouteReady>
-            <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}>
-              <SettingsView />
-            </div>
-          </RouteReady>
-        } />
-        <Route path="tasks" element={
-          <RouteReady>
-            <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}>
-              <TasksView />
-            </div>
-          </RouteReady>
-        } />
-        <Route path="crew" element={<RouteReady><CrewView /></RouteReady>} />
-        <Route path="projects" element={<RouteReady><ProjectView /></RouteReady>} />
+        {PRODUCT_ROUTES.map((route) => (
+          route.path === '/'
+            ? <Route key={route.id} index element={<ProductRouteReady routeId={route.id} />} />
+            : <Route key={route.id} path={nestedRoutePath(route.path)} element={<ProductRouteReady routeId={route.id} />} />
+        ))}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
@@ -123,8 +155,12 @@ function AppRoutes() {
 }
 
 function App() {
+  const [credentialsReady, setCredentialsReady] = useState(false)
+  const [credentialError, setCredentialError] = useState(false)
+  const [credentialRetry, setCredentialRetry] = useState(0)
   const loadChatFromDb = useChatStore((s) => s.loadFromDb)
   const loadTasksFromDb = useTaskStore((s) => s.loadFromDb)
+  const loadWorkTasksFromDb = useWorkTasksStore((s) => s.loadFromDb)
   const loadProjectsFromDb = useProjectStore((s) => s.loadFromDb)
   const theme = useUiStore((s) => s.theme)
   const setTheme = useUiStore((s) => s.setTheme)
@@ -136,16 +172,40 @@ function App() {
   const ensureCrewRuntimeReady = useCrewRuntimeStore((s) => s.ensureReady)
 
   useEffect(() => {
+    let cancelled = false
+    void initializeCredentialVault()
+      .then(() => {
+        if (!cancelled) setCredentialsReady(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCredentialError(true)
+        hideBootLoader()
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [credentialRetry])
+
+  useEffect(() => {
+    if (!credentialsReady) return
     const startedAt = performance.now()
     void loadChatFromDb().catch((error) => console.warn('[startup] Chat loading failed', error))
     void loadTasksFromDb().catch((error) => console.warn('[startup] Task loading failed', error))
+    void loadWorkTasksFromDb().catch((error) => console.warn('[startup] Work task loading failed', error))
     void loadProjectsFromDb()
     void loadScheduledTasks()
     void loadScheduledRuns(20)
     void safeInvoke<BackendPolicyState | null>('policy_get', undefined, null)
       .then((policy) => {
         if (!policy) return
-        setPolicySnapshot(policy.flags, policy.denyRules ?? [], policy.enabledToolIds ?? [])
+        setPolicySnapshot(
+          policy.flags,
+          policy.denyRules ?? [],
+          policy.enabledToolIds ?? [],
+          policy.activeToolsetPolicyId,
+          policy.toolsetPolicies
+        )
       })
       .catch(() => {})
     seedDefaultPersonalities().catch(() => {})
@@ -165,7 +225,7 @@ function App() {
     // Start scheduled tasks worker
     startScheduledWorker()
     return () => stopScheduledWorker()
-  }, [addLog, ensureCrewRuntimeReady, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, setPolicySnapshot])
+  }, [addLog, credentialsReady, ensureCrewRuntimeReady, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -248,10 +308,25 @@ function App() {
     }
   }, [])
 
+  if (!credentialsReady) {
+    return credentialError ? (
+      <main className="credential-startup-error" role="alert">
+        <h1>{i18n.t('credentials.errorTitle')}</h1>
+        <p>{i18n.t('credentials.errorBody')}</p>
+        <button type="button" className="btn-sm" onClick={() => {
+          setCredentialError(false)
+          setCredentialRetry((value) => value + 1)
+        }}>
+          {i18n.t('credentials.retry')}
+        </button>
+      </main>
+    ) : null
+  }
+
   return (
-    <MemoryRouter>
+    <BrowserRouter>
       <AppRoutes />
-    </MemoryRouter>
+    </BrowserRouter>
   )
 }
 

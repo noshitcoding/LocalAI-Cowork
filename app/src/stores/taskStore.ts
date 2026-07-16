@@ -11,6 +11,8 @@ export type TaskStatus =
   | 'failed'
   | 'cancelled'
 
+export type PlanApprovalStatus = TaskStatus
+
 export type TaskStep = {
   id: string
   index: number
@@ -20,6 +22,8 @@ export type TaskStep = {
   riskLevel: 'low' | 'medium' | 'high'
   output: string | null
 }
+
+export type PlanApprovalStep = TaskStep
 
 export type PermissionConfig = {
   mode: PermissionMode
@@ -38,6 +42,13 @@ export type Task = {
   error: string | null
   permissionConfig?: PermissionConfig
 }
+
+/**
+ * Compatibility alias for the legacy planned-task store.
+ * User-facing executable work lives in workTasksStore; this store now represents
+ * approval/progress plans that still use the existing DB task tables.
+ */
+export type PlanApproval = Task
 
 type TaskState = {
   tasks: Task[]

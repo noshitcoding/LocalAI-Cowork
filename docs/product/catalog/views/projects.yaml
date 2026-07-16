@@ -1,0 +1,42 @@
+id: view:/projects
+route: /projects
+title: Projects
+purpose: Manage chat context containers, linked resources, instructions, and project-thread membership.
+user_story: As a user I can group chats, attach reusable sources, and control project context without making projects own WorkTasks.
+layout_regions:
+  - project list panel
+  - project detail header
+  - resources panel
+  - project chats panel
+  - available chats panel
+owned_elements:
+  - element:/projects/project-list
+  - element:/projects/project-detail
+  - element:/projects/project-sources
+  - element:/projects/project-chats
+primary_actions:
+  - button:/projects/project-list/create
+  - button:/projects/project-detail/new-chat
+  - button:/projects/project-detail/add-files
+  - button:/projects/project-detail/add-folders
+  - button:/projects/project-detail/delete
+  - button:/projects/project-sources/add-link
+empty_states:
+  - Empty project list shows No projects yet.
+  - Detail pane shows No project selected.
+loading_states:
+  - Project data loads during app startup from SQLite.
+error_states:
+  - Delete confirmation separates detach-only from project-and-chat deletion.
+data_dependencies:
+  - projects and project_thread_membership from projectStore and SQLite
+  - chat threads from chatStore
+permissions:
+  - file and folder source pickers use Tauri dialogs when available
+source_files:
+  - app/src/components/ProjectView.tsx
+  - app/src/stores/projectStore.ts
+  - app/src/stores/chatStore.ts
+tests:
+  - app/src/components/ProjectView.test.tsx
+  - app/src/stores/projectStore.test.ts

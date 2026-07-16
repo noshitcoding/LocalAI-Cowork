@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+
+import { resolveNpmInvocation } from './process-utils.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ciMode = process.argv.includes('--ci')
@@ -30,7 +32,8 @@ function commandVersion(name, command, args = ['--version'], required = true) {
 }
 
 addCheck('Node.js', true, `${process.version} (${process.execPath})`)
-commandVersion('npm', 'npm', ['--version'], ciMode)
+const npmInvocation = resolveNpmInvocation()
+commandVersion('npm', npmInvocation.command, [...npmInvocation.args, '--version'], ciMode)
 commandVersion('Cargo', 'cargo', ['--version'], ciMode)
 commandVersion('Rust', 'rustc', ['--version'], ciMode)
 

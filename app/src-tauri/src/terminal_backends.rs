@@ -1,7 +1,14 @@
+use crate::credential_store::CredentialStore;
 use crate::db::{Database, TerminalBackendRow};
+use crate::process_control::{attach_process_tree, configure_process_tree, terminate_process_tree};
+use crate::secure_config::{self, SecureConfigScope};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
+use std::process::Stdio;
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -16,6 +23,60 @@ fn suppress_command_window(command: &mut std::process::Command) {
 
 #[cfg(not(target_os = "windows"))]
 fn suppress_command_window(_command: &mut std::process::Command) {}
+
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MIN_TIMEOUT_MS: u64 = 100;
+const MAX_TIMEOUT_MS: u64 = 600_000;
+const MAX_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
+const WAIT_INTERVAL: Duration = Duration::from_millis(10);
+
+struct CapturedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+fn read_limited(mut reader: impl Read) -> std::io::Result<CapturedOutput> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = MAX_CAPTURE_BYTES.saturating_sub(bytes.len());
+        if remaining > 0 {
+            bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+        }
+        if count > remaining {
+            truncated = true;
+        }
+    }
+
+    Ok(CapturedOutput { bytes, truncated })
+}
+
+fn output_text(captured: CapturedOutput) -> String {
+    let mut text = String::from_utf8_lossy(&captured.bytes).to_string();
+    if captured.truncated {
+        text.push_str(&format!(
+            "\n[output truncated after {} bytes]\n",
+            MAX_CAPTURE_BYTES
+        ));
+    }
+    text
+}
+
+fn append_error(stderr: &mut String, message: impl AsRef<str>) {
+    if !stderr.is_empty() && !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+    stderr.push_str(message.as_ref());
+    if !stderr.ends_with('\n') {
+        stderr.push('\n');
+    }
+}
 
 // ── Backend config types ────────────────────────────────────────────────────
 
@@ -182,7 +243,17 @@ pub fn execute_local(
 
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new(&shell);
-        c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        let shell_lower = shell.to_ascii_lowercase();
+        if shell_lower.contains("powershell")
+            || shell_lower.ends_with("pwsh")
+            || shell_lower.ends_with("pwsh.exe")
+        {
+            c.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        } else if shell_lower.ends_with("cmd") || shell_lower.ends_with("cmd.exe") {
+            c.args(["/C", command]);
+        } else {
+            c.args(["-c", command]);
+        }
         c
     } else {
         let mut c = std::process::Command::new(&shell);
@@ -194,6 +265,9 @@ pub fn execute_local(
         cmd.current_dir(dir);
     }
     suppress_command_window(&mut cmd);
+    configure_process_tree(&mut cmd);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
     if let Some(ref env_vars) = config.env_vars {
         for (k, v) in env_vars {
@@ -201,36 +275,123 @@ pub fn execute_local(
         }
     }
 
-    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    let timeout_ms = timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+    let timeout = Duration::from_millis(timeout_ms);
 
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            // Basic timeout check: if process took too long we'd need a child + wait_timeout
-            // For now, std::process::Command blocks
-            let _ = timeout; // reserved for future child-process timeout
-            BackendExecResponse {
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return BackendExecResponse {
                 backend_id: String::new(),
-                stdout,
-                stderr,
-                exit_code: output.status.code(),
+                stdout: String::new(),
+                stderr: format!("Execution error: {error}"),
+                exit_code: None,
                 timed_out: false,
+            };
+        }
+    };
+    let process_tree = attach_process_tree(&child).ok();
+
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|stdout| thread::spawn(move || read_limited(stdout)));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|stderr| thread::spawn(move || read_limited(stderr)));
+
+    let started = Instant::now();
+    let mut timed_out = false;
+    let mut runtime_errors = Vec::new();
+    let mut capture_complete = true;
+    let exit_status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() >= timeout => {
+                timed_out = true;
+                if let Err(error) = terminate_process_tree(&mut child, process_tree.as_ref()) {
+                    runtime_errors.push(format!("Failed to terminate timed-out process: {error}"));
+                    capture_complete = false;
+                }
+                break None;
+            }
+            Ok(None) => thread::sleep(WAIT_INTERVAL),
+            Err(error) => {
+                runtime_errors.push(format!("Failed to wait for process: {error}"));
+                if let Err(termination_error) =
+                    terminate_process_tree(&mut child, process_tree.as_ref())
+                {
+                    runtime_errors.push(format!(
+                        "Failed to terminate process after wait error: {termination_error}"
+                    ));
+                    capture_complete = false;
+                }
+                break None;
             }
         }
-        Err(e) => BackendExecResponse {
-            backend_id: String::new(),
-            stdout: String::new(),
-            stderr: format!("Execution error: {}", e),
-            exit_code: None,
-            timed_out: false,
-        },
+    };
+
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    drop(process_tree);
+
+    if capture_complete {
+        match stdout_handle {
+            Some(handle) => match handle.join() {
+                Ok(Ok(captured)) => stdout = output_text(captured),
+                Ok(Err(error)) => {
+                    append_error(&mut stderr, format!("stdout capture failed: {error}"))
+                }
+                Err(_) => append_error(&mut stderr, "stdout capture thread failed"),
+            },
+            None => append_error(&mut stderr, "stdout pipe unavailable"),
+        }
+
+        match stderr_handle {
+            Some(handle) => match handle.join() {
+                Ok(Ok(captured)) => stderr.push_str(&output_text(captured)),
+                Ok(Err(error)) => {
+                    append_error(&mut stderr, format!("stderr capture failed: {error}"))
+                }
+                Err(_) => append_error(&mut stderr, "stderr capture thread failed"),
+            },
+            None => append_error(&mut stderr, "stderr pipe unavailable"),
+        }
+    } else {
+        drop(stdout_handle);
+        drop(stderr_handle);
+        append_error(
+            &mut stderr,
+            "Output capture was detached because the process could not be confirmed stopped.",
+        );
+    }
+
+    if timed_out {
+        append_error(
+            &mut stderr,
+            format!("Command timed out after {timeout_ms} ms."),
+        );
+    }
+    for error in runtime_errors {
+        append_error(&mut stderr, error);
+    }
+
+    BackendExecResponse {
+        backend_id: String::new(),
+        stdout,
+        stderr,
+        exit_code: exit_status.and_then(|status| status.code()),
+        timed_out,
     }
 }
 
 /// Dispatch command execution to the correct backend
 pub fn dispatch_exec(
     db: &Arc<Database>,
+    credential_store: &CredentialStore,
     backend_id: &str,
     command: &str,
     working_dir: Option<&str>,
@@ -249,8 +410,15 @@ pub fn dispatch_exec(
         ));
     }
 
+    let resolved_config = secure_config::resolve(
+        credential_store,
+        SecureConfigScope::TerminalBackend,
+        &backend.id,
+        &backend.config_json,
+    )?;
+
     let mut result = match backend.backend_type.as_str() {
-        "local" => execute_local(&backend.config_json, command, working_dir, timeout_ms),
+        "local" => execute_local(&resolved_config, command, working_dir, timeout_ms),
         "container" => {
             // Placeholder: would spawn docker exec or docker run
             BackendExecResponse {
@@ -294,7 +462,10 @@ pub fn dispatch_exec(
 }
 
 /// Get the default local backend, creating it if needed
-pub fn ensure_default_local_backend(db: &Arc<Database>) -> Result<TerminalBackendRow, String> {
+pub fn ensure_default_local_backend(
+    db: &Arc<Database>,
+    credential_store: &CredentialStore,
+) -> Result<TerminalBackendRow, String> {
     let backends = db.list_terminal_backends().map_err(|e| e.to_string())?;
     if let Some(local) = backends.into_iter().find(|b| b.backend_type == "local") {
         return Ok(local);
@@ -308,8 +479,17 @@ pub fn ensure_default_local_backend(db: &Arc<Database>) -> Result<TerminalBacken
     })
     .unwrap_or_else(|_| "{}".to_string());
 
-    db.upsert_terminal_backend(&id, "Lokal", "local", &config)
-        .map_err(|e| e.to_string())?;
+    secure_config::replace(
+        credential_store,
+        SecureConfigScope::TerminalBackend,
+        &id,
+        &config,
+        None,
+        |marker| {
+            db.upsert_terminal_backend(&id, "Lokal", "local", marker)
+                .map_err(|error| error.to_string())
+        },
+    )?;
     db.update_terminal_backend_status(&id, "active")
         .map_err(|e| e.to_string())?;
 
@@ -318,4 +498,160 @@ pub fn ensure_default_local_backend(db: &Arc<Database>) -> Result<TerminalBacken
         .into_iter()
         .find(|b| b.id == id)
         .ok_or_else(|| "Default backend could not be created".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Cursor;
+
+    fn local_config() -> String {
+        serde_json::to_string(&LocalBackendConfig {
+            shell: None,
+            working_dir: None,
+            env_vars: None,
+        })
+        .expect("local backend config should serialize")
+    }
+
+    #[test]
+    fn execute_local_captures_output_and_exit_code() {
+        let command = if cfg!(target_os = "windows") {
+            "[Console]::Out.WriteLine('hello'); [Console]::Error.WriteLine('warning'); exit 7"
+        } else {
+            "printf 'hello\\n'; printf 'warning\\n' >&2; exit 7"
+        };
+
+        let result = execute_local(&local_config(), command, None, Some(5_000));
+
+        assert!(!result.timed_out);
+        assert_eq!(result.exit_code, Some(7));
+        assert!(result.stdout.contains("hello"));
+        assert!(result.stderr.contains("warning"));
+    }
+
+    #[test]
+    fn execute_local_reports_invalid_configuration_without_spawning() {
+        let result = execute_local("{", "echo should-not-run", None, Some(1_000));
+
+        assert!(!result.timed_out);
+        assert_eq!(result.exit_code, None);
+        assert!(result.stderr.contains("Config-Fehler"));
+    }
+
+    #[test]
+    fn output_capture_is_bounded_and_reports_truncation() {
+        let captured = read_limited(Cursor::new(vec![b'x'; MAX_CAPTURE_BYTES + 17]))
+            .expect("in-memory output should be readable");
+
+        assert_eq!(captured.bytes.len(), MAX_CAPTURE_BYTES);
+        assert!(captured.truncated);
+        assert!(output_text(captured).contains("output truncated"));
+    }
+
+    #[cfg(any(target_os = "windows", unix))]
+    #[test]
+    fn execute_local_closes_background_descendants_after_parent_exit() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "open-cowork-terminal-background-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let marker = test_dir.join("background-survived.txt");
+
+        #[cfg(target_os = "windows")]
+        let command = {
+            let child_script = test_dir.join("background-write.ps1");
+            let marker_literal = marker.to_string_lossy().replace('\'', "''");
+            fs::write(
+                &child_script,
+                format!(
+                    "Start-Sleep -Milliseconds 1000\nSet-Content -LiteralPath '{}' -Value 'survived'\n",
+                    marker_literal
+                ),
+            )
+            .expect("child script should be written");
+            let child_literal = child_script.to_string_lossy().replace('\'', "''");
+            format!(
+                "Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-File','{}') | Out-Null",
+                child_literal
+            )
+        };
+
+        #[cfg(unix)]
+        let command = {
+            let marker_literal = marker.to_string_lossy().replace('\'', "'\"'\"'");
+            format!("(sleep 1; printf survived > '{}') &", marker_literal)
+        };
+
+        let result = execute_local(&local_config(), &command, None, Some(5_000));
+
+        assert!(!result.timed_out);
+        assert_eq!(result.exit_code, Some(0));
+        thread::sleep(Duration::from_millis(1_300));
+        assert!(
+            !marker.exists(),
+            "background descendant survived and wrote {}",
+            marker.display()
+        );
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn execute_local_timeout_terminates_descendant_processes() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "open-cowork-terminal-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let marker = test_dir.join("descendant-survived.txt");
+
+        #[cfg(target_os = "windows")]
+        let command = {
+            let child_script = test_dir.join("delayed-write.ps1");
+            let marker_literal = marker.to_string_lossy().replace('\'', "''");
+            fs::write(
+                &child_script,
+                format!(
+                    "Start-Sleep -Milliseconds 1200\nSet-Content -LiteralPath '{}' -Value 'survived'\n",
+                    marker_literal
+                ),
+            )
+            .expect("child script should be written");
+            let child_literal = child_script.to_string_lossy().replace('\'', "''");
+            format!(
+                "$child = Start-Process -PassThru -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-File','{}'); Start-Sleep -Seconds 5",
+                child_literal
+            )
+        };
+
+        #[cfg(unix)]
+        let command = {
+            let marker_literal = marker.to_string_lossy().replace('\'', "'\"'\"'");
+            format!(
+                "(sleep 1; printf survived > '{}') & sleep 5",
+                marker_literal
+            )
+        };
+
+        #[cfg(not(any(target_os = "windows", unix)))]
+        let command = "sleep 5".to_string();
+
+        let started = Instant::now();
+        let result = execute_local(&local_config(), &command, None, Some(200));
+
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code, None);
+        assert!(result.stderr.contains("Command timed out after 200 ms."));
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        thread::sleep(Duration::from_millis(1_500));
+        assert!(
+            !marker.exists(),
+            "descendant process survived the timeout and wrote {}",
+            marker.display()
+        );
+        let _ = fs::remove_dir_all(test_dir);
+    }
 }

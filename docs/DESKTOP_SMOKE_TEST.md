@@ -28,13 +28,14 @@ Erwartung:
 
 ```powershell
 cd app
-npm run tauri build
+npm run smoke:desktop
 ```
 
 Erwartung:
 - Rust kompiliert ohne Fehler
-- die Desktop-App wird unter `src-tauri/target/release/bundle/` erzeugt
-- die gebaute App startet ohne Crash
+- das Release-Binary wird unter `src-tauri/target/release/app.exe` erzeugt
+- das Binary bleibt beim Start stabil und stellt innerhalb von 20 Sekunden ein Fenster mit dem Titel `Open Cowork` bereit
+- der automatisierte Smoke-Prozess wird nach erfolgreicher Pruefung wieder beendet
 
 ## Durchklickrunde
 
@@ -57,6 +58,11 @@ Erwartung:
 Erwartung:
 - Sidebar legt einen neuen Thread an
 - Cowork-Ansicht wird aktiv
+
+4b. Sidebar-Status klarstellen
+Erwartung:
+- Projektlisten zeigen klarer an, wenn ein Bereich leer ist
+- Leere Bereichsbeschreibungen sind für Chat- und Session-Leerzustände verständlich
 
 5. Prompt senden
 Beispiel:
@@ -154,7 +160,7 @@ Der Smoke-Test ist bestanden, wenn alle folgenden Punkte zutreffen:
 
 - `npm run test:ci` erfolgreich
 - `npm run build` erfolgreich
-- `npm run tauri build` erzeugt die Desktop-App
+- `npm run smoke:desktop` baut und startet die native Desktop-App erfolgreich
 - Settings und Cowork sind erreichbar
 - ein Prompt kann gesendet werden
 - persistierte Sessions lassen sich direkt aus der Sidebar laden

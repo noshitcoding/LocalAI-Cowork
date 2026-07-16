@@ -94,6 +94,8 @@ export type EngineConfig = {
   runId?: string
   /** Current session ID */
   sessionId?: string
+  /** Active toolset policy used for this run */
+  toolsetPolicyId?: string
   /** Current worker sandbox ID */
   sandboxId?: string
 }

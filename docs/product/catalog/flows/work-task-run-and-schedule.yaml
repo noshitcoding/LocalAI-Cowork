@@ -1,0 +1,33 @@
+id: flow:/tasks/run-and-schedule
+title: WorkTask Run And Schedule
+purpose: Define how a WorkTask is run immediately or persisted as a scheduler snapshot.
+route: /tasks
+actors:
+  - user
+  - TasksView
+  - workTasksStore
+  - coworkStore scheduler
+domain_objects:
+  - domain:work-task
+  - domain:scheduled-task
+  - domain:crew
+steps:
+  - User selects a WorkTask in the task list.
+  - Detail pane resolves chat and project context from WorkTask.threadId.
+  - User starts a model or crew run from the run toolbar.
+  - TasksView validates prompt, crew, busy state, and absolute working folder.
+  - The selected runner records output and terminal status back to the WorkTask.
+  - User saves a schedule with a non-empty expression.
+  - Scheduler row uses the WorkTask id and stores prompt or crew snapshot details.
+  - Active checkbox reflects the loaded scheduler row when it exists.
+  - Removing or deleting the WorkTask removes the matching scheduler row.
+source_files:
+  - app/src/components/TasksView.tsx
+  - app/src/components/tasks/TaskRunToolbar.tsx
+  - app/src/components/tasks/TaskSchedulerPanel.tsx
+  - app/src/engine/tasks/workTaskExecutionService.ts
+  - app/src/engine/tasks/workTaskScheduleService.ts
+tests:
+  - app/src/components/tasks/TaskPanels.test.tsx
+  - app/src/components/TasksView.schedule.test.tsx
+  - app/src/stores/workTasksStore.test.ts

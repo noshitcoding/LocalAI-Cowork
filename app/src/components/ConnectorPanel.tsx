@@ -1,42 +1,28 @@
-import type { CSSProperties } from 'react'
 import { useCoworkStore } from '../stores/coworkStore'
-import { tr } from '../i18n'
+import i18n, { tr } from '../i18n'
+import SecureCredentialInput from './SecureCredentialInput'
 
 export default function ConnectorPanel() {
   const connectors = useCoworkStore((s) => s.connectors)
   const toggleConnector = useCoworkStore((s) => s.toggleConnector)
   const setConnectorNote = useCoworkStore((s) => s.setConnectorNote)
-  const updateConnectorConfig = useCoworkStore((s) => s.updateConnectorConfig)
+  const setConnectorApiKey = useCoworkStore((s) => s.setConnectorApiKey)
+  const setConnectorWebhookUrl = useCoworkStore((s) => s.setConnectorWebhookUrl)
   const testConnector = useCoworkStore((s) => s.testConnector)
 
-  const inputStyle: CSSProperties = {
-    padding: '6px 10px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border-color)',
-    background: 'var(--bg-secondary)',
-    fontSize: 13,
-    width: '100%',
-  }
-
   return (
-    <div className="panel">
+    <div className="panel connector-panel">
       <h2>{tr("Connectors")}</h2>
-      <p className="hint-text">{tr("Webhook URL and API key are saved locally. The connection test runs through the Rust backend to avoid WebView CORS issues.")}</p>
+      <p className="hint-text">{tr("Connector credentials are protected by the operating-system credential store.")}</p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="connector-list">
         {connectors.map((connector) => {
-          const statusColor = connector.lastTestStatus === 'success'
-            ? 'var(--success)'
-            : connector.lastTestStatus === 'error'
-              ? 'var(--danger)'
-              : 'var(--text-muted)'
-
           return (
-            <div key={connector.key} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+            <div key={connector.key} className="card connector-card">
+              <div className="connector-card-header">
                 <div>
                   <strong>{connector.label}</strong>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{tr("Key:")}{connector.key}
+                  <div className="connector-key">{tr("Key:")}{connector.key}
                   </div>
                 </div>
                 <button
@@ -48,35 +34,36 @@ export default function ConnectorPanel() {
                 </button>
               </div>
 
-              <label>{tr("Webhook / API URL")}<input
+              <label>{tr("Webhook / API URL")}<SecureCredentialInput
+                  type="url"
+                  className="connector-input"
                   value={connector.webhookUrl ?? ''}
-                  onChange={(event) => updateConnectorConfig(connector.key, { webhookUrl: event.target.value })}
+                  onCommit={(value) => setConnectorWebhookUrl(connector.key, value)}
                   placeholder={tr("https://example.com/webhook")}
-                  style={inputStyle}
                 />
               </label>
 
-              <label>{tr("API Key")}<input
+              <label>{tr("API Key")}<SecureCredentialInput
+                  className="connector-input"
                   value={connector.apiKey ?? ''}
-                  onChange={(event) => updateConnectorConfig(connector.key, { apiKey: event.target.value })}
+                  onCommit={(value) => setConnectorApiKey(connector.key, value)}
                   placeholder={tr("Optional bearer token")}
-                  style={inputStyle}
                 />
               </label>
 
               <label>{tr("Note")}<textarea
+                  className="connector-input connector-textarea"
                   rows={2}
                   value={connector.note}
                   onChange={(event) => setConnectorNote(connector.key, event.target.value)}
                   placeholder={tr("Internal notes or setup comments")}
-                  style={{ ...inputStyle, resize: 'vertical' }}
                 />
               </label>
 
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                <div style={{ fontSize: 12, color: statusColor }}>
+              <div className="connector-test-row">
+                <div className={`connector-test-status ${connector.lastTestStatus ?? 'idle'}`}>
                   {connector.lastTestMessage ?? tr('No connection test has run yet.')}
-                  {connector.lastTestAt ? ` (${new Date(connector.lastTestAt).toLocaleString('en-US')})` : ''}
+                  {connector.lastTestAt ? ` (${new Date(connector.lastTestAt).toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')})` : ''}
                 </div>
                 <button
                   type="button"

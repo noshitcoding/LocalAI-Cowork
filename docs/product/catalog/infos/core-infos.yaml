@@ -1,0 +1,262 @@
+infos:
+  - id: info:/app/shell/view-loading
+    owner_element: element:/app/shell
+    type: loading
+    visible_when: lazy route component is pending
+    copy_key: common.preparingView
+    source_of_value: Layout ViewLoadingState
+    severity: neutral
+    freshness: live
+    accessibility: aria-busy true and aria-live polite
+  - id: info:/app/left-sidebar/no-projects
+    owner_element: element:/app/left-sidebar
+    type: empty
+    visible_when: projectStore.projects is empty
+    copy_key: No projects
+    source_of_value: projectStore.projects.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/app/left-sidebar/no-tasks
+    owner_element: element:/app/left-sidebar
+    type: empty
+    visible_when: workTasksStore.tasks is empty
+    copy_key: No tasks
+    source_of_value: workTasksStore.tasks.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/app/command-palette/no-results
+    owner_element: element:/app/command-palette
+    type: empty
+    visible_when: filteredCommands.length is 0
+    copy_key: No results for
+    source_of_value: CommandPalette query filter
+    severity: neutral
+    freshness: live
+    accessibility: visible empty result row
+  - id: info:/app/command-palette/command-count
+    owner_element: element:/app/command-palette
+    type: metadata
+    visible_when: command palette open
+    copy_key: Commands available - type / for slash commands
+    source_of_value: commandRegistryStore.commands.length
+    severity: neutral
+    freshness: live
+    accessibility: visible footer text
+  - id: info:/cowork/transcript/live-tool-state
+    owner_element: element:/cowork/transcript
+    type: status
+    visible_when: active message contains live tool calls
+    copy_key: Live Tool Calls
+    source_of_value: CoworkView displayToolCalls
+    severity: info
+    freshness: live
+    accessibility: live tool call list is labeled
+  - id: info:/cowork/composer/attachment-notice
+    owner_element: element:/cowork/composer
+    type: notice
+    visible_when: attachmentNotice is set
+    copy_key: attachmentNotice
+    source_of_value: CoworkView attachment validation
+    severity: warning
+    freshness: live
+    accessibility: visible paragraph near composer
+  - id: info:/cowork/approval-banner/request
+    owner_element: element:/cowork/approval-banner
+    type: approval
+    visible_when: tool approval or ask-user request is pending
+    copy_key: approval request text
+    source_of_value: engine approval state
+    severity: warning
+    freshness: live
+    accessibility: visible banner with grouped answer options when needed
+  - id: info:/cowork/project-context-strip/active-project
+    owner_element: element:/cowork/project-context-strip
+    type: context
+    visible_when: active thread belongs to a project
+    copy_key: Project instructions active
+    source_of_value: projectStore active project and resources
+    severity: neutral
+    freshness: live
+    accessibility: strip has aria-label Project context
+  - id: info:/tasks/task-create-panel/invalid-workdir
+    owner_element: element:/tasks/task-create-panel
+    type: validation
+    visible_when: create form workDir is non-empty and not absolute
+    copy_key: Working folder must be absolute.
+    source_of_value: isAbsolutePath(createWorkDir)
+    severity: warning
+    freshness: live
+    accessibility: visible hint text immediately below field
+  - id: info:/tasks/task-create-panel/no-crews
+    owner_element: element:/tasks/task-create-panel
+    type: empty
+    visible_when: runner is crew and crews.length is 0
+    copy_key: Create a crew under Crew first to run crew tasks.
+    source_of_value: crewStore.crews.length
+    severity: warning
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/tasks/task-list-pane/empty
+    owner_element: element:/tasks/task-list-pane
+    type: empty
+    visible_when: WorkTask list is empty
+    copy_key: No tasks yet. Create your first task above or import templates from a crew.
+    source_of_value: workTasksStore.tasks.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text in task list pane
+  - id: info:/tasks/task-list-pane/task-count
+    owner_element: element:/tasks/task-list-pane
+    type: count
+    visible_when: task list pane visible
+    copy_key: task(s)
+    source_of_value: tasks.length
+    severity: neutral
+    freshness: live
+    accessibility: visible text next to Your tasks heading
+  - id: info:/tasks/crew-task-import/no-importable
+    owner_element: element:/tasks/crew-task-import
+    type: disabled-reason
+    visible_when: importCrewId is empty or selected crew has no new templates
+    copy_key: disabled import button state
+    source_of_value: importableCount
+    severity: neutral
+    freshness: live
+    accessibility: disabled import button prevents action
+  - id: info:/tasks/task-detail-pane/no-selection
+    owner_element: element:/tasks/task-detail-pane
+    type: empty
+    visible_when: selectedTask is null
+    copy_key: Create or select a task to edit its runner, schedule, chat, and output.
+    source_of_value: TasksView selectedTask
+    severity: neutral
+    freshness: live
+    accessibility: section keeps Task detail aria-label
+  - id: info:/tasks/task-detail-pane/project-context
+    owner_element: element:/tasks/task-detail-pane
+    type: context
+    visible_when: selected WorkTask exists
+    copy_key: Project context
+    source_of_value: project membership resolved through task.threadId
+    severity: neutral
+    freshness: live
+    accessibility: visible context strip
+  - id: info:/tasks/task-detail-pane/invalid-workdir
+    owner_element: element:/tasks/task-detail-pane
+    type: validation
+    visible_when: selected WorkTask workDir is non-empty and not absolute
+    copy_key: Working folder must be absolute.
+    source_of_value: isAbsolutePath(task.workDir)
+    severity: warning
+    freshness: live
+    accessibility: visible hint text immediately below field
+  - id: info:/tasks/task-detail-pane/output-preview
+    owner_element: element:/tasks/task-detail-pane
+    type: output
+    visible_when: selected WorkTask has output or error
+    copy_key: task output or error text
+    source_of_value: WorkTask.output or WorkTask.error
+    severity: info
+    freshness: live
+    accessibility: preformatted text preview
+  - id: info:/tasks/task-scheduler-panel/run-times
+    owner_element: element:/tasks/task-scheduler-panel
+    type: metadata
+    visible_when: scheduler panel visible
+    copy_key: Last run / Next run
+    source_of_value: ScheduledTask.lastRunAt and nextRunAt
+    severity: neutral
+    freshness: loaded from scheduler state
+    accessibility: visible text in scheduler header
+  - id: info:/tasks/task-scheduler-panel/source
+    owner_element: element:/tasks/task-scheduler-panel
+    type: metadata
+    visible_when: selected WorkTask runner is crew and schedule metadata exists
+    copy_key: Source
+    source_of_value: CrewScheduleSnapshotMetadata
+    severity: neutral
+    freshness: loaded from crew snapshot json
+    accessibility: visible hint text under scheduler actions
+  - id: info:/tasks/task-scheduler-panel/crew-required
+    owner_element: element:/tasks/task-scheduler-panel
+    type: validation
+    visible_when: selected WorkTask runner is crew and crewId is empty
+    copy_key: Crew required for crew schedule
+    source_of_value: WorkTask.runner and crewId
+    severity: warning
+    freshness: live
+    accessibility: visible hint text near scheduler actions
+  - id: info:/crew/studio/no-crews
+    owner_element: element:/crew/studio
+    type: empty
+    visible_when: no crew definition exists
+    copy_key: empty crew state
+    source_of_value: crewStore.crews.length
+    severity: neutral
+    freshness: live
+    accessibility: visible empty state copy
+  - id: info:/crew/runtime-monitor/status
+    owner_element: element:/crew/runtime-monitor
+    type: status
+    visible_when: crew runtime event or run status exists
+    copy_key: runtime status label
+    source_of_value: crewRuntimeStore and CrewLiveMonitor events
+    severity: info
+    freshness: live
+    accessibility: text status plus color token
+  - id: info:/crew/governance/policy
+    owner_element: element:/crew/governance
+    type: policy
+    visible_when: governance panel visible
+    copy_key: governance policy fields
+    source_of_value: crew governance config
+    severity: neutral
+    freshness: live editor state
+    accessibility: label-wrapped settings
+  - id: info:/projects/project-list/empty
+    owner_element: element:/projects/project-list
+    type: empty
+    visible_when: projectStore.projects is empty
+    copy_key: No projects yet.
+    source_of_value: projectStore.projects.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/projects/project-detail/no-selection
+    owner_element: element:/projects/project-detail
+    type: empty
+    visible_when: active project is null
+    copy_key: No project selected
+    source_of_value: activeProject
+    severity: neutral
+    freshness: live
+    accessibility: visible heading and create button
+  - id: info:/projects/project-sources/empty
+    owner_element: element:/projects/project-sources
+    type: empty
+    visible_when: active project has no sources
+    copy_key: No sources linked.
+    source_of_value: project.resources.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/projects/project-chats/empty
+    owner_element: element:/projects/project-chats
+    type: empty
+    visible_when: active project has no chats
+    copy_key: No chats in the project yet.
+    source_of_value: project.threadIds.length
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text
+  - id: info:/settings/gateway/status-unavailable
+    owner_element: element:/settings/active-panel
+    type: environment
+    visible_when: gateway status is not available outside Tauri runtime
+    copy_key: Gateway status is not available outside the Tauri runtime.
+    source_of_value: hasTauriRuntime and gateway diagnostics
+    severity: neutral
+    freshness: live
+    accessibility: visible hint text

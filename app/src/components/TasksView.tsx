@@ -1,706 +1,71 @@
-/* eslint-disable react-refresh/only-export-components */
 import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useChatStore, type CrewLiveEntry, type CrewLiveEntryCategory, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { CalendarClock, ListTodo, PlayCircle } from 'lucide-react'
+import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
-import { resolveCrewAgentsWithProfiles, useCrewStore, type Crew, type CrewPersonalityProfile, type CrewProviderKind } from '../stores/crewStore'
+import { resolveCrewAgentsWithProfiles, useCrewStore, type CrewPersonalityProfile } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
+import { useProjectStore } from '../stores/projectStore'
 import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
+import { tr } from '../i18n'
 import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
 import { streamChatTurn } from '../utils/ollamaStreaming'
-
-type CrewDefinitionVersionRow = {
-  id: string
-  crewId: string
-  versionNumber: number
-  changeSummary: string | null
-  definitionJson: string
-  createdAt: string
-}
-
-type CrewScheduleSnapshotMetadata = {
-  snapshotSource: 'live' | 'saved-version'
-  definitionVersionId?: string
-  definitionVersionNumber?: number
-  definitionChangeSummary?: string | null
-  definitionSavedAt?: string | null
-}
-
-export type CrewExecutionLog = {
-  id: string
-  crewId: string
-  agentId: string
-  taskId: string
-  action: string
-  result: string
-  timestamp: number
-  agentName?: string | null
-  sourceAgent?: string | null
-  targetAgent?: string | null
-  provider?: string | null
-  model?: string | null
-  taskTitle?: string | null
-  phase?: string | null
-  summary?: string | null
-  detail?: string | null
-  severity?: 'info' | 'warning' | 'error' | null
-  providerReasoning?: string | null
-}
-
-export type CrewExecutionLogEvent = {
-  streamId?: string | null
-  runId?: string | null
-  log: CrewExecutionLog
-}
-
-export type CrewExecutionResponse = {
-  crewId: string
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'canceled'
-  taskResults: Array<{ taskId: string; agentId: string; status: string; output: string | null }>
-  logs: CrewExecutionLog[]
-  error: string | null
-}
-
-type CrewResolvedProviderConfigs = {
-  openAICompatible: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
-  openRouter: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
-}
-
-const CREW_AGENT_COLORS = [
-  '#2563eb',
-  '#059669',
-  '#d97706',
-  '#7c3aed',
-  '#dc2626',
-  '#0891b2',
-  '#be123c',
-  '#4f46e5',
-]
-const CREW_BOX_CHARS = /[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+/u
-const CREW_BOX_EDGE_START = /^[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+/u
-const CREW_BOX_EDGE_END = /[\s│┃║╭╮╰╯┌┐└┘├┤┬┴┼─━═╔╗╚╝╠╣╦╩╬]+$/u
-
-function resolveDefaultAgentId(crew: Crew): string | null {
-  if (crew.process === 'hierarchical' && crew.managerAgentId) {
-    const worker = crew.agents.find((agent) => agent.enabled && agent.id !== crew.managerAgentId)
-    if (worker) return worker.id
-
-    const manager = crew.agents.find((agent) => agent.enabled && agent.id === crew.managerAgentId)
-    if (manager) return manager.id
-  }
-
-  const enabled = crew.agents.find((agent) => agent.enabled)
-  if (enabled) return enabled.id
-  return crew.agents[0]?.id ?? null
-}
-
-export function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig: { baseUrl: string; model: string; timeoutMs: number }) {
-  if (!crew.runtimeConfig.enabled) {
-    return fallbackConfig
-  }
-
-  return {
-    ...fallbackConfig,
-    baseUrl: crew.runtimeConfig.baseUrl.trim() || fallbackConfig.baseUrl,
-    model: crew.runtimeConfig.model.trim() || fallbackConfig.model,
-    timeoutMs: Math.max(1000, crew.runtimeConfig.timeoutMs || fallbackConfig.timeoutMs),
-  }
-}
-
-export function resolveExternalProviderConfig(
-  config: { enabled: boolean; baseUrl: string; model: string; apiKey: string; timeoutMs: number },
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string } | undefined,
-  fallbackBaseUrl: string,
-) {
-  if (!config.enabled) {
-    return undefined
-  }
-
-  return {
-    baseUrl: config.baseUrl.trim() || fallbackConfig?.baseUrl?.trim() || fallbackBaseUrl,
-    model: config.model.trim() || fallbackConfig?.model?.trim() || '',
-    apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
-    timeoutMs: Math.max(1000, config.timeoutMs || 600000),
-  }
-}
-
-export function applyCrewDefaultModel(
-  crew: Crew,
-  config: { baseUrl: string; model: string; timeoutMs: number },
-  providerConfigs: CrewResolvedProviderConfigs,
-) {
-  const defaultProvider: CrewProviderKind = crew.defaultProvider ?? 'ollama'
-  const defaultModel = crew.defaultModel?.trim()
-  if (!defaultModel) {
-    return { config, providerConfigs }
-  }
-
-  if (defaultProvider === 'ollama') {
-    return {
-      config: { ...config, model: defaultModel },
-      providerConfigs,
-    }
-  }
-
-  if (defaultProvider === 'openai-compatible' && providerConfigs.openAICompatible) {
-    return {
-      config,
-      providerConfigs: {
-        ...providerConfigs,
-        openAICompatible: { ...providerConfigs.openAICompatible, model: defaultModel },
-      },
-    }
-  }
-
-  if (defaultProvider === 'openrouter' && providerConfigs.openRouter) {
-    return {
-      config,
-      providerConfigs: {
-        ...providerConfigs,
-        openRouter: { ...providerConfigs.openRouter, model: defaultModel },
-      },
-    }
-  }
-
-  return { config, providerConfigs }
-}
-
-export function buildWorkTaskCrewGuidelines(crew: Crew, task: WorkTask): string {
-  const workTaskContext = [
-    `Work task request: ${deriveTaskName(task)}`,
-    task.prompt.trim(),
-    task.expectedOutput.trim() ? `Expected overall result:\n${task.expectedOutput.trim()}` : '',
-  ].filter(Boolean).join('\n\n')
-
-  return [
-    crew.executionGuidelines.trim(),
-    workTaskContext,
-  ].filter(Boolean).join('\n\n')
-}
-
-export function buildCrewRuntimeTasks(crew: Crew, task: WorkTask, enabledAgentIds: Set<string>) {
-  const crewTasks = crew.tasks ?? []
-  const runnableCrewTasks = crewTasks.filter((crewTask) => enabledAgentIds.has(crewTask.agentId))
-
-  if (crewTasks.length > 0 && runnableCrewTasks.length === 0) {
-    throw new Error('No executable crew tasks are available: all assigned crew members are disabled or missing.')
-  }
-
-  if (runnableCrewTasks.length > 0) {
-    const runnableTaskIds = new Set(runnableCrewTasks.map((crewTask) => crewTask.id))
-    return runnableCrewTasks.map((crewTask) => ({
-      id: crewTask.id,
-      description: crewTask.description,
-      expectedOutput: crewTask.expectedOutput || task.expectedOutput || 'Create a complete result.',
-      agentId: crewTask.agentId,
-      context: crewTask.context.filter((contextId) => runnableTaskIds.has(contextId)),
-      dependencies: crewTask.dependencies.filter((dependencyId) => runnableTaskIds.has(dependencyId)),
-      asyncExecution: crew.process === 'parallel' ? true : crewTask.asyncExecution,
-    }))
-  }
-
-  const agentId = resolveDefaultAgentId(crew)
-  if (!agentId) {
-    throw new Error('Crew has no agent.')
-  }
-
-  return [
-    {
-      id: task.id,
-      description: task.prompt,
-      expectedOutput: task.expectedOutput || 'Create a complete result.',
-      agentId,
-      context: [],
-      dependencies: [],
-      asyncExecution: crew.process === 'parallel',
-    },
-  ]
-}
-
-function buildCrewRunOutput(response: CrewExecutionResponse, fallbackTaskId: string): string {
-  const directResult = response.taskResults.find((result) => result.taskId === fallbackTaskId)
-  if (directResult?.output?.trim()) {
-    return directResult.output
-  }
-
-  const renderedResults = response.taskResults
-    .filter((result) => result.output?.trim())
-    .map((result) => [
-      `Task: ${result.taskId}`,
-      `Agent: ${result.agentId}`,
-      result.output?.trim() ?? '',
-    ].filter(Boolean).join('\n'))
-
-  if (renderedResults.length > 0) {
-    return renderedResults.join('\n\n---\n\n')
-  }
-
-  return response.error ?? 'Crew run completed without text output.'
-}
-
-function formatTimestamp(ts: number | null | undefined): string {
-  if (!ts) return '—'
-  try {
-    return new Date(ts).toLocaleString('en-US')
-  } catch {
-    return String(ts)
-  }
-}
-
-function deriveTaskName(task: WorkTask): string {
-  const title = task.title.trim()
-  if (title) return title
-  const prompt = task.prompt.trim()
-  if (!prompt) return task.id
-  const singleLine = prompt.replace(/\s+/g, ' ').trim()
-  return singleLine.length > 48 ? `${singleLine.slice(0, 48)}…` : singleLine
-}
-
-function findScheduledTask(scheduledTasks: ScheduledTask[], taskId: string): ScheduledTask | null {
-  return scheduledTasks.find((entry) => entry.id === taskId) ?? null
-}
-
-function isAbsolutePath(path: string): boolean {
-  const trimmed = path.trim()
-  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
-}
-
-function createCrewStreamId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `crew-${crypto.randomUUID()}`
-  }
-
-  return `crew-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function buildTaskThreadSummary(task: WorkTask): string {
-  const lines = [
-    `Task created: ${deriveTaskName(task)}`,
-    `Runner: ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
-    task.expectedOutput.trim() ? `Expected Output: ${task.expectedOutput.trim()}` : '',
-    task.workDir.trim() ? `Working folder: ${task.workDir.trim()}` : '',
-  ].filter(Boolean)
-
-  return lines.join('\n')
-}
-
-function buildTaskPromptMessage(task: WorkTask): string {
-  const parts = [task.prompt.trim()]
-
-  if (task.expectedOutput.trim()) {
-    parts.push(`Expected output:\n${task.expectedOutput.trim()}`)
-  }
-
-  if (task.workDir.trim()) {
-    parts.push(`Working folder:\n${task.workDir.trim()}`)
-  }
-
-  return parts.filter(Boolean).join('\n\n')
-}
-
-function getCrewLogActionLabel(action: string): string {
-  switch (action) {
-    case 'run_started': return 'Run started'
-    case 'runtime_context': return 'Runtime context'
-    case 'agent_ready': return 'Agent ready'
-    case 'task_handoff': return 'Handoff'
-    case 'crew_kickoff': return 'CrewAI started'
-    case 'runtime_stdout': return 'Runtime output'
-    case 'runtime_stderr': return 'Runtime error output'
-    case 'crew_finished': return 'CrewAI completed'
-    case 'task_completed': return 'Task completed'
-    case 'runtime_failed': return 'Runtime failed'
-    default: return action
-  }
-}
-
-function stripCrewRuntimeChrome(line: string): string {
-  const trimmed = line.trimEnd()
-  if (!trimmed || trimmed.replace(CREW_BOX_CHARS, '').trim().length === 0) {
-    return ''
-  }
-
-  return trimmed
-    .replace(CREW_BOX_EDGE_START, '')
-    .replace(CREW_BOX_EDGE_END, '')
-    .trim()
-}
-
-function cleanCrewLogDetail(log: CrewExecutionLog): string {
-  const rawDetail = log.detail?.trim() ? log.detail : log.result
-  const lines = rawDetail
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map(stripCrewRuntimeChrome)
-    .filter((line) => line.trim().length > 0)
-
-  return lines.join('\n').trim()
-}
-
-function normalizeCrewLivePhase(value: string | null | undefined): CrewLiveEntryCategory | null {
-  const normalized = value?.trim().toLowerCase()
-  if (!normalized) return null
-  if (normalized === 'reasoning') return 'thinking'
-  if (normalized === 'handoff') return 'handoff'
-  if (normalized === 'delegation') return 'delegation'
-  if (normalized === 'tool') return 'tool'
-  if (normalized === 'mcp') return 'mcp'
-  if (normalized === 'result') return 'result'
-  if (normalized === 'task') return 'task'
-  if (normalized === 'error') return 'error'
-  if (normalized === 'agent') return 'agent'
-  if (normalized === 'context') return 'context'
-  if (normalized === 'status') return 'status'
-  if (normalized === 'output') return 'output'
-  return null
-}
-
-function classifyCrewLog(log: CrewExecutionLog, detail: string): CrewLiveEntryCategory {
-  const structuredPhase = normalizeCrewLivePhase(log.phase)
-  if (structuredPhase) {
-    return structuredPhase
-  }
-
-  const combined = `${log.action}\n${detail}`.toLowerCase()
-
-  if (combined.includes('traceback') || combined.includes('error') || combined.includes('failed') || log.action.includes('stderr') || log.action.includes('failed')) {
-    return 'error'
-  }
-  if (combined.includes('thinking') || combined.includes('reasoning') || combined.includes('work process')) {
-    return 'thinking'
-  }
-  if (combined.includes('mcp')) {
-    return 'mcp'
-  }
-  if (combined.includes('delegate_work') || combined.includes('delegation') || combined.includes('coworker')) {
-    return 'delegation'
-  }
-  if (combined.includes('tool execution') || combined.includes('tool:') || combined.includes('args:')) {
-    return 'tool'
-  }
-  if (log.action === 'task_handoff') {
-    return 'handoff'
-  }
-  if (log.action === 'agent_ready' || combined.includes('agent started')) {
-    return 'agent'
-  }
-  if (log.action === 'runtime_context') {
-    return 'context'
-  }
-  if (log.action === 'task_completed') {
-    return 'result'
-  }
-  if (log.action === 'run_started' || log.action === 'crew_kickoff' || log.action === 'crew_finished') {
-    return 'status'
-  }
-
-  return 'output'
-}
-
-function firstMatchingLine(detail: string, pattern: RegExp): string | null {
-  return detail.split('\n').map((line) => line.trim()).find((line) => pattern.test(line)) ?? null
-}
-
-function parseAgentNameFromDetail(detail: string): string | null {
-  const agentLine = firstMatchingLine(detail, /^Agent:\s*(.+)$/i)
-  if (agentLine) return agentLine.replace(/^Agent:\s*/i, '').trim()
-
-  const nameMatch = detail.match(/(?:^|\n)Name:\s*([^|\n]+)/i)
-  if (nameMatch?.[1]) return nameMatch[1].trim()
-
-  const handoffMatch = detail.match(/Task an Agent uebergeben:\s*([^\n]+)/i)
-  if (handoffMatch?.[1]) return handoffMatch[1].trim()
-
-  return null
-}
-
-function getDisplayAgentName(log: CrewExecutionLog, detail: string): string {
-  const structuredName = log.agentName?.trim()
-  if (structuredName) return structuredName
-  const parsedName = parseAgentNameFromDetail(detail)
-  if (parsedName) return parsedName
-  return log.agentId || 'Runtime'
-}
-
-function buildCrewLiveTitle(log: CrewExecutionLog, category: CrewLiveEntryCategory, detail: string): string {
-  const summary = log.summary?.trim()
-  if (summary) return summary
-
-  if (category === 'tool') {
-    return firstMatchingLine(detail, /^Tool:/i) ?? 'Tool-Execution'
-  }
-  if (category === 'delegation') {
-    if (log.sourceAgent?.trim() && log.targetAgent?.trim()) {
-      return `${log.sourceAgent.trim()} -> ${log.targetAgent.trim()}`
-    }
-    return log.targetAgent?.trim() ? `Delegation an ${log.targetAgent.trim()}` : 'Delegation an Crew-Mitglied'
-  }
-  if (category === 'mcp') {
-    return 'MCP context or MCP access'
-  }
-  if (category === 'thinking') {
-    return `Work process: ${getDisplayAgentName(log, detail)}`
-  }
-  if (category === 'handoff') {
-    return `Task-Handoff an ${log.targetAgent?.trim() || getDisplayAgentName(log, detail)}`
-  }
-  if (category === 'agent') {
-    return firstMatchingLine(detail, /^Agent:/i) ?? `${getDisplayAgentName(log, detail)} ready`
-  }
-  if (category === 'task') {
-    return 'Task result received'
-  }
-  if (category === 'result') {
-    return log.taskTitle?.trim() ? `Result: ${log.taskTitle.trim()}` : 'Task result received'
-  }
-  if (category === 'error') {
-    return 'Crew error'
-  }
-  if (category === 'context') {
-    return 'Runtime context loaded'
-  }
-  if (category === 'status') {
-    return getCrewLogActionLabel(log.action)
-  }
-
-  return getCrewLogActionLabel(log.action)
-}
-
-function normalizeCrewAgentLabel(value: string): string {
-  const normalized = value.trim().replace(/^['"]|['"]$/g, '')
-  if (!normalized) return ''
-  return normalized.replace(/\s+/g, '-').toLowerCase()
-}
-
-function looksLikeTechnicalAgentId(value: string): boolean {
-  const normalized = value.trim().toLowerCase()
-  return /(?:^|-)pers-\d{8,}/.test(normalized)
-    || normalized.startsWith('personality-pers-')
-    || normalized.startsWith('agent-personality-pers-')
-    || normalized.startsWith('python-runtime')
-    || normalized.startsWith('crew-runtime')
-}
-
-function deriveCrewLiveAgentId(log: CrewExecutionLog, detail: string): string {
-  const displayAgent = log.targetAgent?.trim() || log.agentName?.trim() || parseAgentNameFromDetail(detail)
-  if (displayAgent && !looksLikeTechnicalAgentId(displayAgent)) {
-    const agent = normalizeCrewAgentLabel(displayAgent)
-    if (agent) return agent
-  }
-
-  const handoffMatch = detail.match(/Task an Agent uebergeben:\s*([^\n]+)/i)
-  if (handoffMatch?.[1]) {
-    const agent = normalizeCrewAgentLabel(handoffMatch[1])
-    if (agent) return agent
-  }
-
-  const coworkerMatch = detail.match(/coworker['"]?\s*:\s*['"]([^'"]+)/i)
-  if (coworkerMatch?.[1]) {
-    const agent = normalizeCrewAgentLabel(coworkerMatch[1])
-    if (agent) return agent
-  }
-
-  if (log.agentId && !looksLikeTechnicalAgentId(log.agentId)) {
-    return log.agentId
-  }
-
-  return displayAgent ? normalizeCrewAgentLabel(displayAgent) || log.agentId || 'runtime' : log.agentId || 'runtime'
-}
-
-function getLogDetailWithMetadata(log: CrewExecutionLog, baseDetail: string): string {
-  const metadataLines = [
-    log.provider?.trim() ? `Provider: ${log.provider.trim()}` : '',
-    log.model?.trim() ? `Model: ${log.model.trim()}` : '',
-    log.taskTitle?.trim() ? `Task: ${log.taskTitle.trim()}` : '',
-    log.sourceAgent?.trim() ? `Source: ${log.sourceAgent.trim()}` : '',
-    log.targetAgent?.trim() ? `Target: ${log.targetAgent.trim()}` : '',
-    log.agentId?.trim() ? `Technical ID: ${log.agentId.trim()}` : '',
-    log.providerReasoning?.trim() ? `Provider-Reasoning: ${log.providerReasoning.trim()}` : '',
-  ].filter(Boolean)
-
-  const merged = [...metadataLines, baseDetail].filter(Boolean).join('\n')
-  return merged.trim()
-}
-
-export function createCrewLiveEntry(log: CrewExecutionLog): CrewLiveEntry | null {
-  const baseDetail = cleanCrewLogDetail(log)
-  const detail = getLogDetailWithMetadata(log, baseDetail)
-  if (!detail && (log.action === 'runtime_stdout' || log.action === 'runtime_stderr')) {
-    return null
-  }
-
-  const category = classifyCrewLog(log, detail)
-  return {
-    id: log.id,
-    timestamp: log.timestamp || Date.now(),
-    agentId: deriveCrewLiveAgentId(log, detail),
-    rawAgentId: log.agentId || null,
-    taskId: log.taskId || 'runtime',
-    action: log.action,
-    category,
-    title: buildCrewLiveTitle(log, category, detail),
-    detail,
-    agentName: log.agentName?.trim() || parseAgentNameFromDetail(detail),
-    sourceAgent: log.sourceAgent ?? null,
-    targetAgent: log.targetAgent ?? null,
-    rawTargetAgentId: null,
-    provider: log.provider ?? null,
-    model: log.model ?? null,
-    taskTitle: log.taskTitle ?? null,
-    phase: log.phase ?? null,
-    summary: log.summary ?? null,
-    severity: log.severity ?? (category === 'error' ? 'error' : 'info'),
-    providerReasoning: log.providerReasoning ?? null,
-  }
-}
-
-function assignCrewAgentColor(agentId: string, colors: Record<string, string>): Record<string, string> {
-  if (!agentId.trim() || colors[agentId]) {
-    return colors
-  }
-
-  const next = { ...colors }
-  next[agentId] = CREW_AGENT_COLORS[Object.keys(next).length % CREW_AGENT_COLORS.length]
-  return next
-}
-
-function shouldMergeCrewLiveEntries(previous: CrewLiveEntry | undefined, next: CrewLiveEntry): boolean {
-  if (!previous) return false
-  if (previous.agentId !== next.agentId || previous.taskId !== next.taskId) return false
-  if (previous.action !== 'runtime_stdout' || next.action !== 'runtime_stdout') return false
-  if (previous.category !== next.category) return false
-  return previous.detail.length < 12000
-}
-
-export function appendCrewLiveEntry(state: CrewLiveState, entry: CrewLiveEntry): CrewLiveState {
-  const agentColors = assignCrewAgentColor(entry.agentId, state.agentColors)
-  const entries = [...state.entries]
-  const previous = entries[entries.length - 1]
-
-  if (shouldMergeCrewLiveEntries(previous, entry)) {
-    entries[entries.length - 1] = {
-      ...previous!,
-      detail: [previous!.detail, entry.detail].filter(Boolean).join('\n'),
-      timestamp: entry.timestamp,
-    }
-  } else {
-    entries.push(entry)
-  }
-
-  return {
-    ...state,
-    agentColors,
-    entries,
-    updatedAt: Date.now(),
-  }
-}
-
-export function buildCrewLiveMessageContent(state: CrewLiveState): string {
-  const latest = state.entries[state.entries.length - 1]
-  return [
-    'Crew Live Monitor',
-    `Status: ${state.status}`,
-    `Displayed events: ${state.entries.length}`,
-    latest ? `Letztes Ereignis: ${latest.title}` : '',
-  ].filter(Boolean).join('\n')
-}
-
-function hydrateCrewFromDefinition(baseCrew: Crew, rawDefinition: string): Crew | null {
-  try {
-    const parsed = JSON.parse(rawDefinition) as Partial<Crew>
-    return {
-      ...baseCrew,
-      ...parsed,
-      providerProfiles: parsed.providerProfiles ?? baseCrew.providerProfiles,
-      agents: Array.isArray(parsed.agents) ? parsed.agents : baseCrew.agents,
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : baseCrew.tasks,
-      runtimeConfig: parsed.runtimeConfig ?? baseCrew.runtimeConfig,
-      status: baseCrew.status,
-      createdAt: baseCrew.createdAt,
-      updatedAt: baseCrew.updatedAt,
-    }
-  } catch {
-    return null
-  }
-}
-
-async function resolveCrewScheduleSource(crew: Crew): Promise<{ crew: Crew; metadata: CrewScheduleSnapshotMetadata }> {
-  try {
-    const versions = await safeInvoke<CrewDefinitionVersionRow[]>('crew_definition_versions_list', { crewId: crew.id }, [])
-    const latestVersion = Array.isArray(versions) ? versions[0] : undefined
-    if (!latestVersion?.definitionJson?.trim()) {
-      return {
-        crew,
-        metadata: { snapshotSource: 'live' },
-      }
-    }
-
-    const hydrated = hydrateCrewFromDefinition(crew, latestVersion.definitionJson)
-    if (!hydrated) {
-      return {
-        crew,
-        metadata: { snapshotSource: 'live' },
-      }
-    }
-
-    return {
-      crew: hydrated,
-      metadata: {
-        snapshotSource: 'saved-version',
-        definitionVersionId: latestVersion.id,
-        definitionVersionNumber: latestVersion.versionNumber,
-        definitionChangeSummary: latestVersion.changeSummary,
-        definitionSavedAt: latestVersion.createdAt,
-      },
-    }
-  } catch {
-    return {
-      crew,
-      metadata: { snapshotSource: 'live' },
-    }
-  }
-}
-
-function readCrewScheduleSnapshotMetadata(snapshotJson: string | null | undefined): CrewScheduleSnapshotMetadata | null {
-  if (!snapshotJson?.trim()) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(snapshotJson) as Partial<CrewScheduleSnapshotMetadata>
-    if (parsed.snapshotSource !== 'live' && parsed.snapshotSource !== 'saved-version') {
-      return null
-    }
-
-    return {
-      snapshotSource: parsed.snapshotSource,
-      definitionVersionId: typeof parsed.definitionVersionId === 'string' ? parsed.definitionVersionId : undefined,
-      definitionVersionNumber: typeof parsed.definitionVersionNumber === 'number' ? parsed.definitionVersionNumber : undefined,
-      definitionChangeSummary: typeof parsed.definitionChangeSummary === 'string' || parsed.definitionChangeSummary === null ? parsed.definitionChangeSummary : undefined,
-      definitionSavedAt: typeof parsed.definitionSavedAt === 'string' || parsed.definitionSavedAt === null ? parsed.definitionSavedAt : undefined,
-    }
-  } catch {
-    return null
-  }
-}
+import {
+  appendCrewLiveEntry,
+  applyCrewDefaultModel,
+  augmentCrewToolsForTask,
+  buildCrewLiveMessageContent,
+  buildCrewRuntimeTasks,
+  buildWorkTaskCrewGuidelines,
+  createCrewLiveEntry,
+  resolveCrewRuntimeConfig,
+  resolveExternalProviderConfig,
+  type CrewExecutionLog,
+  type CrewExecutionLogEvent,
+  type CrewExecutionResponse,
+} from '../engine/crew/workTaskCrewRuntime'
+import {
+  buildCrewRunOutput,
+  buildCrewMissionDraft,
+  buildCrewMissionId,
+  buildCrewMissionTask,
+  buildTaskPromptMessage,
+  buildTaskThreadSummary,
+  createCrewStreamId,
+  deriveTaskName,
+  isAbsolutePath,
+  resolveWorkTaskChatProviderSettings,
+} from '../engine/tasks/workTaskExecutionService'
+import {
+  findScheduledTask,
+  readCrewScheduleSnapshotMetadata,
+  resolveCrewScheduleSource,
+} from '../engine/tasks/workTaskScheduleService'
+import TaskCreatePanel from './tasks/TaskCreatePanel'
+import TaskDetailPane from './tasks/TaskDetailPane'
+import TaskListPane from './tasks/TaskListPane'
 
 export default function TasksView() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const crews = useCrewStore((s) => s.crews)
   const personalities = usePersonalityStore((s) => s.personalities)
   const loadPersonalities = usePersonalityStore((s) => s.loadPersonalities)
   const { tasks, addTask, updateTask, removeTask, upsertMany } = useWorkTasksStore()
   const addThread = useChatStore((s) => s.addThread)
+  const ensureThread = useChatStore((s) => s.ensureThread)
+  const loadChatFromDb = useChatStore((s) => s.loadFromDb)
   const activeThreadId = useChatStore((s) => s.activeThreadId)
   const threads = useChatStore((s) => s.threads)
   const setActiveThread = useChatStore((s) => s.setActiveThread)
   const addChatMessage = useChatStore((s) => s.addMessage)
   const updateChatMessage = useChatStore((s) => s.updateMessage)
+  const projects = useProjectStore((s) => s.projects)
   const setActiveMode = useUiStore((s) => s.setActiveMode)
   const setWorkingFolder = useUiStore((s) => s.setWorkingFolder)
 
@@ -742,9 +107,14 @@ export default function TasksView() {
   const [newRunner, setNewRunner] = useState<WorkTaskRunner>('crew')
   const [newCrewId, setNewCrewId] = useState<string>('')
   const [newModel, setNewModel] = useState<string>('')
+  const [createPanelOpen, setCreatePanelOpen] = useState(tasks.length === 0)
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [importCrewId, setImportCrewId] = useState<string>('')
+  const [pendingCrewMissionId, setPendingCrewMissionId] = useState<string | null>(null)
   const runningTaskControllersRef = useRef(new Map<string, AbortController>())
   const runningCrewTaskIdsRef = useRef(new Map<string, string>())
   const canceledTaskIdsRef = useRef(new Set<string>())
+  const handledCrewHandoffRef = useRef<string | null>(null)
 
   const normalizedNewWorkDir = newWorkDir.trim()
   const canCreateTask = newPrompt.trim().length > 0
@@ -764,6 +134,96 @@ export default function TasksView() {
     if (newCrewId && crews.some((crew) => crew.id === newCrewId)) return
     setNewCrewId(crews[0]?.id ?? '')
   }, [crews, newCrewId, newRunner])
+
+  useEffect(() => {
+    if (importCrewId && crews.some((crew) => crew.id === importCrewId)) return
+    setImportCrewId(crews[0]?.id ?? '')
+  }, [crews, importCrewId])
+
+  useEffect(() => {
+    if (tasks.length === 0) setCreatePanelOpen(true)
+  }, [tasks.length])
+
+  useEffect(() => {
+    const handoffCrewId = searchParams.get('crew')?.trim() ?? ''
+    if (!handoffCrewId || handledCrewHandoffRef.current === handoffCrewId) return
+
+    const crew = crews.find((entry) => entry.id === handoffCrewId)
+    if (!crew) return
+
+    handledCrewHandoffRef.current = handoffCrewId
+    setImportCrewId(crew.id)
+    const existingMission = tasks.find((task) => task.id === buildCrewMissionId(crew.id))
+    if (existingMission) {
+      setSelectedTaskId(existingMission.id)
+    } else {
+      const mission = buildCrewMissionDraft(crew)
+      setPendingCrewMissionId(crew.id)
+      setCreatePanelOpen(true)
+      setNewRunner('crew')
+      setNewCrewId(crew.id)
+      setNewTitle(mission.title)
+      setNewPrompt(mission.prompt)
+      setNewExpectedOutput(mission.expectedOutput)
+    }
+
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.delete('crew')
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [crews, searchParams, setSearchParams, tasks])
+
+  useEffect(() => {
+    if (searchParams.has('crew')) return
+    const linkedTaskId = searchParams.get('task')?.trim() ?? ''
+    if (!linkedTaskId) return
+
+    const linkedTask = tasks.find((task) => task.id === linkedTaskId)
+    if (!linkedTask) {
+      if (tasks.length === 0) return
+      const nextSearchParams = new URLSearchParams(searchParams)
+      nextSearchParams.delete('task')
+      setSearchParams(nextSearchParams, { replace: true })
+      return
+    }
+
+    setSelectedTaskId(linkedTask.id)
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.delete('task')
+    setSearchParams(nextSearchParams, { replace: true })
+  }, [searchParams, setSearchParams, tasks])
+
+  useEffect(() => {
+    if (searchParams.has('task')) return
+    if (selectedTaskId && tasks.some((task) => task.id === selectedTaskId)) return
+    setSelectedTaskId(tasks[0]?.id ?? null)
+  }, [searchParams, selectedTaskId, tasks])
+
+  useEffect(() => {
+    if (tasks.length === 0) return
+    for (const task of tasks) {
+      const scheduled = findScheduledTask(scheduledTasks, task.id)
+      if (!scheduled) {
+        if (task.scheduleEnabled) {
+          updateTask(task.id, { scheduleEnabled: false })
+        }
+        continue
+      }
+
+      const nextPatch: Partial<Omit<WorkTask, 'id' | 'createdAt'>> = {}
+      const scheduledExpr = scheduled.cronLike.trim()
+      if (scheduledExpr && task.scheduleExpr !== scheduledExpr) {
+        nextPatch.scheduleExpr = scheduledExpr
+      }
+      if (task.scheduleEnabled !== scheduled.active) {
+        nextPatch.scheduleEnabled = scheduled.active
+      }
+
+      const patchEntries = Object.keys(nextPatch)
+      if (patchEntries.length > 0) {
+        updateTask(task.id, nextPatch)
+      }
+    }
+  }, [scheduledTasks, tasks, updateTask])
 
   useEffect(() => {
     // One-way migration helper: import legacy templates as runnable tasks.
@@ -793,40 +253,14 @@ export default function TasksView() {
     upsertMany(migrated)
   }, [tasks.length, templates, upsertMany])
 
-  useEffect(() => {
-    // One-way migration helper: import Crew-attached tasks into Work Tasks.
-    const existingIds = new Set(tasks.map((task) => task.id))
-    const legacyCrewTasks: WorkTask[] = []
-    for (const crew of crews) {
-      for (const crewTask of crew.tasks ?? []) {
-        if (existingIds.has(crewTask.id)) continue
-        legacyCrewTasks.push({
-          id: crewTask.id,
-          title: '',
-          prompt: crewTask.description,
-          expectedOutput: crewTask.expectedOutput,
-          workDir: '',
-          threadId: null,
-          runner: 'crew',
-          crewId: crew.id,
-          model: '',
-          scheduleExpr: '',
-          scheduleEnabled: false,
-          status: 'idle',
-          output: crewTask.output ?? null,
-          error: null,
-          lastRunAt: null,
-          createdAt: crew.updatedAt || Date.now(),
-          updatedAt: crew.updatedAt || Date.now(),
-        })
-      }
-    }
-
-    if (legacyCrewTasks.length === 0) return
-    upsertMany(legacyCrewTasks)
-  }, [crews, tasks, upsertMany])
-
   const crewsById = useMemo(() => new Map(crews.map((crew) => [crew.id, crew])), [crews])
+  const selectedTask = selectedTaskId ? tasks.find((task) => task.id === selectedTaskId) ?? null : tasks[0] ?? null
+  const selectedScheduledTask = selectedTask ? findScheduledTask(scheduledTasks, selectedTask.id) : null
+  const selectedProjectContext = useMemo(() => {
+    if (!selectedTask?.threadId) return null
+    const project = projects.find((item) => item.threadIds.includes(selectedTask.threadId as string))
+    return project ? { title: project.title } : null
+  }, [projects, selectedTask?.threadId])
 
   const ensureAllowedTaskFolder = async (workDir: string) => {
     const normalized = workDir.trim()
@@ -835,7 +269,7 @@ export default function TasksView() {
   }
 
   const createTaskThread = (task: WorkTask, preserveCurrentThread = true): string => {
-    const existingThreadId = task.threadId && threads.some((thread) => thread.id === task.threadId)
+    const existingThreadId = task.threadId && useChatStore.getState().threads.some((thread) => thread.id === task.threadId)
       ? task.threadId
       : null
 
@@ -843,27 +277,49 @@ export default function TasksView() {
       return existingThreadId
     }
 
-    const previousActiveThreadId = activeThreadId
-    const threadId = addThread(
-      deriveTaskName(task),
-      undefined,
-      undefined,
-      task.runner,
-      task.runner === 'crew' ? task.crewId : null,
-    )
-    addChatMessage(threadId, {
-      role: 'system',
-      content: buildTaskThreadSummary(task),
-      visibleInChat: true,
-      timestamp: Date.now(),
+    const currentThread = threads.find((thread) => thread.id === activeThreadId)
+    const providerSettings = resolveWorkTaskChatProviderSettings(task, {
+      crews,
+      ollamaModel: ollamaConfig.model,
+      defaultLlmProfileIds,
+      llmProfiles,
+      fallbackProviderSettings: currentThread?.providerSettings,
     })
-    updateTask(task.id, { threadId })
+    const previousActiveThreadId = activeThreadId
+    const ensuredThread = task.threadId
+      ? ensureThread(
+          task.threadId,
+          deriveTaskName(task),
+          providerSettings,
+          undefined,
+          task.runner,
+          task.runner === 'crew' ? task.crewId : null,
+        )
+      : { id: addThread(
+          deriveTaskName(task),
+          providerSettings,
+          undefined,
+          task.runner,
+          task.runner === 'crew' ? task.crewId : null,
+        ), created: true }
+
+    if (ensuredThread.created) {
+      addChatMessage(ensuredThread.id, {
+        role: 'system',
+        content: buildTaskThreadSummary(task),
+        visibleInChat: true,
+        timestamp: Date.now(),
+      })
+    }
+    if (!task.threadId) {
+      updateTask(task.id, { threadId: ensuredThread.id })
+    }
 
     if (preserveCurrentThread) {
       setActiveThread(previousActiveThreadId)
     }
 
-    return threadId
+    return ensuredThread.id
   }
 
   const applyTaskWorkingFolder = async (task: WorkTask) => {
@@ -909,6 +365,7 @@ export default function TasksView() {
   }
 
   const handleOpenTaskChat = async (task: WorkTask) => {
+    await loadChatFromDb()
     const threadId = createTaskThread(task, false)
     await applyTaskWorkingFolder(task)
     setActiveMode('work')
@@ -919,32 +376,65 @@ export default function TasksView() {
   const handleCreateTask = () => {
     if (!canCreateTask) return
 
-    const id = addTask({
-      title: newTitle,
-      prompt: newPrompt,
-      expectedOutput: newExpectedOutput,
-      workDir: normalizedNewWorkDir,
-      runner: newRunner,
-      crewId: newRunner === 'crew' ? newCrewId : null,
-      model: newRunner === 'model' ? newModel : '',
-    })
+    let createdTask: WorkTask | undefined
+    if (pendingCrewMissionId && newRunner === 'crew' && newCrewId === pendingCrewMissionId) {
+      const crew = crewsById.get(pendingCrewMissionId)
+      if (crew) {
+        createdTask = {
+          ...buildCrewMissionTask(crew),
+          title: newTitle.trim(),
+          prompt: newPrompt.trim(),
+          expectedOutput: newExpectedOutput.trim(),
+          workDir: normalizedNewWorkDir,
+        }
+        upsertMany([createdTask])
+      }
+    }
 
-    const createdTask = useWorkTasksStore.getState().tasks.find((task) => task.id === id)
+    if (!createdTask) {
+      const id = addTask({
+        title: newTitle,
+        prompt: newPrompt,
+        expectedOutput: newExpectedOutput,
+        workDir: normalizedNewWorkDir,
+        runner: newRunner,
+        crewId: newRunner === 'crew' ? newCrewId : null,
+        model: newRunner === 'model' ? newModel : '',
+      })
+      createdTask = useWorkTasksStore.getState().tasks.find((task) => task.id === id)
+    }
+
     if (createdTask) {
       void ensureAllowedTaskFolder(createdTask.workDir)
       createTaskThread(createdTask, true)
+      setSelectedTaskId(createdTask.id)
+      setCreatePanelOpen(false)
     }
 
+    setPendingCrewMissionId(null)
     setNewTitle('')
     setNewPrompt('')
     setNewExpectedOutput('')
     setNewWorkDir('')
   }
 
+  const handleImportCrewTasks = () => {
+    const crew = crewsById.get(importCrewId)
+    if (!crew) return
+
+    const missionId = buildCrewMissionId(crew.id)
+    if (tasks.some((task) => task.id === missionId)) return
+
+    const missionTask = buildCrewMissionTask(crew, crew.updatedAt || Date.now())
+    upsertMany([missionTask])
+    createTaskThread(missionTask, true)
+    setSelectedTaskId(missionTask.id)
+  }
+
   const handleRunTask = async (task: WorkTask) => {
     const normalizedWorkDir = task.workDir.trim()
     if (normalizedWorkDir && !isAbsolutePath(normalizedWorkDir)) {
-      const message = 'Working folder must be absolute.'
+      const message = tr('Working folder must be absolute.')
       updateTask(task.id, {
         status: 'failed',
         error: message,
@@ -955,6 +445,7 @@ export default function TasksView() {
     }
 
     const taskForRun = normalizedWorkDir ? { ...task, workDir: normalizedWorkDir } : task
+    await loadChatFromDb()
     const threadId = createTaskThread(taskForRun, true)
     const startedAt = Date.now()
 
@@ -971,9 +462,9 @@ export default function TasksView() {
     addChatMessage(threadId, {
       role: 'system',
       content: [
-        'Task-Run started',
-        `Runner: ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
-        normalizedWorkDir ? `Working folder: ${normalizedWorkDir}` : '',
+        tr('Task run started'),
+        `${tr('Runner')}: ${task.runner === 'crew' ? tr('Crew') : tr('Model')}`,
+        normalizedWorkDir ? `${tr('Working folder')}: ${normalizedWorkDir}` : '',
       ].filter(Boolean).join('\n'),
       visibleInChat: true,
       timestamp: startedAt,
@@ -1015,7 +506,7 @@ export default function TasksView() {
         )
 
         if (abortController.signal.aborted || canceledTaskIdsRef.current.has(task.id)) {
-          const message = 'Task abgebrochen.'
+          const message = tr('Task canceled.')
           updateTask(task.id, {
             status: 'canceled',
             error: null,
@@ -1048,11 +539,11 @@ export default function TasksView() {
         updateTask(task.id, {
           status: aborted ? 'canceled' : 'failed',
           error: aborted ? null : message,
-          output: aborted ? 'Task abgebrochen.' : message,
+          output: aborted ? tr('Task canceled.') : message,
           lastRunAt: Date.now(),
         })
         updateChatMessage(threadId, assistantMessageId, {
-          content: aborted ? 'Task abgebrochen.' : message,
+          content: aborted ? tr('Task canceled.') : message,
           streaming: false,
         }, {
           persist: true,
@@ -1200,7 +691,7 @@ export default function TasksView() {
             personalityId: agent.personalityId,
             modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
             providerKind: crewDefaultProvider,
-            tools: agent.tools,
+            tools: augmentCrewToolsForTask(agent.tools, taskForRun),
             mcpServerNames: agent.mcpServerNames,
             enabled: agent.enabled,
             allowDelegation: agent.allowDelegation,
@@ -1218,13 +709,13 @@ export default function TasksView() {
         finishCrewLive('canceled')
         updateTask(task.id, {
           status: 'canceled',
-          output: 'Task abgebrochen.',
+          output: tr('Task canceled.'),
           error: null,
           lastRunAt: Date.now(),
         })
         addChatMessage(threadId, {
           role: 'assistant',
-          content: 'Task abgebrochen.',
+          content: tr('Task canceled.'),
           timestamp: Date.now(),
         })
         return
@@ -1255,13 +746,13 @@ export default function TasksView() {
       finishCrewLive(aborted ? 'canceled' : 'failed')
       addChatMessage(threadId, {
         role: 'assistant',
-        content: aborted ? 'Task abgebrochen.' : message,
+        content: aborted ? tr('Task canceled.') : message,
         timestamp: Date.now(),
       })
       updateTask(task.id, {
         status: aborted ? 'canceled' : waitingForApproval ? 'waiting_approval' : 'failed',
         error: aborted ? null : message,
-        output: aborted ? 'Task abgebrochen.' : message,
+        output: aborted ? tr('Task canceled.') : message,
         lastRunAt: Date.now(),
       })
     } finally {
@@ -1282,12 +773,12 @@ export default function TasksView() {
     updateTask(task.id, {
       status: 'canceled',
       error: null,
-      output: task.output?.trim() ? `${task.output}\n\nTask abgebrochen.` : 'Task abgebrochen.',
+      output: task.output?.trim() ? `${task.output}\n\n${tr('Task canceled.')}` : tr('Task canceled.'),
       lastRunAt: Date.now(),
     })
   }
 
-  const handleUpsertSchedule = async (task: WorkTask) => {
+  const handleUpsertSchedule = async (task: WorkTask, activeOverride?: boolean) => {
     const scheduleExpr = task.scheduleExpr.trim()
     if (!scheduleExpr) {
       updateTask(task.id, { scheduleEnabled: false })
@@ -1304,6 +795,7 @@ export default function TasksView() {
     }
 
     let scheduled: ScheduledTask | null = findScheduledTask(scheduledTasks, task.id)
+    const active = activeOverride ?? scheduled?.active ?? task.scheduleEnabled
 
     if (task.runner === 'crew') {
       if (!task.crewId) {
@@ -1384,6 +876,7 @@ export default function TasksView() {
         maxParallelTasks: crew.maxParallelTasks,
         agents: enabledAgents.map((agent) => ({
           ...agent,
+          tools: augmentCrewToolsForTask(agent.tools, task),
           modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
           providerKind: crewDefaultProvider,
         })),
@@ -1408,7 +901,7 @@ export default function TasksView() {
         modelConfigJson: null,
         priority: scheduled?.priority ?? 100,
         dependsOnTaskIds: scheduled?.dependsOnTaskIds ?? [],
-        active: Boolean(task.scheduleEnabled),
+        active: Boolean(active),
         lastRunAt: scheduled?.lastRunAt ?? null,
         nextRunAt: scheduled?.nextRunAt ?? null,
       }
@@ -1428,7 +921,7 @@ export default function TasksView() {
         }),
         priority: scheduled?.priority ?? 100,
         dependsOnTaskIds: scheduled?.dependsOnTaskIds ?? [],
-        active: Boolean(task.scheduleEnabled),
+        active: Boolean(active),
         lastRunAt: scheduled?.lastRunAt ?? null,
         nextRunAt: scheduled?.nextRunAt ?? null,
       }
@@ -1442,6 +935,11 @@ export default function TasksView() {
     const scheduled = findScheduledTask(scheduledTasks, task.id)
     if (scheduled) {
       await toggleScheduledTask(task.id, enabled)
+      return
+    }
+
+    if (enabled) {
+      await handleUpsertSchedule({ ...task, scheduleEnabled: true }, true)
     }
   }
 
@@ -1453,260 +951,111 @@ export default function TasksView() {
     }
   }
 
+  const handleDeleteTask = async (task: WorkTask) => {
+    const scheduled = findScheduledTask(scheduledTasks, task.id)
+    if (scheduled) {
+      await removeScheduledTask(task.id)
+    }
+    removeTask(task.id)
+  }
+
   const handleRemoveLegacyTemplate = (templateId: string) => {
     // Templates are legacy; keep deletion available so users can clean up old storage.
     removeTemplate(templateId)
   }
 
+  const selectedCrewScheduleMetadata = selectedTask?.runner === 'crew'
+    ? readCrewScheduleSnapshotMetadata(selectedScheduledTask?.crewSnapshotJson)
+    : null
+  const activeTaskCount = tasks.filter((task) => task.status === 'running' || task.status === 'waiting_approval').length
+  const scheduledTaskCount = tasks.filter((task) => Boolean(findScheduledTask(scheduledTasks, task.id))).length
+
   return (
-    <div className="settings-view">
-      <h1>Tasks</h1>
-      <p className="hint-text">Create tasks, assign a crew or model, start them, and schedule each task.</p>
-
-      <div className="panel">
-        <h2>➕ New Task</h2>
-        <div className="grid">
-          <label>
-            Title (optional)
-            <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="e.g. Weekly Report" />
-          </label>
-          <label>
-            Execution
-            <select value={newRunner} onChange={(e) => setNewRunner(e.target.value as WorkTaskRunner)}>
-              <option value="crew">Crew</option>
-              <option value="model">Model</option>
-            </select>
-          </label>
-          {newRunner === 'crew' ? (
-            <label>
-              Crew
-              <select value={newCrewId} onChange={(e) => setNewCrewId(e.target.value)}>
-                {crews.length === 0 && (
-                  <option value="">No crews available</option>
-                )}
-                {crews.map((crew) => (
-                  <option key={crew.id} value={crew.id}>{crew.name}</option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <label>
-              Model (optional)
-              <input value={newModel} onChange={(e) => setNewModel(e.target.value)} placeholder={`Default: ${ollamaConfig.model || '—'}`} />
-            </label>
-          )}
-          <label>
-            Expected Output (optional)
-            <input value={newExpectedOutput} onChange={(e) => setNewExpectedOutput(e.target.value)} placeholder="e.g. Bullet report" />
-          </label>
-          <label style={{ gridColumn: '1 / -1' }}>
-            Working folder (optional, absolute)
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} placeholder="C:\\Projects\\my-task" />
-              <button type="button" className="btn-secondary" onClick={() => void handlePickNewWorkDir()}>
-                Choose folder
-              </button>
-            </div>
-            {normalizedNewWorkDir && !isAbsolutePath(normalizedNewWorkDir) ? (
-              <div className="hint-text">Der Working folder must be absolute.</div>
-            ) : null}
-          </label>
-          <label style={{ gridColumn: '1 / -1' }}>
-            Task
-            <textarea value={newPrompt} onChange={(e) => setNewPrompt(e.target.value)} rows={4} placeholder="Was soll der Task tun?" />
-          </label>
+    <div className="task-view" data-doc-id="view:/tasks">
+      <header className="task-view-header">
+        <div className="task-view-heading">
+          <span className="task-view-kicker">{tr('Task command center')}</span>
+          <h1>{tr('Tasks')}</h1>
+          <p>{tr('Create tasks, assign a crew or model, start them, and schedule each task.')}</p>
         </div>
-        <div className="actions">
-          <button type="button" onClick={handleCreateTask} disabled={!canCreateTask}>
-            Task erstellen
-          </button>
+        <div className="task-view-metrics" aria-label={tr('Task overview')}>
+          <span><ListTodo size={16} aria-hidden="true" /><strong>{tasks.length}</strong>{tr('Total')}</span>
+          <span><PlayCircle size={16} aria-hidden="true" /><strong>{activeTaskCount}</strong>{tr('Active')}</span>
+          <span><CalendarClock size={16} aria-hidden="true" /><strong>{scheduledTaskCount}</strong>{tr('Scheduled')}</span>
         </div>
-        {newRunner === 'crew' && crews.length === 0 && (
-          <p className="hint-text">Create a crew in settings first to run crew tasks.</p>
-        )}
-      </div>
+      </header>
 
-      <div className="panel">
-        <div className="panel-heading-row">
-          <h2>🧩 Deine Tasks</h2>
-          <span className="hint-text">{tasks.length} Task(s)</span>
-        </div>
+      <TaskCreatePanel
+        crews={crews}
+        defaultModel={ollamaConfig.model}
+        open={createPanelOpen}
+        title={newTitle}
+        prompt={newPrompt}
+        expectedOutput={newExpectedOutput}
+        workDir={newWorkDir}
+        runner={newRunner}
+        crewId={newCrewId}
+        model={newModel}
+        canCreateTask={canCreateTask}
+        onOpenChange={setCreatePanelOpen}
+        onTitleChange={setNewTitle}
+        onPromptChange={setNewPrompt}
+        onExpectedOutputChange={setNewExpectedOutput}
+        onWorkDirChange={setNewWorkDir}
+        onRunnerChange={setNewRunner}
+        onCrewIdChange={setNewCrewId}
+        onModelChange={setNewModel}
+        onPickWorkDir={() => void handlePickNewWorkDir()}
+        onCreateTask={handleCreateTask}
+      />
 
-        {tasks.length === 0 ? (
-          <p className="hint-text">No tasks yet. Create your first task above.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {tasks.map((task) => {
-              const scheduled = findScheduledTask(scheduledTasks, task.id)
-              const crewName = task.crewId ? crewsById.get(task.crewId)?.name : null
-              const crewScheduleMetadata = task.runner === 'crew'
-                ? readCrewScheduleSnapshotMetadata(scheduled?.crewSnapshotJson)
-                : null
+      <div className="tasks-layout">
+        <TaskListPane
+          tasks={tasks}
+          crews={crews}
+          selectedTaskId={selectedTask?.id ?? null}
+          importCrewId={importCrewId}
+          onSelectTask={setSelectedTaskId}
+          onImportCrewIdChange={setImportCrewId}
+          onImportCrewTasks={handleImportCrewTasks}
+          scheduledTasks={scheduledTasks}
+        />
 
-              return (
-                <div key={task.id} className="card">
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <strong>{deriveTaskName(task)}</strong>
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: 'var(--accent)', color: '#fff' }}>
-                        {task.runner === 'crew' ? 'Crew' : 'Model'}
-                      </span>
-                      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 8, background: task.status === 'completed' ? 'var(--success)' : task.status === 'failed' ? 'var(--danger)' : task.status === 'running' ? 'var(--accent)' : task.status === 'waiting_approval' ? 'var(--warning)' : task.status === 'canceled' ? 'var(--text-muted)' : 'var(--border-color)', color: task.status === 'idle' ? 'var(--text-secondary)' : '#fff' }}>
-                        {task.status}
-                      </span>
-                    </div>
-                    <div className="actions" style={{ marginTop: 0 }}>
-                      <button type="button" onClick={() => void handleOpenTaskChat(task)}>
-                        Chat
-                      </button>
-                      <button type="button" onClick={() => void handleRunTask(task)} disabled={(task.status === 'running' || task.status === 'waiting_approval') || !task.prompt.trim() || (task.runner === 'crew' && !task.crewId) || Boolean(task.workDir.trim() && !isAbsolutePath(task.workDir))}>
-                        Start
-                      </button>
-                      {task.status === 'running' && (
-                        <button type="button" className="btn-stop" onClick={() => void handleCancelTask(task)}>
-                          Stopp
-                        </button>
-                      )}
-                      <button type="button" className="btn-secondary" onClick={() => removeTask(task.id)} disabled={task.status === 'running'}>
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid" style={{ marginTop: 10 }}>
-                    <label>
-                      Title
-                      <input value={task.title} onChange={(e) => updateTask(task.id, { title: e.target.value })} />
-                    </label>
-                    <label>
-                      Execution
-                      <select value={task.runner} onChange={(e) => updateTask(task.id, { runner: e.target.value as WorkTaskRunner })}>
-                        <option value="crew">Crew</option>
-                        <option value="model">Model</option>
-                      </select>
-                    </label>
-                    {task.runner === 'crew' ? (
-                      <label>
-                        Crew
-                        <select value={task.crewId ?? ''} onChange={(e) => updateTask(task.id, { crewId: e.target.value || null })}>
-                          <option value="">Select crew</option>
-                          {crews.map((crew) => (
-                            <option key={crew.id} value={crew.id}>{crew.name}</option>
-                          ))}
-                        </select>
-                        {task.crewId && !crewName ? (
-                          <div className="hint-text">Assigned crew no longer exists.</div>
-                        ) : null}
-                      </label>
-                    ) : (
-                      <label>
-                        Model (optional)
-                        <input
-                          value={task.model}
-                          onChange={(e) => updateTask(task.id, { model: e.target.value })}
-                          placeholder={`Default: ${ollamaConfig.model || '—'}`}
-                        />
-                      </label>
-                    )}
-                    <label>
-                      Expected Output
-                      <input value={task.expectedOutput} onChange={(e) => updateTask(task.id, { expectedOutput: e.target.value })} />
-                    </label>
-                    <label style={{ gridColumn: '1 / -1' }}>
-                      Working folder (absolute)
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <input value={task.workDir} onChange={(e) => updateTask(task.id, { workDir: e.target.value })} placeholder="C:\\Projects\\my-task" />
-                        <button type="button" className="btn-secondary" onClick={() => void handlePickTaskWorkDir(task)}>
-                          Choose folder
-                        </button>
-                      </div>
-                      {task.workDir.trim() && !isAbsolutePath(task.workDir) ? (
-                        <div className="hint-text">Der Working folder must be absolute.</div>
-                      ) : null}
-                    </label>
-                    <label style={{ gridColumn: '1 / -1' }}>
-                      Task
-                      <textarea value={task.prompt} onChange={(e) => updateTask(task.id, { prompt: e.target.value })} rows={3} />
-                    </label>
-                  </div>
-
-                  <div className="card" style={{ marginTop: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-                      <strong>⏰ Scheduler</strong>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                        Last run: {formatTimestamp(scheduled?.lastRunAt ?? null)} · Next run: {formatTimestamp(scheduled?.nextRunAt ?? null)}
-                      </div>
-                    </div>
-
-                    <div className="grid" style={{ marginTop: 8 }}>
-                      <label>
-                        Expression
-                        <input
-                          value={task.scheduleExpr}
-                          onChange={(e) => updateTask(task.id, { scheduleExpr: e.target.value })}
-                          placeholder="e.g. daily 09:00"
-                        />
-                      </label>
-                      <label style={{ display: 'flex', flexDirection: 'column' }}>
-                        Active
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                          <input
-                            type="checkbox"
-                            checked={task.scheduleEnabled}
-                            onChange={(e) => void handleToggleSchedule(task, e.target.checked)}
-                          />
-                          <span className="hint-text">Job {task.scheduleEnabled ? 'active' : 'paused'}</span>
-                        </div>
-                      </label>
-                    </div>
-                    <div className="actions" style={{ marginTop: 10 }}>
-                      <button type="button" className="btn-sm" onClick={() => void handleUpsertSchedule(task)} disabled={!task.scheduleExpr.trim()}>
-                        Save
-                      </button>
-                      <button type="button" className="btn-sm" onClick={() => void handleRemoveSchedule(task)} disabled={!scheduled && !task.scheduleExpr.trim()}>
-                        Remove
-                      </button>
-                      {task.runner === 'crew' && !task.crewId ? (
-                        <span className="hint-text">(Crew required for crew schedule)</span>
-                      ) : null}
-                    </div>
-                    {task.runner === 'crew' && crewScheduleMetadata ? (
-                      <div className="hint-text" style={{ marginTop: 8 }}>
-                        {crewScheduleMetadata.snapshotSource === 'saved-version'
-                          ? `Source: saved crew version v${crewScheduleMetadata.definitionVersionNumber ?? '—'}${crewScheduleMetadata.definitionSavedAt ? ` from ${new Date(crewScheduleMetadata.definitionSavedAt).toLocaleString('en-US')}` : ''}${crewScheduleMetadata.definitionChangeSummary ? ` · ${crewScheduleMetadata.definitionChangeSummary}` : ''}`
-                          : 'Source: current crew editor state'}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {(task.output || task.error) && (
-                    <pre style={{ whiteSpace: 'pre-wrap', marginTop: 10, fontSize: 12 }}>
-                      {(task.error ?? task.output ?? '').slice(0, 6000)}
-                    </pre>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
+        <TaskDetailPane
+          task={selectedTask}
+          crews={crews}
+          defaultModel={ollamaConfig.model}
+          scheduled={selectedScheduledTask}
+          crewScheduleMetadata={selectedCrewScheduleMetadata}
+          projectContext={selectedProjectContext}
+          onUpdateTask={updateTask}
+          onPickWorkDir={(task) => void handlePickTaskWorkDir(task)}
+          onOpenChat={(task) => void handleOpenTaskChat(task)}
+          onRunTask={(task) => void handleRunTask(task)}
+          onCancelTask={(task) => void handleCancelTask(task)}
+          onDeleteTask={(task) => void handleDeleteTask(task)}
+          onToggleSchedule={(task, enabled) => void handleToggleSchedule(task, enabled)}
+          onSaveSchedule={(task) => void handleUpsertSchedule(task)}
+          onRemoveSchedule={(task) => void handleRemoveSchedule(task)}
+        />
       </div>
 
       {templates.length > 0 && (
         <div className="panel">
           <div className="panel-heading-row">
-            <h2>📦 Legacy: Templates</h2>
-            <span className="hint-text">{templates.length} template(s) in legacy storage</span>
+            <h2>{tr("Legacy: Templates")}</h2>
+            <span className="hint-text">{templates.length} {tr("template(s) in legacy storage")}</span>
           </div>
-          <p className="hint-text">These templates are no longer used actively. You can clean them up here if needed.</p>
+          <p className="hint-text">{tr("These templates are no longer used actively. You can clean them up here if needed.")}</p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="task-list">
             {templates.map((template) => (
-              <div key={template.id} className="card">
+              <div key={template.id} className="work-task-card">
                 <strong>{template.title?.trim() ? template.title : template.id}</strong>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{template.description}</div>
-                <div className="actions" style={{ marginTop: 10 }}>
-                  <button type="button" className="btn-secondary" onClick={() => handleRemoveLegacyTemplate(template.id)}>
-                    Delete
+                <div className="task-template-description">{template.description}</div>
+                <div className="actions work-task-card-actions">
+                  <button type="button" className="ui-button ui-button--danger" onClick={() => handleRemoveLegacyTemplate(template.id)}>
+                    {tr("Delete")}
                   </button>
                 </div>
               </div>

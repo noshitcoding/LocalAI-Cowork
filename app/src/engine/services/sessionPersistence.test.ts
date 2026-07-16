@@ -31,9 +31,9 @@ describe('sessionPersistence', () => {
           {
             id: 'thread-1',
             title: 'Build Review',
-            totalMessages: 7,
-            startedAt: '1970-01-01T00:00:01.000Z', // 1000ms since epoch
-            endedAt: '1970-01-01T00:00:02.000Z', // 2000ms since epoch
+            total_messages: 7,
+            started_at: '1970-01-01T00:00:01.000Z', // 1000ms since epoch
+            ended_at: '1970-01-01T00:00:02.000Z', // 2000ms since epoch
           },
         ])
       }
@@ -59,11 +59,11 @@ describe('sessionPersistence', () => {
         return Promise.resolve({
           id: 'legacy-1',
           title: 'Alte Session',
-          threadId: 'thread-legacy-1',
+          thread_id: 'thread-legacy-1',
           cwd: 'C:/workspace',
-          totalMessages: 2,
-          startedAt: '1970-01-01T00:00:01.000Z',
-          endedAt: '1970-01-01T00:00:02.000Z',
+          total_messages: 2,
+          started_at: '1970-01-01T00:00:01.000Z',
+          ended_at: '1970-01-01T00:00:02.000Z',
         })
       }
       return Promise.resolve(null)
@@ -73,6 +73,7 @@ describe('sessionPersistence', () => {
     expect(session).toMatchObject({
       id: 'legacy-1',
       title: 'Alte Session',
+      threadId: 'thread-legacy-1',
     })
     expect(session?.messages).toEqual([])
   })

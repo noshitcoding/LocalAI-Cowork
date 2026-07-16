@@ -1,0 +1,553 @@
+elements:
+  - id: element:/cowork/transcript
+    route: /
+    parent_view: view:/
+    component: CoworkView
+    purpose: Render chat messages, streaming output, message actions, attachments, and debug details for the active thread.
+    visible_text:
+      - Copy
+      - Als Prompt nutzen
+      - Open_Cowork
+    states:
+      - empty
+      - streaming
+      - collapsed messages
+      - live tool calls
+    buttons:
+      - button:/cowork/transcript/copy-message
+      - button:/cowork/transcript/use-as-prompt
+    infos:
+      - info:/cowork/transcript/live-tool-state
+    layout_size: scrollable transcript pane
+    accessibility: Transcript keeps message text visible and uses labeled live tool call regions.
+    source_files:
+      - app/src/components/CoworkView.tsx
+    tests:
+      - app/src/components/CoworkView.test.ts
+  - id: element:/cowork/composer
+    route: /
+    parent_view: view:/
+    component: CoworkView
+    purpose: Compose prompts, select provider/model/permission mode, attach files/folders, and send or stop generation.
+    visible_text:
+      - Files
+      - Folder
+      - Stop
+      - Send
+    states:
+      - idle
+      - locked
+      - slash command menu
+      - drag over
+    buttons:
+      - button:/cowork/composer/send
+      - button:/cowork/composer/stop
+      - button:/cowork/composer/attach-files
+      - button:/cowork/composer/attach-folder
+    infos:
+      - info:/cowork/composer/attachment-notice
+    layout_size: bottom composer
+    accessibility: Message input has an aria-label; connected items and slash commands are labeled.
+    source_files:
+      - app/src/components/CoworkView.tsx
+    tests:
+      - app/src/components/CoworkView.test.ts
+  - id: element:/cowork/approval-banner
+    route: /
+    parent_view: view:/
+    component: CoworkView
+    purpose: Present tool approval and ask-user decisions while a run is paused.
+    visible_text:
+      - Approve
+      - Reject
+      - Answer
+      - Cancel
+    states:
+      - tool approval
+      - ask user
+      - locked
+    buttons:
+      - button:/cowork/approval-banner/approve
+      - button:/cowork/approval-banner/reject
+      - button:/cowork/approval-banner/answer
+      - button:/cowork/approval-banner/cancel
+    infos:
+      - info:/cowork/approval-banner/request
+    layout_size: inline banner above composer
+    accessibility: Answer options are grouped and labeled; buttons remain text-labeled.
+    source_files:
+      - app/src/components/CoworkView.tsx
+    tests:
+      - app/src/components/CoworkView.test.ts
+  - id: element:/cowork/project-context-strip
+    route: /
+    parent_view: view:/
+    component: CoworkView
+    purpose: Show active project instructions and enabled project resources applied to the chat.
+    visible_text:
+      - Project context
+      - Project instructions active
+    states:
+      - no project
+      - project active
+      - disabled resource
+    buttons: []
+    infos:
+      - info:/cowork/project-context-strip/active-project
+    layout_size: compact strip inside composer
+    accessibility: Strip is labeled as project context.
+    source_files:
+      - app/src/components/CoworkView.tsx
+      - app/src/stores/projectStore.ts
+    tests:
+      - app/src/components/CoworkView.test.ts
+  - id: element:/tasks/task-create-panel
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskCreatePanel
+    purpose: Capture a new WorkTask title, runner, crew/model, expected output, working folder, and prompt.
+    visible_text:
+      - New task
+      - Title optional
+      - Execution
+      - Crew
+      - Model optional
+      - Expected output optional
+      - Working folder optional absolute
+      - Task
+      - Choose folder
+      - Create task
+    states:
+      - model runner
+      - crew runner
+      - invalid working folder
+      - no crews available
+    buttons:
+      - button:/tasks/task-create-panel/choose-folder
+      - button:/tasks/task-create-panel/create
+    infos:
+      - info:/tasks/task-create-panel/invalid-workdir
+      - info:/tasks/task-create-panel/no-crews
+    layout_size: full-width panel above task workspace
+    accessibility: Fields are label-wrapped; button labels are visible; invalid folder state renders inline text.
+    source_files:
+      - app/src/components/tasks/TaskCreatePanel.tsx
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+  - id: element:/tasks/task-list-pane
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskListPane
+    purpose: List WorkTasks, expose status/runner/scheduled badges, and select the active detail record.
+    visible_text:
+      - Your tasks
+      - task(s)
+      - No tasks yet. Create your first task above or import templates from a crew.
+    states:
+      - empty
+      - selected
+      - scheduled
+      - runner crew
+      - runner model
+    buttons:
+      - button:/tasks/task-list-pane/select-task
+    infos:
+      - info:/tasks/task-list-pane/empty
+      - info:/tasks/task-list-pane/task-count
+    layout_size: left task pane
+    accessibility: Aside is labeled Tasks; selected item sets aria-current.
+    source_files:
+      - app/src/components/tasks/TaskListPane.tsx
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+  - id: element:/tasks/crew-task-import
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskListPane
+    purpose: Explicitly import CrewTask templates into WorkTasks without making Crew own the Tasks route.
+    visible_text:
+      - Crew templates
+      - Import from crew
+      - No crews available
+    states:
+      - no crew selected
+      - no importable templates
+      - import available
+    buttons:
+      - button:/tasks/crew-task-import/import
+    infos:
+      - info:/tasks/crew-task-import/no-importable
+    layout_size: strip inside task list pane
+    accessibility: Crew selector is label-wrapped and import button is disabled when no import is possible.
+    source_files:
+      - app/src/components/tasks/TaskListPane.tsx
+      - app/src/stores/crewStore.ts
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+  - id: element:/tasks/task-detail-pane
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskDetailPane
+    purpose: Edit the selected WorkTask fields, show project/chat context, output preview, and contain run/scheduler controls.
+    visible_text:
+      - No task selected
+      - Project context
+      - Title
+      - Execution
+      - Working folder absolute
+      - Expected output
+    states:
+      - no selection
+      - selected
+      - invalid working folder
+      - missing crew
+      - output available
+      - error available
+    buttons:
+      - button:/tasks/task-detail-pane/choose-folder
+    infos:
+      - info:/tasks/task-detail-pane/no-selection
+      - info:/tasks/task-detail-pane/project-context
+      - info:/tasks/task-detail-pane/invalid-workdir
+      - info:/tasks/task-detail-pane/output-preview
+    layout_size: detail pane filling remaining route width
+    accessibility: Section is labeled Task detail; fields are label-wrapped; disabled run conditions have inline hints.
+    source_files:
+      - app/src/components/tasks/TaskDetailPane.tsx
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+  - id: element:/tasks/task-run-toolbar
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskRunToolbar
+    purpose: Provide primary execution actions for the selected WorkTask.
+    visible_text:
+      - Chat erstellen
+      - Chat oeffnen
+      - Start
+      - Stop
+      - Delete
+    states:
+      - idle
+      - running
+      - waiting approval
+      - run disabled
+      - delete disabled
+    buttons:
+      - button:/tasks/task-run-toolbar/open-chat
+      - button:/tasks/task-run-toolbar/start
+      - button:/tasks/task-run-toolbar/stop
+      - button:/tasks/task-run-toolbar/delete
+    infos: []
+    layout_size: compact action row in task detail header
+    accessibility: Buttons have visible labels and icon aria-hidden markers.
+    source_files:
+      - app/src/components/tasks/TaskRunToolbar.tsx
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+  - id: element:/tasks/task-scheduler-panel
+    route: /tasks
+    parent_view: view:/tasks
+    component: TaskSchedulerPanel
+    purpose: Configure, activate, pause, save, and remove the scheduler snapshot for the selected WorkTask.
+    visible_text:
+      - Scheduler
+      - Last run
+      - Next run
+      - Expression
+      - Active
+      - Save
+      - Remove
+    states:
+      - no schedule
+      - active
+      - paused
+      - crew snapshot source
+      - save disabled
+    buttons:
+      - button:/tasks/task-scheduler-panel/toggle-active
+      - button:/tasks/task-scheduler-panel/save
+      - button:/tasks/task-scheduler-panel/remove
+    infos:
+      - info:/tasks/task-scheduler-panel/run-times
+      - info:/tasks/task-scheduler-panel/source
+      - info:/tasks/task-scheduler-panel/crew-required
+    layout_size: scheduler panel below task editor
+    accessibility: Active checkbox is label-wrapped; save/remove controls have visible labels.
+    source_files:
+      - app/src/components/tasks/TaskSchedulerPanel.tsx
+      - app/src/engine/tasks/workTaskScheduleService.ts
+    tests:
+      - app/src/components/tasks/TaskPanels.test.tsx
+      - app/src/components/TasksView.schedule.test.tsx
+  - id: element:/crew/studio
+    route: /crew
+    parent_view: view:/crew
+    component: CrewPanel
+    purpose: Edit crew definitions, agents, tasks, provider settings, and run controls.
+    visible_text:
+      - Crew Studio
+    states:
+      - empty
+      - editing
+      - running
+    buttons:
+      - button:/crew/studio/create
+      - button:/crew/studio/run
+      - button:/crew/studio/save-definition
+    infos:
+      - info:/crew/studio/no-crews
+    layout_size: full route workspace
+    accessibility: Crew controls must keep text labels or aria-labels.
+    source_files:
+      - app/src/components/CrewPanel.tsx
+    tests:
+      - app/src/components/CrewPanel.test.tsx
+  - id: element:/crew/runtime-monitor
+    route: /crew
+    parent_view: view:/crew
+    component: CrewLiveMonitor
+    purpose: Show live crew runtime events, status, metrics, and errors.
+    visible_text:
+      - Running
+      - Completed
+      - Failed
+    states:
+      - idle
+      - running
+      - completed
+      - failed
+      - canceled
+    buttons: []
+    infos:
+      - info:/crew/runtime-monitor/status
+    layout_size: monitor panel
+    accessibility: Runtime statuses are text and color coded.
+    source_files:
+      - app/src/components/CrewLiveMonitor.tsx
+    tests:
+      - app/src/components/CrewLiveMonitor.test.tsx
+  - id: element:/crew/governance
+    route: /crew
+    parent_view: view:/crew
+    component: CrewGovernancePanel
+    purpose: Configure crew permissions, governance, access controls, and runtime policy.
+    visible_text:
+      - Governance
+    states:
+      - default policy
+      - custom policy
+    buttons: []
+    infos:
+      - info:/crew/governance/policy
+    layout_size: crew settings panel
+    accessibility: Governance controls should be label-wrapped.
+    source_files:
+      - app/src/components/crew/CrewGovernancePanel.tsx
+    tests:
+      - app/src/components/CrewPanel.test.tsx
+  - id: element:/projects/project-list
+    route: /projects
+    parent_view: view:/projects
+    component: ProjectView
+    purpose: List projects, create a new project, and select the active project.
+    visible_text:
+      - Projects
+      - No projects yet.
+    states:
+      - empty
+      - selected
+    buttons:
+      - button:/projects/project-list/create
+      - button:/projects/project-list/select
+    infos:
+      - info:/projects/project-list/empty
+    layout_size: left project list panel
+    accessibility: Project rows are buttons with visible names.
+    source_files:
+      - app/src/components/ProjectView.tsx
+    tests:
+      - app/src/components/ProjectView.test.tsx
+  - id: element:/projects/project-detail
+    route: /projects
+    parent_view: view:/projects
+    component: ProjectView
+    purpose: Edit project title and instructions, create project chats, add sources, and delete projects.
+    visible_text:
+      - No project selected
+      - Create project
+      - Delete project
+      - New chat
+    states:
+      - no selection
+      - editing
+      - delete confirmation
+    buttons:
+      - button:/projects/project-detail/create-empty
+      - button:/projects/project-detail/new-chat
+      - button:/projects/project-detail/add-files
+      - button:/projects/project-detail/add-folders
+      - button:/projects/project-detail/delete
+      - button:/projects/project-detail/delete-detach-only
+      - button:/projects/project-detail/delete-with-chats
+      - button:/projects/project-detail/delete-cancel
+    infos:
+      - info:/projects/project-detail/no-selection
+    layout_size: main project detail panel
+    accessibility: Delete dialog uses role dialog and labels destructive choices.
+    source_files:
+      - app/src/components/ProjectView.tsx
+    tests:
+      - app/src/components/ProjectView.test.tsx
+  - id: element:/projects/project-sources
+    route: /projects
+    parent_view: view:/projects
+    component: ProjectView
+    purpose: Add links and manage enabled file, folder, and link resources for project context.
+    visible_text:
+      - Project sources
+      - Link
+      - No sources linked.
+    states:
+      - empty
+      - resource enabled
+      - resource disabled
+    buttons:
+      - button:/projects/project-sources/add-link
+      - button:/projects/project-sources/remove-source
+    infos:
+      - info:/projects/project-sources/empty
+    layout_size: project panel
+    accessibility: Link input has an sr-only label; remove buttons expose aria-labels.
+    source_files:
+      - app/src/components/ProjectView.tsx
+    tests:
+      - app/src/components/ProjectView.test.tsx
+  - id: element:/projects/project-chats
+    route: /projects
+    parent_view: view:/projects
+    component: ProjectView
+    purpose: Show project chats and attach or detach chats from the active project.
+    visible_text:
+      - Project chats
+      - Chats outside this project
+      - No chats in the project yet.
+    states:
+      - empty project chats
+      - available chats
+    buttons:
+      - button:/projects/project-chats/open-chat
+      - button:/projects/project-chats/remove-chat
+      - button:/projects/project-chats/add-chat
+    infos:
+      - info:/projects/project-chats/empty
+    layout_size: project panels
+    accessibility: Remove chat buttons expose aria-labels.
+    source_files:
+      - app/src/components/ProjectView.tsx
+    tests:
+      - app/src/components/ProjectView.test.tsx
+  - id: element:/settings/category-tabs
+    route: /settings
+    parent_view: view:/settings
+    component: SettingsView
+    purpose: Navigate settings categories using tab semantics.
+    visible_text:
+      - AI and model
+      - Agent and Skills
+      - Memory
+      - Sessions and Insights
+      - Terminal and Processes
+      - MCP Server
+      - Interface
+      - Security
+      - Gateway
+    states:
+      - selected
+      - inactive
+    buttons:
+      - button:/settings/category-tabs/select
+    infos: []
+    layout_size: left settings sidebar
+    accessibility: Uses role tablist and role tab/panel ids.
+    source_files:
+      - app/src/components/SettingsView.tsx
+    tests:
+      - app/src/components/SettingsView.test.tsx
+  - id: element:/settings/active-panel
+    route: /settings
+    parent_view: view:/settings
+    component: SettingsView
+    purpose: Render the currently selected settings category and its controls.
+    visible_text:
+      - Configure multiple LLM profiles
+      - Control agent behavior
+      - Manage agent memory
+      - Search past sessions
+      - Configure terminal backends
+      - Manage and test Model Context Protocol servers
+      - Customize display
+    states:
+      - ai
+      - agent
+      - memory
+      - sessions
+      - terminal
+      - mcp
+      - ui
+      - security
+      - gateway
+    buttons:
+      - button:/settings/agent/reset-system-prompt
+      - button:/settings/gateway/refresh
+      - button:/settings/gateway/refresh-deep
+    infos:
+      - info:/settings/gateway/status-unavailable
+    layout_size: settings content panel
+    accessibility: Active panel is tied to the selected tab with aria-labelledby.
+    source_files:
+      - app/src/components/SettingsView.tsx
+    tests:
+      - app/src/components/SettingsView.test.tsx
+  - id: element:/features/capability-tabs
+    route: /features
+    parent_view: view:/features
+    component: FeaturesView
+    purpose: Switch between the operational MCP, knowledge, skills, and slash-command tools.
+    visible_text:
+      - MCP Server
+      - Knowledge base
+      - Skills
+      - Slash commands
+    states:
+      - active tab
+      - inactive tab
+    buttons:
+      - button:/features/select-capability
+    infos: []
+    layout_size: horizontal workbench tabs
+    accessibility: Uses tablist, tab, aria-selected, and a connected tabpanel.
+    source_files:
+      - app/src/components/FeaturesView.tsx
+    tests:
+      - app/src/components/FeaturesView.test.tsx
+  - id: element:/features/command-catalog
+    route: /features
+    parent_view: view:/features
+    component: FeaturesView
+    purpose: Search all registered slash commands and open one directly in the Cowork composer.
+    visible_text:
+      - Search slash commands...
+    states:
+      - populated
+      - filtered
+      - no matches
+    buttons:
+      - button:/features/open-slash-command
+    infos: []
+    layout_size: searchable command list
+    accessibility: Search has an accessible label and every command is a keyboard-operable button.
+    source_files:
+      - app/src/components/FeaturesView.tsx
+    tests:
+      - app/src/components/FeaturesView.test.tsx

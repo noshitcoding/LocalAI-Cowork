@@ -9,6 +9,22 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_MODEL: &str = "llama3.1:8b";
 const DEFAULT_TIMEOUT_MS: u64 = 600_000;
 
+fn diagnostic_endpoint(input: &str) -> String {
+    let Ok(url) = Url::parse(input) else {
+        return crate::sensitive_data::redact_and_bound_text(input, 2 * 1024);
+    };
+    let host = url.host_str().unwrap_or("unknown");
+    let port = url
+        .port()
+        .map(|value| format!(":{value}"))
+        .unwrap_or_default();
+    format!("{}://{}{}{}", url.scheme(), host, port, url.path())
+}
+
+fn diagnostic_text(input: &str) -> String {
+    crate::sensitive_data::redact_and_bound_text(input, 4 * 1024)
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OllamaConfig {
@@ -173,14 +189,17 @@ fn request_error(context: &str, config: &OllamaConfig, error: reqwest::Error) ->
     };
     OllamaError::RequestFailed(format!(
         "{context} failed ({kind}) for endpoint={} model={} timeoutMs={}: {}",
-        config.base_url, config.model, config.timeout_ms, error
+        diagnostic_endpoint(&config.base_url),
+        config.model,
+        config.timeout_ms,
+        diagnostic_text(&error.to_string())
     ))
 }
 
 fn empty_response_error(context: &str, config: &OllamaConfig) -> OllamaError {
     OllamaError::RequestFailed(format!(
         "{context} returned an empty response for endpoint={} model={}. Try another model tag or increase the timeout.",
-        config.base_url, config.model
+        diagnostic_endpoint(&config.base_url), config.model
     ))
 }
 
@@ -301,7 +320,7 @@ pub async fn generate_plan(
     let started = Instant::now();
     log::info!(
         "ollama generate_plan start endpoint={} model={} timeoutMs={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         config.timeout_ms
     );
@@ -335,7 +354,7 @@ pub async fn generate_plan(
     if generate_payload.response.trim().is_empty() {
         log::warn!(
             "ollama generate_plan empty endpoint={} model={} elapsedMs={}",
-            config.base_url,
+            diagnostic_endpoint(&config.base_url),
             config.model,
             started.elapsed().as_millis()
         );
@@ -344,7 +363,7 @@ pub async fn generate_plan(
 
     log::info!(
         "ollama generate_plan success endpoint={} model={} elapsedMs={} chars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         started.elapsed().as_millis(),
         generate_payload.response.len()
@@ -389,7 +408,7 @@ pub async fn chat_turn(
     let started = Instant::now();
     log::info!(
         "ollama chat_turn start endpoint={} model={} timeoutMs={} historyItems={} promptChars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         config.timeout_ms,
         history.len(),
@@ -425,7 +444,7 @@ pub async fn chat_turn(
     if generate_payload.response.trim().is_empty() {
         log::warn!(
             "ollama chat_turn empty endpoint={} model={} elapsedMs={}",
-            config.base_url,
+            diagnostic_endpoint(&config.base_url),
             config.model,
             started.elapsed().as_millis()
         );
@@ -434,7 +453,7 @@ pub async fn chat_turn(
 
     log::info!(
         "ollama chat_turn success endpoint={} model={} elapsedMs={} chars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         started.elapsed().as_millis(),
         generate_payload.response.len()
@@ -481,7 +500,7 @@ where
     let started = Instant::now();
     log::info!(
         "ollama chat_turn_stream start endpoint={} model={} timeoutMs={} historyItems={} promptChars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         config.timeout_ms,
         history.len(),
@@ -526,9 +545,9 @@ where
                 let stream_error = request_error("/api/generate stream", &config, error);
                 log::warn!(
                     "ollama chat_turn_stream fallback endpoint={} model={} reason={}",
-                    config.base_url,
+                    diagnostic_endpoint(&config.base_url),
                     config.model,
-                    stream_error
+                    diagnostic_text(&stream_error.to_string())
                 );
                 return chat_turn(
                     Some(config.clone()),
@@ -557,7 +576,7 @@ where
     if assistant_message.trim().is_empty() {
         log::warn!(
             "ollama chat_turn_stream empty endpoint={} model={} elapsedMs={}",
-            config.base_url,
+            diagnostic_endpoint(&config.base_url),
             config.model,
             started.elapsed().as_millis()
         );
@@ -566,7 +585,7 @@ where
 
     log::info!(
         "ollama chat_turn_stream success endpoint={} model={} elapsedMs={} chars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         started.elapsed().as_millis(),
         assistant_message.len()
@@ -603,7 +622,7 @@ async fn chat_turn_with_tools(
     let started = Instant::now();
     log::info!(
         "ollama chat_turn tools start endpoint={} model={} timeoutMs={} historyItems={} toolCount={} promptChars={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         config.timeout_ms,
         history.len(),
@@ -654,7 +673,7 @@ async fn chat_turn_with_tools(
     if assistant_message.trim().is_empty() && tool_calls.is_empty() {
         log::warn!(
             "ollama chat_turn tools empty endpoint={} model={} elapsedMs={}",
-            config.base_url,
+            diagnostic_endpoint(&config.base_url),
             config.model,
             started.elapsed().as_millis()
         );
@@ -663,7 +682,7 @@ async fn chat_turn_with_tools(
 
     log::info!(
         "ollama chat_turn tools success endpoint={} model={} elapsedMs={} chars={} toolCalls={}",
-        config.base_url,
+        diagnostic_endpoint(&config.base_url),
         config.model,
         started.elapsed().as_millis(),
         assistant_message.len(),
@@ -697,9 +716,9 @@ where
         Ok(payload) => payload,
         Err(error) => {
             log::debug!(
-                "ignoring non-json ollama stream line: {} ({})",
-                normalized,
-                error
+                "ignoring non-json ollama stream line (bytes={}): {}",
+                normalized.len(),
+                diagnostic_text(&error.to_string())
             );
             return Ok(());
         }
@@ -805,14 +824,12 @@ fn build_chat_turn_response(
         let response_steps = parse_steps(&assistant_message);
         let steps: Vec<String> = response_steps.into_iter().take(6).collect();
         if steps.is_empty() || (steps.len() == 1 && steps[0] == assistant_message.trim()) {
-            vec![
-                assistant_message
-                    .lines()
-                    .next()
-                    .unwrap_or("Aktion pruefen")
-                    .trim()
-                    .to_string(),
-            ]
+            vec![assistant_message
+                .lines()
+                .next()
+                .unwrap_or("Aktion pruefen")
+                .trim()
+                .to_string()]
         } else {
             steps
         }
@@ -857,7 +874,7 @@ fn parse_steps(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OllamaConfig, OllamaToolCall, OllamaToolFunctionCall, build_chat_turn_response, parse_steps,
+        build_chat_turn_response, parse_steps, OllamaConfig, OllamaToolCall, OllamaToolFunctionCall,
     };
     use serde_json::{Map, Value};
 
@@ -871,7 +888,7 @@ mod tests {
             vec![
                 "Initialize project".to_string(),
                 "Configure Ollama".to_string(),
-            "Run tests".to_string()
+                "Run tests".to_string()
             ]
         );
     }

@@ -112,7 +112,7 @@ type TerminalState = {
   activeAiThreadId: string | null
 
   loadBackends: () => Promise<void>
-  upsertBackend: (b: { id: string; name: string; backendType: string; configJson: string }) => Promise<void>
+  upsertBackend: (b: { id: string; name: string; backendType: string; configJson: string }) => Promise<boolean>
   deleteBackend: (id: string) => Promise<void>
   execCommand: (backendId: string, command: string, workingDir?: string, timeoutMs?: number) => Promise<BackendExecResponse>
   ensureLocalBackend: () => Promise<TerminalBackend>
@@ -387,8 +387,10 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
         backendType: b.backendType,
         configJson: b.configJson,
       }, undefined)
+      return true
     } catch (e) {
       set({ error: String(e) })
+      return false
     }
   },
 
@@ -673,11 +675,14 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
       }
       pendingCommand.timer = setTimeout(() => {
         pendingAiCommands.delete(marker)
+        void get().killSession(session.id).catch((error) => {
+          set({ error: error instanceof Error ? error.message : String(error) })
+        })
         set((current) =>
           updateSessionById(current, session.id, (item) => ({
             ...item,
-            status: 'idle',
-            output: appendOutput(item.output, `\n[terminal command timed out after ${timeoutMs}ms]\n`),
+            status: 'exited',
+            output: appendOutput(item.output, `\n[terminal command timed out after ${timeoutMs}ms; session terminated]\n`),
             currentAiCommand: undefined,
             updatedAt: Date.now(),
           })),
@@ -710,7 +715,19 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
       }))
 
       void get().writeToSession(session.id, aiCommand.data).catch((error) => {
+        if (pendingCommand.timer !== null) {
+          clearTimeout(pendingCommand.timer)
+        }
         pendingAiCommands.delete(marker)
+        void get().killSession(session.id).catch(() => undefined)
+        set((current) =>
+          updateSessionById(current, session.id, (item) => ({
+            ...item,
+            status: 'error',
+            currentAiCommand: undefined,
+            updatedAt: Date.now(),
+          })),
+        )
         reject(error instanceof Error ? error : new Error(String(error)))
       })
     })

@@ -7,6 +7,33 @@ import { extractTextContent, generateUUID } from '../types'
 import { QueryEngine, type EngineConfig, type EngineEvent } from '../core/queryEngine'
 import { safeInvoke, safeInvokeVoid } from '../../utils/safeInvoke'
 
+function stringifyRunPayload(value: unknown, maxLength = 4000): string {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+  } catch {
+    return String(value).slice(0, maxLength)
+  }
+}
+
+function appendAgentRunEvent(
+  runId: string,
+  eventType: string,
+  summary: string,
+  payload: unknown,
+  redactionLevel = 'metadata',
+): void {
+  void safeInvokeVoid('engine_run_event_append', {
+    request: {
+      runId,
+      eventType,
+      summary,
+      payloadJson: stringifyRunPayload(payload),
+      redactionLevel,
+    },
+  })
+}
+
 // ── Agent Instance ─────────────────────────────────────────────────────────
 
 export type AgentInstance = {
@@ -47,7 +74,7 @@ export class AgentCoordinator {
     const childRunId = generateUUID()
     const sandboxId = generateUUID()
 
-    void safeInvokeVoid('engine_run_create', {
+    await safeInvokeVoid('engine_run_create', {
       request: {
         id: childRunId,
         parentRunId: this.baseConfig.runId,
@@ -59,6 +86,7 @@ export class AgentCoordinator {
         cwd: this.baseConfig.cwd,
         model: this.baseConfig.ollama?.model ?? this.baseConfig.anthropic?.model,
         provider: this.baseConfig.backend,
+        toolsetPolicyId: this.baseConfig.toolsetPolicyId,
         metadataJson: JSON.stringify({
           agentId,
           agentName: definition.name,
@@ -174,6 +202,43 @@ export class AgentCoordinator {
               metadataJson: JSON.stringify({ toolName: event.toolName, input: event.input }),
             },
           })
+          appendAgentRunEvent(
+            childRunId,
+            'tool_start',
+            `Tool started: ${event.toolName}`,
+            {
+              agentId,
+              toolUseId: event.toolUseId,
+              toolName: event.toolName,
+              input: event.input,
+            },
+          )
+        }
+
+        if (event.type === 'tool_use_complete') {
+          appendAgentRunEvent(
+            childRunId,
+            'tool_result',
+            `Tool completed: ${event.toolName}`,
+            {
+              agentId,
+              toolUseId: event.toolUseId,
+              toolName: event.toolName,
+              result: event.result,
+            },
+          )
+        }
+
+        if (event.type === 'approval_required') {
+          appendAgentRunEvent(
+            childRunId,
+            'approval_requested',
+            'Approval requested',
+            {
+              agentId,
+              request: event.request,
+            },
+          )
         }
 
         if (event.type === 'done') {
@@ -203,6 +268,17 @@ export class AgentCoordinator {
               }),
             },
             })
+          appendAgentRunEvent(
+            childRunId,
+            'run_completed',
+            `Agent completed: ${definition.name}`,
+            {
+              agentId,
+              result: instance.result ?? '',
+              turns: instance.turns,
+              costUsd: instance.costUsd,
+            },
+          )
             void safeInvokeVoid('worker_sandbox_update', {
             request: {
               id: sandboxId,
@@ -227,6 +303,15 @@ export class AgentCoordinator {
               error: event.error,
             },
           })
+          appendAgentRunEvent(
+            childRunId,
+            'error',
+            event.error.slice(0, 240),
+            {
+              agentId,
+              error: event.error,
+            },
+          )
           void safeInvokeVoid('worker_sandbox_update', {
             request: {
               id: sandboxId,
@@ -374,7 +459,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Researcher',
     description: 'Specialized in research and analysis.',
     type: 'research',
-    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead'],
+    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'SessionSearch'],
     maxTurns: 10,
   },
   {
@@ -390,7 +475,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Planner',
     description: 'Specialized in project planning and task decomposition.',
     type: 'planning',
-    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite'],
+    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'SessionSearch'],
     maxTurns: 5,
   },
 ]

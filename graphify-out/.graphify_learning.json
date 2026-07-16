@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-07-16T14:57:24.870636+00:00",
+  "nodes": {
+    "app_src_components_coworkview": {
+      "code_fingerprint": "46473472dfe6156157ef798fe4c17a789a3a1f23e745043ec72bd73484a0003b",
+      "label": "CoworkView.tsx",
+      "last": "2026-07-16T14:51:57.799154+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-16T14:51:57.799154+00:00",
+          "outcome": "useful",
+          "q": "warum wird mein Opencowork nicht bei einer Google suche angezigt?"
+        }
+      ],
+      "score": 0.999912539,
+      "source_file": "app/src/components/CoworkView.tsx",
+      "status": "tentative",
+      "uses": 1
+    },
+    "metadata": {
+      "code_fingerprint": "",
+      "label": "Metadata",
+      "last": "2026-07-16T14:51:57.799154+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-16T14:51:57.799154+00:00",
+          "outcome": "useful",
+          "q": "warum wird mein Opencowork nicht bei einer Google suche angezigt?"
+        }
+      ],
+      "score": 0.999912539,
+      "source_file": "",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
+  "version": 1
+}

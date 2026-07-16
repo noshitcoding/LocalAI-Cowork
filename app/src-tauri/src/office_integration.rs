@@ -84,7 +84,11 @@ pub fn detect_office_apps() -> OfficeDetectResponse {
     if !cfg!(target_os = "windows") {
         warnings.push("Office-Automation ist aktuell nur unter Windows aktiv.".to_string());
     }
-    if apps.iter().filter(|app| app.kind != "libreoffice").all(|app| !app.available) {
+    if apps
+        .iter()
+        .filter(|app| app.kind != "libreoffice")
+        .all(|app| !app.available)
+    {
         warnings.push(
             "Microsoft Office was not found; direct Word/PowerPoint/Excel automation is not available."
                 .to_string(),
@@ -138,7 +142,10 @@ pub fn open_document(path: &Path, app_kind: Option<&str>) -> Result<OfficeOpenRe
         .map_err(|err| format!("{} could not be started: {}", app.display_name, err))?;
 
     if format == "pdf" {
-        warnings.push("PDF was opened in the requested Office app; PDF editing is not guaranteed.".to_string());
+        warnings.push(
+            "PDF was opened in the requested Office app; PDF editing is not guaranteed."
+                .to_string(),
+        );
     }
 
     Ok(OfficeOpenResponse {
@@ -192,7 +199,8 @@ pub fn render_document_preview(
     };
 
     let pages_dir = preview_dir.join("pages");
-    let pages = artifact_pipeline::render_pdf_pages(&pdf_path, &pages_dir, max_pages, target_width)?;
+    let pages =
+        artifact_pipeline::render_pdf_pages(&pdf_path, &pages_dir, max_pages, target_width)?;
     if pages.len() >= max_pages {
         warnings.push(format!("Preview auf {} Seite(n) begrenzt.", max_pages));
     }
@@ -249,7 +257,11 @@ fn normalize_app_kind(value: &str) -> Option<&'static str> {
 fn detect_app_for_kind(kind: &str) -> Option<OfficeAppInfo> {
     match kind {
         "word" => Some(detect_app("word", "Microsoft Word", "WINWORD.EXE")),
-        "powerpoint" => Some(detect_app("powerpoint", "Microsoft PowerPoint", "POWERPNT.EXE")),
+        "powerpoint" => Some(detect_app(
+            "powerpoint",
+            "Microsoft PowerPoint",
+            "POWERPNT.EXE",
+        )),
         "excel" => Some(detect_app("excel", "Microsoft Excel", "EXCEL.EXE")),
         "libreoffice" => Some(detect_app("libreoffice", "LibreOffice", "soffice.exe")),
         _ => None,
@@ -279,7 +291,12 @@ fn known_executable_candidates(kind: &str, exe_name: &str) -> Vec<PathBuf> {
             match kind {
                 "word" | "powerpoint" | "excel" => {
                     for version in ["Office16", "Office15", "Office14"] {
-                        candidates.push(root.join("Microsoft Office").join("root").join(version).join(exe_name));
+                        candidates.push(
+                            root.join("Microsoft Office")
+                                .join("root")
+                                .join(version)
+                                .join(exe_name),
+                        );
                         candidates.push(root.join("Microsoft Office").join(version).join(exe_name));
                     }
                 }
@@ -327,7 +344,13 @@ fn preview_cache_dir(app_data_dir: &Path, source_path: &Path) -> Result<PathBuf,
 fn sanitize_stem(value: &str) -> String {
     let sanitized = value
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string();
@@ -338,7 +361,11 @@ fn sanitize_stem(value: &str) -> String {
     }
 }
 
-fn export_office_to_pdf(source_path: &Path, pdf_path: &Path, office_kind: &str) -> Result<(), String> {
+fn export_office_to_pdf(
+    source_path: &Path,
+    pdf_path: &Path,
+    office_kind: &str,
+) -> Result<(), String> {
     if !cfg!(target_os = "windows") {
         return Err("Office-PDF-Export ist aktuell nur unter Windows available.".to_string());
     }
@@ -350,7 +377,12 @@ fn export_office_to_pdf(source_path: &Path, pdf_path: &Path, office_kind: &str) 
         "word" => office_word_export_script(source_path, pdf_path),
         "powerpoint" => office_powerpoint_export_script(source_path, pdf_path),
         "excel" => office_excel_export_script(source_path, pdf_path),
-        _ => return Err(format!("Office PDF export for '{}' is not supported.", office_kind)),
+        _ => {
+            return Err(format!(
+                "Office PDF export for '{}' is not supported.",
+                office_kind
+            ))
+        }
     };
 
     run_powershell_script(&script)?;

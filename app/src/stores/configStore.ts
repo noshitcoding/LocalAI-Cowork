@@ -1,6 +1,17 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { TerminalPersistenceMode } from './terminalStore'
+import {
+  deleteCredential,
+  llmApiKeyLocator,
+  mcpCredentialOwner,
+  replaceCredentialMap,
+  setCredential,
+} from '../security/credentialVault'
+import {
+  sanitizeMcpServerForPersistence,
+  sanitizeProfilesForPersistence,
+} from '../security/credentialPersistence'
 
 export type OllamaConfig = {
   baseUrl: string
@@ -28,6 +39,7 @@ export type LlmProfile = {
 export type DefaultLlmProfileIds = Record<LlmProviderKind, string>
 
 export type McpServerConfig = {
+  id?: string
   name: string
   command: string
   args: string
@@ -85,17 +97,19 @@ type ConfigState = {
   availableModels: string[]
   setOllama: (patch: Partial<OllamaConfig>) => void
   addLlmProfile: (provider: LlmProviderKind) => string
-  updateLlmProfile: (id: string, patch: Partial<LlmProfile>) => void
-  deleteLlmProfile: (id: string) => void
+  updateLlmProfile: (id: string, patch: Partial<Omit<LlmProfile, 'apiKey'>>) => void
+  setLlmProfileApiKey: (id: string, apiKey: string) => Promise<void>
+  deleteLlmProfile: (id: string) => Promise<void>
   setDefaultLlmProfile: (provider: LlmProviderKind, id: string) => void
   setLlmProfileModels: (id: string, models: string[]) => void
   setPreference: <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => void
   setPreferences: (patch: Partial<AppPreferences>) => void
-  setMcpServer: (patch: Partial<McpServerConfig>) => void
+  setMcpServer: (patch: Partial<Omit<McpServerConfig, 'env'>>) => void
+  setMcpServerEnv: (env: Record<string, string>) => Promise<void>
   setActiveMcpServer: (name: string) => void
-  upsertMcpServer: (server: McpServerConfig) => void
-  importMcpServers: (servers: McpServerConfig[]) => void
-  deleteMcpServer: (name: string) => void
+  upsertMcpServer: (server: McpServerConfig) => Promise<void>
+  importMcpServers: (servers: McpServerConfig[]) => Promise<void>
+  deleteMcpServer: (name: string) => Promise<void>
   setAvailableModels: (models: string[]) => void
 }
 
@@ -324,6 +338,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
 }
 
 const DEFAULT_MCP: McpServerConfig = {
+  id: 'default-duckduckgo-websearch',
   name: 'duckduckgo-websearch',
   command: 'node',
   args: 'scripts/mcp/duckduckgo-websearch-server.mjs',
@@ -337,6 +352,7 @@ const DEFAULT_MCP: McpServerConfig = {
 
 function normalizeServer(server: McpServerConfig): McpServerConfig {
   return {
+    id: server.id?.trim() || `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     name: server.name.trim(),
     command: server.command.trim(),
     args: server.args.trim(),
@@ -467,7 +483,18 @@ export const useConfigStore = create<ConfigState>()(
               : state.ollama,
           }
         }),
-      deleteLlmProfile: (id) =>
+      setLlmProfileApiKey: async (id, apiKey) => {
+        if (!useConfigStore.getState().llmProfiles.some((profile) => profile.id === id)) return
+        await setCredential(llmApiKeyLocator(id), apiKey)
+        set((state) => ({
+          llmProfiles: state.llmProfiles.map((profile) => (
+            profile.id === id ? { ...profile, apiKey } : profile
+          )),
+        }))
+      },
+      deleteLlmProfile: async (id) => {
+        if (Object.values(useConfigStore.getState().defaultLlmProfileIds).includes(id)) return
+        await deleteCredential(llmApiKeyLocator(id))
         set((state) => {
           if (Object.values(state.defaultLlmProfileIds).includes(id)) {
             return state
@@ -480,7 +507,8 @@ export const useConfigStore = create<ConfigState>()(
             llmProfiles: state.llmProfiles.filter((profile) => profile.id !== id),
             llmProfileModels: nextModels,
           }
-        }),
+        })
+      },
       setDefaultLlmProfile: (provider, id) =>
         set((state) => {
           const profile = state.llmProfiles.find((item) => item.id === id && item.provider === provider)
@@ -536,6 +564,25 @@ export const useConfigStore = create<ConfigState>()(
             activeMcpServerName: updated.name,
           }
         }),
+      setMcpServerEnv: async (env) => {
+        const state = useConfigStore.getState()
+        const active = state.mcpServer
+        await replaceCredentialMap(
+          'mcp_env',
+          mcpCredentialOwner(active),
+          active.env ?? {},
+          env,
+        )
+        set((current) => {
+          const updated = normalizeServer({ ...current.mcpServer, env })
+          const servers = (current.mcpServers.length > 0 ? current.mcpServers : [current.mcpServer])
+            .map((server) => (server.id === updated.id ? updated : server))
+          return {
+            mcpServer: updated,
+            mcpServers: servers,
+          }
+        })
+      },
       setActiveMcpServer: (name) =>
         set((state) => {
           const servers = state.mcpServers.length > 0 ? state.mcpServers : [state.mcpServer]
@@ -544,37 +591,58 @@ export const useConfigStore = create<ConfigState>()(
             mcpServer: chooseServer(servers, name),
           }
         }),
-      upsertMcpServer: (server) =>
+      upsertMcpServer: async (server) => {
+        const normalized = normalizeServer(server)
+        const existingServer = useConfigStore.getState().mcpServers.find((item) => (
+          item.id === normalized.id || item.name === normalized.name
+        ))
+        await replaceCredentialMap(
+          'mcp_env',
+          mcpCredentialOwner(normalized),
+          existingServer?.env ?? {},
+          normalized.env,
+        )
         set((state) => {
-          const normalized = normalizeServer(server)
           const existing = state.mcpServers.length > 0 ? state.mcpServers : [state.mcpServer]
-          const servers = existing.some((item) => item.name === normalized.name)
-            ? existing.map((item) => (item.name === normalized.name ? normalized : item))
+          const servers = existing.some((item) => item.id === normalized.id || item.name === normalized.name)
+            ? existing.map((item) => (item.id === normalized.id || item.name === normalized.name ? normalized : item))
             : [...existing, normalized]
           return {
             mcpServers: servers,
             activeMcpServerName: normalized.name,
             mcpServer: normalized,
           }
-        }),
-      importMcpServers: (serversToImport) =>
+        })
+      },
+      importMcpServers: async (serversToImport) => {
+        const normalizedImports = serversToImport.map(normalizeServer)
+          .filter((server) => server.name && server.command)
+        await Promise.all(normalizedImports.map((server) => replaceCredentialMap(
+          'mcp_env',
+          mcpCredentialOwner(server),
+          {},
+          server.env,
+        )))
         set((state) => {
           const existing = state.mcpServers.length > 0 ? state.mcpServers : [state.mcpServer]
           const byName = new Map(existing.map((server) => [server.name, server]))
-          serversToImport.map(normalizeServer).forEach((server) => {
-            if (server.name && server.command) {
-              byName.set(server.name, server)
-            }
+          normalizedImports.forEach((server) => {
+            byName.set(server.name, server)
           })
           const servers = Array.from(byName.values())
-          const activeMcpServerName = serversToImport[0]?.name ?? state.activeMcpServerName
+          const activeMcpServerName = normalizedImports[0]?.name ?? state.activeMcpServerName
           return {
             mcpServers: servers,
             activeMcpServerName,
             mcpServer: chooseServer(servers, activeMcpServerName),
           }
-        }),
-      deleteMcpServer: (name) =>
+        })
+      },
+      deleteMcpServer: async (name) => {
+        const server = useConfigStore.getState().mcpServers.find((item) => item.name === name)
+        if (server) {
+          await replaceCredentialMap('mcp_env', mcpCredentialOwner(server), server.env, {})
+        }
         set((state) => {
           const servers = (state.mcpServers.length > 0 ? state.mcpServers : [state.mcpServer])
             .filter((server) => server.name !== name)
@@ -584,7 +652,8 @@ export const useConfigStore = create<ConfigState>()(
             activeMcpServerName: fallback.name,
             mcpServer: fallback,
           }
-        }),
+        })
+      },
       setAvailableModels: (models) =>
         set((state) => ({
           availableModels: models,
@@ -596,6 +665,17 @@ export const useConfigStore = create<ConfigState>()(
     }),
     {
       name: 'open-cowork-config',
+      partialize: (state) => ({
+        ollama: state.ollama,
+        llmProfiles: sanitizeProfilesForPersistence(state.llmProfiles),
+        defaultLlmProfileIds: state.defaultLlmProfileIds,
+        llmProfileModels: state.llmProfileModels,
+        preferences: state.preferences,
+        mcpServer: sanitizeMcpServerForPersistence(state.mcpServer),
+        mcpServers: state.mcpServers.map(sanitizeMcpServerForPersistence),
+        activeMcpServerName: state.activeMcpServerName,
+        availableModels: state.availableModels,
+      }),
       merge: (persisted, current) => {
         const state = persisted as Partial<ConfigState>
         const persistedState = { ...(state as Partial<ConfigState> & {

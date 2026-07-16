@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { useUiStore } from './uiStore'
 import { useConfigStore } from './configStore'
 import { useChatStore } from './chatStore'
-import { useCoworkStore } from './coworkStore'
+import { useCoworkStore, type ClaudePermissionMode } from './coworkStore'
 import { useMemoryStore } from './memoryStore'
 import { useSkillStore } from './skillStore'
 import { useInsightsStore } from './insightsStore'
@@ -51,7 +51,7 @@ type CommandRegistryState = {
   lastExecuted: string | null
   executionLog: Array<{ command: string; timestamp: number; args?: string }>
   getCommand: (id: string) => SlashCommand | undefined
-  executeCommand: (commandOrId: string, args?: string) => void
+  executeCommand: (commandOrId: string, args?: string) => Promise<boolean>
 }
 
 function uid() {
@@ -63,25 +63,134 @@ export const useCommandRegistry = create<CommandRegistryState>()((set, get) => (
   lastExecuted: null,
   executionLog: [],
   getCommand: (id) => get().commands.find((c) => c.id === id || c.command === id),
-  executeCommand: (commandOrId, args) => {
+  executeCommand: async (commandOrId, args) => {
     const cmd = get().commands.find(
       (c) => c.id === commandOrId || c.command === commandOrId || c.command === `/${commandOrId}`
     )
-    if (cmd) {
-      cmd.execute(args)
-      set((s) => ({
-        lastExecuted: cmd.id,
-        executionLog: [
-          { command: cmd.command, timestamp: Date.now(), args },
-          ...s.executionLog.slice(0, 199),
-        ],
-      }))
-    }
+    if (!cmd) return false
+    await cmd.execute(args)
+    set((s) => ({
+      lastExecuted: cmd.id,
+      executionLog: [
+        { command: cmd.command, timestamp: Date.now(), args },
+        ...s.executionLog.slice(0, 199),
+      ],
+    }))
+    return true
   },
 }))
 
-function buildAllCommands(): SlashCommand[] {
-  return [
+function addCommandMessage(content: string): void {
+  const chat = useChatStore.getState()
+  if (!chat.activeThreadId) return
+  chat.addMessage(chat.activeThreadId, { role: 'system', content, timestamp: Date.now() })
+}
+
+export function buildAllCommands(): SlashCommand[] {
+  const commands: SlashCommand[] = [
+    // ===== Core commands (single source for help, palette, and autocomplete) =====
+    {
+      id: 'help', command: '/help', label: 'Help', description: 'Show all available slash commands',
+      category: 'session', execute: () => {
+        const commands = useCommandRegistry.getState().commands
+        addCommandMessage(['Available slash commands:', ...commands.map((command) => `${command.command} - ${command.description}`)].join('\n'))
+      },
+    },
+    {
+      id: 'tools', command: '/tools', label: 'Tools', description: 'Show active tool configuration',
+      category: 'tools', execute: () => {
+        const cowork = useCoworkStore.getState()
+        addCommandMessage(`Active tools: ${cowork.enabledClaudeToolIds.join(', ') || '(none)'}`)
+      },
+    },
+    {
+      id: 'mode', command: '/mode', label: 'Execution mode', description: 'Set plan or execute mode',
+      category: 'agent', execute: (args) => {
+        const target = args?.trim().toLowerCase()
+        if (target !== 'plan' && target !== 'execute') {
+          addCommandMessage('Usage: /mode plan | execute')
+          return
+        }
+        useCoworkStore.getState().setClaudePlanMode(target === 'plan')
+        addCommandMessage(`Mode set to ${target}.`)
+      },
+    },
+    {
+      id: 'permissions', command: '/permissions', label: 'Permissions', description: 'Show or change the permission mode',
+      category: 'security', execute: (args) => {
+        const target = args?.trim() as ClaudePermissionMode | undefined
+        const valid: ClaudePermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'dontAsk', 'plan']
+        if (!target) {
+          addCommandMessage(`Permission mode: ${useCoworkStore.getState().claudePermissionMode}`)
+          return
+        }
+        if (!valid.includes(target)) {
+          addCommandMessage(`Invalid permission mode. Allowed: ${valid.join(', ')}`)
+          return
+        }
+        useCoworkStore.getState().setClaudePermissionMode(target)
+        addCommandMessage(`Permission mode set to ${target}.`)
+      },
+    },
+    {
+      id: 'plan', command: '/plan', label: 'Plan request', description: 'Run the next prompt in plan mode',
+      category: 'agent', execute: (args) => {
+        useCoworkStore.getState().setClaudePlanMode(true)
+        addCommandMessage(args?.trim() ? `Plan mode enabled for: ${args.trim()}` : 'Plan mode enabled.')
+      },
+    },
+    {
+      id: 'fetch', command: '/fetch', label: 'Fetch URL', description: 'Fetch a URL and show a text excerpt',
+      category: 'tools', execute: async (args) => {
+        const url = args?.trim()
+        if (!url) {
+          addCommandMessage('Usage: /fetch https://example.com')
+          return
+        }
+        const response = await safeInvoke<{ url: string; status: number; title?: string; content: string }>('web_fetch_url', {
+          request: { url, maxChars: 4000 },
+        })
+        addCommandMessage([`Web fetch: ${response.url}`, `Status: ${response.status}`, response.title ?? '', '', response.content].filter(Boolean).join('\n'))
+      },
+    },
+    {
+      id: 'tool', command: '/tool', label: 'Tool dispatcher', description: 'Dispatch read_file or web_fetch directly',
+      category: 'tools', execute: async (args) => {
+        const [name = '', ...rest] = args?.trim().split(/\s+/) ?? []
+        const value = rest.join(' ').trim()
+        if (name === 'read_file' && value) {
+          const content = await safeInvoke<string>('fs_extract_text', { path: value })
+          addCommandMessage(`File read: ${value}\n\n${content.slice(0, 5000)}`)
+          return
+        }
+        if (name === 'web_fetch' && value) {
+          const response = await safeInvoke<{ url: string; status: number; content: string }>('web_fetch_url', {
+            request: { url: value, maxChars: 4000 },
+          })
+          addCommandMessage(`Web fetch: ${response.url}\nStatus: ${response.status}\n\n${response.content}`)
+          return
+        }
+        addCommandMessage('Usage: /tool read_file <path> | /tool web_fetch <url>')
+      },
+    },
+    {
+      id: 'todo', command: '/todo', label: 'Todo', description: 'Add or list tasks',
+      category: 'agent', execute: async (args) => {
+        const [action = 'list', ...rest] = args?.trim().split(/\s+/) ?? []
+        if (action.toLowerCase() === 'add' && rest.length > 0) {
+          const title = rest.join(' ')
+          useTaskStore.getState().createTask(title, title, useChatStore.getState().activeThreadId)
+          addCommandMessage(`Todo created: ${title}`)
+          return
+        }
+        await useTaskStore.getState().loadFromDb()
+        addCommandMessage('Todo list refreshed.')
+      },
+    },
+    {
+      id: 'settings', command: '/settings', label: 'Open settings', description: 'Alias for /config',
+      category: 'config', execute: () => useUiStore.getState().setActiveMode('settings'),
+    },
     // ===== Navigation =====
     {
       id: 'switch-work', command: '/ide', label: 'Go to workspace', description: 'Switches to the main workspace',
@@ -703,7 +812,12 @@ function buildAllCommands(): SlashCommand[] {
       id: 'crew-create', command: '/crew', label: 'Create crew', description: 'Create a new AI crew with agents',
       category: 'crew', execute: (args) => {
         if (args?.trim()) {
-          useCrewStore.getState().createCrew(uid(), args.trim(), [])
+          const raw = args.trim()
+          const separator = raw.indexOf(':')
+          useCrewStore.getState().createStarterCrew(
+            separator > 0 ? raw.slice(0, separator).trim() : raw.slice(0, 64),
+            separator > 0 ? raw.slice(separator + 1).trim() : raw,
+          )
         }
       },
     },
@@ -845,7 +959,7 @@ function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Open_Cowork v1.0\n- 100+ slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Memory engine\n- Full Claude Code compatibility',
+            role: 'system', content: 'Open_Cowork v1.0\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Hermes-style memory and session search\n- Plugin and MCP integration',
             timestamp: Date.now(),
           })
         }
@@ -864,4 +978,17 @@ function buildAllCommands(): SlashCommand[] {
       },
     },
   ]
+
+  const ids = new Set<string>()
+  const names = new Set<string>()
+  for (const command of commands) {
+    if (!command.command.startsWith('/')) {
+      throw new Error(`Slash command must start with /: ${command.command}`)
+    }
+    if (ids.has(command.id)) throw new Error(`Duplicate slash command id: ${command.id}`)
+    if (names.has(command.command)) throw new Error(`Duplicate slash command: ${command.command}`)
+    ids.add(command.id)
+    names.add(command.command)
+  }
+  return commands
 }

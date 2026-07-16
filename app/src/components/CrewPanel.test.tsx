@@ -1,16 +1,34 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CrewPanel from './CrewPanel'
-import { safeInvoke } from '../utils/safeInvoke'
+import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { useConfigStore } from '../stores/configStore'
 import { useCrewStore, type CrewAgent } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
+import i18n from '../i18n'
 
 vi.mock('../utils/safeInvoke', () => ({
+  hasTauriRuntime: vi.fn(() => false),
   safeInvoke: vi.fn(),
 }))
 
+const hasTauriRuntimeMock = vi.mocked(hasTauriRuntime)
 const safeInvokeMock = vi.mocked(safeInvoke)
+
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{`${location.pathname}${location.search}`}</output>
+}
+
+function renderCrewPanel() {
+  return render(
+    <MemoryRouter>
+      <CrewPanel />
+      <LocationProbe />
+    </MemoryRouter>,
+  )
+}
 
 const baseAgent: CrewAgent = {
   id: 'agent-1',
@@ -31,8 +49,15 @@ const baseAgent: CrewAgent = {
 }
 
 describe('CrewPanel', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en')
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    })
     window.localStorage.removeItem('open-cowork-crew')
+    hasTauriRuntimeMock.mockReset()
+    hasTauriRuntimeMock.mockReturnValue(false)
     safeInvokeMock.mockReset()
     safeInvokeMock.mockResolvedValue({
       endpoint: 'https://api.openai.com/v1',
@@ -159,9 +184,137 @@ describe('CrewPanel', () => {
     })
   })
 
+  it('keeps the German crew workspace guidance consistently localized', async () => {
+    await i18n.changeLanguage('de')
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+
+    expect(screen.getByText('Crew-Arbeitsbereich')).toBeInTheDocument()
+    expect(screen.getByText('Provider & Modell')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Crew-Mitglieder/ }))
+    expect(screen.getByText('Rollen, Modelle und Zugriff pro Agent')).toBeInTheDocument()
+    expect(screen.getByText('Freigaben für alle Mitglieder')).toBeInTheDocument()
+    expect(screen.getAllByText('Alles erlauben').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Crew-Starts erfolgen ohne Rückfrage. Bestehende manuelle Freigaben bleiben wirksam.').length).toBeGreaterThan(0)
+  })
+
+  it('does not run desktop personality migration in the browser preview', async () => {
+    const migrateAgentsToPersonalityProfiles = vi.fn().mockResolvedValue(true)
+    useCrewStore.setState({ migrateAgentsToPersonalityProfiles })
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+
+    expect(migrateAgentsToPersonalityProfiles).not.toHaveBeenCalled()
+    expect(usePersonalityStore.getState().loadPersonalities).toHaveBeenCalledTimes(1)
+  })
+
+  it('creates a complete starter workflow from an empty-state preset', async () => {
+    useCrewStore.setState({
+      crews: [],
+      activeCrewId: null,
+      agents: [
+        { ...baseAgent, id: 'planner', name: 'Planner', role: 'planner' },
+        { ...baseAgent, id: 'executor', name: 'Executor', role: 'executor' },
+        { ...baseAgent, id: 'reviewer', name: 'Reviewer', role: 'reviewer' },
+      ],
+    })
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Build crew/i }))
+
+    const created = useCrewStore.getState().crews[0]
+    expect(created.name).toBe('Build crew')
+    expect(created.description).toContain('complete working deliverable')
+    expect(created.tasks).toHaveLength(3)
+    expect(created.agents.map((agent) => agent.role)).toEqual(['planner', 'executor', 'reviewer'])
+  })
+
+  it('hands the active crew to the task mission composer', async () => {
+    renderCrewPanel()
+
+    const launchChecklist = screen.getByLabelText('Crew launch checklist')
+    expect(within(launchChecklist).getByText('Action needed')).toBeInTheDocument()
+    expect(within(launchChecklist).getByText('Create a mission in Tasks before running this crew.')).toBeInTheDocument()
+
+    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Prepare mission in Tasks' }))
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/tasks?crew=crew-1')
+  })
+
+  it('keeps dense member controls collapsed until they are needed', async () => {
+    renderCrewPanel()
+
+    const members = screen.getByRole('button', { name: /Crew-members/ })
+    expect(members).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('Approvals for all members')).not.toBeInTheDocument()
+    expect(screen.getByText('Turn this crew into one complete mission')).toBeInTheDocument()
+
+    fireEvent.click(members)
+
+    expect(members).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Approvals for all members')).toBeInTheDocument()
+  })
+
+  it('explains provider blockers next to the disabled run action and links to their fixes', async () => {
+    useConfigStore.setState((state) => ({
+      llmProfiles: state.llmProfiles.map((profile) => profile.provider === 'openrouter'
+        ? { ...profile, apiKey: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' }
+        : profile),
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        defaultProvider: 'openrouter',
+        defaultModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+        providerProfiles: {
+          ...crew.providerProfiles,
+          openRouter: {
+            ...crew.providerProfiles.openRouter,
+            enabled: true,
+            model: 'nvidia/nemotron-3-super-120b-a12b:free',
+            apiKey: '',
+          },
+        },
+        tasks: [{
+          id: 'task-openrouter',
+          description: 'Verify the product',
+          expectedOutput: 'Verified result',
+          agentId: 'agent-default',
+          context: [],
+          dependencies: [],
+          asyncExecution: false,
+          status: 'pending' as const,
+          output: null,
+        }],
+      })),
+    }))
+
+    renderCrewPanel()
+
+    const launchChecklist = screen.getByLabelText('Crew launch checklist')
+    expect(within(launchChecklist).getByText('OpenRouter crew profile has no API key.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Run crew' })).toBeDisabled()
+
+    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Review blockers' }))
+    expect(screen.getByRole('button', { name: /Diagnostics/i })).toHaveFocus()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix provider settings' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
+
+    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Open settings' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
+  })
+
   it('syncs member providers to the crew provider when changing the crew provider', async () => {
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     await act(async () => {
@@ -185,8 +338,10 @@ describe('CrewPanel', () => {
 
   it('can grant a tool to all crew members from the crew-level access panel', async () => {
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /Crew-members/ }))
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText('Delegate task'))
@@ -205,8 +360,10 @@ describe('CrewPanel', () => {
     })
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
+
+    fireEvent.click(screen.getByRole('button', { name: /Crew-members/ }))
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText('workspace-mcp'))
@@ -214,6 +371,49 @@ describe('CrewPanel', () => {
 
     const crew = useCrewStore.getState().crews[0]
     expect(crew.agents.every((agent) => agent.mcpServerNames.includes('workspace-mcp'))).toBe(true)
+  })
+
+  it('starts a configured crew directly from the crew workspace', async () => {
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        tasks: [{
+          id: 'task-run',
+          description: 'Run the configured crew',
+          expectedOutput: 'Verified result',
+          agentId: 'agent-default',
+          context: [],
+          dependencies: [],
+          asyncExecution: false,
+          status: 'pending' as const,
+          output: null,
+        }],
+      })),
+    }))
+    safeInvokeMock.mockImplementation(async (command) => {
+      if (command === 'crew_execute') {
+        return {
+          crewId: 'crew-1',
+          status: 'completed',
+          taskResults: [{ taskId: 'task-run', agentId: 'agent-default', status: 'completed', output: 'Done' }],
+          logs: [],
+          error: null,
+        }
+      }
+      return { endpoint: 'https://api.openai.com/v1', models: ['gpt-4.1-mini'] }
+    })
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Run crew' }))
+    })
+
+    expect(safeInvokeMock).toHaveBeenCalledWith('crew_execute', expect.objectContaining({
+      request: expect.objectContaining({ id: 'crew-1' }),
+    }))
+    expect(useCrewStore.getState().crews[0].status).toBe('completed')
   })
 
   it('adds newly created custom personalities to existing crew members automatically', async () => {
@@ -239,7 +439,7 @@ describe('CrewPanel', () => {
     }))
 
     await act(async () => {
-      render(<CrewPanel />)
+      renderCrewPanel()
     })
 
     const crew = useCrewStore.getState().crews[0]

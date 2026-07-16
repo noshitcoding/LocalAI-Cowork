@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import { safeInvoke } from '../utils/safeInvoke'
+import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
+import {
+  getVolatileMemoryProviders,
+  migrateLegacyMemoryProviderConfigs,
+  setVolatileMemoryProviders,
+} from '../security/legacyConfigMigration'
+import { buildKnowledgeImportEntries } from '../engine/memory/knowledgeImport'
 
 export type MemoryEntry = {
   id: string
@@ -45,10 +51,18 @@ export type FrozenSnapshot = {
 }
 
 export type MemoryHint = {
-  key: string
-  content: string
-  scope: string
-  relevance: string
+  hintType: string
+  message: string
+  suggestedKey: string | null
+  suggestedCategory: string | null
+}
+
+type BackendFrozenSnapshot = {
+  sessionId: string
+  agentEntries: MemoryEntry[]
+  sharedEntries: MemoryEntry[]
+  userProfile: UserProfileEntry[]
+  createdAt: string
 }
 
 /* ── Local fallback storage (when Tauri is not available) ─────────────── */
@@ -79,19 +93,6 @@ function setLocalProfile(entries: UserProfileEntry[]): void {
   try { localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(entries)) } catch { /* noop */ }
 }
 
-const LOCAL_PROVIDER_KEY = 'open-cowork-providers-local'
-
-function getLocalProviders(): MemoryProvider[] {
-  try {
-    const raw = localStorage.getItem(LOCAL_PROVIDER_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch { return [] }
-}
-
-function setLocalProviders(providers: MemoryProvider[]): void {
-  try { localStorage.setItem(LOCAL_PROVIDER_KEY, JSON.stringify(providers)) } catch { /* noop */ }
-}
-
 /* ── Store ────────────────────────────────────────────────────────────── */
 
 type MemoryState = {
@@ -107,6 +108,7 @@ type MemoryState = {
   loadEntries: (scope?: string, category?: string, limit?: number) => Promise<void>
   searchEntries: (query: string, limit?: number) => Promise<void>
   upsertEntry: (entry: { id: string; scope: string; category: string; key: string; content: string; confidence?: number }) => Promise<void>
+  importKnowledgeText: (title: string, content: string) => Promise<number>
   deleteEntry: (id: string) => Promise<void>
   compactEntries: (scope: string, minConfidence: number) => Promise<{ removed: number; remaining: number }>
   createSnapshot: () => Promise<FrozenSnapshot>
@@ -117,7 +119,7 @@ type MemoryState = {
   deleteProfile: (key: string) => Promise<void>
 
   loadProviders: () => Promise<void>
-  upsertProvider: (p: { id: string; name: string; provider_type: string; config_json: string; enabled?: boolean }) => Promise<void>
+  upsertProvider: (p: { id: string; name: string; provider_type: string; config_json: string; enabled?: boolean }) => Promise<boolean>
   deleteProvider: (id: string) => Promise<void>
 }
 
@@ -178,7 +180,10 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       // Fallback: save locally
       const local = getLocalEntries()
       const now = new Date().toISOString()
-      const existing = local.findIndex(e => e.id === entry.id)
+      const existing = local.findIndex(e =>
+        e.id === entry.id
+        || (e.scope === entry.scope && e.category === entry.category && e.key === entry.key)
+      )
       const full: MemoryEntry = {
         id: entry.id,
         scope: entry.scope,
@@ -198,6 +203,17 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
     }
   },
 
+  importKnowledgeText: async (title, content) => {
+    const entries = buildKnowledgeImportEntries(title, content)
+    for (const entry of entries) {
+      await get().upsertEntry(entry)
+    }
+    if (entries.length > 0) {
+      await get().loadEntries(undefined, undefined, 200)
+    }
+    return entries.length
+  },
+
   deleteEntry: async (id) => {
     try {
       await safeInvoke('memory_delete', { id }, undefined)
@@ -212,10 +228,14 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
 
   compactEntries: async (scope, minConfidence) => {
     try {
-      return await safeInvoke<{ removed: number; remaining: number }>('memory_compact', {
+      const response = await safeInvoke<{ scope: string; deletedCount: number }>('memory_compact', {
         scope,
         minConfidence,
-      }, { removed: 0, remaining: get().entries.length })
+      }, { scope, deletedCount: 0 })
+      return {
+        removed: response.deletedCount,
+        remaining: Math.max(0, get().entries.filter((entry) => entry.scope === scope).length - response.deletedCount),
+      }
     } catch {
       return { removed: 0, remaining: get().entries.length }
     }
@@ -223,14 +243,15 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
 
   createSnapshot: async () => {
     try {
-      const json = await safeInvoke<string>('memory_snapshot', undefined, JSON.stringify({
-        timestamp: new Date().toISOString(),
-        entries: getLocalEntries(),
-        profile: getLocalProfile(),
-        total_entries: getLocalEntries().length,
-        total_profile_keys: getLocalProfile().length,
-      }))
-      const snapshot = JSON.parse(json) as FrozenSnapshot
+      const backend = await safeInvoke<BackendFrozenSnapshot>('memory_snapshot')
+      const entries = [...backend.agentEntries, ...backend.sharedEntries]
+      const snapshot: FrozenSnapshot = {
+        timestamp: backend.createdAt,
+        entries,
+        profile: backend.userProfile,
+        total_entries: entries.length,
+        total_profile_keys: backend.userProfile.length,
+      }
       set({ lastSnapshot: snapshot })
       return snapshot
     } catch {
@@ -293,7 +314,10 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
 
   loadProviders: async () => {
     try {
-      const providers = await safeInvoke<MemoryProvider[]>('memory_provider_list', undefined, getLocalProviders())
+      await migrateLegacyMemoryProviderConfigs()
+      const providers = hasTauriRuntime()
+        ? await safeInvoke<MemoryProvider[]>('memory_provider_list')
+        : getVolatileMemoryProviders()
       set({ providers })
     } catch (e) {
       set({ error: String(e) })
@@ -309,9 +333,13 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
         configJson: p.config_json,
         enabled: p.enabled ?? true,
       }, undefined)
-    } catch {
-      // Fallback: save locally
-      const local = getLocalProviders()
+      return true
+    } catch (error) {
+      if (hasTauriRuntime()) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+        return false
+      }
+      const local = [...getVolatileMemoryProviders()]
       const now = new Date().toISOString()
       const existing = local.findIndex(pr => pr.id === p.id)
       const full: MemoryProvider = {
@@ -321,7 +349,9 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       }
       if (existing >= 0) local[existing] = full
       else local.unshift(full)
-      setLocalProviders(local)
+      setVolatileMemoryProviders(local)
+      set({ providers: local })
+      return true
     }
   },
 
@@ -329,9 +359,13 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
     try {
       await safeInvoke('memory_provider_delete', { id }, undefined)
       set((s) => ({ providers: s.providers.filter((p) => p.id !== id) }))
-    } catch {
-      const local = getLocalProviders().filter(p => p.id !== id)
-      setLocalProviders(local)
+    } catch (error) {
+      if (hasTauriRuntime()) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      const local = getVolatileMemoryProviders().filter(p => p.id !== id)
+      setVolatileMemoryProviders(local)
       set((s) => ({ providers: s.providers.filter((p) => p.id !== id) }))
     }
   },

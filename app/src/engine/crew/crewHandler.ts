@@ -15,6 +15,7 @@ import type { PermissionMode } from '../types/tool'
 import {
   appendCrewLiveEntry,
   applyCrewDefaultModel,
+  augmentCrewToolsForTask,
   buildCrewLiveMessageContent,
   buildCrewRuntimeTasks,
   buildWorkTaskCrewGuidelines,
@@ -24,7 +25,7 @@ import {
   type CrewExecutionLog,
   type CrewExecutionLogEvent,
   type CrewExecutionResponse,
-} from '../../components/TasksView'
+} from './workTaskCrewRuntime'
 
 export interface CrewTaskMessageParams {
   userInput: EngineUserInput
@@ -235,7 +236,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
           personalityId: agent.personalityId,
           modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
           providerKind: crewDefaultProvider,
-          tools: agent.tools,
+          tools: augmentCrewToolsForTask(agent.tools, task),
           mcpServerNames: agent.mcpServerNames,
           enabled: agent.enabled,
           allowDelegation: agent.allowDelegation,

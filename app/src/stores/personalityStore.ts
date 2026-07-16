@@ -99,7 +99,7 @@ function buildFallbackPersonalities(): Personality[] {
   return DEFAULT_PERSONALITIES.map((entry) => normalizePersonality({
     id: entry.id,
     name: entry.name,
-    description: entry.description,
+    description: entry.goal,
     role: entry.role,
     goal: entry.goal,
     system_prompt: entry.systemPrompt,

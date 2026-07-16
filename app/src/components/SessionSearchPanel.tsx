@@ -3,7 +3,7 @@ import type { SessionSummary } from '../engine'
 import { useChatStore } from '../stores/chatStore'
 import { useEngineStore } from '../stores/engineStore'
 import { resolveSessionRecord, toChatThread } from '../utils/sessionThreads'
-import { tr } from '../i18n'
+import i18n, { tr } from '../i18n'
 
 type SessionLike = Partial<SessionSummary> & { id?: unknown }
 
@@ -24,7 +24,7 @@ const normalizeSessionSummary = (value: unknown): SessionSummary | null => {
 
   return {
     id,
-    title: typeof session.title === 'string' && session.title.trim() ? session.title : 'Untitlede Session',
+    title: typeof session.title === 'string' && session.title.trim() ? session.title : tr('Untitled session'),
     cwd: typeof session.cwd === 'string' ? session.cwd : '',
     messageCount: typeof session.messageCount === 'number' && Number.isFinite(session.messageCount)
       ? session.messageCount
@@ -110,47 +110,47 @@ export default function SessionSearchPanel() {
   }
 
   return (
-    <div className="panel">
-      <h2>{tr("📂 Sessions")}</h2>
+    <div className="panel session-search-panel">
+      <h2>{tr("Sessions")}</h2>
 
-      {error && <p style={{ color: 'var(--danger)', fontSize: 12 }}>{error}</p>}
+      {error && <p className="session-search-error">{error}</p>}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div className="session-search-toolbar">
         <input
+          className="session-search-input"
           type="text"
           placeholder={tr("Filter sessions by title or path...")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          style={{ flex: 1, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', fontSize: 13 }}
         />
         <button type="button" className="btn-sm" onClick={() => void refreshSessions()}>{tr("Refresh")}</button>
       </div>
 
       {query.trim() && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
-          {filteredSessions.length}{tr("Session")}{filteredSessions.length !== 1 ? 's' : ''}{tr("passen zu &quot;")}{query}{tr("&quot;")}</div>
+        <div className="session-search-count">
+          {tr("Matching sessions")}: {filteredSessions.length} "{query}"
+        </div>
       )}
-
 
       {loading ? (
         <p className="panel-empty">{tr("Loading...")}</p>
       ) : filteredSessions.length === 0 ? (
         <p className="panel-empty">{query.trim() ? tr('No matching sessions') : tr('No sessions yet')}</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 400, overflowY: 'auto' }}>
+        <div className="session-search-list">
           {filteredSessions.map((session) => (
-            <div key={session.id} className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{session.title}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
-                    {new Date(session.updatedAt).toLocaleString('en-US')}
-                    <span style={{ marginLeft: 6 }}>• {session.messageCount}{tr("Messages")}</span>
-                    {currentSessionId === session.id && <span style={{ color: 'var(--success)', marginLeft: 6 }}>{tr("loaded as active")}</span>}
+            <div key={session.id} className="card session-search-card">
+              <div className="session-search-card-row">
+                <div className="session-search-main">
+                  <div className="session-search-title">{session.title}</div>
+                  <div className="session-search-meta">
+                    <span>{new Date(session.updatedAt).toLocaleString(i18n.resolvedLanguage ?? i18n.language ?? 'en')}</span>
+                    <span>{session.messageCount} {tr("Messages")}</span>
+                    {currentSessionId === session.id && <span className="session-search-active">{tr("loaded as active")}</span>}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{session.cwd || tr('No working directory saved')}</div>
+                  <div className="session-search-cwd">{session.cwd || tr('No working directory saved')}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 6, marginLeft: 12 }}>
+                <div className="session-search-actions">
                   <button
                     type="button"
                     className="btn-sm"

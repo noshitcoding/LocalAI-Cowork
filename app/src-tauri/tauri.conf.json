@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Open Cowork",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
     "beforeDevCommand": "npm run dev:tauri",
@@ -36,6 +36,7 @@
       "resources/pdfium/LICENSE": "resources/pdfium/LICENSE",
       "resources/pdfium/VERSION": "resources/pdfium/VERSION",
       "python/crew_runtime/main.py": "python/crew_runtime/main.py",
+      "python/crew_runtime/crew_tools.py": "python/crew_runtime/crew_tools.py",
       "python/crew_runtime/requirements.txt": "python/crew_runtime/requirements.txt",
       "resources/WebView2Loader.dll": "WebView2Loader.dll"
     },

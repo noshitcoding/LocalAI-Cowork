@@ -17,6 +17,17 @@ npm run tauri build
 
 ## Tests
 
+Vollstaendige lokale Qualitaetspipeline:
+
+```powershell
+cd app
+npm run verify
+```
+
+`verify` ist das kanonische lokale und CI-Gate. Es prueft Toolchain, Release-Scripts,
+TypeScript, ESLint, i18n, Frontend-Tests, Produktionsbuild, Bundle-Budgets sowie
+`cargo check`, Rust-Tests und Clippy.
+
 Frontend:
 
 ```powershell
@@ -41,12 +52,32 @@ Desktop-Steuerung und Computer Use:
 
 ## CI-Gates (aktueller Stand)
 
+- Toolchain Doctor und Release-Script-Tests muessen erfolgreich sein
+- TypeScript und ESLint muessen ohne Fehler durchlaufen
+- Das DE/EN-i18n-Audit muss vollstaendig sein
 - Frontend Build muss erfolgreich sein
 - Frontend Unit-Tests muessen erfolgreich sein
+- Frontend Build-Budgets muessen eingehalten werden
 - Rust Unit-Tests muessen erfolgreich sein
 - Rust Compile-Check muss erfolgreich sein
+- Rust Clippy darf keine Warnungen enthalten
+- Produkt-, Cargo-, Tauri- und Tag-Version muessen konsistent sein
+- Rust `1.89.0` und alle GitHub Actions sind unveraenderlich gepinnt
+- Alle npm- und Windows-Cargo-Lizenzen muessen die explizite SPDX-Policy bestehen
+- `npm audit --audit-level=high` und `cargo-audit 0.22.2` sind blockierend
 - Semgrep Security Scan muss erfolgreich sein
 - Trivy Filesystem Scan muss erfolgreich sein
+- Tag-Releases muessen CycloneDX-SBOM, Drittanbieterhinweise, Provenienz, SHA256SUMS und GitHub-Attestierungen erzeugen
+
+Lokale Supply-Chain-Pruefung:
+
+```powershell
+cd app
+npm run supply-chain:check
+npm run security:npm
+cd src-tauri
+cargo audit
+```
 
 ## Funktionstest: Cowork Chat
 
@@ -124,6 +155,10 @@ Testschritte:
 - Git ist Quelle der Wahrheit fuer Quellcode
 - Jede relevante Aenderung wird als eigener Commit erfasst
 - Recovery erfolgt ueber Checkout eines stabilen Commits/Tags
+- Die lokale Laufzeitdatenbank liegt als `open_cowork.db` im Tauri-App-Data-Verzeichnis.
+- Vor jedem Schema-Upgrade einer bestehenden Datenbank wird mit der SQLite-Online-Backup-API eine verifizierte Kopie unter `database-backups/pre-migration-*.db` angelegt; maximal drei Kopien bleiben erhalten.
+- Open Cowork muss vor einer manuellen Wiederherstellung vollstaendig beendet sein. Die aktuelle Datenbank sowie zugehoerige `-wal`- und `-shm`-Dateien werden zuerst separat gesichert und aus dem aktiven Verzeichnis entfernt; erst danach wird eine gepruefte Backup-Datei als `open_cowork.db` eingesetzt.
+- Ein Integritaets-, Foreign-Key- oder Versionsfehler ist ein Stop-Zustand. Die App darf auf dieser Datenbank weder weiter migrieren noch neue Daten schreiben.
 
 ## Empfohlene Betriebsgrenzen (vorlaeufig)
 

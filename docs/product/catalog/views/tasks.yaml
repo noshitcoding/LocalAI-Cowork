@@ -1,0 +1,55 @@
+id: view:/tasks
+route: /tasks
+title: Tasks
+purpose: Create, import, edit, run, stop, delete, and schedule user-facing WorkTasks without treating legacy Task records as product tasks.
+user_story: As a user I can define repeatable work, select a model or crew runner, link chat context, and schedule the work from one route.
+layout_regions:
+  - task create panel
+  - task list pane
+  - task detail pane
+  - run toolbar
+  - scheduler panel
+owned_elements:
+  - element:/tasks/task-create-panel
+  - element:/tasks/task-list-pane
+  - element:/tasks/crew-task-import
+  - element:/tasks/task-detail-pane
+  - element:/tasks/task-run-toolbar
+  - element:/tasks/task-scheduler-panel
+primary_actions:
+  - button:/tasks/task-create-panel/create
+  - button:/tasks/crew-task-import/import
+  - button:/tasks/task-run-toolbar/open-chat
+  - button:/tasks/task-run-toolbar/start
+  - button:/tasks/task-run-toolbar/stop
+  - button:/tasks/task-run-toolbar/delete
+  - button:/tasks/task-scheduler-panel/save
+  - button:/tasks/task-scheduler-panel/remove
+empty_states:
+  - Task list shows an empty hint when there are no WorkTasks.
+  - Detail pane asks the user to create or select a task.
+loading_states:
+  - Existing scheduled tasks are reflected after coworkStore load completes.
+error_states:
+  - Invalid relative working folders show inline hints and disable unsafe run/create actions.
+  - Missing crews disable crew execution and scheduling paths.
+data_dependencies:
+  - WorkTask records from workTasksStore and SQLite work_tasks
+  - scheduled_tasks from coworkStore and scheduler commands
+  - crew templates from crewStore
+  - chat/project context from chatStore and projectStore
+permissions:
+  - working folder picker uses Tauri dialog when available
+  - execution uses model, crew, file, and scheduler permissions downstream
+source_files:
+  - app/src/components/TasksView.tsx
+  - app/src/components/tasks/TaskCreatePanel.tsx
+  - app/src/components/tasks/TaskListPane.tsx
+  - app/src/components/tasks/TaskDetailPane.tsx
+  - app/src/components/tasks/TaskRunToolbar.tsx
+  - app/src/components/tasks/TaskSchedulerPanel.tsx
+  - app/src/stores/workTasksStore.ts
+tests:
+  - app/src/components/tasks/TaskPanels.test.tsx
+  - app/src/components/TasksView.schedule.test.tsx
+  - app/src/stores/workTasksStore.test.ts

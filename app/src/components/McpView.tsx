@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { RefreshCw, Square } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import type { McpServerConfig } from '../stores/configStore'
 import { safeInvoke } from '../utils/safeInvoke'
@@ -115,6 +116,7 @@ export default function McpView() {
     activeMcpServerName,
     preferences,
     setMcpServer,
+    setMcpServerEnv,
     setActiveMcpServer,
     importMcpServers,
     deleteMcpServer,
@@ -161,7 +163,7 @@ export default function McpView() {
     setNotice(null)
     try {
       const env = currentEnv()
-      setMcpServer({ env })
+      await setMcpServerEnv(env)
       const response = await safeInvoke<McpProbeResponse>('mcp_probe', {
         request: {
           name: mcpServer.name,
@@ -190,7 +192,7 @@ export default function McpView() {
     setNotice(null)
     try {
       const env = currentEnv()
-      setMcpServer({ env })
+      await setMcpServerEnv(env)
       await safeInvoke<McpRuntimeServerStatus>('mcp_runtime_start', {
         request: {
           name: mcpServer.name,
@@ -200,7 +202,7 @@ export default function McpView() {
         },
       })
       await refreshRuntimeServers()
-      setNotice(`Runtime-Server started: ${mcpServer.name}`)
+      setNotice(`${tr("Runtime server started:")} ${mcpServer.name}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -215,7 +217,7 @@ export default function McpView() {
     try {
       const stopped = await safeInvoke<boolean>('mcp_runtime_stop', { name: mcpServer.name }, false)
       await refreshRuntimeServers()
-      setNotice(stopped ? `Runtime server stopped: ${mcpServer.name}` : `Runtime server was not active: ${mcpServer.name}`)
+      setNotice(stopped ? `${tr("Runtime server stopped:")} ${mcpServer.name}` : `${tr("Runtime server was not active:")} ${mcpServer.name}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -229,7 +231,7 @@ export default function McpView() {
     setNotice(null)
     try {
       const env = currentEnv()
-      setMcpServer({ env })
+      await setMcpServerEnv(env)
       await safeInvoke<McpRuntimeServerStatus>('mcp_runtime_restart', {
         request: {
           name: mcpServer.name,
@@ -239,7 +241,7 @@ export default function McpView() {
         },
       })
       await refreshRuntimeServers()
-      setNotice(`Runtime-Server neustarted: ${mcpServer.name}`)
+      setNotice(`${tr("Runtime server restarted:")} ${mcpServer.name}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -255,7 +257,7 @@ export default function McpView() {
     try {
       const parsedArgs = JSON.parse(toolArgs) as Record<string, unknown>
       const env = currentEnv()
-      setMcpServer({ env })
+      await setMcpServerEnv(env)
 
       const response = await safeInvoke<McpCallResponse>('mcp_call_tool', {
         request: {
@@ -281,7 +283,7 @@ export default function McpView() {
     setCallResult(null)
     try {
       const env = currentEnv()
-      setMcpServer({ env })
+      await setMcpServerEnv(env)
 
       const response = await safeInvoke<McpCallResponse>('mcp_call_tool', {
         request: {
@@ -305,12 +307,12 @@ export default function McpView() {
     }
   }
 
-  const handleImport = () => {
+  const handleImport = async () => {
     setError(null)
     setNotice(null)
     try {
       const imported = parseMcpJson(importText)
-      importMcpServers(imported)
+      await importMcpServers(imported)
       setEnvText(JSON.stringify(imported[0]?.env ?? {}, null, 2))
       setNotice(`${imported.length} MCP-Server importiert`)
       setImportText('')
@@ -326,10 +328,9 @@ export default function McpView() {
       <h1>{tr("MCP Server")}</h1>
       <p className="hint-text">{tr("Manage and test Model Context Protocol servers")}</p>
 
-      {/* ── Import ─────────────── */}
       {preferences.mcpAllowManualImport && (
         <div className="panel">
-          <h2>{tr("📥 Claude-Code-JSON importieren")}</h2>
+          <h2>{tr("Import Claude Code JSON")}</h2>
           <p className="hint-text">{tr("Supports .mcp.json and Claude Desktop format with mcpServers. HTTP/SSE servers are ignored.")}</p>
           <textarea
             className="json-import"
@@ -339,18 +340,17 @@ export default function McpView() {
             placeholder={exampleJson()}
           />
           <div className="actions">
-            <button type="button" disabled={!importText.trim()} onClick={handleImport}>{tr("Import JSON")}</button>
+            <button type="button" disabled={!importText.trim()} onClick={() => void handleImport()}>{tr("Import JSON")}</button>
             <button type="button" className="btn-secondary" onClick={() => setImportText(exampleJson())}>{tr("Insert example")}</button>
           </div>
         </div>
       )}
 
-      {/* ── Server Config ──────── */}
       <div className="panel">
         <div className="panel-heading-row">
           <h2>{tr("Server configuration")}</h2>
           <span className={`status-badge ${status}`}>
-            {status === 'online' ? '● Online' : status === 'offline' ? '● Offline' : '● Unbekannt'}
+            {status === 'online' ? tr("Online") : status === 'offline' ? tr("Offline") : tr("Unknown")}
           </span>
         </div>
         <div className="grid">
@@ -360,12 +360,12 @@ export default function McpView() {
           </label>
           <label>{tr("Name")}<input value={mcpServer.name} onChange={(e) => setMcpServer({ name: e.target.value })} />
           </label>
-          <label>{tr("Command")}<input value={mcpServer.command} onChange={(e) => setMcpServer({ command: e.target.value })} style={{ fontFamily: 'monospace' }} />
+          <label>{tr("Command")}<input className="mcp-mono-input" value={mcpServer.command} onChange={(e) => setMcpServer({ command: e.target.value })} />
           </label>
-          <label>{tr("Args")}<input value={mcpServer.args} onChange={(e) => setMcpServer({ args: e.target.value })} style={{ fontFamily: 'monospace' }} />
+          <label>{tr("Args")}<input className="mcp-mono-input" value={mcpServer.args} onChange={(e) => setMcpServer({ args: e.target.value })} />
           </label>
         </div>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 12 }}>{tr("Env JSON")}<textarea
+        <label className="mcp-env-field">{tr("Env JSON")}<textarea
             className="json-import"
             rows={3}
             value={envText}
@@ -376,23 +376,32 @@ export default function McpView() {
         </label>
         <div className="actions">
           <button disabled={busy} onClick={handleProbe}>
-            {busy ? '⏳ Probe running...' : '🔌 Connect server and load tools'}
+            {busy ? tr('Probe running...') : tr('Connect server and load tools')}
           </button>
-          <button type="button" className="btn-secondary" disabled={servers.length <= 1} onClick={() => deleteMcpServer(mcpServer.name)}>{tr("Delete server")}</button>
+          <button type="button" className="btn-secondary" disabled={servers.length <= 1} onClick={() => void deleteMcpServer(mcpServer.name)}>{tr("Delete server")}</button>
         </div>
 
-        <div className="actions" style={{ marginTop: 10 }}>
+        <div className="actions mcp-runtime-actions">
           <button type="button" disabled={busy || runtimeActive} onClick={handleRuntimeStart}>
-            {runtimeActive ? 'Runtime active' : '▶ Start runtime'}
+            {runtimeActive ? tr('Runtime active') : tr('Start runtime')}
           </button>
-          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeStop}>{tr("■ Runtime stoppen")}</button>
-          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeRestart}>{tr("↻ Restart runtime")}</button>
-          <button type="button" className="btn-secondary" disabled={busy} onClick={() => void refreshRuntimeServers()}>{tr("Refresh runtime")}</button>
+          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeStop}>
+            <Square size={15} aria-hidden="true" />
+            {tr("Stop runtime")}
+          </button>
+          <button type="button" className="btn-secondary" disabled={busy || !runtimeActive} onClick={handleRuntimeRestart}>
+            <RefreshCw size={15} aria-hidden="true" />
+            {tr("Restart runtime")}
+          </button>
+          <button type="button" className="btn-secondary" disabled={busy} onClick={() => void refreshRuntimeServers()}>
+            <RefreshCw size={15} aria-hidden="true" />
+            {tr("Refresh runtime")}
+          </button>
         </div>
       </div>
 
       <div className="panel">
-        <h2>{tr("🧠 Runtime-Server (")}{runtimeServers.length})</h2>
+        <h2>{tr("Runtime servers")} ({runtimeServers.length})</h2>
         {runtimeServers.length === 0 ? (
           <p className="hint-text">{tr("No persistent MCP servers are currently started.")}</p>
         ) : (
@@ -400,13 +409,13 @@ export default function McpView() {
             {runtimeServers.map((server) => (
               <li key={server.name} className="tool-item">
                 <strong>{server.name}</strong>
-                <span style={{ marginLeft: 8, fontSize: 12 }}>{tr("pid=")}{server.pid ?? '—'}{tr("· started")}{new Date(server.startedAt).toLocaleString('en-US')}
+                <span className="mcp-runtime-meta">{tr("pid=")}{server.pid ?? '-'} / {tr("started")} {new Date(server.startedAt).toLocaleString('de-DE')}
                 </span>
-                <div style={{ fontFamily: 'monospace', fontSize: 12, marginTop: 4 }}>
+                <div className="mcp-command-line">
                   {server.command} {server.args.join(' ')}
                 </div>
                 {server.lastError && (
-                  <div className="error" style={{ marginTop: 4 }}>{server.lastError}</div>
+                  <div className="error mcp-runtime-error">{server.lastError}</div>
                 )}
               </li>
             ))}
@@ -414,55 +423,51 @@ export default function McpView() {
         )}
       </div>
 
-      {/* ── Notices ─────────────── */}
       {notice && <p className="success">{notice}</p>}
       {error && <p className="error">{error}</p>}
 
-      {/* ── screenshot Quick Actions ─────────────── */}
       {isscreenshotServer && (
         <div className="panel">
-          <h2>{tr("📸 screenshot Schnellstart")}</h2>
+          <h2>{tr("Screenshot quick start")}</h2>
           <p className="hint-text">{tr("Captures all screens by default and saves PNG files in the app data folder.")}</p>
           <div className="actions">
             <button type="button" disabled={busy} onClick={() => quickMcpCall('capture_screenshot', { allscreens: true })}>
-              {busy ? '⏳ Capture running...' : 'Capture all screens'}
+              {busy ? tr('Capture running...') : tr('Capture all screens')}
             </button>
             <button type="button" className="btn-secondary" disabled={busy} onClick={() => quickMcpCall('list_screens', {})}>{tr("Show screens")}</button>
           </div>
         </div>
       )}
 
-      {/* ── Server List ────────── */}
       <div className="panel">
-        <h2>{tr("📋 Importierte Server (")}{servers.length})</h2>
+        <h2>{tr("Imported servers")} ({servers.length})</h2>
         <ul className="tool-list">
           {servers.map((s) => (
             <li key={s.name} className="tool-item">
-              <strong>{s.name}</strong> — <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{s.command} {s.args}</span>
+              <strong>{s.name}</strong> - <span className="mcp-command-inline">{s.command} {s.args}</span>
             </li>
           ))}
         </ul>
       </div>
 
-      {/* ── Probe Results ──────── */}
       {probe && (
         <>
           <div className="panel">
-            <h2>{tr("ℹ️ Server-Info")}</h2>
+            <h2>{tr("Server info")}</h2>
             <div className="card">
               <p><strong>{tr("Server:")}</strong> {probe.serverName}</p>
-              <p><strong>{tr("Protocol:")}</strong> {probe.protocolVersion ?? '—'}</p>
-              <p><strong>{tr("Info:")}</strong> {probe.serverInfo ?? '—'}</p>
+              <p><strong>{tr("Protocol:")}</strong> {probe.protocolVersion ?? '-'}</p>
+              <p><strong>{tr("Info:")}</strong> {probe.serverInfo ?? '-'}</p>
             </div>
           </div>
 
           <div className="panel">
-            <h2>{tr("🔧 Available tools (")}{probe.tools.length})</h2>
+            <h2>{tr("Available tools")} ({probe.tools.length})</h2>
             <ul className="tool-list">
               {probe.tools.map((tool) => (
                 <li key={tool.name} className="tool-item">
                   <strong>{tool.name}</strong>
-                  {tool.description && <span> — {tool.description}</span>}
+                  {tool.description && <span> - {tool.description}</span>}
                 </li>
               ))}
             </ul>
@@ -470,7 +475,7 @@ export default function McpView() {
 
           {probe.tools.length > 0 && (
             <div className="panel tool-execute">
-              <h2>{tr("▶️ Tool execute")}</h2>
+              <h2>{tr("Execute tool")}</h2>
               <div className="grid">
                 <label>{tr("Tool")}<select value={selectedTool} onChange={(e) => setSelectedTool(e.target.value)}>
                     {probe.tools.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
@@ -481,7 +486,7 @@ export default function McpView() {
               </div>
               <div className="actions">
                 <button disabled={busy || !selectedTool} onClick={handleToolCall}>
-                  {busy ? '⏳ Call running...' : 'Call tool'}
+                  {busy ? tr('Call running...') : tr('Call tool')}
                 </button>
               </div>
             </div>
@@ -489,15 +494,14 @@ export default function McpView() {
         </>
       )}
 
-      {/* ── Tool Result ────────── */}
       {callResult && (
         <div className="panel">
-          <h2>{tr("📤 Tool-Result")}</h2>
+          <h2>{tr("Tool result")}</h2>
           <div className="card">
             <p><strong>{tr("Tool:")}</strong> {callResult.toolName}</p>
-            <p><strong>{tr("Erfolg:")}</strong> {callResult.success ? '✓ Ja' : '✗ Nein'}</p>
+            <p><strong>{tr("Success:")}</strong> {callResult.success ? tr("yes") : tr("no")}</p>
           </div>
-          {callResult.error && <p className="error" style={{ marginTop: 8 }}>{callResult.error}</p>}
+          {callResult.error && <p className="error mcp-call-error">{callResult.error}</p>}
           <pre className="tool-result">{callResult.result}</pre>
         </div>
       )}

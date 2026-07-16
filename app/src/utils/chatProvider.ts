@@ -92,6 +92,36 @@ function resolveExternalModel(
   return selectedModel || profileModel
 }
 
+function uniqueModels(models: string[]): string[] {
+  const seen = new Set<string>()
+
+  return models
+    .map((model) => model.trim())
+    .filter((model) => {
+      if (!model || seen.has(model)) {
+        return false
+      }
+
+      seen.add(model)
+      return true
+    })
+}
+
+function collectProviderModels(
+  context: ChatProviderContext,
+  provider: ChatProviderKind,
+  primaryModels: string[] = [],
+): string[] {
+  const profiles = Array.isArray(context.llmProfiles) ? context.llmProfiles : []
+  const profileModels = context.llmProfileModels ?? {}
+  const providerProfiles = profiles.filter((profile) => profile.provider === provider)
+  return uniqueModels([
+    ...primaryModels,
+    ...providerProfiles.flatMap((profile) => profileModels[profile.id] ?? []),
+    ...providerProfiles.map((profile) => profile.model),
+  ])
+}
+
 export function normalizeChatProvider(value: unknown): ChatProviderKind {
   return value === 'openai-compatible' || value === 'openrouter' || value === 'ollama'
     ? value
@@ -140,17 +170,38 @@ export function getChatProviderState(
       apiKey: '',
       timeoutMs: context.ollama.timeoutMs,
       verifyTlsCertificates: true,
-      selectableModels: Array.isArray(context.availableModels) ? context.availableModels : [],
+      selectableModels: collectProviderModels(
+        context,
+        provider,
+        Array.isArray(context.availableModels) ? context.availableModels : [],
+      ),
     }
   }
 
+  const profiles = Array.isArray(context.llmProfiles) ? context.llmProfiles : []
+  const defaultProfileIds = context.defaultLlmProfileIds ?? {}
+  const profileModelMap = context.llmProfileModels ?? {}
   const selectedProfile = selection?.profileId
-    ? context.llmProfiles.find((item) => item.id === selection.profileId && item.provider === provider)
+    ? profiles.find((item) => item.id === selection.profileId && item.provider === provider)
     : undefined
-  const profile = selectedProfile ?? resolveDefaultProfile(context.llmProfiles, context.defaultLlmProfileIds, provider)
-  const selectableModels = profile ? (context.llmProfileModels[profile.id] ?? []) : []
+  const profile = selectedProfile ?? resolveDefaultProfile(profiles, defaultProfileIds, provider)
+  const profileModels = profile ? (profileModelMap[profile.id] ?? []) : []
+  const providerLoadedModels = uniqueModels(
+    profiles
+      .filter((item) => item.provider === provider)
+      .flatMap((item) => profileModelMap[item.id] ?? []),
+  )
+  const selectableModels = collectProviderModels(
+    context,
+    provider,
+    profileModels,
+  )
   const profileModel = profile?.model?.trim() || ''
-  const model = resolveExternalModel(selectedModel, profileModel, selectableModels)
+  const model = resolveExternalModel(
+    selectedModel,
+    profileModel,
+    providerLoadedModels.length > 0 ? selectableModels : [],
+  )
 
   return {
     provider,

@@ -32,17 +32,17 @@ export type SessionSummary = {
 
 type DbSessionRow = {
   id: string
-  threadId?: string
+  thread_id?: string
   title: string
   summary?: string
-  modelUsed?: string
+  model_used?: string
   provider?: string
   personality?: string
-  totalMessages: number
-  totalTokensEst: number
+  total_messages: number
+  total_tokens_est: number
   outcome?: string
-  startedAt: string
-  endedAt?: string
+  started_at: string
+  ended_at?: string
 }
 
 function parseDbDate(value: string | undefined): number {
@@ -54,12 +54,12 @@ function parseDbDate(value: string | undefined): number {
 function rowToSummary(row: DbSessionRow): SessionSummary {
   return {
     id: row.id,
-    title: row.title || 'Untitlede Session',
-    threadId: row.threadId,
+    title: row.title || 'Untitled Session',
+    threadId: row.thread_id,
     cwd: '',
-    messageCount: row.totalMessages ?? 0,
-    createdAt: parseDbDate(row.startedAt),
-    updatedAt: parseDbDate(row.endedAt ?? row.startedAt),
+    messageCount: row.total_messages ?? 0,
+    createdAt: parseDbDate(row.started_at),
+    updatedAt: parseDbDate(row.ended_at ?? row.started_at),
   }
 }
 
@@ -113,14 +113,15 @@ export async function loadSession(sessionId: string): Promise<SessionRecord | nu
     if (!row) return null
     return {
       id: row.id,
-      title: row.title || 'Untitlede Session',
+      title: row.title || 'Untitled Session',
+      threadId: row.thread_id,
       cwd: '',
       messages: [],
       totalUsage: { input_tokens: 0, output_tokens: 0 },
       totalCostUsd: 0,
       appState: {},
-      createdAt: parseDbDate(row.startedAt),
-      updatedAt: parseDbDate(row.endedAt ?? row.startedAt),
+      createdAt: parseDbDate(row.started_at),
+      updatedAt: parseDbDate(row.ended_at ?? row.started_at),
     }
   } catch {
     return null

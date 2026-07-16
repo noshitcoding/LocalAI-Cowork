@@ -1,0 +1,22 @@
+id: domain:project
+title: Project
+purpose: Chat context container with instructions and reusable resources; not a WorkTask owner.
+canonical_definition: A Project groups chat threads and resources, and supplies instructions/resources to the active chat context.
+allowed_ui_surfaces:
+  - /projects
+  - left sidebar project groups
+  - cowork project context strip
+  - tasks linked chat context display
+disallowed_meanings:
+  - direct owner of WorkTask execution
+  - scheduler identity
+source_of_truth:
+  - app/src/stores/projectStore.ts
+  - app/src/utils/projectPromptContext.ts
+source_files:
+  - app/src/stores/projectStore.ts
+  - app/src/utils/projectPromptContext.ts
+  - app/src/components/ProjectView.tsx
+tests:
+  - app/src/stores/projectStore.test.ts
+  - app/src/components/ProjectView.test.tsx

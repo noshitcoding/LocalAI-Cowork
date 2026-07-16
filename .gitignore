@@ -76,6 +76,7 @@ Thumbs.db
 temp/
 .cache/
 .playwright-mcp/
+graphify-out/.graphify_python
 
 # External example repositories
 andere_ai_agenten_beispiele/

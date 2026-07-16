@@ -1,7 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { OllamaConfig } from './configStore'
+import { useConfigStore } from './configStore'
 import { safeInvoke } from '../utils/safeInvoke'
+import { crewProviderLocator, deleteCredential, setCredential } from '../security/credentialVault'
+import { sanitizeCrewsForPersistence } from '../security/credentialPersistence'
+import { redactText } from '../security/redaction'
 
 export type AgentRole = 'researcher' | 'writer' | 'reviewer' | 'planner' | 'executor' | 'analyst' | 'custom'
 export type CrewProcess = 'sequential' | 'parallel' | 'hierarchical'
@@ -112,6 +116,20 @@ export type CrewExecutionLog = {
   providerReasoning?: string | null
 }
 
+function redactCrewExecutionLog(log: CrewExecutionLog): CrewExecutionLog {
+  const redactOptional = (value: string | null | undefined) => (
+    typeof value === 'string' ? redactText(value) : value
+  )
+  return {
+    ...log,
+    action: redactText(log.action),
+    result: redactText(log.result),
+    summary: redactOptional(log.summary),
+    detail: redactOptional(log.detail),
+    providerReasoning: redactOptional(log.providerReasoning),
+  }
+}
+
 export type CrewPersonalityProfile = {
   id: string
   name: string
@@ -149,8 +167,10 @@ type CrewState = {
   loading: boolean
 
   createCrew: (id: string, name: string, agentIds: string[]) => void
-  updateCrew: (id: string, patch: Partial<Crew>) => void
-  deleteCrew: (id: string) => void
+  createStarterCrew: (name: string, goal: string) => string
+  updateCrew: (id: string, patch: Partial<Omit<Crew, 'providerProfiles'>>) => void
+  setCrewProviderProfiles: (id: string, profiles: CrewProviderProfiles) => Promise<void>
+  deleteCrew: (id: string) => Promise<void>
   setActiveCrew: (id: string | null) => void
 
   addAgent: (agent: CrewAgent) => void
@@ -184,7 +204,7 @@ const DEFAULT_AGENTS: CrewAgent[] = [
     personalityId: null,
     modelOverride: null,
     providerKind: 'ollama',
-    tools: ['web_fetch', 'grep', 'glob', 'read_file'],
+    tools: ['web_search', 'web_fetch', 'grep', 'glob', 'read_file'],
     mcpServerNames: [],
     enabled: true,
     allowDelegation: true,
@@ -201,7 +221,7 @@ const DEFAULT_AGENTS: CrewAgent[] = [
     personalityId: null,
     modelOverride: null,
     providerKind: 'ollama',
-    tools: ['edit_file', 'read_file', 'glob'],
+    tools: ['edit_file', 'read_file', 'glob', 'office_workflow'],
     mcpServerNames: [],
     enabled: true,
     allowDelegation: false,
@@ -252,7 +272,7 @@ const DEFAULT_AGENTS: CrewAgent[] = [
     personalityId: null,
     modelOverride: null,
     providerKind: 'ollama',
-    tools: ['bash', 'edit_file', 'read_file', 'glob', 'grep'],
+    tools: ['bash', 'edit_file', 'read_file', 'glob', 'grep', 'office_workflow'],
     mcpServerNames: [],
     enabled: true,
     allowDelegation: false,
@@ -269,7 +289,7 @@ const DEFAULT_AGENTS: CrewAgent[] = [
     personalityId: null,
     modelOverride: null,
     providerKind: 'ollama',
-    tools: ['read_file', 'grep', 'glob', 'web_fetch'],
+    tools: ['read_file', 'grep', 'glob', 'web_search', 'web_fetch'],
     mcpServerNames: [],
     enabled: true,
     allowDelegation: true,
@@ -623,16 +643,112 @@ export const useCrewStore = create<CrewState>()(
         set(s => ({ crews: [crew, ...s.crews] }))
       },
 
+      createStarterCrew: (name, goal) => {
+        if (get().agents.length === 0) {
+          get().loadAgents()
+        }
+        const availableAgents = get().agents
+        const preferredRoles: AgentRole[] = ['planner', 'executor', 'reviewer']
+        const selectedAgents = preferredRoles
+          .map((role) => availableAgents.find((agent) => agent.role === role))
+          .filter((agent): agent is CrewAgent => Boolean(agent))
+        for (const agent of availableAgents) {
+          if (selectedAgents.length >= 3) break
+          if (!selectedAgents.some((selected) => selected.id === agent.id)) selectedAgents.push(agent)
+        }
+        if (selectedAgents.length === 0) {
+          throw new Error('No crew agents are available.')
+        }
+
+        const crewId = crypto.randomUUID()
+        get().createCrew(crewId, name.trim() || 'New crew', selectedAgents.map((agent) => agent.id))
+        const normalizedGoal = goal.trim() || `Complete ${name.trim() || 'the requested task'}`
+        const planTaskId = crypto.randomUUID()
+        const executeTaskId = crypto.randomUUID()
+        const reviewTaskId = crypto.randomUUID()
+        const planner = selectedAgents[0]
+        const executor = selectedAgents[1] ?? planner
+        const reviewer = selectedAgents[2] ?? executor
+
+        get().updateCrew(crewId, {
+          description: normalizedGoal,
+          knowledgeFocus: normalizedGoal,
+          managerAgentId: planner.id,
+          tasks: [
+            {
+              id: planTaskId,
+              description: `Analyze the objective, retrieve relevant knowledge, and create an executable plan: ${normalizedGoal}`,
+              expectedOutput: 'A concise plan with assumptions, evidence needs, and acceptance criteria.',
+              agentId: planner.id,
+              context: [],
+              dependencies: [],
+              asyncExecution: false,
+              status: 'pending',
+              output: null,
+            },
+            {
+              id: executeTaskId,
+              description: `Execute the approved plan and produce the requested result: ${normalizedGoal}`,
+              expectedOutput: 'A complete result with concrete evidence and any produced artifacts.',
+              agentId: executor.id,
+              context: [planTaskId],
+              dependencies: [planTaskId],
+              asyncExecution: false,
+              status: 'pending',
+              output: null,
+            },
+            {
+              id: reviewTaskId,
+              description: `Review the result against the objective, correct gaps, and provide the final synthesis: ${normalizedGoal}`,
+              expectedOutput: 'A verified final answer including remaining risks and acceptance status.',
+              agentId: reviewer.id,
+              context: [planTaskId, executeTaskId],
+              dependencies: [executeTaskId],
+              asyncExecution: false,
+              status: 'pending',
+              output: null,
+            },
+          ],
+        })
+        get().setActiveCrew(crewId)
+        return crewId
+      },
+
       updateCrew: (id, patch) =>
         set(s => ({
           crews: s.crews.map(c => c.id === id ? { ...c, ...patch, updatedAt: Date.now() } : c),
         })),
 
-      deleteCrew: (id) =>
+      setCrewProviderProfiles: async (id, profiles) => {
+        await Promise.all([
+          setCredential(
+            crewProviderLocator(id, 'openai_compatible'),
+            profiles.openAICompatible.apiKey,
+          ),
+          setCredential(
+            crewProviderLocator(id, 'openrouter'),
+            profiles.openRouter.apiKey,
+          ),
+        ])
+        set((state) => ({
+          crews: state.crews.map((crew) => (
+            crew.id === id
+              ? { ...crew, providerProfiles: profiles, updatedAt: Date.now() }
+              : crew
+          )),
+        }))
+      },
+
+      deleteCrew: async (id) => {
+        await Promise.all([
+          deleteCredential(crewProviderLocator(id, 'openai_compatible')),
+          deleteCredential(crewProviderLocator(id, 'openrouter')),
+        ])
         set(s => ({
           crews: s.crews.filter(c => c.id !== id),
           activeCrewId: s.activeCrewId === id ? null : s.activeCrewId,
-        })),
+        }))
+      },
 
       setActiveCrew: (id) => set({ activeCrewId: id }),
 
@@ -919,9 +1035,8 @@ export const useCrewStore = create<CrewState>()(
         let config = undefined
         let providerConfigs = undefined
         try {
-          const configStore = await import('./configStore')
-          config = configStore.useConfigStore.getState().ollama
-          const { defaultLlmProfileIds, llmProfiles } = configStore.useConfigStore.getState()
+          config = useConfigStore.getState().ollama
+          const { defaultLlmProfileIds, llmProfiles } = useConfigStore.getState()
           const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
             ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible')
           const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
@@ -1154,7 +1269,7 @@ export const useCrewStore = create<CrewState>()(
                 : c
             ),
             executionLogs: [
-              {
+              redactCrewExecutionLog({
                 id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 crewId,
                 agentId: crew.managerAgentId ?? crew.agents[0]?.id ?? 'unknown',
@@ -1162,7 +1277,7 @@ export const useCrewStore = create<CrewState>()(
                 action: awaitingApproval ? 'Crew is waiting for approval' : 'Crew execution failed',
                 result: message,
                 timestamp: Date.now(),
-              },
+              }),
               ...s.executionLogs,
             ].slice(0, 500),
           }))
@@ -1199,7 +1314,7 @@ export const useCrewStore = create<CrewState>()(
 
       addLog: (log) =>
         set(s => ({
-          executionLogs: [log, ...s.executionLogs].slice(0, 500),
+          executionLogs: [redactCrewExecutionLog(log), ...s.executionLogs].slice(0, 500),
         })),
 
       installDefaultAgents: () => {
@@ -1223,12 +1338,15 @@ export const useCrewStore = create<CrewState>()(
           ...typedState,
           crews: (typedState.crews ?? currentState.crews).map(normalizeCrewStateEntry),
           agents: dedupeCrewAgents(typedState.agents ?? currentState.agents),
+          executionLogs: (typedState.executionLogs ?? currentState.executionLogs)
+            .map(redactCrewExecutionLog)
+            .slice(0, 500),
         }
       },
       partialize: (s) => ({
-        crews: s.crews,
+        crews: sanitizeCrewsForPersistence(s.crews),
         agents: s.agents,
-        executionLogs: s.executionLogs,
+        executionLogs: s.executionLogs.map(redactCrewExecutionLog),
         activeCrewId: s.activeCrewId,
       }),
     }

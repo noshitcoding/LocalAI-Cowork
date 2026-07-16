@@ -58,6 +58,14 @@ describe('RunPanel', () => {
         ])
       }
 
+      if (command === 'engine_run_artifact_list') {
+        return Promise.resolve([])
+      }
+
+      if (command === 'engine_run_event_list') {
+        return Promise.resolve([])
+      }
+
       if (command === 'worker_sandbox_get_for_run') {
         return Promise.resolve({
           id: 'sb-1',
@@ -82,9 +90,9 @@ describe('RunPanel', () => {
     render(<RunPanel />)
 
     await waitFor(() => {
-      expect(screen.getByText((_content, element) => element?.textContent === 'Workspace:C:/workspace')).toBeInTheDocument()
+      expect(screen.getByText((_content, element) => element?.textContent === 'Workspace: C:/workspace')).toBeInTheDocument()
       expect(screen.getByText('{"step":"collect"}')).toBeInTheDocument()
     })
-    expect(screen.getByText((_content, element) => element?.textContent === 'Retry Count:2')).toBeInTheDocument()
+    expect(screen.getByText((_content, element) => element?.textContent === 'Retry Count: 2')).toBeInTheDocument()
   })
 })

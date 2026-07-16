@@ -1,0 +1,12 @@
+.codex/**
+graphify-out/**
+app/src-tauri/resources/pdfium/licenses/**
+docs/product/generated/**
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.bmp
+*.svg
+*.ico

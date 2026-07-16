@@ -83,35 +83,19 @@ pub struct ClaudeCodeToolInfo {
 pub fn get_claude_code_commands() -> Vec<ClaudeCodeCommandInfo> {
     let commands = vec![
         // Session Management
-        (
-            "clear",
-            "Clear context and start a new session",
-            "session",
-        ),
-        (
-            "compact",
-            "Compact conversation to save tokens",
-            "session",
-        ),
+        ("clear", "Clear context and start a new session", "session"),
+        ("compact", "Compact conversation to save tokens", "session"),
         ("resume", "Resume previous session", "session"),
         ("recap", "Summary of the current session", "session"),
         ("exit", "End session", "session"),
-        (
-            "cost",
-            "Show current costs and token usage",
-            "session",
-        ),
+        ("cost", "Show current costs and token usage", "session"),
         ("stats", "Show session statistics", "session"),
         ("status", "Status of the current session", "session"),
         ("export", "Export session", "session"),
         // Configuration
         ("config", "Show and edit configuration", "config"),
         ("model", "Switch model (e.g. opus, sonnet)", "config"),
-        (
-            "memory",
-            "Edit project memory (CLAUDE.md)",
-            "config",
-        ),
+        ("memory", "Edit project memory (CLAUDE.md)", "config"),
         ("permissions", "Manage permissions", "config"),
         ("init", "Initialize project (.claude/ folder)", "config"),
         ("login", "API authentication", "config"),
@@ -127,21 +111,13 @@ pub fn get_claude_code_commands() -> Vec<ClaudeCodeCommandInfo> {
         ("branch", "Create/change Git branch", "code"),
         ("commit", "Commit changes", "code"),
         // Planning & Execution
-        (
-            "plan",
-            "Create detailed plan (ultraplan)",
-            "planning",
-        ),
+        ("plan", "Create detailed plan (ultraplan)", "planning"),
         (
             "ultraplan",
             "Create comprehensive plan with analysis",
             "planning",
         ),
-        (
-            "ultrareview",
-            "Run deep review",
-            "planning",
-        ),
+        ("ultrareview", "Run deep review", "planning"),
         ("simplify", "Simplify code", "planning"),
         // Agent & Tasks
         ("agents", "Sub-Manage agents", "agents"),
@@ -177,11 +153,7 @@ pub fn get_claude_code_commands() -> Vec<ClaudeCodeCommandInfo> {
             "advanced",
         ),
         ("fast", "Schnellmodus (weniger Denkzeit)", "advanced"),
-        (
-            "rewind",
-            "Jump back to an earlier state",
-            "advanced",
-        ),
+        ("rewind", "Jump back to an earlier state", "advanced"),
         ("insights", "Show insights and patterns", "advanced"),
         ("release-notes", "Release Notes generieren", "advanced"),
     ];

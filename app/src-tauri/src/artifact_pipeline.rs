@@ -1,9 +1,9 @@
 use pdfium_render::prelude::*;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -212,9 +212,7 @@ fn safe_extract_pdf_text_limited(
             None => (text, false),
         }),
         Ok(Err(err)) => Err(err.to_string()),
-        Err(_) => {
-            Err("PDF text could not be extracted: parser crashed".to_string())
-        }
+        Err(_) => Err("PDF text could not be extracted: parser crashed".to_string()),
     }
 }
 
@@ -636,4 +634,72 @@ fn parse_binary(path: &Path, size_bytes: u64) -> Result<ArtifactParseResponse, S
         preview: String::new(),
         metadata: json!({}),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::content::{Content, Operation};
+    use lopdf::{dictionary, Document, Object, Stream};
+    use uuid::Uuid;
+
+    #[test]
+    fn upgraded_pdf_extractor_reads_generated_text() {
+        let path =
+            std::env::temp_dir().join(format!("open_cowork_pdf_extract_{}.pdf", Uuid::new_v4()));
+        let mut document = Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = document.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let content = Content {
+            operations: vec![
+                Operation::new("BT", vec![]),
+                Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 14.into()]),
+                Operation::new("Td", vec![72.into(), 720.into()]),
+                Operation::new(
+                    "Tj",
+                    vec![Object::string_literal("Open Cowork PDF regression")],
+                ),
+                Operation::new("ET", vec![]),
+            ],
+        };
+        let content_id = document.add_object(Stream::new(
+            dictionary! {},
+            content.encode().expect("PDF content encodes"),
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        });
+        document.objects.insert(
+            pages_id,
+            dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }
+            .into(),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        document.trailer.set("Root", catalog_id);
+        document.compress();
+        document.save(&path).expect("PDF fixture saves");
+
+        let extracted = pdf_extract::extract_text(&path).expect("PDF text extracts");
+        assert!(extracted.contains("Open Cowork PDF regression"));
+
+        let _ = fs::remove_file(path);
+    }
 }

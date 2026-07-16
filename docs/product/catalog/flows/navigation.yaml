@@ -1,0 +1,69 @@
+flows:
+  - id: flow:/app/navigate-by-top-tabs
+    title: Navigate by top tabs
+    purpose: Let users switch primary product views through the top navigation generated from the route registry.
+    route: /
+    actors:
+      - user
+    domain_objects: []
+    steps:
+      - User selects a top navigation tab.
+      - Layout reads the route target and optional active mode from PRODUCT_ROUTES.
+      - React Router navigates to the selected route.
+    source_files:
+      - app/src/components/Layout.tsx
+      - app/src/product/routeRegistry.ts
+    tests:
+      - app/src/App.test.tsx
+  - id: flow:/app/navigate-by-shortcut
+    title: Navigate by shortcut
+    purpose: Keep number shortcuts aligned with the same product route order used by top navigation.
+    route: /
+    actors:
+      - user
+    domain_objects: []
+    steps:
+      - User presses Ctrl plus a route number.
+      - Layout resolves the matching route through getProductRouteByShortcutKey.
+      - React Router navigates to the matching route.
+    source_files:
+      - app/src/components/Layout.tsx
+      - app/src/product/routeRegistry.ts
+    tests:
+      - app/src/App.test.tsx
+  - id: flow:/app/navigate-by-command-palette
+    title: Navigate by command palette
+    purpose: Keep command palette navigation entries aligned with top navigation and shortcuts.
+    route: /
+    actors:
+      - user
+    domain_objects: []
+    steps:
+      - User opens the command palette.
+      - CommandPalette builds navigation commands from PRODUCT_ROUTES.
+      - User selects a navigation command.
+      - React Router navigates to the command target.
+    source_files:
+      - app/src/components/CommandPalette.tsx
+      - app/src/product/routeRegistry.ts
+    tests:
+      - app/src/App.test.tsx
+  - id: flow:/app/navigate-by-sidebar
+    title: Navigate by sidebar
+    purpose: Keep sidebar quick links aligned with the same product route registry used by top navigation, shortcuts, and command palette.
+    route: /
+    actors:
+      - user
+    domain_objects:
+      - domain:work-task
+      - domain:project
+      - domain:crew
+    steps:
+      - User selects a sidebar quick action, project link, chat link, task chat link, or session link.
+      - LeftSidebar resolves the target through getProductRouteById.
+      - React Router navigates to the matching product route.
+    source_files:
+      - app/src/components/LeftSidebar.tsx
+      - app/src/product/routeRegistry.ts
+    tests:
+      - app/src/components/LeftSidebar.test.tsx

@@ -34,6 +34,8 @@ export type MemoryConfig = {
 
 const MEMORY_FILES = [
   'CLAUDE.md',
+  'MEMORY.md',
+  'USER.md',
   '.claude/memory.md',
   '.claude/settings.json',
   'AGENTS.md',
@@ -42,6 +44,8 @@ const MEMORY_FILES = [
 /** Additional memory files for OpenCowork-specific features */
 const COWORK_MEMORY_FILES = [
   '.cowork/memory.md',
+  '.cowork/DRAFT_MEMORY.md',
+  '.cowork/DRAFT_KNOWLEDGE.md',
   '.cowork/config.json',
   '.cowork/agents.md',
 ]
@@ -161,8 +165,8 @@ type MemoryEntryRow = {
   key: string
   content: string
   confidence: number
-  createdAt: string
-  updatedAt: string
+  created_at: string
+  updated_at: string
 }
 
 function toBackendMemoryScope(scope: MemoryEntry['scope'] | string | undefined): string | undefined {
@@ -186,6 +190,180 @@ export type RuntimeInstruction = {
   content: string
   enabled: boolean
   priority: number
+}
+
+export type FrozenMemorySnapshot = {
+  sessionId: string
+  agentEntries: Array<{
+    id: string
+    scope: string
+    category: string
+    key: string
+    content: string
+    confidence: number
+  }>
+  sharedEntries: Array<{
+    id: string
+    scope: string
+    category: string
+    key: string
+    content: string
+    confidence: number
+  }>
+  userProfile: Array<{
+    id: string
+    key: string
+    value: string
+    source: string
+    confidence: number
+  }>
+  createdAt: string
+}
+
+export type AutomaticMemoryCandidate = {
+  target: 'memory' | 'user'
+  content: string
+}
+
+const MEMORY_CHAR_LIMIT = 2200
+const USER_CHAR_LIMIT = 1375
+const DRAFT_KNOWLEDGE_FILE = '.cowork/DRAFT_KNOWLEDGE.md'
+const DRAFT_HEADER = `# Draft Knowledge Base
+
+Automatically captured high-signal memory candidates. Review, edit, or promote these through the Memory tool. This file is included as project context, but entries remain drafts until curated.
+
+## Candidates`
+
+function countCharacters(entries: string[]): number {
+  return entries.reduce((total, entry) => total + Array.from(entry).length, 0)
+    + Math.max(0, entries.length - 1) * 3
+}
+
+function renderMemorySection(title: string, entries: string[], limit: number): string {
+  if (entries.length === 0) return ''
+  const used = countCharacters(entries)
+  const percent = Math.min(100, Math.round((used / limit) * 100))
+  return [
+    `${title} [${percent}% - ${used}/${limit} chars]`,
+    entries.join('\n§\n'),
+  ].join('\n')
+}
+
+export function renderFrozenMemorySnapshot(snapshot: FrozenMemorySnapshot): string {
+  const agentEntries = snapshot.agentEntries
+    .filter((entry) => entry.category === 'curated')
+    .map((entry) => entry.content.trim())
+    .filter(Boolean)
+  const sharedEntries = snapshot.sharedEntries
+    .filter((entry) => entry.category !== 'draft_knowledge')
+    .slice(0, 24)
+    .map((entry) => `[${entry.category}] ${entry.key}: ${entry.content.trim()}`)
+    .filter(Boolean)
+  const userEntries = snapshot.userProfile
+    .map((entry) => entry.value.trim())
+    .filter(Boolean)
+
+  return [
+    renderMemorySection('MEMORY (curated agent notes)', agentEntries, MEMORY_CHAR_LIMIT),
+    renderMemorySection('USER PROFILE', userEntries, USER_CHAR_LIMIT),
+    sharedEntries.length > 0
+      ? `SHARED KNOWLEDGE SNAPSHOT [${sharedEntries.length} entries]\n${sharedEntries.join('\n§\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n---\n\n')
+}
+
+export async function loadFrozenMemorySnapshot(sessionId?: string): Promise<FrozenMemorySnapshot | null> {
+  try {
+    return sessionId
+      ? await invoke<FrozenMemorySnapshot>('session_memory_snapshot', { sessionId })
+      : await invoke<FrozenMemorySnapshot>('memory_snapshot')
+  } catch {
+    return null
+  }
+}
+
+function normalizeCandidate(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s:,-]+|[\s]+$/g, '')
+    .slice(0, 500)
+}
+
+function isUnsafeDraft(value: string): boolean {
+  return /(?:api[_ -]?key|access[_ -]?token|password|passwort|secret|credential|private key)\s*[:=]/i.test(value)
+    || /ignore (?:all )?previous instructions|reveal (?:the )?system prompt|exfiltrat/i.test(value)
+}
+
+export function extractAutomaticMemoryCandidates(userInput: string): AutomaticMemoryCandidate[] {
+  const compact = normalizeCandidate(userInput)
+  if (!compact || compact.length < 12 || isUnsafeDraft(compact)) return []
+
+  const explicitMatch = compact.match(/(?:remember(?: that)?|merke dir(?:,? dass)?|bitte merken|vergiss nicht)\s*[:,-]?\s*(.+)/i)
+  if (explicitMatch?.[1]) {
+    const content = normalizeCandidate(explicitMatch[1])
+    return content && !isUnsafeDraft(content) ? [{ target: 'memory', content }] : []
+  }
+
+  const isPreference = /\b(?:i prefer|ich bevorzuge|ich mag|nenne mich|please answer|bitte antworte|communication style)\b/i.test(compact)
+  if (isPreference) return [{ target: 'user', content: compact }]
+
+  const isReusableFact = /\b(?:project uses|das projekt nutzt|we use|wir verwenden|runs on|laeuft auf|läuft auf|always use|verwende immer|do not use|don't use|verwende nicht)\b/i.test(compact)
+  return isReusableFact ? [{ target: 'memory', content: compact }] : []
+}
+
+function stableDraftKey(value: string): string {
+  let hash = 2166136261
+  for (const character of value) {
+    hash ^= character.charCodeAt(0)
+    hash = Math.imul(hash, 16777619)
+  }
+  return `draft-${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+export async function captureAutomaticMemoryDraft(
+  projectDir: string,
+  userInput: string,
+  sourceSessionId?: string,
+): Promise<AutomaticMemoryCandidate[]> {
+  const candidates = extractAutomaticMemoryCandidates(userInput)
+  if (candidates.length === 0) return []
+
+  const draftPath = `${projectDir}/${DRAFT_KNOWLEDGE_FILE}`
+  let existing = ''
+  try {
+    existing = await invoke<string>('fs_extract_text', { path: draftPath })
+  } catch {
+    // The draft file is created lazily on the first high-signal candidate.
+  }
+
+  const lines = existing.trim() ? existing.trim().split(/\r?\n/) : DRAFT_HEADER.split('\n')
+  let changed = false
+  for (const candidate of candidates) {
+    const line = `- [${candidate.target}] ${candidate.content}`
+    if (!lines.some((existingLine) => existingLine.trim().toLowerCase() === line.toLowerCase())) {
+      lines.push(line)
+      changed = true
+    }
+    await invoke('memory_upsert', {
+      id: crypto.randomUUID(),
+      scope: 'shared',
+      category: 'draft_knowledge',
+      key: stableDraftKey(`${candidate.target}:${candidate.content}`),
+      content: candidate.content,
+      sourceSessionId: sourceSessionId ?? null,
+      confidence: 0.6,
+    })
+  }
+
+  if (changed) {
+    const bounded = lines.join('\n').slice(-20_000)
+    await invoke('fs_write_text_file', {
+      path: draftPath,
+      content: bounded.startsWith('# Draft Knowledge Base') ? bounded : `${DRAFT_HEADER}\n${bounded}`,
+      createBackup: true,
+    })
+  }
+  return candidates
 }
 
 /**
@@ -223,8 +401,8 @@ export async function getMemoryEntries(scope?: string, category?: string): Promi
       content: row.content,
       category: row.category,
       confidence: row.confidence,
-      createdAt: Date.parse(row.createdAt),
-      updatedAt: Date.parse(row.updatedAt),
+      createdAt: Date.parse(row.created_at),
+      updatedAt: Date.parse(row.updated_at),
     }))
   } catch {
     return []
@@ -245,10 +423,14 @@ export async function recallRelevantMemory(query: string, limit: number = 6): Pr
 
   try {
     const rows = await invoke<Array<{ key: string; content: string; category: string }>>('memory_search', {
+      scope: null,
+      category: null,
       keyword: trimmed,
-      limit,
+      limit: Math.max(limit * 3, 12),
     })
     return rows
+      .filter((row) => !['run_input', 'run_output', 'context', 'draft_knowledge'].includes(row.category))
+      .slice(0, limit)
       .map((row) => `[${row.category}] ${row.key}: ${row.content}`)
       .filter(Boolean)
   } catch {
@@ -346,6 +528,7 @@ export async function buildSystemPromptWithMemory(
   options?: {
     globalDir?: string
     userInput?: string
+    frozenSnapshot?: FrozenMemorySnapshot | null
   },
 ): Promise<{
   systemPrompt: string
@@ -354,13 +537,16 @@ export async function buildSystemPromptWithMemory(
   runtimeInstructions: RuntimeInstruction[]
   recalledMemory: string[]
 }> {
-  const [projectMemory, globalMemory, settings, runtimeInstructions, recalledMemory] = await Promise.all([
+  const [projectMemory, globalMemory, settings, runtimeInstructions, recalledMemory, liveSnapshot] = await Promise.all([
     loadProjectMemory(projectDir),
     loadGlobalMemory(options?.globalDir),
     loadProjectSettings(projectDir),
     loadEffectiveRuntimeInstructions(projectDir),
     recallRelevantMemory(options?.userInput ?? ''),
+    options?.frozenSnapshot === undefined ? loadFrozenMemorySnapshot() : Promise.resolve(null),
   ])
+  const frozenSnapshot = options?.frozenSnapshot ?? liveSnapshot
+  const frozenMemoryBlock = frozenSnapshot ? renderFrozenMemorySnapshot(frozenSnapshot) : ''
 
   const instructionBlock = runtimeInstructions.length > 0
     ? runtimeInstructions
@@ -372,13 +558,12 @@ export async function buildSystemPromptWithMemory(
     ? recalledMemory.join('\n')
     : ''
 
-  const memoryContent = [globalMemory, projectMemory, instructionBlock, recallBlock]
+  const memoryContent = [frozenMemoryBlock, globalMemory, projectMemory, instructionBlock, recallBlock]
     .filter(Boolean)
     .join('\n\n---\n\n')
 
-  const systemPrompt = memoryContent
-    ? `${basePrompt}\n\n<memory>\n${memoryContent}\n</memory>`
-    : basePrompt
+  // QueryEngine owns the single <memory> injection point.
+  const systemPrompt = basePrompt
 
   return { systemPrompt, memoryContent, settings, runtimeInstructions, recalledMemory }
 }

@@ -151,7 +151,7 @@ export async function* streamMessages(
   const decoder = new TextDecoder()
   let buffer = ''
   let totalUsage: TokenUsage = { ...EMPTY_USAGE }
-  let resultContent: ContentBlock[] = []
+  const resultContent: ContentBlock[] = []
   let stopReason: string | null = null
   let modelId = config.model
 

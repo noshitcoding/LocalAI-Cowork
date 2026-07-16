@@ -166,7 +166,7 @@ export function buildSearchIndex({ threads, tasks, projects, sessions }: BuildSe
       id: `task:${task.id}`,
       type: 'task',
       title: getTaskSearchTitle(task),
-      subtitle: `Task Â· ${task.status} Â· ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
+      subtitle: `Task / ${task.status} / ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
       body: compact([task.prompt, task.expectedOutput, task.workDir, task.model, task.error ?? undefined, task.output ?? undefined]),
       href: task.threadId ? '/' : '/tasks',
       action: 'open-task',
@@ -180,7 +180,7 @@ export function buildSearchIndex({ threads, tasks, projects, sessions }: BuildSe
       id: `project:${project.id}`,
       type: 'project',
       title: project.title || 'Untitled project',
-      subtitle: `${project.threadIds.length} Chats Â· ${project.resources.length} Resources`,
+      subtitle: `${project.threadIds.length} Chats / ${project.resources.length} Resources`,
       body: compact([project.instructions, ...project.resources.map((resource) => compact([resource.label, resource.path, resource.kind]))]),
       href: '/projects',
       action: 'open-project',
@@ -258,7 +258,6 @@ export function filterSearchIndex(entries: SearchIndexEntry[], query: string, li
 
   return scored.slice(0, limit)
 }
-
 
 
 

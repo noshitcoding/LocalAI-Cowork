@@ -1,33 +1,24 @@
-use chrono::Utc;
-use serde_json::{Value, json};
-use std::fs::{OpenOptions, create_dir_all};
-use std::io::Write;
-use std::path::PathBuf;
+use crate::audit_service::{verified_audit_tail, verify_audit_integrity, LegacyAuditJsonlService};
+pub use crate::audit_service::{AuditIntegrityReport, AuditIntegrityStatus};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 pub fn append_audit_event(
-    mut app_data_dir: PathBuf,
+    app_data_dir: PathBuf,
     area: &str,
     action: &str,
     details: Option<Value>,
 ) -> Result<(), String> {
-    app_data_dir.push("audit");
-    create_dir_all(&app_data_dir).map_err(|err| err.to_string())?;
+    LegacyAuditJsonlService::new(app_data_dir).append_legacy_event(area, action, details)
+}
 
-    let mut file_path = app_data_dir;
-    file_path.push("events.jsonl");
+pub fn integrity_report(app_data_dir: &Path) -> AuditIntegrityReport {
+    verify_audit_integrity(app_data_dir)
+}
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file_path)
-        .map_err(|err| err.to_string())?;
-
-    let event = json!({
-      "timestamp": Utc::now().to_rfc3339(),
-      "area": area,
-      "action": action,
-      "details": details,
-    });
-
-    writeln!(file, "{}", event).map_err(|err| err.to_string())
+pub fn verified_tail(
+    app_data_dir: &Path,
+    limit: usize,
+) -> Result<(AuditIntegrityReport, Vec<String>), String> {
+    verified_audit_tail(app_data_dir, limit)
 }

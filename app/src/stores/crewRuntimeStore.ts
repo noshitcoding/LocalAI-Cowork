@@ -14,6 +14,10 @@ export type CrewRuntimeStatus = {
   venvPythonPath: string | null
   pythonVersion: string | null
   crewaiVersion: string | null
+  expectedCrewaiVersion: string | null
+  toolDependenciesInstalled: boolean
+  runtimeCompatible: boolean
+  runtimeSchemaVersion: number | null
   lastBootstrapAt: string | null
   message: string
 }

@@ -1,0 +1,23 @@
+id: domain:work-task
+title: WorkTask
+purpose: The only user-facing executable task object shown by /tasks.
+canonical_definition: A WorkTask is a user-authored executable request with runner, prompt, expected output, optional absolute working folder, optional linked chat, output, status, and schedule metadata.
+allowed_ui_surfaces:
+  - /tasks primary list and detail
+  - left sidebar task chat links
+disallowed_meanings:
+  - legacy PlanApproval Task
+  - ScheduledTask identity
+  - CrewTask template identity
+source_of_truth:
+  - app/src/stores/workTasksStore.ts
+  - app/src-tauri/src/db.rs
+source_files:
+  - app/src/stores/workTasksStore.ts
+  - app/src/engine/tasks/workTaskExecutionService.ts
+  - app/src/engine/tasks/workTaskScheduleService.ts
+  - app/src-tauri/src/db.rs
+tests:
+  - app/src/stores/workTasksStore.test.ts
+  - app/src/components/TasksView.schedule.test.tsx
+  - app/src-tauri/src/db.rs

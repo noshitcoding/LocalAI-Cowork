@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
 import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind, type CrewProviderProfiles, type CrewRuntimeConfig } from '../stores/crewStore'
@@ -7,8 +8,9 @@ import CrewControlPlanePanel from './crew/CrewControlPlanePanel'
 import CrewGovernancePanel from './crew/CrewGovernancePanel'
 import CrewHistoryPanel from './crew/CrewHistoryPanel'
 import CrewRuntimePanel from './crew/CrewRuntimePanel'
-import { safeInvoke } from '../utils/safeInvoke'
+import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { tr } from '../i18n'
+import { ArrowRight, ChevronDown, ListCollapse, ListTree, MousePointerClick, Settings2, Trash2, UsersRound, Workflow } from 'lucide-react'
 
 const ROLE_OPTIONS: AgentRole[] = ['researcher', 'writer', 'reviewer', 'planner', 'executor', 'analyst', 'custom']
 const PROCESS_OPTIONS: Array<{ value: CrewProcess; label: string }> = [
@@ -21,6 +23,24 @@ const PROVIDER_OPTIONS: Array<{ value: CrewProviderKind; label: string }> = [
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
   { value: 'openrouter', label: 'OpenRouter' },
 ]
+
+const CREW_STARTER_PRESETS = [
+  {
+    id: 'research',
+    name: 'Research squad',
+    description: 'Find reliable evidence and turn it into a clear recommendation.',
+  },
+  {
+    id: 'build',
+    name: 'Build crew',
+    description: 'Plan, create, and verify a complete working deliverable.',
+  },
+  {
+    id: 'review',
+    name: 'Review council',
+    description: 'Audit an existing result, close gaps, and sign off the final output.',
+  },
+] as const
 
 type ProviderModelState = {
   loading: boolean
@@ -293,11 +313,14 @@ openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string }) {
 }
 
 export default function CrewPanel() {
+  const navigate = useNavigate()
   const {
     crews,
     activeCrewId,
     createCrew,
+    createStarterCrew,
     updateCrew,
+    setCrewProviderProfiles,
     deleteCrew,
     setActiveCrew,
     loadAgents,
@@ -305,6 +328,8 @@ export default function CrewPanel() {
     syncAgentsFromPersonalityProfiles,
     migrateAgentsToPersonalityProfiles,
     updateCrewAgent,
+    runCrew,
+    stopCrew,
   } = useCrewStore()
   const { availableModels, defaultLlmProfileIds, llmProfiles, mcpServer, mcpServers, ollama } = useConfigStore()
   const claudeTools = useCoworkStore((state) => state.claudeTools)
@@ -315,11 +340,14 @@ export default function CrewPanel() {
   const [crewName, setCrewName] = useState('')
   const [providerModelOptions, setProviderModelOptions] = useState<Record<string, ProviderModelState>>({})
   const [pendingScrollCrewId, setPendingScrollCrewId] = useState<string | null>(null)
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ general: true, execution: false, provider: false, diagnostics: true })
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({ general: true, execution: false, provider: false, diagnostics: false, members: false })
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({})
   const [isCrewListVisible, setIsCrewListVisible] = useState(() => typeof window === 'undefined' ? true : window.innerWidth >= 1320)
   const importCrewInputRef = useRef<HTMLInputElement | null>(null)
+  const crewNameInputRef = useRef<HTMLInputElement | null>(null)
   const activeCrewDetailsRef = useRef<HTMLDivElement | null>(null)
+  const diagnosticsHeaderRef = useRef<HTMLButtonElement | null>(null)
+  const providerCredentialTokensRef = useRef(new Map<string, string>())
 
   useEffect(() => {
     loadAgents()
@@ -353,6 +381,8 @@ export default function CrewPanel() {
   }, [personalityProfiles, syncAgentsFromPersonalityProfiles])
 
   useEffect(() => {
+    if (!hasTauriRuntime() || personalityProfiles.length === 0) return
+
     void migrateAgentsToPersonalityProfiles(personalityProfiles).then((changed) => {
       if (changed) {
         void loadPersonalities()
@@ -419,7 +449,13 @@ export default function CrewPanel() {
   const getProviderModelCacheKey = (providerKey: 'openAICompatible' | 'openRouter') => {
     const config = resolvedActiveProviderConfigs[providerKey]
     if (!config) return ''
-    return `${config.baseUrl.trim()}::${config.apiKey.trim()}::${config.verifyTlsCertificates}`
+    const secret = config.apiKey.trim()
+    let credentialToken = providerCredentialTokensRef.current.get(secret)
+    if (!credentialToken) {
+      credentialToken = crypto.randomUUID()
+      providerCredentialTokensRef.current.set(secret, credentialToken)
+    }
+    return `${config.baseUrl.trim()}::${credentialToken}::${config.verifyTlsCertificates}`
   }
 
   const getProviderModelCatalog = (providerKind: CrewProviderKind) => {
@@ -530,11 +566,16 @@ export default function CrewPanel() {
     if (current?.cacheKey === cacheKey && (current.endpoint || current.error)) return
 
     void handleLoadProviderModels(providerKey)
+    // Provider loaders are render-local; this effect tracks their store inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCrew, providerModelOptions, resolvedActiveProviderConfigs])
 
   useEffect(() => {
     if (!pendingScrollCrewId || activeCrew?.id !== pendingScrollCrewId) return
-    activeCrewDetailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const activeCrewDetails = activeCrewDetailsRef.current
+    if (typeof activeCrewDetails?.scrollIntoView === 'function') {
+      activeCrewDetails.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
     setPendingScrollCrewId(null)
   }, [activeCrew?.id, pendingScrollCrewId])
 
@@ -585,13 +626,20 @@ export default function CrewPanel() {
 
       updateCrewAgent(activeCrew.id, agentId, { modelOverride: null })
     })
+    // The catalog helper is render-local; this effect tracks its store inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCrew, availableModels, personalityProfiles, providerModelOptions, updateCrewAgent, updateCrewPersonalityProfile])
 
   const handleCreateCrew = () => {
     const nextName = crewName.trim() || buildDefaultCrewName(crews.map((crew) => crew.name))
-    const id = crypto.randomUUID()
-    createCrew(id, nextName, [])
-    setActiveCrew(id)
+    const id = createStarterCrew(nextName, nextName)
+    setPendingScrollCrewId(id)
+    setCrewName('')
+  }
+
+  const handleCreateStarterPreset = (preset: (typeof CREW_STARTER_PRESETS)[number]) => {
+    const presetName = tr(preset.name)
+    const id = createStarterCrew(presetName, tr(preset.description))
     setPendingScrollCrewId(id)
     setCrewName('')
   }
@@ -628,7 +676,7 @@ export default function CrewPanel() {
     }))
   }
 
-  const handleDuplicateCrew = () => {
+  const handleDuplicateCrew = async () => {
     if (!activeCrew) return
     const newId = crypto.randomUUID()
     createCrew(newId, `${activeCrew.name} Kopie`, [])
@@ -644,7 +692,6 @@ export default function CrewPanel() {
       sharedOutputCharLimit: activeCrew.sharedOutputCharLimit,
       defaultProvider: activeCrew.defaultProvider,
       defaultModel: activeCrew.defaultModel,
-      providerProfiles: activeCrew.providerProfiles,
       process: activeCrew.process,
       managerAgentId: activeCrew.managerAgentId,
       verbose: activeCrew.verbose,
@@ -658,6 +705,10 @@ export default function CrewPanel() {
       })),
       tasks: [],
       status: 'idle',
+    })
+    await setCrewProviderProfiles(newId, {
+      openAICompatible: { ...activeCrew.providerProfiles.openAICompatible },
+      openRouter: { ...activeCrew.providerProfiles.openRouter },
     })
     setActiveCrew(newId)
     setPendingScrollCrewId(newId)
@@ -679,7 +730,10 @@ export default function CrewPanel() {
       sharedOutputCharLimit: activeCrew.sharedOutputCharLimit,
       defaultProvider: activeCrew.defaultProvider,
       defaultModel: activeCrew.defaultModel,
-      providerProfiles: activeCrew.providerProfiles,
+      providerProfiles: {
+        openAICompatible: { ...activeCrew.providerProfiles.openAICompatible, apiKey: '' },
+        openRouter: { ...activeCrew.providerProfiles.openRouter, apiKey: '' },
+      },
       process: activeCrew.process,
       managerAgentId: activeCrew.managerAgentId,
       verbose: activeCrew.verbose,
@@ -701,6 +755,7 @@ export default function CrewPanel() {
       const importedName = typeof imported.name === 'string' && imported.name.trim() ? imported.name : 'Importierte Crew'
       createCrew(newId, importedName, [])
       const patch: Parameters<typeof updateCrew>[1] = { tasks: [], status: 'idle' }
+      let importedProviderProfiles: CrewProviderProfiles | null = null
       if (typeof imported.description === 'string') patch.description = imported.description
       if (typeof imported.executionGuidelines === 'string') patch.executionGuidelines = imported.executionGuidelines
       if (imported.outputMode === 'standard' || imported.outputMode === 'bullet-report' || imported.outputMode === 'json') {
@@ -723,7 +778,7 @@ export default function CrewPanel() {
       if (
         isCrewProviderProfiles(imported.providerProfiles)
       ) {
-        patch.providerProfiles = imported.providerProfiles
+        importedProviderProfiles = imported.providerProfiles
       }
       if (imported.process === 'sequential' || imported.process === 'parallel' || imported.process === 'hierarchical') {
         patch.process = imported.process
@@ -744,6 +799,9 @@ export default function CrewPanel() {
       }
 
       updateCrew(newId, patch)
+      if (importedProviderProfiles) {
+        await setCrewProviderProfiles(newId, importedProviderProfiles)
+      }
       setActiveCrew(newId)
       setPendingScrollCrewId(newId)
     } finally {
@@ -804,36 +862,50 @@ export default function CrewPanel() {
   const toggleAgent = (id: string) => setExpandedAgents((s) => ({ ...s, [id]: !s[id] }))
   const toggleCrewListVisibility = () => setIsCrewListVisible((current) => !current)
   const roleEmoji = (role: AgentRole) => {
-    const map: Record<AgentRole, string> = { researcher: '🔍', writer: '✍️', reviewer: '🔎', planner: '📋', executor: '⚙️', analyst: '📊', custom: '🤖' }
-    return map[role] ?? '🤖'
+    const map: Record<AgentRole, string> = { researcher: 'RE', writer: 'WR', reviewer: 'RV', planner: 'PL', executor: 'EX', analyst: 'AN', custom: 'AG' }
+    return map[role] ?? 'AG'
   }
   const processLabel = (p: CrewProcess) => PROCESS_OPTIONS.find((o) => o.value === p)?.label ?? p
   const activeAgentCount = activeCrew?.agents.filter((agent) => agent.enabled).length ?? 0
   const profileBackedAgentCount = activeCrew?.agents.filter((agent) => Boolean(agent.personalityId)).length ?? 0
   const configuredToolCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.tools)).size : 0
   const configuredMcpCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.mcpServerNames)).size : 0
+  const activeCrewNeedsMission = Boolean(activeCrew && activeCrew.tasks.length === 0)
+  const activeCrewBlockerCount = activeCrewDiagnostics.errors.length + (activeCrewNeedsMission ? 1 : 0)
+  const activeCrewHasProviderBlocker = activeCrewDiagnostics.errors.some((entry) => (
+    entry.includes('OpenRouter') || entry.includes('OpenAI-compatible')
+  ))
+  const activeCrewProviderSettingsPath = activeCrewDiagnostics.errors.some((entry) => entry.includes('OpenRouter'))
+    ? '/settings?provider=openrouter'
+    : activeCrewDiagnostics.errors.some((entry) => entry.includes('OpenAI-compatible'))
+      ? '/settings?provider=openai-compatible'
+      : '/settings'
   const outputModeLabel = activeCrew?.outputMode === 'bullet-report'
     ? 'Stichpunkte'
     : activeCrew?.outputMode === 'json'
       ? 'JSON'
       : 'Standard'
+  const reviewActiveCrewBlockers = () => {
+    setOpenSections((sections) => ({ ...sections, diagnostics: true }))
+    diagnosticsHeaderRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    diagnosticsHeaderRef.current?.focus({ preventScroll: true })
+  }
 
   return (
     <div className="panel crew-shell">
       <div className="crew-shell-top">
-        <CrewRuntimePanel />
         <div className="crew-header">
           <div className="crew-header-copy">
             <div className="crew-header-eyebrow">{tr("Crew Workspace")}</div>
             <div className="crew-header-title">
-              <span className="crew-header-icon">🚀</span>
+              <span className="crew-header-icon" aria-hidden="true"><UsersRound size={24} strokeWidth={1.9} /></span>
               <span>{tr("Crew AI")}</span>
             </div>
             <div className="crew-header-subtitle">{tr("Plan roles, governance, and reproducible runs in a clean workspace instead of cramped individual cards.")}</div>
           </div>
           <div className="crew-header-badge" aria-label={tr("Crew-Uebersicht")}>
             <strong>{crews.length}</strong>
-            <span>{crews.length === 1 ? 'Crew configured' : 'Crews configured'}</span>
+            <span>{tr(crews.length === 1 ? 'Crew configured' : 'Crews configured')}</span>
           </div>
         </div>
       </div>
@@ -842,6 +914,7 @@ export default function CrewPanel() {
       <div className="crew-toolbar">
         <div className="crew-toolbar-primary">
           <input
+            ref={crewNameInputRef}
             className="crew-toolbar-input"
             placeholder={tr("New crew...")}
             value={crewName}
@@ -851,29 +924,96 @@ export default function CrewPanel() {
           <button type="button" className="crew-toolbar-btn" onClick={handleCreateCrew}>{tr("Create")}</button>
         </div>
         <div className="crew-toolbar-actions">
+          {activeCrew?.status === 'running' || activeCrew?.status === 'awaiting-approval' ? (
+            <button type="button" className="crew-toolbar-btn danger" onClick={() => void stopCrew(activeCrew.id)}>{tr('Stop run')}</button>
+          ) : (
+            <button
+              type="button"
+              className="crew-toolbar-btn run"
+              disabled={!activeCrew || activeCrew.tasks.length === 0 || activeCrewDiagnostics.errors.length > 0}
+              onClick={() => activeCrew && void runCrew(activeCrew.id)}
+            >
+              {activeCrew?.status === 'completed' || activeCrew?.status === 'failed' || activeCrew?.status === 'canceled' ? tr('Run again') : tr('Run crew')}
+            </button>
+          )}
           <button type="button" className="crew-toolbar-btn secondary" onClick={handleDuplicateCrew} disabled={!activeCrew}>{tr("Duplicate")}</button>
           <button type="button" className="crew-toolbar-btn secondary" onClick={handleExportCrew} disabled={!activeCrew}>{tr("Export")}</button>
           <button type="button" className="crew-toolbar-btn secondary" onClick={() => importCrewInputRef.current?.click()}>{tr("Import")}</button>
           <button type="button" className="crew-toolbar-btn secondary crew-toolbar-toggle" aria-pressed={isCrewListVisible} onClick={toggleCrewListVisibility}>
-            {isCrewListVisible ? 'Liste ausblenden' : 'Liste zeigen'}
+            {isCrewListVisible ? <ListCollapse size={15} aria-hidden="true" /> : <ListTree size={15} aria-hidden="true" />}
+            {isCrewListVisible ? tr('Hide list') : tr('Show list')}
           </button>
         </div>
       </div>
 
       {activeCrew && (
-        <div className="crew-overview-grid">
-          <CrewControlPlanePanel activeCrew={activeCrew} />
-          <div className="crew-overview-meta-grid">
-            <CrewGovernancePanel activeCrewId={activeCrew.id} />
-            <CrewHistoryPanel activeCrewId={activeCrew.id} />
+        <div className="crew-active-compact" aria-label={tr('Crew launch checklist')}>
+          <div className="crew-active-compact-main">
+            <span className={`crew-card-dot${activeCrewBlockerCount > 0 ? ' has-errors' : ''}`} aria-hidden="true" />
+            <div className="crew-active-compact-body">
+              <div className="crew-overview-title-row">
+                <div className="crew-active-compact-name">{activeCrew.name}</div>
+                <span className={`crew-status-pill ${activeCrewBlockerCount > 0 ? 'warning' : 'ready'}`}>
+                  {tr(activeCrewBlockerCount > 0 ? 'Action needed' : 'Ready')}
+                </span>
+              </div>
+              <div className="crew-active-compact-meta">
+                <span>{activeAgentCount} {tr('Active members')}</span>
+                <span> / </span>
+                <span>{activeCrew.tasks.length} {tr('Tasks')}</span>
+                <span> / </span>
+                <span>{activeCrewBlockerCount} {tr(activeCrewBlockerCount === 1 ? 'Blocker' : 'Blockers')}</span>
+              </div>
+              <div className="crew-active-compact-meta">
+                {activeCrewDiagnostics.errors.length > 0
+                  ? tr(activeCrewDiagnostics.errors[0])
+                  : activeCrewNeedsMission
+                    ? tr('Create a mission in Tasks before running this crew.')
+                    : tr('This crew is configured and ready for its next run.')}
+              </div>
+            </div>
+          </div>
+          <div className="crew-overview-actions">
+            {activeCrewDiagnostics.errors.length > 0 && (
+              <button type="button" className="crew-compact-toggle" onClick={reviewActiveCrewBlockers}>{tr('Review blockers')}</button>
+            )}
+            {activeCrewHasProviderBlocker && (
+              <button type="button" className="crew-compact-toggle" onClick={() => navigate(activeCrewProviderSettingsPath)}>{tr('Open settings')}</button>
+            )}
+            <button type="button" className="crew-compact-toggle" onClick={() => navigate(`/tasks?crew=${encodeURIComponent(activeCrew.id)}`)}>
+              {tr('Prepare mission in Tasks')}
+            </button>
           </div>
         </div>
       )}
 
       {crews.length === 0 ? (
         <div className="crew-empty">
-          <div className="crew-empty-icon">🚀</div>
-          <div className="crew-empty-text">{tr("No crew available yet. Create your first crew above.")}</div>
+          <div className="crew-empty-icon" aria-hidden="true"><Workflow size={26} strokeWidth={1.7} /></div>
+          <div className="crew-empty-copy">
+            <strong>{tr('Build your first operating team')}</strong>
+            <div className="crew-empty-text">{tr('Create a crew, give each agent a clear role, then reuse the setup for repeatable work.')}</div>
+          </div>
+          <div className="crew-starter-grid" aria-label={tr('Starter crews')}>
+            {CREW_STARTER_PRESETS.map((preset, index) => (
+              <button
+                key={preset.id}
+                type="button"
+                className="crew-starter-card"
+                onClick={() => handleCreateStarterPreset(preset)}
+              >
+                <span className="crew-starter-number" aria-hidden="true">0{index + 1}</span>
+                <strong>{tr(preset.name)}</strong>
+                <small>{tr(preset.description)}</small>
+              </button>
+            ))}
+          </div>
+          <div className="crew-empty-steps" aria-label={tr('Crew setup steps')}>
+            <span><strong>01</strong>{tr('Name the crew')}</span>
+            <span><strong>02</strong>{tr('Add roles and tools')}</span>
+            <span><strong>03</strong>{tr('Run and review')}</span>
+          </div>
+          <button type="button" className="crew-toolbar-btn secondary" onClick={() => crewNameInputRef.current?.focus()}>{tr('Name a custom crew')}</button>
         </div>
       ) : (
         <div className={`crew-grid${isCrewListVisible ? '' : ' crew-grid-list-hidden'}`}>
@@ -884,18 +1024,30 @@ export default function CrewPanel() {
                 const diag = getCrewDiagnostics(crew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile)
                 const enabledCount = crew.agents.filter((a) => a.enabled).length
                 return (
-                  <div key={crew.id} className={`crew-card${activeCrew?.id === crew.id ? ' active' : ''}`} onClick={() => setActiveCrew(crew.id)}>
-                    <span className={`crew-card-dot${diag.errors.length > 0 ? ' has-errors' : ''}`} />
-                    <div className="crew-card-body">
-                      <div className="crew-card-name">{crew.name}</div>
-                      <div className="crew-card-meta">
-                        <span>{processLabel(crew.process)}</span>
-                        <span>·</span>
-                        <span>{enabledCount}/{crew.agents.length}{tr("active")}</span>
-                        {diag.errors.length > 0 && <><span>·</span><span style={{ color: 'var(--danger)' }}>{diag.errors.length}{tr("Blocker")}</span></>}
-                      </div>
-                    </div>
-                    <button type="button" className="crew-card-delete" onClick={(e) => { e.stopPropagation(); deleteCrew(crew.id) }}>✕</button>
+                  <div
+                    key={crew.id}
+                    className={`crew-card${activeCrew?.id === crew.id ? ' active' : ''}`}
+                  >
+                    <button
+                      type="button"
+                      className="crew-card-main"
+                      aria-current={activeCrew?.id === crew.id ? 'page' : undefined}
+                      onClick={() => setActiveCrew(crew.id)}
+                    >
+                      <span className={`crew-card-dot${diag.errors.length > 0 ? ' has-errors' : ''}`} />
+                      <span className="crew-card-body">
+                        <span className="crew-card-name">{crew.name}</span>
+                        <span className="crew-card-meta">
+                          <span>{processLabel(crew.process)}</span>
+                          <span> / </span>
+                          <span>{enabledCount}/{crew.agents.length} {tr("active")}</span>
+                          {diag.errors.length > 0 && <><span> / </span><span style={{ color: 'var(--danger)' }}>{diag.errors.length} {tr("Blocker")}</span></>}
+                        </span>
+                      </span>
+                    </button>
+                    <button type="button" className="crew-card-delete" onClick={(e) => { e.stopPropagation(); deleteCrew(crew.id) }} aria-label={tr("Delete crew")}>
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
                   </div>
                 )
               })}
@@ -906,60 +1058,43 @@ export default function CrewPanel() {
           <div className="crew-detail" ref={activeCrewDetailsRef}>
             {activeCrew ? (
               <>
-                {!isCrewListVisible && (
-                  <div className="crew-active-compact">
-                    <div className="crew-active-compact-main">
-                      <span className={`crew-card-dot${activeCrewDiagnostics.errors.length > 0 ? ' has-errors' : ''}`} />
-                      <div className="crew-active-compact-body">
-                        <div className="crew-active-compact-name">{activeCrew.name}</div>
-                        <div className="crew-active-compact-meta">
-                          <span>{processLabel(activeCrew.process)}</span>
-                          <span>·</span>
-                          <span>{activeCrew.agents.filter((agent) => agent.enabled).length}/{activeCrew.agents.length}{tr("active")}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <button type="button" className="crew-compact-toggle" onClick={toggleCrewListVisibility}>{tr("Show list")}</button>
-                  </div>
-                )}
-
                 {/* Section: General */}
                 <div className={`crew-section${openSections.general ? ' open' : ''}`}>
-                  <button type="button" className="crew-section-header" onClick={() => toggleSection('general')}>
-                    <span className="crew-section-icon">📝</span>{tr("General")}<span className="crew-section-chevron">▾</span>
+                  <button type="button" className="crew-section-header" aria-expanded={openSections.general} aria-controls="crew-section-general" onClick={() => toggleSection('general')}>
+                    <span className="crew-section-icon" aria-hidden="true">01</span>{tr("General")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
                   {openSections.general && (
-                    <div className="crew-section-body">
+                    <div id="crew-section-general" className="crew-section-body">
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Name")}</span>
-                          <input className="crew-input" value={activeCrew.name} onChange={(e) => updateActiveCrew({ name: e.target.value })} />
+                          <input aria-label={tr("Crew-Name")} className="crew-input" value={activeCrew.name} onChange={(e) => updateActiveCrew({ name: e.target.value })} />
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Execution mode")}</span>
-                          <select className="crew-select" value={activeCrew.process} onChange={(e) => updateActiveCrew({ process: e.target.value as CrewProcess })}>
+                          <select aria-label={tr("Execution mode")} className="crew-select" value={activeCrew.process} onChange={(e) => updateActiveCrew({ process: e.target.value as CrewProcess })}>
                             {PROCESS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{tr(o.label)}</option>)}
                           </select>
                         </div>
                       </div>
                       <div className="crew-form-group full-width">
                         <span className="crew-label">{tr("Description")}</span>
-                        <AutoResizeTextarea className="crew-textarea" value={activeCrew.description} onChange={(e) => updateActiveCrew({ description: e.target.value })} />
+                        <AutoResizeTextarea aria-label={tr("Description")} className="crew-textarea" value={activeCrew.description} onChange={(e) => updateActiveCrew({ description: e.target.value })} />
                       </div>
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Execution Subject")}</span>
-                          <input className="crew-input" value={activeCrew.executionSubject} onChange={(e) => updateActiveCrew({ executionSubject: e.target.value })} placeholder={tr("workspace-user")} />
+                          <input aria-label={tr("Execution Subject")} className="crew-input" value={activeCrew.executionSubject} onChange={(e) => updateActiveCrew({ executionSubject: e.target.value })} placeholder={tr("workspace-user")} />
                           <span className="crew-hint">{tr("Must match a stored crew role when governance is active.")}</span>
                         </div>
                       </div>
                       <div className="crew-form-group full-width">
                         <span className="crew-label">{tr("Additional crew instructions")}</span>
-                        <AutoResizeTextarea className="crew-textarea" value={activeCrew.executionGuidelines} onChange={(e) => updateActiveCrew({ executionGuidelines: e.target.value })} placeholder={tr("e.g. respond with risks, assumptions, and next steps")} />
+                        <AutoResizeTextarea aria-label={tr("Additional crew instructions")} className="crew-textarea" value={activeCrew.executionGuidelines} onChange={(e) => updateActiveCrew({ executionGuidelines: e.target.value })} placeholder={tr("e.g. respond with risks, assumptions, and next steps")} />
                       </div>
                       <div className="crew-form-group full-width">
                         <span className="crew-label">{tr("Knowledge focus")}</span>
-                        <AutoResizeTextarea className="crew-textarea" value={activeCrew.knowledgeFocus} onChange={(e) => updateActiveCrew({ knowledgeFocus: e.target.value })} placeholder={tr("z. B. priorisiere API-Vertraege, Scheduler-Verhalten und letzte Crew-Laeufe")} />
+                        <AutoResizeTextarea aria-label={tr("Knowledge focus")} className="crew-textarea" value={activeCrew.knowledgeFocus} onChange={(e) => updateActiveCrew({ knowledgeFocus: e.target.value })} placeholder={tr("z. B. priorisiere API-Vertraege, Scheduler-Verhalten und letzte Crew-Laeufe")} />
                         <span className="crew-hint">{tr("Guides memory and knowledge search for the Python runtime prompt.")}</span>
                       </div>
                     </div>
@@ -968,15 +1103,15 @@ export default function CrewPanel() {
 
                 {/* Section: Execution */}
                 <div className={`crew-section${openSections.execution ? ' open' : ''}`}>
-                  <button type="button" className="crew-section-header" onClick={() => toggleSection('execution')}>
-                    <span className="crew-section-icon">⚡</span>{tr("Execution")}<span className="crew-section-chevron">▾</span>
+                  <button type="button" className="crew-section-header" aria-expanded={openSections.execution} aria-controls="crew-section-execution" onClick={() => toggleSection('execution')}>
+                    <span className="crew-section-icon" aria-hidden="true">02</span>{tr("Execution")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
                   {openSections.execution && (
-                    <div className="crew-section-body">
+                    <div id="crew-section-execution" className="crew-section-body">
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Manager-Agent")}</span>
-                          <select className="crew-select" value={activeCrew.managerAgentId ?? ''} onChange={(e) => updateActiveCrew({ managerAgentId: e.target.value || null })}>
+                          <select aria-label={tr("Manager-Agent")} className="crew-select" value={activeCrew.managerAgentId ?? ''} onChange={(e) => updateActiveCrew({ managerAgentId: e.target.value || null })}>
                             <option value="">{tr("Nor")}</option>
                             {activeCrew.agents.map((a) => {
                               const profile = a.personalityId ? personalityProfiles.find((entry) => entry.id === a.personalityId) : null
@@ -987,7 +1122,7 @@ export default function CrewPanel() {
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Outputformat")}</span>
-                          <select className="crew-select" value={activeCrew.outputMode} onChange={(e) => updateActiveCrew({ outputMode: e.target.value as CrewOutputMode })}>
+                          <select aria-label={tr("Outputformat")} className="crew-select" value={activeCrew.outputMode} onChange={(e) => updateActiveCrew({ outputMode: e.target.value as CrewOutputMode })}>
                             <option value="standard">{tr("Standard")}</option>
                             <option value="bullet-report">{tr("Stichpunkt-Report")}</option>
                             <option value="json">{tr("JSON")}</option>
@@ -997,21 +1132,21 @@ export default function CrewPanel() {
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Max RPM")}</span>
-                          <input className="crew-input" type="number" min={1} max={600} value={activeCrew.maxRpm} onChange={(e) => updateActiveCrew({ maxRpm: Number(e.target.value) || 1 })} />
+                          <input aria-label={tr("Max RPM")} className="crew-input" type="number" min={1} max={600} value={activeCrew.maxRpm} onChange={(e) => updateActiveCrew({ maxRpm: Number(e.target.value) || 1 })} />
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Max parallele Tasks")}</span>
-                          <input className="crew-input" type="number" min={1} max={24} value={activeCrew.maxParallelTasks} onChange={(e) => updateActiveCrew({ maxParallelTasks: Number(e.target.value) || 1 })} />
+                          <input aria-label={tr("Max parallele Tasks")} className="crew-input" type="number" min={1} max={24} value={activeCrew.maxParallelTasks} onChange={(e) => updateActiveCrew({ maxParallelTasks: Number(e.target.value) || 1 })} />
                         </div>
                       </div>
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Retry-Versuche pro Task")}</span>
-                          <input className="crew-input" type="number" min={0} max={5} value={activeCrew.retryCount} onChange={(e) => updateActiveCrew({ retryCount: Math.max(0, Number(e.target.value) || 0) })} />
+                          <input aria-label={tr("Retry-Versuche pro Task")} className="crew-input" type="number" min={0} max={5} value={activeCrew.retryCount} onChange={(e) => updateActiveCrew({ retryCount: Math.max(0, Number(e.target.value) || 0) })} />
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Zeichenlimit geteilte Resultse")}</span>
-                          <input className="crew-input" type="number" min={0} max={50000} value={activeCrew.sharedOutputCharLimit} onChange={(e) => updateActiveCrew({ sharedOutputCharLimit: Math.max(0, Number(e.target.value) || 0) })} />
+                          <input aria-label={tr("Zeichenlimit geteilte Resultse")} className="crew-input" type="number" min={0} max={50000} value={activeCrew.sharedOutputCharLimit} onChange={(e) => updateActiveCrew({ sharedOutputCharLimit: Math.max(0, Number(e.target.value) || 0) })} />
                         </div>
                       </div>
                       <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.verbose} onChange={(e) => updateActiveCrew({ verbose: e.target.checked })} />{tr("Enable verbose crew logging")}</label>
@@ -1020,7 +1155,7 @@ export default function CrewPanel() {
                       {activeCrew.managerReviewEnabled && (
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Manager-Review-instructions")}</span>
-                          <AutoResizeTextarea className="crew-textarea" value={activeCrew.managerReviewGuidelines} onChange={(e) => updateActiveCrew({ managerReviewGuidelines: e.target.value })} placeholder={tr("e.g. assess risks more strictly and escalate early")} />
+                          <AutoResizeTextarea aria-label={tr("Manager-Review-instructions")} className="crew-textarea" value={activeCrew.managerReviewGuidelines} onChange={(e) => updateActiveCrew({ managerReviewGuidelines: e.target.value })} placeholder={tr("e.g. assess risks more strictly and escalate early")} />
                         </div>
                       )}
                       <label className="crew-checkbox-label"><input type="checkbox" checked={activeCrew.shareAllTaskOutputs} onChange={(e) => updateActiveCrew({ shareAllTaskOutputs: e.target.checked })} />{tr("Vorherige Task-Resultse global als Context teilen")}</label>
@@ -1030,11 +1165,11 @@ export default function CrewPanel() {
 
                 {/* Section: Provider & Model */}
                 <div className={`crew-section${openSections.provider ? ' open' : ''}`}>
-                  <button type="button" className="crew-section-header" onClick={() => toggleSection('provider')}>
-                    <span className="crew-section-icon">🔌</span>{tr("Provider & Model")}<span className="crew-section-chevron">▾</span>
+                  <button type="button" className="crew-section-header" aria-expanded={openSections.provider} aria-controls="crew-section-provider" onClick={() => toggleSection('provider')}>
+                    <span className="crew-section-icon" aria-hidden="true">03</span>{tr("Provider & Model")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
                   {openSections.provider && (
-                    <div className="crew-section-body">
+                    <div id="crew-section-provider" className="crew-section-body">
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Provider")}</span>
@@ -1048,7 +1183,7 @@ export default function CrewPanel() {
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Model")}</span>
-                          <select className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => updateActiveCrew({ defaultModel: e.target.value })}>
+                          <select aria-label={tr("Crew-Model")} className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => updateActiveCrew({ defaultModel: e.target.value })}>
                             <option value="">{tr("Globale Settings verwenden")}</option>
                             {getCrewDefaultModelOptions().map((m) => <option key={m} value={m}>{m}</option>)}
                           </select>
@@ -1065,21 +1200,29 @@ export default function CrewPanel() {
 
                 {/* Diagnostics */}
                 <div className={`crew-section${openSections.diagnostics ? ' open' : ''}`}>
-                  <button type="button" className="crew-section-header" onClick={() => toggleSection('diagnostics')}>
-                    <span className="crew-section-icon">🩺</span>{tr("Diagnostik")}<span className="crew-section-chevron">▾</span>
+                  <button ref={diagnosticsHeaderRef} type="button" className="crew-section-header" aria-expanded={openSections.diagnostics} aria-controls="crew-section-diagnostics" onClick={() => toggleSection('diagnostics')}>
+                    <span className="crew-section-icon" aria-hidden="true">04</span>{tr("Diagnostics")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
                   {openSections.diagnostics && (
-                    <div className="crew-section-body">
+                    <div id="crew-section-diagnostics" className="crew-section-body">
                       {activeCrewDiagnostics.errors.length === 0 && activeCrewDiagnostics.warnings.length === 0 ? (
-                        <div className="crew-alert success"><span className="crew-alert-icon">✅</span>{tr("No blockers found. Crew is ready to start.")}</div>
+                        <div className="crew-alert success"><span className="crew-alert-icon" aria-hidden="true">OK</span>{tr("No blockers found. Crew is ready to start.")}</div>
                       ) : (
                         <>
                           {activeCrewDiagnostics.errors.map((entry) => (
-                            <div key={`e-${entry}`} className="crew-alert error"><span className="crew-alert-icon">🚫</span> {entry}</div>
+                            <div key={`e-${entry}`} className="crew-alert error"><span className="crew-alert-icon" aria-hidden="true">!</span> {tr(entry)}</div>
                           ))}
                           {activeCrewDiagnostics.warnings.map((entry) => (
-                            <div key={`w-${entry}`} className="crew-alert warning"><span className="crew-alert-icon">⚠️</span> {entry}</div>
+                            <div key={`w-${entry}`} className="crew-alert warning"><span className="crew-alert-icon" aria-hidden="true">!</span> {tr(entry)}</div>
                           ))}
+                          {activeCrewHasProviderBlocker && (
+                            <div className="crew-overview-actions">
+                              <button type="button" className="ui-button ui-button--secondary" onClick={() => navigate(activeCrewProviderSettingsPath)}>
+                                <Settings2 size={15} aria-hidden="true" />
+                                {tr('Fix provider settings')}
+                              </button>
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
@@ -1087,11 +1230,12 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Agents */}
-                <div className="crew-section open">
-                  <div className="crew-section-header" style={{ cursor: 'default' }}>
-                    <span className="crew-section-icon">👥</span>{tr("Crew-members (")}{activeAgentCount}/{activeCrew.agents.length})
-                  </div>
-                  <div className="crew-section-body">
+                <div className={`crew-section${openSections.members ? ' open' : ''}`}>
+                  <button type="button" className="crew-section-header" aria-expanded={openSections.members} aria-controls="crew-section-members" onClick={() => toggleSection('members')}>
+                    <span className="crew-section-icon" aria-hidden="true">05</span>{tr("Crew-members (")}{activeAgentCount}/{activeCrew.agents.length})<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
+                  </button>
+                  {openSections.members && (
+                  <div id="crew-section-members" className="crew-section-body">
                     <div className="crew-members-hero">
                       <div className="crew-members-copy">
                         <div className="crew-overview-kicker">{tr("members")}</div>
@@ -1206,7 +1350,12 @@ export default function CrewPanel() {
                         }
                         return (
                           <div key={agent.id} className={`crew-agent-card${!agent.enabled ? ' disabled' : ''}${isOpen ? ' open' : ''}`}>
-                            <div className="crew-agent-header" onClick={() => toggleAgent(agent.id)}>
+                            <button
+                              type="button"
+                              className="crew-agent-header"
+                              aria-expanded={isOpen}
+                              onClick={() => toggleAgent(agent.id)}
+                            >
                               <div className="crew-agent-avatar">{roleEmoji(profileAgent.role)}</div>
                               <div className="crew-agent-info">
                                 <div className="crew-agent-name">{profileAgent.name}</div>
@@ -1218,10 +1367,10 @@ export default function CrewPanel() {
                                 </div>
                               </div>
                               <div className="crew-agent-header-actions">
-                                <span className={`crew-badge ${agent.enabled ? 'active' : 'inactive'}`}>{agent.enabled ? 'Active' : 'Inactive'}</span>
-                                <span className="crew-agent-chevron">▾</span>
+                                <span className={`crew-badge ${agent.enabled ? 'active' : 'inactive'}`}>{agent.enabled ? tr("Active") : tr("Inactive")}</span>
+                                <ChevronDown className="crew-agent-chevron" size={16} aria-hidden="true" />
                               </div>
-                            </div>
+                            </button>
                             {isOpen && (
                               <div className="crew-agent-body">
                                 <div className="crew-agent-panel">
@@ -1234,31 +1383,31 @@ export default function CrewPanel() {
                                       {profile && (
                                         <div className="crew-form-group">
                                           <span className="crew-label">{tr("Icon")}</span>
-                                          <input className="crew-input" value={profile.icon ?? ''} maxLength={4} onChange={(e) => updateCrewPersonalityProfile(profile, { icon: e.target.value || null })} />
+                                          <input aria-label={tr("Icon")} className="crew-input" value={profile.icon ?? ''} maxLength={4} onChange={(e) => updateCrewPersonalityProfile(profile, { icon: e.target.value || null })} />
                                         </div>
                                       )}
-                                      <div className="crew-form-group"><span className="crew-label">{tr("Name")}</span><input className="crew-input" value={profileAgent.name} onChange={(e) => updateProfileOrSnapshot({ name: e.target.value })} /></div>
-                                      <div className="crew-form-group"><span className="crew-label">{tr("Rolle")}</span><select className="crew-select" value={profileAgent.role} onChange={(e) => updateProfileOrSnapshot({ role: e.target.value as AgentRole })}>{ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
+                                      <div className="crew-form-group"><span className="crew-label">{tr("Name")}</span><input aria-label={tr("Name")} className="crew-input" value={profileAgent.name} onChange={(e) => updateProfileOrSnapshot({ name: e.target.value })} /></div>
+                                      <div className="crew-form-group"><span className="crew-label">{tr("Rolle")}</span><select aria-label={tr("Rolle")} className="crew-select" value={profileAgent.role} onChange={(e) => updateProfileOrSnapshot({ role: e.target.value as AgentRole })}>{ROLE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
                                       {profile && (
                                         <div className="crew-form-group">
                                           <span className="crew-label">{tr("Temperatur")}</span>
-                                          <input className="crew-input" type="number" min={0} max={2} step={0.1} value={profile.temperature ?? ''} onChange={(e) => updateCrewPersonalityProfile(profile, { temperature: e.target.value === '' ? null : Number(e.target.value) })} />
+                                          <input aria-label={tr("Temperatur")} className="crew-input" type="number" min={0} max={2} step={0.1} value={profile.temperature ?? ''} onChange={(e) => updateCrewPersonalityProfile(profile, { temperature: e.target.value === '' ? null : Number(e.target.value) })} />
                                         </div>
                                       )}
                                     </div>
                                     {profile && (
                                       <label className="crew-checkbox-label"><input type="checkbox" checked={profile.isDefault ?? false} onChange={(e) => updateCrewPersonalityProfile(profile, { isDefault: e.target.checked })} />{tr("Als Standard verwenden")}</label>
                                     )}
-                                    <div className="crew-form-group"><span className="crew-label">{tr("Target / Prompt-Fokus")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.goal} onChange={(e) => updateProfileOrSnapshot({ goal: e.target.value })} /></div>
-                                    <div className="crew-form-group"><span className="crew-label">{tr("Background / system prompt")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.backstory} onChange={(e) => updateProfileOrSnapshot({ backstory: e.target.value })} /></div>
-                                    <div className="crew-form-group"><span className="crew-label">{tr("skills.md")}</span><AutoResizeTextarea className="crew-textarea" value={profileAgent.skillsMarkdown} onChange={(e) => updateProfileOrSnapshot({ skillsMarkdown: e.target.value })} placeholder={tr("# skills.md&#10;- Project context&#10;- Work style")} /></div>
-                                    <span className="crew-hint">{profile ? 'Profile fields are synchronized globally for all crews.' : 'Local snapshot without active profile synchronization.'}</span>
+                                    <div className="crew-form-group"><span className="crew-label">{tr("Target / Prompt-Fokus")}</span><AutoResizeTextarea aria-label={tr("Target / Prompt-Fokus")} className="crew-textarea" value={profileAgent.goal} onChange={(e) => updateProfileOrSnapshot({ goal: e.target.value })} /></div>
+                                    <div className="crew-form-group"><span className="crew-label">{tr("Background / system prompt")}</span><AutoResizeTextarea aria-label={tr("Background / system prompt")} className="crew-textarea" value={profileAgent.backstory} onChange={(e) => updateProfileOrSnapshot({ backstory: e.target.value })} /></div>
+                                    <div className="crew-form-group"><span className="crew-label">{tr("skills.md")}</span><AutoResizeTextarea aria-label={tr("skills.md")} className="crew-textarea" value={profileAgent.skillsMarkdown} onChange={(e) => updateProfileOrSnapshot({ skillsMarkdown: e.target.value })} placeholder={tr("# skills.md&#10;- Project context&#10;- Work style")} /></div>
+                                    <span className="crew-hint">{profile ? tr("Profile fields are synchronized globally for all crews.") : tr("Local snapshot without active profile synchronization.")}</span>
                                   </div>
                                 </div>
                                 <div className="crew-agent-panel">
                                   <div className="crew-agent-panel-header">
                                     <div className="crew-agent-panel-title">{tr("Configuration")}</div>
-                                    <div className="crew-agent-panel-subtitle">{tr("Status, Provider, Model und runtimeverhalten.")}</div>
+                                    <div className="crew-agent-panel-subtitle">{tr("Status, provider, model, and runtime behavior.")}</div>
                                   </div>
                                   <div className="crew-agent-col">
                                     <div className="crew-checkbox-stack">
@@ -1269,17 +1418,17 @@ export default function CrewPanel() {
                                     <div className="crew-form-row">
                                       <div className="crew-form-group">
                                         <span className="crew-label">{tr("Provider")}</span>
-                                        <input className="crew-input" value={getProviderLabel(effectiveProviderKind)} readOnly />
+                                        <input aria-label={tr("Provider")} className="crew-input" value={getProviderLabel(effectiveProviderKind)} readOnly />
                                         <span className="crew-hint">{tr("Controlled by the crew provider.")}</span>
                                       </div>
                                       <div className="crew-form-group">
                                         <span className="crew-label">{tr("Max Iterationen")}</span>
-                                        <input className="crew-input" type="number" min={1} max={100} value={agent.maxIterations} onChange={(e) => updateActiveCrewAgent(agent.id, { maxIterations: Number(e.target.value) || 1 })} />
+                                        <input aria-label={tr("Max Iterationen")} className="crew-input" type="number" min={1} max={100} value={agent.maxIterations} onChange={(e) => updateActiveCrewAgent(agent.id, { maxIterations: Number(e.target.value) || 1 })} />
                                       </div>
                                     </div>
                                     <div className="crew-form-group">
                                       <span className="crew-label">{tr("Model")}</span>
-                                      <select className="crew-select" value={selModel} onChange={(e) => updateProfileOrSnapshot({ modelOverride: e.target.value || null })}>
+                                      <select aria-label={tr("Model")} className="crew-select" value={selModel} onChange={(e) => updateProfileOrSnapshot({ modelOverride: e.target.value || null })}>
                                         <option value="">{tr("Crew-Model (")}{getCrewDefaultModelLabel(effectiveProviderKind)})</option>
                                         {amo.map((m) => <option key={m} value={m}>{m}</option>)}
                                       </select>
@@ -1333,14 +1482,24 @@ export default function CrewPanel() {
                       })}
                     </div>
                   </div>
+                  )}
                 </div>
 
                 {/* Tasks hint */}
                 <div className="crew-task-rail">
                   <div className="crew-task-rail-copy">
                     <div className="crew-overview-kicker">{tr("Task-Flow")}</div>
-                    <strong className="crew-overview-title">{tr("Tasks are created, executed, and scheduled under /tasks")}</strong>
-                    <div className="crew-overview-description">{tr("This crew view controls parallelism, retry behavior, result sharing, and the runtime output format.")}</div>
+                    <strong className="crew-overview-title">{tr("Turn this crew into one complete mission")}</strong>
+                    <div className="crew-overview-description">{tr("Prepare the objective here, then create, run, and schedule the complete crew workflow in Tasks.")}</div>
+                    <button
+                      type="button"
+                      className="ui-button ui-button--primary"
+                      style={{ justifySelf: 'start' }}
+                      onClick={() => navigate(`/tasks?crew=${encodeURIComponent(activeCrew.id)}`)}
+                    >
+                      {tr("Prepare mission in Tasks")}
+                      <ArrowRight size={15} aria-hidden="true" />
+                    </button>
                   </div>
                   <div className="crew-task-rail-metrics">
                     <div className="crew-task-metric">
@@ -1364,10 +1523,22 @@ export default function CrewPanel() {
               </>
             ) : (
               <div className="crew-empty">
-                <div className="crew-empty-icon">👈</div>
+                <div className="crew-empty-icon" aria-hidden="true"><MousePointerClick size={24} /></div>
                 <div className="crew-empty-text">{tr("Select a crew from the list.")}</div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      <CrewRuntimePanel />
+
+      {activeCrew && (
+        <div className="crew-overview-grid">
+          <CrewControlPlanePanel activeCrew={activeCrew} />
+          <div className="crew-overview-meta-grid">
+            <CrewGovernancePanel activeCrewId={activeCrew.id} />
+            <CrewHistoryPanel activeCrewId={activeCrew.id} />
           </div>
         </div>
       )}

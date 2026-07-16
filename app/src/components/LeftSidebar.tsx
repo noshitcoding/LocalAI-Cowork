@@ -7,11 +7,19 @@ import { useUiStore } from '../stores/uiStore'
 import { useConfigStore } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
 import { useTaskStore } from '../stores/taskStore'
-import { useWorkTasksStore, type WorkTask } from '../stores/workTasksStore'
+import { useWorkTasksStore, type WorkTask, type WorkTaskStatus } from '../stores/workTasksStore'
 import { useProjectStore } from '../stores/projectStore'
+import { useCrewStore } from '../stores/crewStore'
+import { resolveWorkTaskChatProviderSettings } from '../engine/tasks/workTaskExecutionService'
 import { createChatProviderSelection, getChatProviderState } from '../utils/chatProvider'
 import { ContextPanel, DocumentWorkspacePanel, OutputsPanel, ProgressPanel, WorkingFolderPanel } from './RightSidebar'
 import { tr } from '../i18n'
+
+function getThreadDisplayTitle(title: string): string {
+  return title === 'New chat' ? tr('New chat') : title
+}
+import { Activity, ChevronDown, ChevronRight, FolderPlus, MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
+import { getProductRouteById, type ProductRouteId } from '../product/routeRegistry'
 
 const THREAD_DND_MIME = 'application/open-cowork-thread-id'
 const POINTER_DRAG_THRESHOLD = 5
@@ -45,12 +53,23 @@ function getTaskSidebarTitle(task: WorkTask): string {
   return prompt.length > 36 ? `${prompt.slice(0, 36)}...` : prompt
 }
 
+function formatWorkTaskStatus(status: WorkTaskStatus): string {
+  switch (status) {
+    case 'idle': return tr('Idle')
+    case 'waiting_approval': return tr('Waiting for approval')
+    case 'running': return tr('Running')
+    case 'completed': return tr('Completed')
+    case 'failed': return tr('Failed')
+    case 'canceled': return tr('Canceled')
+  }
+}
+
 function buildTaskSidebarSummary(task: WorkTask): string {
   return [
     `${tr('Task created')}: ${getTaskSidebarTitle(task)}`,
-    `Runner: ${task.runner === 'crew' ? 'Crew' : 'Model'}`,
-    task.expectedOutput.trim() ? `Expected Output: ${task.expectedOutput.trim()}` : '',
-    task.workDir.trim() ? `Working folder: ${task.workDir.trim()}` : '',
+    `${tr('Runner')}: ${task.runner === 'crew' ? tr('Crew') : tr('Model')}`,
+    task.expectedOutput.trim() ? `${tr('Expected output')}: ${task.expectedOutput.trim()}` : '',
+    task.workDir.trim() ? `${tr('Working folder')}: ${task.workDir.trim()}` : '',
   ].filter(Boolean).join('\n')
 }
 
@@ -79,6 +98,8 @@ export default function LeftSidebar() {
     threads,
     activeThreadId,
     addThread,
+    ensureThread,
+    loadFromDb: loadChatFromDb,
     addMessage,
     setActiveThread,
     deleteThread,
@@ -92,6 +113,7 @@ export default function LeftSidebar() {
   const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
   const workTasks = useWorkTasksStore((s) => s.tasks)
   const updateWorkTask = useWorkTasksStore((s) => s.updateTask)
+  const crews = useCrewStore((s) => s.crews)
   const tasks = useTaskStore((s) => s.tasks)
   const activeTaskId = useTaskStore((s) => s.activeTaskId)
   const activeProvider = useEngineStore((s) => s.activeProvider)
@@ -113,10 +135,12 @@ export default function LeftSidebar() {
   const [chatsCollapsed, setChatsCollapsed] = useState(false)
   const [tasksCollapsed, setTasksCollapsed] = useState(false)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
+  const [workspaceStatusOpen, setWorkspaceStatusOpen] = useState(Boolean(activeTaskId))
   const [dropProjectId, setDropProjectId] = useState<string | null>(null)
   const [chatsDropActive, setChatsDropActive] = useState(false)
   const [pointerDrag, setPointerDrag] = useState<PointerThreadDrag | null>(null)
   const pointerDragRef = useRef<PointerThreadDrag | null>(null)
+  const dragPreviewRef = useRef<HTMLDivElement | null>(null)
   const suppressThreadClickRef = useRef<string | null>(null)
 
   const activeThread = useMemo(
@@ -134,6 +158,14 @@ export default function LeftSidebar() {
     [activeProvider, activeThread?.providerSettings, availableModels, defaultLlmProfileIds, llmProfileModels, llmProfiles, ollama],
   )
   const activeTask = tasks.find((task) => task.id === activeTaskId)
+
+  const navigateToProductRoute = (routeId: ProductRouteId) => {
+    const route = getProductRouteById(routeId)
+    if (route.activeMode) {
+      setActiveMode(route.activeMode)
+    }
+    navigate(route.path)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -165,6 +197,12 @@ export default function LeftSidebar() {
     () => threads.filter((thread) => !taskThreadIds.has(thread.id) && !projectThreadIds.has(thread.id)),
     [projectThreadIds, taskThreadIds, threads],
   )
+
+  useEffect(() => {
+    const preview = dragPreviewRef.current
+    if (!preview || !pointerDrag?.active) return
+    preview.style.transform = `translate3d(${pointerDrag.x + 12}px, ${pointerDrag.y + 10}px, 0)`
+  }, [pointerDrag?.active, pointerDrag?.x, pointerDrag?.y])
 
   useEffect(() => {
     if (!pointerDrag) return undefined
@@ -224,6 +262,8 @@ export default function LeftSidebar() {
       window.removeEventListener('pointerup', finishPointerDrag)
       window.removeEventListener('pointercancel', cancelPointerDrag)
     }
+    // Drag handlers close over the active store actions for the current gesture.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detachThreadFromAll, pointerDrag, threadIds])
 
   const handleNewChat = (projectId?: string) => {
@@ -232,27 +272,26 @@ export default function LeftSidebar() {
       attachThread(projectId, threadId)
       setActiveProject(projectId)
     }
-    setActiveMode('work')
     setActiveThread(threadId)
-    navigate('/')
+    navigateToProductRoute('cowork')
   }
 
   const handleNewProject = () => {
     const projectId = addProject(`Project ${projects.length + 1}`)
     setActiveProject(projectId)
-    navigate('/projects')
+    navigateToProductRoute('projects')
   }
 
   const handleOpenProjects = () => {
     if (!activeProjectId && projects[0]) {
       setActiveProject(projects[0].id)
     }
-    navigate('/projects')
+    navigateToProductRoute('projects')
   }
 
   const handleOpenProject = (projectId: string) => {
     setActiveProject(projectId)
-    navigate('/projects')
+    navigateToProductRoute('projects')
   }
 
   const handleOpenThread = (threadId: string) => {
@@ -260,33 +299,47 @@ export default function LeftSidebar() {
       suppressThreadClickRef.current = null
       return
     }
-    setActiveMode('work')
     setActiveThread(threadId)
-    navigate('/')
+    navigateToProductRoute('cowork')
   }
 
-  const handleOpenTaskThread = (task: WorkTask) => {
-    const existingThreadId = task.threadId && threadIds.has(task.threadId)
+  const handleOpenTaskThread = async (task: WorkTask) => {
+    await loadChatFromDb()
+    const loadedThreadIds = new Set(useChatStore.getState().threads.map((thread) => thread.id))
+    const existingThreadId = task.threadId && loadedThreadIds.has(task.threadId)
       ? task.threadId
       : null
+    const taskProviderSettings = resolveWorkTaskChatProviderSettings(task, {
+      crews,
+      ollamaModel: ollama.model,
+      defaultLlmProfileIds,
+      llmProfiles,
+      fallbackProviderSettings: createChatProviderSelection(providerState),
+    })
 
-    const threadId = existingThreadId ?? addThread(getTaskSidebarTitle(task), createChatProviderSelection(providerState))
+    const ensuredThread = existingThreadId
+      ? { id: existingThreadId, created: false }
+      : task.threadId
+        ? ensureThread(task.threadId, getTaskSidebarTitle(task), taskProviderSettings)
+        : { id: addThread(getTaskSidebarTitle(task), taskProviderSettings), created: true }
+    const threadId = ensuredThread.id
 
-    if (!existingThreadId) {
+    if (ensuredThread.created) {
       addMessage(threadId, {
         role: 'system',
         content: buildTaskSidebarSummary(task),
         visibleInChat: true,
         timestamp: Date.now(),
       })
-      updateWorkTask(task.id, { threadId })
+      if (!task.threadId) {
+        updateWorkTask(task.id, { threadId })
+      }
     }
 
     const workDir = task.workDir.trim()
     setWorkingFolder(workDir && isAbsolutePath(workDir) ? workDir : null)
-    setActiveMode('work')
     setActiveThread(threadId)
-    navigate('/')
+    navigateToProductRoute('cowork')
   }
 
   const handleOpenSession = async (sessionId: string) => {
@@ -295,8 +348,7 @@ export default function LeftSidebar() {
     if (session.threadId && threadIds.has(session.threadId)) {
       setActiveThread(session.threadId)
     }
-    setActiveMode('work')
-    navigate('/')
+    navigateToProductRoute('cowork')
   }
 
   const toggleProjectCollapsed = (projectId: string) => {
@@ -396,25 +448,50 @@ export default function LeftSidebar() {
   }
 
   return (
-    <aside className="left-sidebar">
-      <button type="button" className="btn-new-task" onClick={() => handleNewChat()}>{tr("+ New chat")}</button>
-      <button type="button" className="btn-new-task" onClick={handleNewProject}>{tr("+ New project")}</button>
-      <button type="button" className="btn-sm" style={{ width: '100%', marginBottom: 6 }} onClick={handleOpenProjects}>{tr("Manage projects")}</button>
-      <button type="button" className="btn-sm" style={{ width: '100%', marginBottom: 12 }} onClick={() => navigate('/crew')}>{tr("Crew Studio")}</button>
+    <aside className="left-sidebar" data-doc-id="element:/app/left-sidebar" aria-label={tr("Workspace sidebar")}>
+      <div className="sidebar-primary-actions">
+        <button type="button" className="sidebar-primary-action" aria-label={tr("+ New chat")} data-doc-id="button:/app/left-sidebar/new-chat" onClick={() => handleNewChat()}>
+          <MessageSquarePlus size={17} aria-hidden="true" />
+          <span>{tr("New chat")}</span>
+        </button>
+        <button type="button" className="sidebar-primary-action" aria-label={tr("+ New project")} data-doc-id="button:/app/left-sidebar/new-project" onClick={handleNewProject}>
+          <FolderPlus size={17} aria-hidden="true" />
+          <span>{tr("New project")}</span>
+        </button>
+      </div>
+      <div className="sidebar-utility-actions">
+        <button type="button" className="sidebar-utility-link" data-doc-id="button:/app/left-sidebar/manage-projects" onClick={handleOpenProjects}>{tr("Manage projects")}</button>
+        <button type="button" className="sidebar-utility-link" data-doc-id="button:/app/left-sidebar/open-crew" onClick={() => navigateToProductRoute('crew')}>{tr("Crew Studio")}</button>
+      </div>
 
-      <div className="sidebar-status-panels">
-        <ProgressPanel task={activeTask} />
-        <DocumentWorkspacePanel />
-        <WorkingFolderPanel />
-        <OutputsPanel task={activeTask} />
-        <ContextPanel />
+      <div className={`sidebar-status-group${workspaceStatusOpen ? ' open' : ''}`}>
+        <button
+          type="button"
+          className="sidebar-status-toggle"
+          aria-expanded={workspaceStatusOpen}
+          onClick={() => setWorkspaceStatusOpen((open) => !open)}
+        >
+          <span><Activity size={15} aria-hidden="true" />{tr("Workspace status")}</span>
+          {workspaceStatusOpen ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
+        </button>
+        {workspaceStatusOpen && (
+          <div className="sidebar-status-panels">
+            <ProgressPanel task={activeTask} />
+            <DocumentWorkspacePanel />
+            <WorkingFolderPanel />
+            <OutputsPanel task={activeTask} />
+            <ContextPanel />
+          </div>
+        )}
       </div>
 
       <div className="sidebar-section">
         <div className="sidebar-group">
           <div className="sidebar-group-title">
             <span>{tr("Projects")}</span>
-            <button type="button" onClick={handleNewProject} title={tr("New project")}>+</button>
+            <button type="button" onClick={handleNewProject} title={tr("New project")} aria-label={tr("New project")}>
+              <Plus size={14} aria-hidden="true" />
+            </button>
           </div>
           {projects.map((project) => {
             const projectThreads = project.threadIds
@@ -432,15 +509,21 @@ export default function LeftSidebar() {
                 onDrop={(event) => handleThreadDrop(event, (threadId) => moveThreadToProject(project.id, threadId))}
               >
                 <div className="sidebar-project-header">
+                  <button
+                    type="button"
+                    className="sidebar-project-caret"
+                    aria-label={collapsed ? tr("Expand project") : tr("Collapse project")}
+                    aria-expanded={!collapsed}
+                    onClick={() => toggleProjectCollapsed(project.id)}
+                  >
+                    {collapsed ? <ChevronRight size={14} aria-hidden="true" /> : <ChevronDown size={14} aria-hidden="true" />}
+                  </button>
                   <button type="button" className="sidebar-project-main" onClick={() => handleOpenProject(project.id)}>
-                    <span className="sidebar-project-caret" onClick={(event) => { event.stopPropagation(); toggleProjectCollapsed(project.id) }}>
-                      {collapsed ? '>' : 'v'}
-                    </span>
                     <span className="sidebar-project-name">{project.title}</span>
                     <span className="sidebar-project-count">{projectThreads.length}</span>
                   </button>
-                  <button type="button" className="sidebar-row-action" onClick={() => handleNewChat(project.id)} title={tr("Start project chat")}>
-                    +
+                  <button type="button" className="sidebar-row-action" onClick={() => handleNewChat(project.id)} title={tr("Start project chat")} aria-label={tr("Start project chat")}>
+                    <Plus size={14} aria-hidden="true" />
                   </button>
                 </div>
                 {!collapsed && (
@@ -451,7 +534,7 @@ export default function LeftSidebar() {
                         className={`sidebar-thread-row thread-draggable${thread.id === activeThreadId ? ' active' : ''}`}
                         onDragStart={(event) => handleThreadDragStart(event, thread.id)}
                         onDragEnd={clearThreadDropState}
-                        onPointerDown={(event) => handleThreadPointerDown(event, thread.id, thread.title)}
+                        onPointerDown={(event) => handleThreadPointerDown(event, thread.id, getThreadDisplayTitle(thread.title))}
                         title={tr("Move chat to another project")}
                       >
                         <button
@@ -461,11 +544,11 @@ export default function LeftSidebar() {
                           onDragEnd={clearThreadDropState}
                           onClick={() => handleOpenThread(thread.id)}
                         >
-                          {thread.title}
+                          {getThreadDisplayTitle(thread.title)}
                         </button>
                       </div>
                     ))}
-                    {projectThreads.length === 0 && <p className="hint-text">{tr("No Chats")}</p>}
+                    {projectThreads.length === 0 && <p className="hint-text">{tr("No chats in this project")}</p>}
                   </div>
                 )}
               </div>
@@ -484,9 +567,10 @@ export default function LeftSidebar() {
           <button
             type="button"
             className="sidebar-group-toggle"
+            aria-expanded={!chatsCollapsed}
             onClick={() => setChatsCollapsed((value) => !value)}
           >
-            <span>{chatsCollapsed ? '>' : 'v'}{tr("Chats")}</span>
+            <span>{chatsCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Chats")}</span>
             <span>{unassignedThreads.length}</span>
           </button>
           {!chatsCollapsed && (
@@ -497,7 +581,7 @@ export default function LeftSidebar() {
                   className={`sidebar-thread-row thread-draggable${thread.id === activeThreadId ? ' active' : ''}`}
                   onDragStart={(event) => handleThreadDragStart(event, thread.id)}
                   onDragEnd={clearThreadDropState}
-                  onPointerDown={(event) => handleThreadPointerDown(event, thread.id, thread.title)}
+                  onPointerDown={(event) => handleThreadPointerDown(event, thread.id, getThreadDisplayTitle(thread.title))}
                   title={tr("Move chat to a project")}
                 >
                   <button
@@ -507,7 +591,7 @@ export default function LeftSidebar() {
                     onDragEnd={clearThreadDropState}
                     onClick={() => handleOpenThread(thread.id)}
                   >
-                    {thread.title}
+                    {getThreadDisplayTitle(thread.title)}
                   </button>
                   <button
                     type="button"
@@ -515,36 +599,38 @@ export default function LeftSidebar() {
                     draggable={false}
                     onClick={(event) => { event.stopPropagation(); deleteThread(thread.id) }}
                     title={tr("Delete")}
-                  >{tr("x")}</button>
+                    aria-label={tr("Delete chat")}
+                  ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
               ))}
-              {unassignedThreads.length === 0 && <p className="hint-text">{tr("No projektlosen Chats")}</p>}
+              {unassignedThreads.length === 0 && <p className="hint-text">{tr("No unassigned chats")}</p>}
             </div>
           )}
         </div>
 
         <div className="sidebar-group">
-          <button type="button" className="sidebar-group-toggle" onClick={() => setTasksCollapsed((value) => !value)}>
-            <span>{tasksCollapsed ? '>' : 'v'}{tr("Tasks")}</span>
+          <button type="button" className="sidebar-group-toggle" aria-expanded={!tasksCollapsed} onClick={() => setTasksCollapsed((value) => !value)}>
+            <span>{tasksCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Tasks")}</span>
             <span>{workTasks.length}</span>
           </button>
           {!tasksCollapsed && (
             <div className="sidebar-thread-list">
               {workTasks.map((task) => (
                 <div key={task.id} className={`sidebar-thread-row${task.threadId === activeThreadId ? ' active' : ''}`}>
-                  <button type="button" className="sidebar-row-main" onClick={() => handleOpenTaskThread(task)}>
-                    {getTaskSidebarTitle(task)} ? {task.status}
+                  <button type="button" className="sidebar-row-main sidebar-task-row-main" data-doc-id="button:/app/left-sidebar/open-task-chat" onClick={() => void handleOpenTaskThread(task)}>
+                    <span className="sidebar-task-title">{getTaskSidebarTitle(task)}</span>
+                    <span className={`task-pill task-status task-status-${task.status}`}>{formatWorkTaskStatus(task.status)}</span>
                   </button>
                 </div>
               ))}
-              {workTasks.length === 0 && <p className="hint-text">{tr("No Tasks")}</p>}
+              {workTasks.length === 0 && <p className="hint-text">{tr("No tasks")}</p>}
             </div>
           )}
         </div>
 
         <div className="sidebar-group">
-          <button type="button" className="sidebar-group-toggle" onClick={() => setSessionsCollapsed((value) => !value)}>
-            <span>{sessionsCollapsed ? '>' : 'v'}{tr("Sessions")}</span>
+          <button type="button" className="sidebar-group-toggle" aria-expanded={!sessionsCollapsed} onClick={() => setSessionsCollapsed((value) => !value)}>
+            <span>{sessionsCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Sessions")}</span>
             <span>{persistedSessions.length}</span>
           </button>
           {!sessionsCollapsed && (
@@ -559,21 +645,20 @@ export default function LeftSidebar() {
                     className="sidebar-row-action"
                     onClick={(event) => { event.stopPropagation(); void deleteSessionById(session.id) }}
                     title={tr("Delete")}
-                  >{tr("x")}</button>
+                    aria-label={tr("Delete session")}
+                  ><Trash2 size={14} aria-hidden="true" /></button>
                 </div>
               ))}
-              {loadingSessions && <p className="hint-text">{tr("Wird loaded...")}</p>}
-              {!loadingSessions && persistedSessions.length === 0 && <p className="hint-text">{tr("No Sessions")}</p>}
+              {loadingSessions && <p className="hint-text">{tr("Loading sessions...")}</p>}
+              {!loadingSessions && persistedSessions.length === 0 && <p className="hint-text">{tr("No persisted sessions")}</p>}
             </div>
           )}
         </div>
       </div>
       {pointerDrag?.active && (
         <div
+          ref={dragPreviewRef}
           className="sidebar-drag-preview"
-          style={{
-            transform: `translate3d(${pointerDrag.x + 12}px, ${pointerDrag.y + 10}px, 0)`,
-          }}
         >
           {pointerDrag.title}
         </div>
