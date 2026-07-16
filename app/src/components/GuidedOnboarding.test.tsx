@@ -5,6 +5,7 @@ import GuidedOnboarding, { GUIDED_ONBOARDING_STORAGE_KEY, STARTER_PROMPT } from 
 const baseProps = {
   providerLabel: 'Ollama',
   model: 'llama3.1:8b',
+  providerConfigured: true,
   workingFolder: 'C:\\workspace',
   permissionLabel: 'Standard',
   onChooseFolder: vi.fn(),
@@ -36,7 +37,7 @@ describe('GuidedOnboarding', () => {
   })
 
   it('can be dismissed and reopened without losing discoverability', () => {
-    render(<GuidedOnboarding {...baseProps} model="" workingFolder={null} />)
+    render(<GuidedOnboarding {...baseProps} model="" providerConfigured={false} workingFolder={null} />)
 
     expect(screen.getAllByText('Needs setup').length).toBeGreaterThan(0)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss onboarding' }))
@@ -56,5 +57,31 @@ describe('GuidedOnboarding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Context' }))
     fireEvent.click(screen.getByRole('button', { name: 'Choose another folder' }))
     expect(baseProps.onChooseFolder).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an unconfigured cloud model out of the ready state', () => {
+    window.localStorage.setItem(GUIDED_ONBOARDING_STORAGE_KEY, 'dismissed')
+    render(
+      <GuidedOnboarding
+        {...baseProps}
+        providerLabel="OpenRouter"
+        model="nvidia/nemotron-3-super-120b-a12b:free"
+        providerConfigured={false}
+        workingFolder={null}
+      />,
+    )
+
+    expect(screen.getByText('Needs setup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open model settings' }))
+    expect(baseProps.onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes incomplete setup back to the model step before using the starter task', () => {
+    render(<GuidedOnboarding {...baseProps} providerConfigured={false} workingFolder={null} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Control' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(screen.getByText('Choose how the work is powered')).toBeInTheDocument()
+    expect(baseProps.onUseStarterTask).not.toHaveBeenCalled()
   })
 })

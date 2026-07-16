@@ -503,7 +503,7 @@
   }
 }
 
-@media (max-width: 680px) {
+@media (max-width: 520px) {
   .onboarding-steps button {
     gap: 0;
     font-size: 0;
@@ -4429,7 +4429,7 @@ body.sidebar-resize-active * {
   margin-inline: auto;
 }
 
-@media (max-width: 680px) {
+@media (max-width: 520px) {
   .cowork-empty-start { padding: 22px 8px; }
   .cowork-empty-start-status { grid-template-columns: 1fr; }
   .cowork-empty-start-status span + span { border-top: 1px solid var(--border); border-left: 0; }

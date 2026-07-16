@@ -8,6 +8,7 @@ const STARTER_PROMPT = 'Inspect the current working folder and create a concise 
 type GuidedOnboardingProps = {
   providerLabel: string
   model: string
+  providerConfigured: boolean
   workingFolder: string | null
   permissionLabel: string
   onChooseFolder: () => void
@@ -35,6 +36,7 @@ function persistState(value: 'dismissed' | 'completed') {
 export default function GuidedOnboarding({
   providerLabel,
   model,
+  providerConfigured,
   workingFolder,
   permissionLabel,
   onChooseFolder,
@@ -43,7 +45,7 @@ export default function GuidedOnboarding({
 }: GuidedOnboardingProps) {
   const [visibility, setVisibility] = useState(readStoredState)
   const [step, setStep] = useState(0)
-  const modelReady = Boolean(model.trim())
+  const modelReady = providerConfigured && Boolean(model.trim())
   const folderReady = Boolean(workingFolder?.trim())
   const steps = [
     tr('Orient'),
@@ -61,7 +63,7 @@ export default function GuidedOnboarding({
     return (
       <section className="cowork-empty-start" aria-labelledby="cowork-empty-start-title">
         <div className="cowork-empty-start-mark" aria-hidden="true"><Sparkles size={22} /></div>
-        <span className="onboarding-kicker">{tr('Workspace ready')}</span>
+        <span className="onboarding-kicker">{modelReady ? tr('Ready') : tr('Needs setup')}</span>
         <h1 id="cowork-empty-start-title">{tr('What do you want to accomplish?')}</h1>
         <p>{tr('Describe the outcome below. Open_Cowork will keep the plan, tool activity, approvals, and outputs together.')}</p>
         <div className="cowork-empty-start-status" aria-label={tr('Current workspace setup')}>
@@ -70,14 +72,18 @@ export default function GuidedOnboarding({
           <span><strong>{tr('Safety')}</strong>{permissionLabel}</span>
         </div>
         <div className="cowork-empty-start-actions">
-          {!folderReady && (
+          {!modelReady ? (
+            <button type="button" className="onboarding-reopen" onClick={onOpenSettings}>
+              <Settings2 size={15} aria-hidden="true" />{tr('Open model settings')}
+            </button>
+          ) : !folderReady ? (
             <button type="button" className="onboarding-secondary-action" onClick={onChooseFolder}>
               <FolderOpen size={15} aria-hidden="true" />{tr('Choose a working folder')}
             </button>
-          )}
+          ) : null}
           <button
             type="button"
-            className="onboarding-reopen"
+            className={modelReady ? 'onboarding-reopen' : 'onboarding-secondary-action'}
             onClick={() => {
               setStep(0)
               setVisibility('open')
@@ -195,11 +201,19 @@ export default function GuidedOnboarding({
                   type="button"
                   className="onboarding-primary-action"
                   onClick={() => {
+                    if (!modelReady) {
+                      setStep(1)
+                      return
+                    }
+                    if (!folderReady) {
+                      setStep(2)
+                      return
+                    }
                     collapse('completed')
                     onUseStarterTask(tr(STARTER_PROMPT))
                   }}
                 >
-                  <Sparkles size={16} aria-hidden="true" />{tr('Use starter task')}
+                  <Sparkles size={16} aria-hidden="true" />{modelReady && folderReady ? tr('Use starter task') : tr('Continue')}
                 </button>
               </div>
             </div>

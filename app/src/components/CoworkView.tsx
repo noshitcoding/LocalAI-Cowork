@@ -958,6 +958,11 @@ export default function CoworkView() {
     () => getChatProviderState(providerContext, activeProvider, activeThread?.providerSettings),
     [activeProvider, activeThread?.providerSettings, providerContext],
   )
+  const providerConfigured = Boolean(
+    providerState.endpoint.trim()
+    && providerState.model.trim()
+    && (providerState.provider === 'ollama' || providerState.apiKey.trim()),
+  )
   const selectableModels = providerState.selectableModels
 
   useEffect(() => {
@@ -3289,7 +3294,10 @@ export default function CoworkView() {
         ? tr('Needs approval')
         : engineStatus === 'error'
           ? tr('Action needed')
-          : tr('Ready')
+          : providerConfigured
+            ? tr('Ready')
+            : tr('Needs setup')
+  const runbarState = !providerConfigured && engineStatus === 'idle' ? 'waiting_approval' : engineStatus
 
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -3342,7 +3350,7 @@ export default function CoworkView() {
         {/* Chat Pane */}
         <div className="cowork-pane">
           <div className="cowork-runbar">
-            <div className={`cowork-runbar-state state-${engineStatus}`}>
+            <div className={`cowork-runbar-state state-${runbarState}`}>
               <span aria-hidden="true" />
               <div><strong>{runStatusLabel}</strong><small>{providerState.label} · {providerState.model || tr('no model set')}</small></div>
             </div>
@@ -3398,10 +3406,11 @@ export default function CoworkView() {
             <GuidedOnboarding
               providerLabel={providerState.label}
               model={providerState.model}
+              providerConfigured={providerConfigured}
               workingFolder={onboardingWorkingFolder}
               permissionLabel={onboardingPermissionLabel}
               onChooseFolder={() => void handleAttachFolders()}
-              onOpenSettings={() => navigate('/settings')}
+              onOpenSettings={() => navigate(`/settings?provider=${providerState.provider}`)}
               onUseStarterTask={applyPromptToInput}
             />
           )}
