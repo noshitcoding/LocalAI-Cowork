@@ -46,6 +46,7 @@ describe('task panels', () => {
       <TaskCreatePanel
         crews={[]}
         defaultModel="qwen3"
+        open
         title=""
         prompt="Draft a task"
         expectedOutput=""
@@ -54,6 +55,7 @@ describe('task panels', () => {
         crewId=""
         model=""
         canCreateTask={false}
+        onOpenChange={vi.fn()}
         onTitleChange={vi.fn()}
         onPromptChange={vi.fn()}
         onExpectedOutputChange={vi.fn()}

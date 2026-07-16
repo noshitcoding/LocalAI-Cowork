@@ -107,6 +107,7 @@ export default function TasksView() {
   const [newRunner, setNewRunner] = useState<WorkTaskRunner>('crew')
   const [newCrewId, setNewCrewId] = useState<string>('')
   const [newModel, setNewModel] = useState<string>('')
+  const [createPanelOpen, setCreatePanelOpen] = useState(tasks.length === 0)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [importCrewId, setImportCrewId] = useState<string>('')
   const [pendingCrewMissionId, setPendingCrewMissionId] = useState<string | null>(null)
@@ -140,6 +141,10 @@ export default function TasksView() {
   }, [crews, importCrewId])
 
   useEffect(() => {
+    if (tasks.length === 0) setCreatePanelOpen(true)
+  }, [tasks.length])
+
+  useEffect(() => {
     const handoffCrewId = searchParams.get('crew')?.trim() ?? ''
     if (!handoffCrewId || handledCrewHandoffRef.current === handoffCrewId) return
 
@@ -154,6 +159,7 @@ export default function TasksView() {
     } else {
       const mission = buildCrewMissionDraft(crew)
       setPendingCrewMissionId(crew.id)
+      setCreatePanelOpen(true)
       setNewRunner('crew')
       setNewCrewId(crew.id)
       setNewTitle(mission.title)
@@ -402,6 +408,7 @@ export default function TasksView() {
       void ensureAllowedTaskFolder(createdTask.workDir)
       createTaskThread(createdTask, true)
       setSelectedTaskId(createdTask.id)
+      setCreatePanelOpen(false)
     }
 
     setPendingCrewMissionId(null)
@@ -981,6 +988,7 @@ export default function TasksView() {
       <TaskCreatePanel
         crews={crews}
         defaultModel={ollamaConfig.model}
+        open={createPanelOpen}
         title={newTitle}
         prompt={newPrompt}
         expectedOutput={newExpectedOutput}
@@ -989,6 +997,7 @@ export default function TasksView() {
         crewId={newCrewId}
         model={newModel}
         canCreateTask={canCreateTask}
+        onOpenChange={setCreatePanelOpen}
         onTitleChange={setNewTitle}
         onPromptChange={setNewPrompt}
         onExpectedOutputChange={setNewExpectedOutput}

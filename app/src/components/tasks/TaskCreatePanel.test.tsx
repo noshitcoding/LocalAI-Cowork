@@ -8,6 +8,7 @@ describe('TaskCreatePanel', () => {
       <TaskCreatePanel
         crews={[]}
         defaultModel="llama3.1:8b"
+        open
         title=""
         prompt=""
         expectedOutput=""
@@ -16,6 +17,7 @@ describe('TaskCreatePanel', () => {
         crewId=""
         model=""
         canCreateTask={false}
+        onOpenChange={vi.fn()}
         onTitleChange={vi.fn()}
         onPromptChange={vi.fn()}
         onExpectedOutputChange={vi.fn()}

@@ -7119,15 +7119,38 @@ button.compact-send-btn {
   box-shadow: 0 14px 34px rgba(66, 44, 18, .05);
 }
 
-.task-create-heading {
+.task-create-panel.is-collapsed {
+  padding: 14px 16px;
+  box-shadow: 0 8px 22px rgba(66, 44, 18, .035);
+}
+
+.task-create-heading-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.task-create-heading {
+  display: flex;
+  flex: 1 1 320px;
+  align-items: center;
   gap: 11px;
-  margin-bottom: 15px;
+  min-width: 0;
 }
 
 .task-create-heading h2 { margin: 0 0 2px; font-size: 17px; }
 .task-create-heading p { margin: 0; color: var(--text-muted); font-size: 12px; }
+.task-create-panel.is-collapsed .task-create-heading p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-create-body { margin-top: 15px; }
+.task-create-panel-toggle { flex: 0 0 auto; }
+.task-create-panel-toggle svg { transition: transform var(--transition); }
+.task-create-panel-toggle svg.is-open { transform: rotate(180deg); }
 .task-create-icon,
 .task-empty-icon {
   display: grid;

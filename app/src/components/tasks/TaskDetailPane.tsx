@@ -80,7 +80,7 @@ export default function TaskDetailPane({
         </div>
         <TaskRunToolbar
           task={task}
-          chatLabel={task.threadId ? tr('Chat öffnen') : tr('Chat erstellen')}
+          chatLabel={task.threadId ? tr('Open chat') : tr('Create chat')}
           onOpenChat={onOpenChat}
           onRunTask={onRunTask}
           onCancelTask={onCancelTask}

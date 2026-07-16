@@ -205,6 +205,46 @@ describe('TasksView crew mission flow', () => {
     expect(screen.getByRole('button', { name: 'Mission created' })).toBeDisabled()
   })
 
+  it('keeps the task workbench prominent when a task already exists', async () => {
+    const user = userEvent.setup()
+    useWorkTasksStore.setState({
+      tasks: [{
+        id: 'task-existing',
+        title: 'Existing mission',
+        prompt: 'Continue the existing mission.',
+        expectedOutput: 'A verified result.',
+        workDir: '',
+        threadId: null,
+        runner: 'model',
+        crewId: null,
+        model: freeModel,
+        scheduleExpr: '',
+        scheduleEnabled: false,
+        status: 'idle',
+        output: null,
+        error: null,
+        lastRunAt: null,
+        createdAt: 100,
+        updatedAt: 100,
+      }],
+    })
+
+    render(
+      <MemoryRouter>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    const composerToggle = await screen.findByRole('button', { name: 'New task' })
+    expect(composerToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByPlaceholderText('What should the task do?')).not.toBeInTheDocument()
+
+    await user.click(composerToggle)
+
+    expect(composerToggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByPlaceholderText('What should the task do?')).toBeInTheDocument()
+  })
+
   it('keeps a persisted task chat id stable when the chat store has not hydrated it yet', async () => {
     const user = userEvent.setup()
     useWorkTasksStore.setState({
