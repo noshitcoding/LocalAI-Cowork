@@ -5,7 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { CheckCircle2, ChevronDown, Clock3, ListTodo, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
+import { ArrowRight, CheckCircle2, ChevronDown, Clock3, ListTodo, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
@@ -3327,12 +3327,13 @@ export default function CoworkView() {
               >
                 <ListTodo size={15} aria-hidden="true" />
                 <span className="cowork-runbar-task-copy">
-                  <small>{tr('Current task')}</small>
+                  <small>{tr('Back to task')}</small>
                   <strong>{activeWorkTask.title}</strong>
                 </span>
                 <span className={`cowork-runbar-task-status status-${activeWorkTask.status}`}>
                   {formatWorkTaskStatus(activeWorkTask.status)}
                 </span>
+                <ArrowRight className="cowork-runbar-task-arrow" size={14} aria-hidden="true" />
               </button>
             ) : null}
             <div className="cowork-runbar-meta">

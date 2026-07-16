@@ -13,7 +13,6 @@ import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
 import { tr } from '../i18n'
-import type { ChatProviderSelection } from '../utils/chatProvider'
 import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
 import { streamChatTurn } from '../utils/ollamaStreaming'
 import {
@@ -40,6 +39,7 @@ import {
   createCrewStreamId,
   deriveTaskName,
   isAbsolutePath,
+  resolveWorkTaskChatProviderSettings,
 } from '../engine/tasks/workTaskExecutionService'
 import {
   findScheduledTask,
@@ -58,6 +58,8 @@ export default function TasksView() {
   const loadPersonalities = usePersonalityStore((s) => s.loadPersonalities)
   const { tasks, addTask, updateTask, removeTask, upsertMany } = useWorkTasksStore()
   const addThread = useChatStore((s) => s.addThread)
+  const ensureThread = useChatStore((s) => s.ensureThread)
+  const loadChatFromDb = useChatStore((s) => s.loadFromDb)
   const activeThreadId = useChatStore((s) => s.activeThreadId)
   const threads = useChatStore((s) => s.threads)
   const setActiveThread = useChatStore((s) => s.setActiveThread)
@@ -261,7 +263,7 @@ export default function TasksView() {
   }
 
   const createTaskThread = (task: WorkTask, preserveCurrentThread = true): string => {
-    const existingThreadId = task.threadId && threads.some((thread) => thread.id === task.threadId)
+    const existingThreadId = task.threadId && useChatStore.getState().threads.some((thread) => thread.id === task.threadId)
       ? task.threadId
       : null
 
@@ -269,58 +271,49 @@ export default function TasksView() {
       return existingThreadId
     }
 
-    const previousActiveThreadId = activeThreadId
-    const providerSettings = resolveTaskThreadProviderSettings(task)
-    const threadId = addThread(
-      deriveTaskName(task),
-      providerSettings,
-      undefined,
-      task.runner,
-      task.runner === 'crew' ? task.crewId : null,
-    )
-    addChatMessage(threadId, {
-      role: 'system',
-      content: buildTaskThreadSummary(task),
-      visibleInChat: true,
-      timestamp: Date.now(),
+    const currentThread = threads.find((thread) => thread.id === activeThreadId)
+    const providerSettings = resolveWorkTaskChatProviderSettings(task, {
+      crews,
+      ollamaModel: ollamaConfig.model,
+      defaultLlmProfileIds,
+      llmProfiles,
+      fallbackProviderSettings: currentThread?.providerSettings,
     })
-    updateTask(task.id, { threadId })
+    const previousActiveThreadId = activeThreadId
+    const ensuredThread = task.threadId
+      ? ensureThread(
+          task.threadId,
+          deriveTaskName(task),
+          providerSettings,
+          undefined,
+          task.runner,
+          task.runner === 'crew' ? task.crewId : null,
+        )
+      : { id: addThread(
+          deriveTaskName(task),
+          providerSettings,
+          undefined,
+          task.runner,
+          task.runner === 'crew' ? task.crewId : null,
+        ), created: true }
+
+    if (ensuredThread.created) {
+      addChatMessage(ensuredThread.id, {
+        role: 'system',
+        content: buildTaskThreadSummary(task),
+        visibleInChat: true,
+        timestamp: Date.now(),
+      })
+    }
+    if (!task.threadId) {
+      updateTask(task.id, { threadId: ensuredThread.id })
+    }
 
     if (preserveCurrentThread) {
       setActiveThread(previousActiveThreadId)
     }
 
-    return threadId
-  }
-
-  const resolveTaskThreadProviderSettings = (task: WorkTask): ChatProviderSelection | undefined => {
-    if (task.runner === 'crew') {
-      const crew = task.crewId ? crewsById.get(task.crewId) : null
-      if (!crew) return undefined
-
-      const provider = crew.defaultProvider ?? 'ollama'
-      const profileId = provider === 'ollama' ? undefined : defaultLlmProfileIds[provider]
-      const defaultProfile = provider === 'ollama'
-        ? undefined
-        : llmProfiles.find((profile) => profile.id === profileId && profile.provider === provider)
-          ?? llmProfiles.find((profile) => profile.provider === provider)
-      const model = crew.defaultModel?.trim()
-        || (provider === 'ollama' ? ollamaConfig.model.trim() : defaultProfile?.model.trim() ?? '')
-
-      return {
-        provider,
-        ...(model ? { model } : {}),
-        ...(defaultProfile?.id ? { profileId: defaultProfile.id } : {}),
-      }
-    }
-
-    const currentThread = threads.find((thread) => thread.id === activeThreadId)
-    if (!currentThread?.providerSettings && !task.model.trim()) return undefined
-
-    return {
-      ...(currentThread?.providerSettings ?? { provider: 'ollama' as const }),
-      ...(task.model.trim() ? { model: task.model.trim() } : {}),
-    }
+    return ensuredThread.id
   }
 
   const applyTaskWorkingFolder = async (task: WorkTask) => {
@@ -366,6 +359,7 @@ export default function TasksView() {
   }
 
   const handleOpenTaskChat = async (task: WorkTask) => {
+    await loadChatFromDb()
     const threadId = createTaskThread(task, false)
     await applyTaskWorkingFolder(task)
     setActiveMode('work')
@@ -444,6 +438,7 @@ export default function TasksView() {
     }
 
     const taskForRun = normalizedWorkDir ? { ...task, workDir: normalizedWorkDir } : task
+    await loadChatFromDb()
     const threadId = createTaskThread(taskForRun, true)
     const startedAt = Date.now()
 

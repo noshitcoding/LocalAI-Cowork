@@ -9,6 +9,8 @@ import { useEngineStore } from '../stores/engineStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskStatus } from '../stores/workTasksStore'
 import { useProjectStore } from '../stores/projectStore'
+import { useCrewStore } from '../stores/crewStore'
+import { resolveWorkTaskChatProviderSettings } from '../engine/tasks/workTaskExecutionService'
 import { createChatProviderSelection, getChatProviderState } from '../utils/chatProvider'
 import { ContextPanel, DocumentWorkspacePanel, OutputsPanel, ProgressPanel, WorkingFolderPanel } from './RightSidebar'
 import { tr } from '../i18n'
@@ -92,6 +94,8 @@ export default function LeftSidebar() {
     threads,
     activeThreadId,
     addThread,
+    ensureThread,
+    loadFromDb: loadChatFromDb,
     addMessage,
     setActiveThread,
     deleteThread,
@@ -105,6 +109,7 @@ export default function LeftSidebar() {
   const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
   const workTasks = useWorkTasksStore((s) => s.tasks)
   const updateWorkTask = useWorkTasksStore((s) => s.updateTask)
+  const crews = useCrewStore((s) => s.crews)
   const tasks = useTaskStore((s) => s.tasks)
   const activeTaskId = useTaskStore((s) => s.activeTaskId)
   const activeProvider = useEngineStore((s) => s.activeProvider)
@@ -294,21 +299,37 @@ export default function LeftSidebar() {
     navigateToProductRoute('cowork')
   }
 
-  const handleOpenTaskThread = (task: WorkTask) => {
-    const existingThreadId = task.threadId && threadIds.has(task.threadId)
+  const handleOpenTaskThread = async (task: WorkTask) => {
+    await loadChatFromDb()
+    const loadedThreadIds = new Set(useChatStore.getState().threads.map((thread) => thread.id))
+    const existingThreadId = task.threadId && loadedThreadIds.has(task.threadId)
       ? task.threadId
       : null
+    const taskProviderSettings = resolveWorkTaskChatProviderSettings(task, {
+      crews,
+      ollamaModel: ollama.model,
+      defaultLlmProfileIds,
+      llmProfiles,
+      fallbackProviderSettings: createChatProviderSelection(providerState),
+    })
 
-    const threadId = existingThreadId ?? addThread(getTaskSidebarTitle(task), createChatProviderSelection(providerState))
+    const ensuredThread = existingThreadId
+      ? { id: existingThreadId, created: false }
+      : task.threadId
+        ? ensureThread(task.threadId, getTaskSidebarTitle(task), taskProviderSettings)
+        : { id: addThread(getTaskSidebarTitle(task), taskProviderSettings), created: true }
+    const threadId = ensuredThread.id
 
-    if (!existingThreadId) {
+    if (ensuredThread.created) {
       addMessage(threadId, {
         role: 'system',
         content: buildTaskSidebarSummary(task),
         visibleInChat: true,
         timestamp: Date.now(),
       })
-      updateWorkTask(task.id, { threadId })
+      if (!task.threadId) {
+        updateWorkTask(task.id, { threadId })
+      }
     }
 
     const workDir = task.workDir.trim()
@@ -592,7 +613,7 @@ export default function LeftSidebar() {
             <div className="sidebar-thread-list">
               {workTasks.map((task) => (
                 <div key={task.id} className={`sidebar-thread-row${task.threadId === activeThreadId ? ' active' : ''}`}>
-                  <button type="button" className="sidebar-row-main sidebar-task-row-main" data-doc-id="button:/app/left-sidebar/open-task-chat" onClick={() => handleOpenTaskThread(task)}>
+                  <button type="button" className="sidebar-row-main sidebar-task-row-main" data-doc-id="button:/app/left-sidebar/open-task-chat" onClick={() => void handleOpenTaskThread(task)}>
                     <span className="sidebar-task-title">{getTaskSidebarTitle(task)}</span>
                     <span className={`task-pill task-status task-status-${task.status}`}>{formatWorkTaskStatus(task.status)}</span>
                   </button>

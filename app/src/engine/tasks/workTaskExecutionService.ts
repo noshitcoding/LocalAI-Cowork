@@ -1,5 +1,7 @@
 import type { WorkTask, WorkTaskStatus } from '../../stores/workTasksStore'
 import type { Crew } from '../../stores/crewStore'
+import type { DefaultLlmProfileIds, LlmProfile } from '../../stores/configStore'
+import type { ChatProviderSelection } from '../../utils/chatProvider'
 import { tr } from '../../i18n'
 import type { CrewExecutionResponse } from '../crew/workTaskCrewRuntime'
 
@@ -11,6 +13,47 @@ export type CrewMissionDraft = {
   runner: 'crew'
   crewId: string
   model: string
+}
+
+type WorkTaskChatProviderContext = {
+  crews: readonly Pick<Crew, 'id' | 'defaultProvider' | 'defaultModel'>[]
+  ollamaModel: string
+  defaultLlmProfileIds: DefaultLlmProfileIds
+  llmProfiles: readonly LlmProfile[]
+  fallbackProviderSettings?: ChatProviderSelection
+}
+
+export function resolveWorkTaskChatProviderSettings(
+  task: WorkTask,
+  context: WorkTaskChatProviderContext,
+): ChatProviderSelection | undefined {
+  if (task.runner === 'crew') {
+    const crew = task.crewId ? context.crews.find((item) => item.id === task.crewId) : null
+    if (!crew) return undefined
+
+    const provider = crew.defaultProvider ?? 'ollama'
+    const profileId = provider === 'ollama' ? undefined : context.defaultLlmProfileIds[provider]
+    const defaultProfile = provider === 'ollama'
+      ? undefined
+      : context.llmProfiles.find((profile) => profile.id === profileId && profile.provider === provider)
+        ?? context.llmProfiles.find((profile) => profile.provider === provider)
+    const model = crew.defaultModel?.trim()
+      || (provider === 'ollama' ? context.ollamaModel.trim() : defaultProfile?.model.trim() ?? '')
+
+    return {
+      provider,
+      ...(model ? { model } : {}),
+      ...(defaultProfile?.id ? { profileId: defaultProfile.id } : {}),
+    }
+  }
+
+  const model = task.model.trim()
+  if (!context.fallbackProviderSettings && !model) return undefined
+
+  return {
+    ...(context.fallbackProviderSettings ?? { provider: 'ollama' as const }),
+    ...(model ? { model } : {}),
+  }
 }
 
 export function buildCrewMissionId(crewId: string): string {

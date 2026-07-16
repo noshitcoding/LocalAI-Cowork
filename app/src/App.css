@@ -537,6 +537,7 @@
 
 .cowork-runbar-state {
   display: flex;
+  flex: 0 1 280px;
   align-items: center;
   gap: 9px;
   min-width: 0;
@@ -600,6 +601,7 @@
 
 .cowork-runbar-task {
   display: flex;
+  flex: 1 1 220px;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -622,6 +624,7 @@
 .cowork-runbar-task-status.status-running { color: var(--info); }
 .cowork-runbar-task-status.status-completed { color: var(--success); }
 .cowork-runbar-task-status.status-failed { color: var(--danger); }
+.cowork-runbar-task-arrow { flex: 0 0 auto; color: var(--accent-hover); }
 
 .cowork-runbar-meta span + span::before {
   content: '·';
@@ -1023,8 +1026,11 @@
   .context-rail-scrim { display: none; }
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1320px) {
   .cowork-runbar-meta { display: none; }
+}
+
+@media (max-width: 1040px) {
   .cowork-runbar-task-status { display: none; }
   .cowork-runbar-actions .btn-sm:last-child { display: none; }
 }

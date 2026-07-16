@@ -123,6 +123,7 @@ describe('TasksView crew mission flow', () => {
       pendingApproval: [],
       busy: false,
       error: null,
+      loadFromDb: vi.fn(async () => undefined),
     })
     useProjectStore.setState({ projects: [], activeProjectId: null })
     useUiStore.setState({ activeMode: 'work', workingFolder: null, workingPathKind: null })
@@ -202,6 +203,46 @@ describe('TasksView crew mission flow', () => {
       profileId: 'openrouter-free',
     })
     expect(screen.getByRole('button', { name: 'Mission created' })).toBeDisabled()
+  })
+
+  it('keeps a persisted task chat id stable when the chat store has not hydrated it yet', async () => {
+    const user = userEvent.setup()
+    useWorkTasksStore.setState({
+      tasks: [{
+        id: 'task-stable-chat',
+        title: 'Stable mission',
+        prompt: 'Continue in the original task chat.',
+        expectedOutput: 'A verified result.',
+        workDir: '',
+        threadId: 'thread-stable-chat',
+        runner: 'model',
+        crewId: null,
+        model: freeModel,
+        scheduleExpr: '',
+        scheduleEnabled: false,
+        status: 'idle',
+        output: null,
+        error: null,
+        lastRunAt: null,
+        createdAt: 100,
+        updatedAt: 100,
+      }],
+    })
+
+    render(
+      <MemoryRouter>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Open chat' }))
+
+    await waitFor(() => {
+      expect(useChatStore.getState().activeThreadId).toBe('thread-stable-chat')
+    })
+    expect(useChatStore.getState().threads).toHaveLength(1)
+    expect(useChatStore.getState().threads[0]?.id).toBe('thread-stable-chat')
+    expect(useWorkTasksStore.getState().tasks[0]?.threadId).toBe('thread-stable-chat')
   })
 
   it('selects a task from a chat deep link', async () => {
