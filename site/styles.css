@@ -34,7 +34,7 @@ body {
 }
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.22em; }
 a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--accent-light); outline-offset: 4px; }
-img { display: block; max-width: 100%; }
+img { display: block; max-width: 100%; height: auto; }
 .skip-link {
   position: fixed;
   z-index: 100;
@@ -65,7 +65,12 @@ img { display: block; max-width: 100%; }
   letter-spacing: -0.02em;
   text-decoration: none;
 }
-.brand img { width: 34px; height: 34px; }
+.brand img {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  object-fit: contain;
+}
 .brand-badge {
   padding: 3px 8px;
   border: 1px solid var(--line);
@@ -144,7 +149,14 @@ h1 {
   filter: blur(70px);
   content: "";
 }
-.product-frame img { width: 100%; border-radius: 17px; background: #171b22; }
+.product-frame img {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  border-radius: 17px;
+  background: #171b22;
+}
 .product-frame figcaption { padding: 12px 8px 3px; color: var(--faint); font-size: 0.78rem; }
 .section { padding: 96px 0; }
 .section-heading { max-width: 720px; margin-bottom: 40px; }

@@ -38,6 +38,7 @@ class PageParser(HTMLParser):
         self.description = ""
         self.canonical = ""
         self.references: list[tuple[str, str]] = []
+        self.images: list[dict[str, str]] = []
         self.json_ld: list[str] = []
         self._json_ld_buffer: list[str] | None = None
 
@@ -53,6 +54,8 @@ class PageParser(HTMLParser):
             self.canonical = values.get("href", "").strip()
         elif tag == "script" and values.get("type", "").lower() == "application/ld+json":
             self._json_ld_buffer = []
+        elif tag == "img":
+            self.images.append(values)
 
         for attribute in ("href", "src"):
             value = values.get(attribute, "").strip()
@@ -91,6 +94,13 @@ def local_target(page: Path, reference: str) -> Path | None:
     return target
 
 
+def png_dimensions(path: Path) -> tuple[int, int] | None:
+    data = path.read_bytes()[:24]
+    if len(data) != 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
 def validate_html(path: Path, errors: list[str]) -> None:
     text = path.read_text(encoding="utf-8")
     relative = path.relative_to(ROOT).as_posix()
@@ -119,6 +129,24 @@ def validate_html(path: Path, errors: list[str]) -> None:
         if target is not None and not target.exists():
             errors.append(f"{relative}: broken local reference {reference!r}")
 
+    for image in parser.images:
+        target = local_target(path, image.get("src", ""))
+        if target is None or not target.exists() or target.suffix.lower() != ".png":
+            continue
+        dimensions = png_dimensions(target)
+        try:
+            declared = int(image.get("width", "")), int(image.get("height", ""))
+        except ValueError:
+            errors.append(f"{relative}: PNG image is missing numeric width and height: {image.get('src', '')!r}")
+            continue
+        if dimensions is None or declared[0] <= 0 or declared[1] <= 0:
+            errors.append(f"{relative}: invalid PNG image metadata: {image.get('src', '')!r}")
+            continue
+        actual_ratio = dimensions[0] / dimensions[1]
+        declared_ratio = declared[0] / declared[1]
+        if abs(actual_ratio - declared_ratio) > 0.001:
+            errors.append(f"{relative}: distorted PNG aspect ratio for {image.get('src', '')!r}")
+
     for payload in parser.json_ld:
         try:
             json.loads(payload)
@@ -142,11 +170,17 @@ def main() -> int:
         SITE / "de" / "datenschutz.html",
         SITE / "robots.txt",
         SITE / "sitemap.xml",
+        SITE / "assets" / "logo.png",
         SITE / "assets" / "app-preview.png",
     )
     for path in required:
         if not path.exists():
             errors.append(f"missing required site file: {path.relative_to(ROOT).as_posix()}")
+
+    site_logo = SITE / "assets" / "logo.png"
+    app_logo = ROOT / "app" / "src-tauri" / "icons" / "128x128.png"
+    if site_logo.exists() and app_logo.exists() and site_logo.read_bytes() != app_logo.read_bytes():
+        errors.append("site/assets/logo.png: does not match the canonical app logo")
 
     for path in sorted(SITE.rglob("*.html")):
         validate_html(path, errors)
