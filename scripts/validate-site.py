@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 PROJECT_PREFIX = "/LocalAI-Cowork/"
+GOOGLE_SITE_VERIFICATION = "googled44b625d58bdfa4e.html"
 PRIVATE_IPV4 = re.compile(
     r"\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b"
 )
@@ -170,6 +171,7 @@ def main() -> int:
         SITE / "de" / "datenschutz.html",
         SITE / "robots.txt",
         SITE / "sitemap.xml",
+        SITE / GOOGLE_SITE_VERIFICATION,
         SITE / "assets" / "logo.png",
         SITE / "assets" / "app-preview.png",
     )
@@ -182,7 +184,13 @@ def main() -> int:
     if site_logo.exists() and app_logo.exists() and site_logo.read_bytes() != app_logo.read_bytes():
         errors.append("site/assets/logo.png: does not match the canonical app logo")
 
-    for path in sorted(SITE.rglob("*.html")):
+    verification_file = SITE / GOOGLE_SITE_VERIFICATION
+    expected_verification = f"google-site-verification: {GOOGLE_SITE_VERIFICATION}"
+    if verification_file.exists() and verification_file.read_text(encoding="utf-8").strip() != expected_verification:
+        errors.append(f"site/{GOOGLE_SITE_VERIFICATION}: unexpected verification content")
+
+    html_pages = [path for path in sorted(SITE.rglob("*.html")) if path != verification_file]
+    for path in html_pages:
         validate_html(path, errors)
 
     robots = (SITE / "robots.txt").read_text(encoding="utf-8")
@@ -211,7 +219,7 @@ def main() -> int:
             print(f"- {error}", file=sys.stderr)
         return 1
 
-    print(f"Website validation passed ({len(list(SITE.rglob('*.html')))} HTML pages).")
+    print(f"Website validation passed ({len(html_pages)} HTML pages plus Google verification).")
     return 0
 
 
