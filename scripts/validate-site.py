@@ -174,6 +174,7 @@ def main() -> int:
         SITE / GOOGLE_SITE_VERIFICATION,
         SITE / "assets" / "logo.png",
         SITE / "assets" / "app-preview.png",
+        SITE / "assets" / "github-social-preview.png",
     )
     for path in required:
         if not path.exists():
@@ -183,6 +184,10 @@ def main() -> int:
     app_logo = ROOT / "app" / "src-tauri" / "icons" / "128x128.png"
     if site_logo.exists() and app_logo.exists() and site_logo.read_bytes() != app_logo.read_bytes():
         errors.append("site/assets/logo.png: does not match the canonical app logo")
+
+    social_preview = SITE / "assets" / "github-social-preview.png"
+    if social_preview.exists() and png_dimensions(social_preview) != (1280, 640):
+        errors.append("site/assets/github-social-preview.png: expected 1280x640 pixels")
 
     verification_file = SITE / GOOGLE_SITE_VERIFICATION
     expected_verification = f"google-site-verification: {GOOGLE_SITE_VERIFICATION}"

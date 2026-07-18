@@ -10,7 +10,6 @@ import {
   Menu,
   MessagesSquare,
   Moon,
-  PanelsTopLeft,
   Settings2,
   Sun,
   UsersRound,
@@ -262,7 +261,7 @@ export default function Layout() {
               <Menu size={17} strokeWidth={2} />
             </button>
           )}
-          <span className="brand-mark" aria-hidden="true"><PanelsTopLeft size={16} strokeWidth={2.2} /></span>
+          <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
           <span className="brand-name">{t('app.name')}</span>
         </div>
 

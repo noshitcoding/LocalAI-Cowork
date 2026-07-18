@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/github-hero.svg" width="100%" alt="LocalAI Cowork — local-first, open-source, human in control">
+</p>
+
 # LocalAI Cowork
 
 **The open-source, local-first AI coworker for Windows.** LocalAI Cowork combines tasks, files, local or hosted models, MCP tools, approvals, and reusable workflows in one inspectable desktop application.

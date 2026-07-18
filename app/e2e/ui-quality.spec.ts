@@ -7,6 +7,8 @@ type ProductSurface = {
   ready: string
 }
 
+type ProductTheme = 'light' | 'dark'
+
 const PRODUCT_SURFACES: ProductSurface[] = [
   { id: 'cowork', path: '/', ready: '.cowork-pane' },
   { id: 'tasks', path: '/tasks', ready: '[data-doc-id="view:/tasks"]' },
@@ -20,6 +22,14 @@ const VIEWPORTS = [
   { id: 'compact', width: 900, height: 650 },
   { id: 'wide', width: 1920, height: 1080 },
 ] as const
+
+const THEMES: ProductTheme[] = ['light', 'dark']
+
+function withTheme(path: string, theme: ProductTheme) {
+  const url = new URL(path, 'http://127.0.0.1:4173')
+  url.searchParams.set('e2e-theme', theme)
+  return `${url.pathname}${url.search}`
+}
 
 async function openStableSurface(page: Page, surface: ProductSurface) {
   const runtimeErrors: string[] = []
@@ -71,31 +81,45 @@ test.beforeEach(async ({ context, page }) => {
       window.sessionStorage.clear()
     }
     window.localStorage.setItem('open-cowork.language', 'en')
+    const requestedTheme = new URLSearchParams(window.location.search).get('e2e-theme')
+    const theme = requestedTheme === 'dark' ? 'dark' : 'light'
+    window.localStorage.setItem('open-cowork-ui', JSON.stringify({
+      state: {
+        activeMode: 'work',
+        leftSidebarOpen: true,
+        leftSidebarWidth: 320,
+        theme,
+      },
+      version: 0,
+    }))
   })
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
 })
 
-for (const viewport of VIEWPORTS) {
-  for (const surface of PRODUCT_SURFACES) {
-    test(`${surface.id} is accessible and visually stable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-      await page.setViewportSize({ width: viewport.width, height: viewport.height })
-      await openStableSurface(page, surface)
+for (const theme of THEMES) {
+  for (const viewport of VIEWPORTS) {
+    for (const surface of PRODUCT_SURFACES) {
+      test(`${surface.id} is accessible and visually stable in ${theme} mode at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+        await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' })
+        await page.setViewportSize({ width: viewport.width, height: viewport.height })
+        await openStableSurface(page, { ...surface, path: withTheme(surface.path, theme) })
 
-      const dimensions = await page.evaluate(() => ({
-        documentWidth: document.documentElement.scrollWidth,
-        viewportWidth: window.innerWidth,
-      }))
-      expect(dimensions.documentWidth, 'The app shell must not create horizontal page overflow.').toBeLessThanOrEqual(dimensions.viewportWidth + 1)
+        const dimensions = await page.evaluate(() => ({
+          documentWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+        }))
+        expect(dimensions.documentWidth, 'The app shell must not create horizontal page overflow.').toBeLessThanOrEqual(dimensions.viewportWidth + 1)
 
-      const accessibility = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
-        .analyze()
-      expect(formatViolations(accessibility.violations)).toEqual([])
+        const accessibility = await new AxeBuilder({ page })
+          .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+          .analyze()
+        expect(formatViolations(accessibility.violations)).toEqual([])
 
-      await expect(page).toHaveScreenshot(`${surface.id}-${viewport.id}.png`, {
-        fullPage: false,
+        await expect(page).toHaveScreenshot(`${surface.id}-${theme}-${viewport.id}.png`, {
+          fullPage: false,
+        })
       })
-    })
+    }
   }
 }
 

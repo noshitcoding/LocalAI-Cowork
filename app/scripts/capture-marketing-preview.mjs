@@ -20,7 +20,7 @@ try {
   browser = await chromium.launch({ headless: true })
   const page = await browser.newPage({
     viewport: { width: 1920, height: 1080 },
-    colorScheme: 'light',
+    colorScheme: 'dark',
     locale: 'en-US',
     reducedMotion: 'reduce',
     deviceScaleFactor: 1,
@@ -29,6 +29,15 @@ try {
     window.localStorage.clear()
     window.sessionStorage.clear()
     window.localStorage.setItem('open-cowork.language', 'en')
+    window.localStorage.setItem('open-cowork-ui', JSON.stringify({
+      state: {
+        activeMode: 'work',
+        leftSidebarOpen: true,
+        leftSidebarWidth: 320,
+        theme: 'dark',
+      },
+      version: 0,
+    }))
   })
   await page.goto('http://127.0.0.1:4173/', { waitUntil: 'domcontentloaded' })
   await page.locator('.cowork-pane').waitFor({ state: 'visible', timeout: 10_000 })
