@@ -68,14 +68,21 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Install Chromium for UI quality gates
+        working-directory: app
+        run: npm exec -- playwright install --with-deps chromium
+
       - name: Verify release source
         working-directory: app
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           npm run verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run supply-chain:check -- --tag "$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Audit Rust dependencies
         shell: pwsh
