@@ -365,7 +365,7 @@ function buildChatExportPayload(
 
   return {
     data: `# Chat Export: ${activeThread.title}\n\n${activeMessages.map((message) => {
-      const prefix = message.role === 'user' ? '## Du' : message.role === 'assistant' ? '## Open_Cowork' : '## System'
+      const prefix = message.role === 'user' ? '## Du' : message.role === 'assistant' ? '## LocalAI Cowork' : '## System'
       return `${prefix}\n\n${message.content}`
     }).join('\n\n---\n\n')}`,
     mimeType: 'text/markdown',
@@ -1206,7 +1206,7 @@ export default function CoworkView() {
     if (notifiedAskUserQuestionRef.current === askUserQuestion) return
 
     notifiedAskUserQuestionRef.current = askUserQuestion
-    void showDesktopNotification('Open Cowork is waiting for your answer', askUserQuestion)
+    void showDesktopNotification('LocalAI Cowork is waiting for your answer', askUserQuestion)
       .then((shown) => {
         addLog({
           level: shown ? 'info' : 'warn',
@@ -2441,7 +2441,7 @@ export default function CoworkView() {
 
       if (slash.command === 'init') {
         void safeInvokeVoid('audit_event', { area: 'project', action: 'init', details: 'Project init' })
-        appendAssistantMessage(tr("Project initialized. Open_Cowork configuration was created."))
+        appendAssistantMessage(tr("Project initialized. LocalAI Cowork configuration was created."))
         return
       }
 
@@ -2558,7 +2558,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'release-notes') {
-        appendAssistantMessage(tr("Open_Cowork v1.0:\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Hermes-style memory and session search\n- Plugin-System with Skills\n- MCP integration\n- Sandbox & Security Controls"))
+        appendAssistantMessage(tr("LocalAI Cowork v1.0:\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Hermes-style memory and session search\n- Plugin-System with Skills\n- MCP integration\n- Sandbox & Security Controls"))
         return
       }
 
@@ -3466,7 +3466,7 @@ export default function CoworkView() {
                 </div>
                 <div className="msg-body">
                   <div className="msg-role">
-                    {msg.role === 'user' ? tr("You") : 'Open_Cowork'}
+                    {msg.role === 'user' ? tr("You") : 'LocalAI Cowork'}
                     {showTimestamps && <span className="msg-time">{formatTime(msg.timestamp)}</span>}
                     {showCollapseButton && (
                       <button
@@ -3614,7 +3614,7 @@ export default function CoworkView() {
             <div className="cowork-msg assistant">
               <div className="msg-avatar">AI</div>
               <div className="msg-body">
-                <div className="msg-role">{tr("Open_Cowork")}</div>
+                <div className="msg-role">{tr("LocalAI Cowork")}</div>
                 <div className="msg-content typing">
                   <span className="typing-dot" />
                   <span className="typing-dot" />
@@ -3667,7 +3667,7 @@ export default function CoworkView() {
           <div className="approval-banner question-banner">
             <div className="approval-header">
               <span className="approval-icon">?</span>
-              <span>{tr("Open_Cowork has a question:")}</span>
+              <span>{tr("LocalAI Cowork has a question:")}</span>
             </div>
             <div className="ask-user-modal-question">
               <HighlightedChatText content={askUserPromptModel?.question ?? askUserQuestion} />

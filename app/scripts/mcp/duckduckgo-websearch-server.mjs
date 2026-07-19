@@ -4,7 +4,7 @@ import readline from 'node:readline'
 
 const PROTOCOL_VERSION = '2024-11-05'
 const SERVER_INFO = {
-  name: 'open-cowork-duckduckgo-websearch',
+  name: 'localai-cowork-duckduckgo-websearch',
   version: '1.0.0',
 }
 
@@ -152,7 +152,7 @@ async function searchDuckDuckGo(args) {
       method: 'GET',
       signal: controller.signal,
       headers: {
-        'user-agent': 'Open_Cowork DuckDuckGo MCP/1.0',
+        'user-agent': 'LocalAI Cowork DuckDuckGo MCP/1.0',
       },
     })
   } finally {

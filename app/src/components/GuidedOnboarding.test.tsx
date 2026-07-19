@@ -24,7 +24,7 @@ describe('GuidedOnboarding', () => {
   it('guides the user to a real starter task and persists completion', () => {
     render(<GuidedOnboarding {...baseProps} />)
 
-    expect(screen.getByRole('heading', { name: 'Set up Open_Cowork' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByText('Choose how the work is powered')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -44,7 +44,7 @@ describe('GuidedOnboarding', () => {
     expect(window.localStorage.getItem(GUIDED_ONBOARDING_STORAGE_KEY)).toBe('dismissed')
 
     fireEvent.click(screen.getByRole('button', { name: 'Open getting started' }))
-    expect(screen.getByRole('heading', { name: 'Set up Open_Cowork' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toBeInTheDocument()
   })
 
   it('links model and folder steps to the existing application actions', () => {

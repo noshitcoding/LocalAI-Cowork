@@ -328,7 +328,7 @@ export default function RunPanel() {
                 onClick={() => setSelectedRun(run.id)}
                 style={{
                   textAlign: 'left',
-                  border: selectedRun === run.id ? '1px solid var(--accent)' : '1px solid var(--border-color)',
+                  border: selectedRun === run.id ? '1px solid var(--accent-text)' : '1px solid var(--border-color)',
                   background: 'var(--bg-secondary)',
                 }}
               >

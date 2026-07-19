@@ -57,4 +57,4 @@ runStep('Rust cargo check', 'cargo', ['check'], join(root, 'src-tauri'))
 runStep('Rust tests', 'cargo', ['test'], join(root, 'src-tauri'))
 runStep('Rust clippy', 'cargo', ['clippy', '--', '-D', 'warnings'], join(root, 'src-tauri'))
 
-console.log('\nOpen_Cowork verification completed.')
+console.log('\nLocalAI Cowork verification completed.')

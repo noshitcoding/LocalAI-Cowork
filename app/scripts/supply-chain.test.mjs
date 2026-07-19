@@ -26,21 +26,21 @@ function writeJson(path, value) {
 }
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'open-cowork-supply-'))
+  const root = mkdtempSync(join(tmpdir(), 'localai-cowork-supply-'))
   const tauri = join(root, 'src-tauri')
   mkdirSync(tauri, { recursive: true })
   writeJson(join(root, 'package.json'), {
-    name: 'open-cowork',
+    name: 'localai-cowork',
     version: '1.2.3',
     license: 'Apache-2.0',
     dependencies: { example: '1.0.0' },
   })
   writeJson(join(root, 'package-lock.json'), {
-    name: 'open-cowork',
+    name: 'localai-cowork',
     version: '1.2.3',
     lockfileVersion: 3,
     packages: {
-      '': { name: 'open-cowork', version: '1.2.3', license: 'Apache-2.0', dependencies: { example: '1.0.0' } },
+      '': { name: 'localai-cowork', version: '1.2.3', license: 'Apache-2.0', dependencies: { example: '1.0.0' } },
       'node_modules/example': { version: '1.0.0', license: 'MIT', integrity: 'sha512-ZXhhbXBsZQ==' },
       'node_modules/build-only': { version: '2.0.0', license: 'Apache-2.0', dev: true },
     },
@@ -130,10 +130,10 @@ test('workflow policy rejects mutable action tags and ignored audits', () => {
 test('release policy requires secret-backed Authenticode before release evidence', () => {
   const valid = `
 env:
-  OPEN_COWORK_CODESIGN_PFX_BASE64: \${{ secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
-  OPEN_COWORK_CODESIGN_PASSWORD: \${{ secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
-  OPEN_COWORK_CODESIGN_THUMBPRINT: \${{ secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
-run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\Open-Cowork-Setup-x64.exe
+  LOCALAI_COWORK_CODESIGN_PFX_BASE64: \${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 }}
+  LOCALAI_COWORK_CODESIGN_PASSWORD: \${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD }}
+  LOCALAI_COWORK_CODESIGN_THUMBPRINT: \${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT }}
+run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe
 next: supply-chain:sbom
 then: supply-chain:release
 uses: actions/attest-build-provenance@commit
@@ -141,11 +141,11 @@ publish: action-gh-release
 `
   assert.deepEqual(releaseWorkflowSigningErrors(valid), [])
   const invalid = valid
-    .replace('run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\Open-Cowork-Setup-x64.exe\n', '')
-    .replace('OPEN_COWORK_CODESIGN_PASSWORD: \${{ secrets.OPEN_COWORK_CODESIGN_PASSWORD }}', 'OPEN_COWORK_CODESIGN_PASSWORD: plaintext')
+    .replace('run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe\n', '')
+    .replace('LOCALAI_COWORK_CODESIGN_PASSWORD: \${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD }}', 'LOCALAI_COWORK_CODESIGN_PASSWORD: plaintext')
   const errors = releaseWorkflowSigningErrors(invalid)
   assert.ok(errors.some((error) => error.includes('missing Authenticode')))
-  assert.ok(errors.some((error) => error.includes('secret-backed OPEN_COWORK_CODESIGN_PASSWORD')))
+  assert.ok(errors.some((error) => error.includes('secret-backed LOCALAI_COWORK_CODESIGN_PASSWORD')))
   assert.ok(releaseWorkflowSigningErrors(`${valid}\nrun: -TestSkipTimestamp`).some((error) => error.includes('test bypasses')))
 })
 
@@ -213,16 +213,16 @@ test('release metadata hashes SBOM, notices, installer, provenance, and material
   const output = join(root, 'release-assets')
   const context = { commit: 'b'.repeat(40), timestamp: '2026-07-11T00:00:00Z' }
   mkdirSync(output)
-  writeFileSync(join(output, 'Open-Cowork-Setup-x64.exe'), 'installer-fixture', 'utf8')
+  writeFileSync(join(output, 'LocalAI-Cowork-Setup-x64.exe'), 'installer-fixture', 'utf8')
   try {
     writeSbomArtifacts(root, output, { policy, cargoMetadata, context, releaseTag: 'v1.2.3' })
     const provenance = writeReleaseProvenance(root, output, { context, releaseTag: 'v1.2.3' })
     const sums = readFileSync(join(output, 'SHA256SUMS'), 'utf8')
     assert.equal(provenance.build.version, '1.2.3')
-    assert.ok(provenance.subject.some((entry) => entry.name === 'open-cowork.cdx.json'))
+    assert.ok(provenance.subject.some((entry) => entry.name === 'localai-cowork.cdx.json'))
     assert.ok(provenance.materials.some((entry) => entry.path === 'src-tauri/Cargo.lock'))
-    assert.match(sums, /Open-Cowork-Setup-x64\.exe/)
-    assert.match(sums, /open-cowork\.cdx\.json/)
+    assert.match(sums, /LocalAI-Cowork-Setup-x64\.exe/)
+    assert.match(sums, /localai-cowork\.cdx\.json/)
     assert.match(sums, /THIRD_PARTY_NOTICES\.json/)
     assert.match(sums, /release-provenance\.json/)
     assert.ok(!sums.includes('SHA256SUMS'))

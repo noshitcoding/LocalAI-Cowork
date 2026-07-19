@@ -123,7 +123,7 @@ function Assert-CodeSigningCertificate {
 
     $actualThumbprint = Normalize-Thumbprint $Certificate.Thumbprint
     if ($actualThumbprint -ne $ExpectedThumbprint) {
-        throw "The imported certificate thumbprint does not match OPEN_COWORK_CODESIGN_THUMBPRINT."
+        throw "The imported certificate thumbprint does not match LOCALAI_COWORK_CODESIGN_THUMBPRINT."
     }
     if (-not $Certificate.HasPrivateKey) {
         throw "The selected code-signing certificate has no private key."
@@ -166,7 +166,7 @@ function Assert-InstallerSignature {
             throw "The installer has no Authenticode signer certificate."
         }
         if ((Normalize-Thumbprint $signature.SignerCertificate.Thumbprint) -ne $ExpectedThumbprint) {
-            throw "The installer signer does not match OPEN_COWORK_CODESIGN_THUMBPRINT."
+            throw "The installer signer does not match LOCALAI_COWORK_CODESIGN_THUMBPRINT."
         }
         if ($RequireTimestamp -and -not $signature.TimeStamperCertificate) {
             throw "The installer signature has no trusted RFC 3161 timestamp."
@@ -195,18 +195,37 @@ if ((Get-Item -LiteralPath $resolvedInstaller).Length -lt 2) {
     throw "InstallerPath is empty or truncated."
 }
 
-$expectedThumbprintValue = [Environment]::GetEnvironmentVariable('OPEN_COWORK_CODESIGN_THUMBPRINT', 'Process')
+function Get-BrandEnvironmentVariable {
+    param(
+        [Parameter(Mandatory = $true)] [string]$PrimaryName,
+        [Parameter(Mandatory = $true)] [string]$LegacyName
+    )
+
+    $value = [Environment]::GetEnvironmentVariable($PrimaryName, 'Process')
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $value = [Environment]::GetEnvironmentVariable($LegacyName, 'Process')
+    }
+    return $value
+}
+
+$expectedThumbprintValue = Get-BrandEnvironmentVariable `
+    -PrimaryName 'LOCALAI_COWORK_CODESIGN_THUMBPRINT' `
+    -LegacyName 'OPEN_COWORK_CODESIGN_THUMBPRINT'
 if ([string]::IsNullOrWhiteSpace($expectedThumbprintValue)) {
-    throw "OPEN_COWORK_CODESIGN_THUMBPRINT is required."
+    throw "LOCALAI_COWORK_CODESIGN_THUMBPRINT is required."
 }
 $expectedThumbprint = Normalize-Thumbprint $expectedThumbprintValue
 if ($expectedThumbprint.Length -ne 40 -and $expectedThumbprint.Length -ne 64) {
-    throw "OPEN_COWORK_CODESIGN_THUMBPRINT must be a SHA-1 or SHA-256 certificate thumbprint."
+    throw "LOCALAI_COWORK_CODESIGN_THUMBPRINT must be a SHA-1 or SHA-256 certificate thumbprint."
 }
 
 $testModeRequested = $TestAllowUntrustedCertificate -or $TestSkipTimestamp
-if ($testModeRequested -and $env:OPEN_COWORK_AUTHENTICODE_TEST_MODE -ne '1') {
-    throw "Authenticode test switches require OPEN_COWORK_AUTHENTICODE_TEST_MODE=1."
+$testModeEnabled = (
+    $env:LOCALAI_COWORK_AUTHENTICODE_TEST_MODE -eq '1' -or
+    $env:OPEN_COWORK_AUTHENTICODE_TEST_MODE -eq '1'
+)
+if ($testModeRequested -and -not $testModeEnabled) {
+    throw "Authenticode test switches require LOCALAI_COWORK_AUTHENTICODE_TEST_MODE=1."
 }
 
 $signTool = Resolve-SignTool
@@ -217,16 +236,20 @@ if ($VerifyOnly) {
     exit 0
 }
 
-$pfxBase64 = [Environment]::GetEnvironmentVariable('OPEN_COWORK_CODESIGN_PFX_BASE64', 'Process')
-$pfxPassword = [Environment]::GetEnvironmentVariable('OPEN_COWORK_CODESIGN_PASSWORD', 'Process')
+$pfxBase64 = Get-BrandEnvironmentVariable `
+    -PrimaryName 'LOCALAI_COWORK_CODESIGN_PFX_BASE64' `
+    -LegacyName 'OPEN_COWORK_CODESIGN_PFX_BASE64'
+$pfxPassword = Get-BrandEnvironmentVariable `
+    -PrimaryName 'LOCALAI_COWORK_CODESIGN_PASSWORD' `
+    -LegacyName 'OPEN_COWORK_CODESIGN_PASSWORD'
 if ([string]::IsNullOrWhiteSpace($pfxBase64)) {
-    throw "OPEN_COWORK_CODESIGN_PFX_BASE64 is required."
+    throw "LOCALAI_COWORK_CODESIGN_PFX_BASE64 is required."
 }
 if ([string]::IsNullOrEmpty($pfxPassword)) {
-    throw "OPEN_COWORK_CODESIGN_PASSWORD is required."
+    throw "LOCALAI_COWORK_CODESIGN_PASSWORD is required."
 }
 
-$temporaryPfx = Join-Path ([System.IO.Path]::GetTempPath()) "open-cowork-codesign-$([guid]::NewGuid().ToString('N')).pfx"
+$temporaryPfx = Join-Path ([System.IO.Path]::GetTempPath()) "localai-cowork-codesign-$([guid]::NewGuid().ToString('N')).pfx"
 $existingThumbprints = @(
     Get-ChildItem -Path 'Cert:\CurrentUser\My' |
         ForEach-Object { Normalize-Thumbprint $_.Thumbprint }
@@ -238,7 +261,7 @@ try {
         [System.IO.File]::WriteAllBytes($temporaryPfx, [Convert]::FromBase64String($pfxBase64))
     }
     catch {
-        throw "OPEN_COWORK_CODESIGN_PFX_BASE64 is not valid base64-encoded PFX data."
+        throw "LOCALAI_COWORK_CODESIGN_PFX_BASE64 is not valid base64-encoded PFX data."
     }
 
     $securePassword = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force

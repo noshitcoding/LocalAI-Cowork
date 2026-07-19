@@ -48,7 +48,7 @@ import { useCoworkStore } from './coworkStore'
 import { setCredential } from '../security/credentialVault'
 import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
 
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the Open Cowork desktop app. You have access to tools for reading, writing, and searching files, running shell commands, and more.
+const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the LocalAI Cowork desktop app. You have access to tools for reading, writing, and searching files, running shell commands, and more.
 
 Important rules:
 1. Execute changes directly instead of only making suggestions, unless plan mode is active.

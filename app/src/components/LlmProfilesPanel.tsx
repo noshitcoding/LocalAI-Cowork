@@ -269,7 +269,6 @@ export default function LlmProfilesPanel() {
         [profile.id]: {
           loading: false,
           reachable: false,
-          endpoint: profile.baseUrl,
           message,
         },
       }))
@@ -596,10 +595,20 @@ export default function LlmProfilesPanel() {
                       </div>
 
                       <div className="actions llm-profile-actions">
-                        <button type="button" className="btn-sm" onClick={() => void handleHealthCheck(profile)}>
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          onClick={() => void handleHealthCheck(profile)}
+                          disabled={health?.loading}
+                        >
                           {health?.loading ? tr('Testing...') : tr('Health check')}
                         </button>
-                        <button type="button" className="btn-sm" onClick={() => void handleLoadModels(profile)}>
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          onClick={() => void handleLoadModels(profile)}
+                          disabled={modelState?.loading}
+                        >
                           {modelState?.loading ? tr('Loading models...') : tr('Load models')}
                         </button>
                         {!isDefault && (
@@ -612,7 +621,7 @@ export default function LlmProfilesPanel() {
                           {health.message}{health.endpoint ? ` (${health.endpoint})` : ''}
                         </p>
                       )}
-                      {models.length > 0 && (
+                      {models.length > 0 && !modelState?.error && (
                         <p className="hint-text" style={{ marginTop: 8 }}>
                           {models.length}{tr("Model(s) loaded")}{modelState?.endpoint ? ` ${tr('from')} ${modelState.endpoint}` : ''}.
                         </p>

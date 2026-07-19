@@ -309,7 +309,7 @@ const DEFAULT_PREFERENCES: AppPreferences = {
   maxToolCallsPerLoop: 12,
   fallbackToHumanOnRepeatedFailure: true,
   confirmOnCloseWithRunningTasks: true,
-  telemetryEnabled: true,
+  telemetryEnabled: false,
   notificationsEnabled: true,
   soundsEnabled: false,
   launchAtStartup: false,
@@ -373,13 +373,21 @@ function isLegacyFilesystemServer(server: McpServerConfig): boolean {
 function isLegacyLocalDocsServer(server: McpServerConfig): boolean {
   const command = server.command.trim().toLowerCase()
   const name = server.name.trim().toLowerCase()
-  return command === 'open-cowork-docs-mcp' || name === 'local-docs'
+  return (
+    command === 'localai-cowork-docs-mcp'
+    || command === 'open-cowork-docs-mcp'
+    || name === 'local-docs'
+  )
 }
 
 function isLegacyscreenshotServer(server: McpServerConfig): boolean {
   const command = server.command.trim().toLowerCase()
   const name = server.name.trim().toLowerCase()
-  return command === 'open-cowork-screenshot-mcp' || name === 'screenshot'
+  return (
+    command === 'localai-cowork-screenshot-mcp'
+    || command === 'open-cowork-screenshot-mcp'
+    || name === 'screenshot'
+  )
 }
 
 function migrateServer(server: McpServerConfig): McpServerConfig {

@@ -60,4 +60,4 @@ if (missingRequired.length > 0) {
   process.exit(1)
 }
 
-console.log('\nOpen_Cowork doctor completed.')
+console.log('\nLocalAI Cowork doctor completed.')

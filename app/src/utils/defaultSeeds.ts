@@ -144,7 +144,7 @@ export const DEFAULT_MEMORY_ENTRIES: DefaultMemoryEntry[] = [
     scope: 'system',
     category: 'context',
     key: 'app-identity',
-    content: 'Open_Cowork is an AI-powered desktop productivity app with chat, task orchestration, multi-agent capabilities, and extensive tool integration.',
+    content: 'Local AI Cowork is an AI-powered desktop productivity app with chat, task orchestration, multi-agent capabilities, and extensive tool integration.',
     confidence: 1.0,
   },
   {
@@ -238,7 +238,7 @@ export function buildSystemPromptFromPersonality(
     parts.push(`[Personality: ${personality.name}]`)
     parts.push(personality.system_prompt)
   } else {
-    parts.push('Du bist Open_Cowork, ein KI-Assistent for Produktivitaet und Software-Entwicklung. Answer in English.')
+    parts.push('Du bist Local AI Cowork, ein KI-Assistent for Produktivitaet und Software-Entwicklung. Answer in English.')
   }
 
   if (globalInstruction.trim()) {

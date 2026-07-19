@@ -21,7 +21,7 @@ function getThreadDisplayTitle(title: string): string {
 import { Activity, ChevronDown, ChevronRight, FolderPlus, MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
 import { getProductRouteById, type ProductRouteId } from '../product/routeRegistry'
 
-const THREAD_DND_MIME = 'application/open-cowork-thread-id'
+const THREAD_DND_MIME = 'application/localai-cowork-thread-id'
 const POINTER_DRAG_THRESHOLD = 5
 
 type PointerThreadDrag = {

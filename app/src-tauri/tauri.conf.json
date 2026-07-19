@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Open Cowork",
+  "productName": "Local AI Cowork",
   "version": "0.1.8",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
@@ -15,7 +15,7 @@
     },
     "windows": [
       {
-        "title": "Open Cowork",
+        "title": "Local AI Cowork",
         "width": 1280,
         "height": 860,
         "resizable": true,

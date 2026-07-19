@@ -1,0 +1,29 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1600"
+  height="512"
+  viewBox="0 0 1600 512"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">Local AI Cowork logo</title>
+  <desc id="description">
+    The existing Open Workframe symbol beside the words Local AI Cowork.
+  </desc>
+  <rect width="1600" height="512" fill="#FCFBF7"/>
+  <g transform="translate(64 64) scale(6)">
+    <rect width="64" height="64" rx="12" fill="#0A0A0B"/>
+    <path d="M44 16H16V48H44" stroke="#F5F5F2" stroke-width="7" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M48 27H29V38H48" stroke="#90908B" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+    <rect x="42" y="10" width="12" height="12" fill="#FFD84D"/>
+  </g>
+  <text
+    x="520"
+    y="302"
+    fill="#0A0A0B"
+    font-family="Inter, 'Segoe UI Variable', 'Segoe UI', Arial, sans-serif"
+    font-size="108"
+    font-weight="700"
+    letter-spacing="-2"
+  >Local AI Cowork</text>
+</svg>

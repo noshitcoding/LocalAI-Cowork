@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a focused improvement or use case
+title: "[Feature]: "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good feature requests explain the user problem before the implementation. Please do not include secrets or private workspace data.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Who has this problem, and what are they trying to finish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable result, not only a UI control or library choice.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Example workflow
+      placeholder: |
+        1. The user …
+        2. LocalAI Cowork …
+        3. The user reviews …
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to help test this.
+        - label: I would be willing to submit a focused pull request.
+

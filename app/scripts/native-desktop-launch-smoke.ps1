@@ -27,16 +27,16 @@ try {
     Start-Sleep -Milliseconds 250
     $process.Refresh()
     if ($process.HasExited) {
-      throw "Open Cowork exited during startup with code $($process.ExitCode)."
+      throw "LocalAI Cowork exited during startup with code $($process.ExitCode)."
     }
-    if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -eq "Open Cowork") {
+    if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -eq "Local AI Cowork") {
       $windowReady = $true
       break
     }
   }
 
   if (-not $windowReady) {
-    throw "Open Cowork did not expose its expected desktop window within 20 seconds."
+    throw "LocalAI Cowork did not expose its expected desktop window within 20 seconds."
   }
 
   Write-Host "[OK] Native process stayed alive and exposed window '$($process.MainWindowTitle)' (PID $($process.Id))."

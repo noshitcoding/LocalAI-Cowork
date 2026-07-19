@@ -147,8 +147,8 @@ const LOCAL_DEFAULT_BACKEND: TerminalBackend = {
 }
 
 const MAX_OUTPUT_CHARS = 250_000
-const AI_DONE_PREFIX = '__OPEN_COWORK_AI_DONE__'
-const AI_CWD_PREFIX = '__OPEN_COWORK_CURRENT_CWD__'
+const AI_DONE_PREFIX = '__LOCALAI_COWORK_AI_DONE__'
+const AI_CWD_PREFIX = '__LOCALAI_COWORK_CURRENT_CWD__'
 
 let listenersReady = false
 const pendingAiCommands = new Map<string, PendingAiCommand>()
@@ -343,8 +343,8 @@ function buildAiCommand(command: string, marker: string, cwdMarker: string): { d
   const normalizedCommand = command.replace(/\r?\n/g, '\r\n')
   const lines = [
     normalizedCommand,
-    '$openCoworkExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }',
-    `Write-Output ('${marker}=' + $openCoworkExit)`,
+    '$localAiCoworkExit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }',
+    `Write-Output ('${marker}=' + $localAiCoworkExit)`,
     `Write-Output ('${cwdMarker}=' + (Get-Location).Path)`,
   ]
   return {

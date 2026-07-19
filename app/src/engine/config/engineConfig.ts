@@ -56,7 +56,7 @@ export type FullEngineConfig = {
 
 // ── Defaults ───────────────────────────────────────────────────────────────
 
-export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the Open_Cowork desktop application.
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the LocalAI Cowork desktop application.
 You can use tools to read, write, search, execute shell commands, work with files, and more.
 
 Guidelines:

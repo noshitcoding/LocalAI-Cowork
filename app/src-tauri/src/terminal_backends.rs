@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn execute_local_closes_background_descendants_after_parent_exit() {
         let test_dir = std::env::temp_dir().join(format!(
-            "open-cowork-terminal-background-{}",
+            "localai-cowork-terminal-background-{}",
             uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&test_dir).expect("test directory should be created");
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn execute_local_timeout_terminates_descendant_processes() {
         let test_dir = std::env::temp_dir().join(format!(
-            "open-cowork-terminal-timeout-{}",
+            "localai-cowork-terminal-timeout-{}",
             uuid::Uuid::new_v4()
         ));
         fs::create_dir_all(&test_dir).expect("test directory should be created");

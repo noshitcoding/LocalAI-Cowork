@@ -110,7 +110,7 @@ function buildChatPrompt(prompt: string, history: Array<{ role: string; content:
     .join('\n')
 
   return [
-    'You are Open_Cowork, a local assistant agent. Answer concisely, clearly, and in English.',
+    'You are LocalAI Cowork, a local assistant agent. Answer concisely, clearly, and in English.',
     'If the task may involve risky or destructive actions, propose a plan and mark it as approval-required.',
     'WICHTIGE REGELN:',
     "- Never output placeholder or waiting answers such as 'I am analyzing', 'please wait', 'coming soon', or similar text.",
@@ -322,7 +322,7 @@ function normalizeTauriInvokeError(error: unknown): Error {
 
   if (isBridgeMissing) {
     return new Error(
-      'Tauri bridge is not available. The app is probably not running as a Tauri desktop app. Start Open_Cowork with "npm run tauri dev" (or as a built desktop app).',
+      'Tauri bridge is not available. The app is probably not running as a Tauri desktop app. Start LocalAI Cowork with "npm run tauri dev" (or as a built desktop app).',
     )
   }
 

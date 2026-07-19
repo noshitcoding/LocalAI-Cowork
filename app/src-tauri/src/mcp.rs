@@ -268,7 +268,7 @@ fn runtime_initialize(server: &mut RuntimeMcpServer) -> Result<serde_json::Value
         serde_json::json!({
             "protocolVersion": "2024-11-05",
             "clientInfo": {
-                "name": "Open_Cowork",
+                "name": "LocalAI Cowork",
                 "version": env!("CARGO_PKG_VERSION")
             },
             "capabilities": {}

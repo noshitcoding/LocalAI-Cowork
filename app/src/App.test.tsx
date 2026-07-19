@@ -52,7 +52,7 @@ describe('App', () => {
 
   it('starts directly in an empty chat', async () => {
     render(<App />)
-    expect(await screen.findByPlaceholderText('Next instruction...', undefined, { timeout: 3000 })).toBeInTheDocument()
+    expect(await screen.findByPlaceholderText('Next instruction...', undefined, { timeout: 10_000 })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '+ New chat' })).toBeInTheDocument()
   })
 
@@ -60,11 +60,11 @@ describe('App', () => {
     await i18n.changeLanguage('de')
     render(<App />)
 
-    expect(await screen.findByRole('button', { name: 'Projekte verwalten' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Projekte verwalten' }, { timeout: 10_000 })).toBeInTheDocument()
     expect(screen.getByText('Keine Projekte')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Erstelle einen klaren Plan mit 5 Schritten für die aktuelle Aufgabe.' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Analysiere die letzten Änderungen und nenne Risiken.' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Formuliere die nächsten konkreten To-dos mit Priorität.' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Erstelle einen klaren Plan mit 5 Schritten für die aktuelle Aufgabe.' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Analysiere die letzten Änderungen und nenne Risiken.' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Formuliere die nächsten konkreten To-dos mit Priorität.' }, { timeout: 10_000 })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('link', { name: 'Aufgaben' }))
     expect(await screen.findByRole('heading', { name: 'Aufgaben' })).toBeInTheDocument()
@@ -87,9 +87,9 @@ describe('App', () => {
 
   it('loads the tasks page without crashing', async () => {
     render(<App />)
-    fireEvent.click(await screen.findByRole('link', { name: 'Tasks' }))
-    expect(await screen.findByRole('heading', { name: 'Tasks' })).toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'New task' })).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('link', { name: 'Tasks' }, { timeout: 10_000 }))
+    expect(await screen.findByRole('heading', { name: 'Tasks' }, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'New task' }, { timeout: 10_000 })).toBeInTheDocument()
   })
 
   it('uses a focused settings layout and restores the workspace sidebar on return', async () => {

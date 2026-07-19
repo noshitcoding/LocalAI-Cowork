@@ -28,7 +28,8 @@ const EMBEDDED_WINDOWS_PYTHON_RELATIVE_PATH: &str = "python/windows/python.exe";
 const EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH: &str = "python/windows.zip";
 const EMBEDDED_RUNTIME_SCRIPT_DIR: &str = "python/crew_runtime";
 const EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH: &str = "python/crew_runtime/wheels.zip";
-const ENV_CREW_PYTHON: &str = "OPEN_COWORK_CREW_PYTHON";
+const ENV_CREW_PYTHON: &str = "LOCALAI_COWORK_CREW_PYTHON";
+const LEGACY_ENV_CREW_PYTHON: &str = "OPEN_COWORK_CREW_PYTHON";
 const MANAGED_PYTHON_VERSION: &str = "3.12";
 const UV_VERSION: &str = "0.11.7";
 const UV_WINDOWS_DOWNLOAD_URL: &str =
@@ -136,8 +137,8 @@ pub struct CrewRuntimeLogEvent {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CrewRuntimeProtocolEvent {
-    #[serde(rename = "openCoworkEvent")]
-    open_cowork_event: String,
+    #[serde(rename = "localAiCoworkEvent")]
+    localai_cowork_event: String,
     #[serde(default)]
     stream_id: Option<String>,
     #[serde(default)]
@@ -276,6 +277,17 @@ fn resolve_embedded_python_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBu
         .filter(|path| path.exists())
 }
 
+fn configured_crew_python() -> Option<String> {
+    [ENV_CREW_PYTHON, LEGACY_ENV_CREW_PYTHON]
+        .iter()
+        .find_map(|name| {
+            std::env::var(name).ok().and_then(|path| {
+                let trimmed = path.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+        })
+}
+
 #[cfg(target_os = "windows")]
 fn resolve_venv_python_path(runtime_root: &Path) -> PathBuf {
     runtime_root.join("venv").join("Scripts").join("python.exe")
@@ -291,27 +303,23 @@ fn detect_base_python_command<R: Runtime>(app: &AppHandle<R>) -> Option<String> 
         return Some(path.display().to_string());
     }
 
-    if let Ok(path) = std::env::var(ENV_CREW_PYTHON) {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
+    if let Some(path) = configured_crew_python() {
+        return Some(path);
     }
 
     Some("python".to_string())
 }
 
 fn ensure_compatible_base_python<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
-    if let Ok(path) = std::env::var(ENV_CREW_PYTHON) {
-        let command = path.trim();
-        if !command.is_empty() && command_available(command) {
-            let version = read_python_version(command)
+    if let Some(command) = configured_crew_python() {
+        if command_available(&command) {
+            let version = read_python_version(&command)
                 .ok_or_else(|| format!("Python version for {} could not be determined", command))?;
             if python_version_supported(&version) {
-                return Ok(command.to_string());
+                return Ok(command);
             }
             return Err(format!(
-                "OPEN_COWORK_CREW_PYTHON zeigt auf Python {}, CrewAI benoetigt Python 3.10 bis 3.13.",
+                "LOCALAI_COWORK_CREW_PYTHON zeigt auf Python {}, CrewAI benoetigt Python 3.10 bis 3.13.",
                 version
             ));
         }
@@ -597,7 +605,7 @@ fn ensure_bundled_runtime_assets<R: Runtime>(app: &AppHandle<R>) -> Result<(), S
 }
 
 fn extract_zip_if_needed(zip_path: &Path, destination: &Path) -> Result<(), String> {
-    let marker = destination.join(".open_cowork_extract_complete");
+    let marker = destination.join(".localai_cowork_extract_complete");
     let zip_metadata = fs::metadata(zip_path).map_err(|error| {
         format!(
             "archive could not be read ({}): {}",
@@ -836,12 +844,12 @@ fn read_lossy_lines<R: std::io::Read>(reader: R) -> impl Iterator<Item = String>
 
 fn parse_runtime_protocol_event(line: &str) -> Option<CrewRuntimeLogEvent> {
     let normalized = line.trim();
-    if normalized.is_empty() || !normalized.contains("\"openCoworkEvent\"") {
+    if normalized.is_empty() || !normalized.contains("\"localAiCoworkEvent\"") {
         return None;
     }
 
     let event = serde_json::from_str::<CrewRuntimeProtocolEvent>(normalized).ok()?;
-    if event.open_cowork_event != "crew_log" {
+    if event.localai_cowork_event != "crew_log" {
         return None;
     }
 
@@ -861,7 +869,7 @@ fn parse_python_json_stdout(stdout: &str, stderr: &str) -> Result<Value, String>
 
     for line in trimmed.lines().rev() {
         let candidate = line.trim();
-        if candidate.is_empty() || candidate.contains("\"openCoworkEvent\"") {
+        if candidate.is_empty() || candidate.contains("\"localAiCoworkEvent\"") {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(candidate) {

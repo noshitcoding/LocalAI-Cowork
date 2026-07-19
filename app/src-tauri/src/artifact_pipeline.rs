@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn upgraded_pdf_extractor_reads_generated_text() {
         let path =
-            std::env::temp_dir().join(format!("open_cowork_pdf_extract_{}.pdf", Uuid::new_v4()));
+            std::env::temp_dir().join(format!("localai_cowork_pdf_extract_{}.pdf", Uuid::new_v4()));
         let mut document = Document::with_version("1.5");
         let pages_id = document.new_object_id();
         let font_id = document.add_object(dictionary! {
@@ -664,7 +664,7 @@ mod tests {
                 Operation::new("Td", vec![72.into(), 720.into()]),
                 Operation::new(
                     "Tj",
-                    vec![Object::string_literal("Open Cowork PDF regression")],
+                    vec![Object::string_literal("LocalAI Cowork PDF regression")],
                 ),
                 Operation::new("ET", vec![]),
             ],
@@ -698,7 +698,7 @@ mod tests {
         document.save(&path).expect("PDF fixture saves");
 
         let extracted = pdf_extract::extract_text(&path).expect("PDF text extracts");
-        assert!(extracted.contains("Open Cowork PDF regression"));
+        assert!(extracted.contains("LocalAI Cowork PDF regression"));
 
         let _ = fs::remove_file(path);
     }

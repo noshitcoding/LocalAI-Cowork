@@ -1,0 +1,36 @@
+name: Privacy question
+description: Ask a non-sensitive question about data handling
+title: "[Privacy]: "
+labels:
+  - privacy
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, personal data, private prompts, file contents, or undisclosed security weaknesses. Report vulnerabilities through the private security advisory link instead.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What data flow, storage behavior, provider connection, or permission needs clarification?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: LocalAI Cowork version (if applicable)
+      placeholder: v0.1.7
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials and private data from this report.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+

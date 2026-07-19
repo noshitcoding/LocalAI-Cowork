@@ -1,4 +1,4 @@
-// ── Open Cowork Engine (main entry) ─────────────────────────────────────────
+// ── LocalAI Cowork Engine (main entry) ─────────────────────────────────────────
 // Architecture ported from Claude Code — adapted for Tauri desktop app
 //
 // This is the single entry point for the engine.

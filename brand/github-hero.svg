@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480" fill="none">
+  <rect width="1600" height="480" fill="#0A0A0B"/>
+  <g stroke="#303034" stroke-width="1" opacity="0.5">
+    <path d="M0 96H1600M0 192H1600M0 288H1600M0 384H1600"/>
+    <path d="M160 0V480M320 0V480M480 0V480M640 0V480M800 0V480M960 0V480M1120 0V480M1280 0V480M1440 0V480"/>
+  </g>
+  <rect x="96" y="78" width="132" height="132" rx="24" fill="#0A0A0B" stroke="#303034" stroke-width="2"/>
+  <path d="M190 111H129V177H190" stroke="#F5F5F2" stroke-width="14" stroke-linecap="square"/>
+  <path d="M199 133H157V158H199" stroke="#90908B" stroke-width="11" stroke-linecap="square"/>
+  <rect x="183" y="97" width="27" height="27" fill="#FFD84D"/>
+  <rect x="96" y="252" width="10" height="112" fill="#FFD84D"/>
+  <text x="138" y="305" fill="#F5F5F2" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="74" font-weight="760" letter-spacing="-3">LocalAI Cowork</text>
+  <text x="140" y="354" fill="#B8B8B3" font-family="Cascadia Code, Consolas, monospace" font-size="22" font-weight="600" letter-spacing="3">LOCAL-FIRST · OPEN SOURCE · HUMAN IN CONTROL</text>
+  <rect x="1370" y="96" width="134" height="8" fill="#303034"/>
+  <rect x="1450" y="96" width="54" height="8" fill="#FFD84D"/>
+  <text x="1370" y="143" fill="#90908B" font-family="Cascadia Code, Consolas, monospace" font-size="18" letter-spacing="2">CARBON SIGNAL</text>
+</svg>

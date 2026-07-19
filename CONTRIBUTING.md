@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking a look at Open Cowork. The project is still early, so focused contributions are the most useful.
+Thanks for taking a look at LocalAI Cowork. The project is still early, so focused contributions are the most useful.
 
 ## Before You Start
 
@@ -55,10 +55,10 @@ npm run smoke:desktop
 
 ## Security And Privacy
 
-Open Cowork can interact with local files, terminals, MCP servers, and model providers. Treat changes in those areas as security-sensitive. Use explicit approval flows for risky operations and avoid logging secrets, API keys, or full private file contents unless a feature explicitly requires it.
+LocalAI Cowork can interact with local files, terminals, MCP servers, and model providers. Treat changes in those areas as security-sensitive. Use explicit approval flows for risky operations and avoid logging secrets, API keys, or full private file contents unless a feature explicitly requires it.
 
 ## Contribution License
 
 Unless explicitly agreed otherwise, contributions are submitted under the Apache
-License, Version 2.0 and may be distributed as part of Open Cowork under that
+License, Version 2.0 and may be distributed as part of LocalAI Cowork under that
 license.

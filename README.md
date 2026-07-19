@@ -1,14 +1,26 @@
-# Open Cowork
+<p align="center">
+  <img src="brand/github-hero.svg" width="100%" alt="LocalAI Cowork — local-first, open-source, human in control">
+</p>
 
-Local-first desktop workspace for AI-assisted work. Open Cowork combines chat, task planning, tool use, file context, MCP servers, and desktop automation controls in one Windows application.
+# LocalAI Cowork
 
-![Open Cowork desktop UI](app/open-cowork-streaming-smoke.png)
+**The open-source, local-first AI coworker for Windows.** LocalAI Cowork combines tasks, files, local or hosted models, MCP tools, approvals, and reusable workflows in one inspectable desktop application.
+
+It is an independent open-source alternative for people who like the outcome-driven approach of Claude Cowork and Microsoft Copilot Cowork, but want Ollama support, model choice, and source they can inspect and modify. It is early-stage software—not a claim of feature parity with either commercial product.
+
+LocalAI Cowork is an independent project. It is not affiliated with or endorsed by Anthropic, Microsoft, or the separate [LocalAI](https://localai.io/) project.
+
+[Website](https://noshitcoding.github.io/LocalAI-Cowork/) · [Download](https://github.com/noshitcoding/LocalAI-Cowork/releases/latest) · [Report a bug](https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=bug_report.yml) · [Request a feature](https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=feature_request.yml) · [Security](SECURITY.md)
+
+![LocalAI Cowork desktop UI](site/assets/app-preview.png)
 
 ## Why This Exists
 
-Most AI work happens in separate browser tabs, terminals, file explorers, and local tools. Open Cowork brings those pieces into a desktop app that can keep context, ask for approval before risky actions, and work with local or self-hosted model providers.
+Most AI work happens in separate browser tabs, terminals, file explorers, and local tools. LocalAI Cowork brings those pieces into a desktop app that can keep context, ask for approval before risky actions, and work with local or self-hosted model providers.
 
-The project is early, but already usable as a Windows-first Tauri app.
+No LocalAI Cowork account is required. Use Ollama for local model execution or connect a compatible provider when a hosted model fits the task better.
+
+The project is early, but already usable as a Windows-first Tauri app. Start with non-sensitive copies of files and review AI-generated work before relying on it.
 
 ## Highlights
 
@@ -25,7 +37,7 @@ The project is early, but already usable as a Windows-first Tauri app.
 
 ## Current Scope
 
-Open Cowork is aimed at local and network-internal AI workflows. It is not a hosted SaaS and does not require a separate web server in normal desktop use.
+LocalAI Cowork is aimed at local and network-internal AI workflows. It is not a hosted SaaS and does not require a separate web server in normal desktop use.
 
 The current implementation is strongest on Windows. The Tauri stack can support more platforms later, but the installer and smoke tests are Windows-focused.
 
@@ -58,7 +70,7 @@ npm run installer
 The packaged installer is written to:
 
 ```text
-dist-installers/Open-Cowork-Setup.exe
+dist-installers/LocalAI-Cowork-Setup.exe
 ```
 
 The original Tauri NSIS output remains under:
@@ -67,9 +79,18 @@ The original Tauri NSIS output remains under:
 app/src-tauri/target/release/bundle/nsis/
 ```
 
+### Regenerate Brand Assets
+
+The canonical Carbon Signal mark lives in `brand/open-workframe.svg`. Regenerate the web favicon, social preview, and all Tauri icon sizes from that master:
+
+```powershell
+cd app
+npm run brand:assets
+```
+
 ## Ollama Setup
 
-Open Cowork defaults to a local Ollama endpoint:
+LocalAI Cowork defaults to a local Ollama endpoint:
 
 ```text
 http://localhost:11434
@@ -106,10 +127,10 @@ Common environment options:
 
 ```text
 app/          Tauri desktop app, React frontend, Rust backend
-docs/         Architecture, operations, Ollama, smoke-test, and control docs
+docs/         Public user and integration documentation
 scripts/      Repository-level validation helpers
-tasks/        Product and implementation notes
-.github/      CI, installer workflow, and agent instructions
+.github/      CI, release automation, and community templates
+site/         Public product website and search metadata
 ```
 
 ## Useful Commands
@@ -141,15 +162,8 @@ npm run smoke:desktop
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [OpenClaw and Hermes feature adoption deep spec](docs/OPENCLAW_HERMES_FEATURE_ADOPTION_DEEP_SPEC.md)
-- [OpenClaw and Hermes P0 implementation backlog](docs/OPENCLAW_HERMES_P0_IMPLEMENTATION_BACKLOG.md)
-- [OpenClaw and Hermes P0 smoke checklist](docs/OPENCLAW_HERMES_P0_SMOKE_CHECKLIST.md)
-- [Development and operations](docs/DEVELOPMENT_AND_OPERATIONS.md)
 - [Ollama configuration](docs/OLLAMA_CONFIGURATION.md)
-- [Desktop smoke test](docs/DESKTOP_SMOKE_TEST.md)
 - [Desktop control and computer use](docs/DESKTOP_CONTROL_AND_COMPUTER_USE.md)
-- [UI requirements](docs/UI_ANFORDERUNGEN.md)
 
 ## Release Workflow
 
@@ -160,7 +174,7 @@ git tag v0.1.8
 git push origin v0.1.8
 ```
 
-The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `OPEN_COWORK_CODESIGN_PFX_BASE64`, `OPEN_COWORK_CODESIGN_PASSWORD`, and `OPEN_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. Manual release builds are also available through the workflow dispatch input.
+The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `LOCALAI_COWORK_CODESIGN_PFX_BASE64`, `LOCALAI_COWORK_CODESIGN_PASSWORD`, and `LOCALAI_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. During the rename transition, the workflow also accepts the legacy `OPEN_COWORK_*` secret names so existing protected values do not have to be exposed or copied. Manual release builds are available through the workflow dispatch input.
 
 ## Contributing
 
@@ -168,7 +182,7 @@ Contributions are welcome while the project is still taking shape. Start with [C
 
 ## License And Disclaimer
 
-Open Cowork is licensed under the [Apache License, Version 2.0](LICENSE).
+LocalAI Cowork is licensed under the [Apache License, Version 2.0](LICENSE).
 
 Attribution notices are provided in [NOTICE](NOTICE). Warranty and liability
 limitations are included in Sections 7 and 8 of the Apache License, Version

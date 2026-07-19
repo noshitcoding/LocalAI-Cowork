@@ -322,7 +322,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const systemMsg: ChatMessage = {
       id: generateId(),
       role: 'system',
-      content: 'Open_Cowork is ready. Send a task to start planning and execution in chat mode.',
+      content: 'LocalAI Cowork is ready. Send a task to start planning and execution in chat mode.',
       timestamp: now,
     }
     const thread: ChatThread = {
@@ -404,7 +404,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     const systemMsg: ChatMessage = {
       id: generateId(),
       role: 'system',
-      content: 'Open_Cowork is ready. Send a task to start planning and execution in chat mode.',
+      content: 'LocalAI Cowork is ready. Send a task to start planning and execution in chat mode.',
       timestamp: now,
     }
     const thread: ChatThread = {

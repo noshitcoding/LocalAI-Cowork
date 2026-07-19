@@ -414,7 +414,7 @@ def _fetch_public_text(url: str) -> tuple[str, str, int, bool]:
     request = urllib.request.Request(
         validated,
         headers={
-            "User-Agent": "OpenCowork-CrewRuntime/1.0 (+local user initiated research)",
+            "User-Agent": "LocalAICowork-CrewRuntime/1.0 (+local user initiated research)",
             "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.2",
         },
     )
@@ -783,7 +783,7 @@ class OfficeWorkflowTool(BaseTool):
                 title_slide = presentation.slides.add_slide(presentation.slide_layouts[0])
                 title_slide.shapes.title.text = title.strip() or "Presentation"
                 if len(title_slide.placeholders) > 1:
-                    title_slide.placeholders[1].text = "Created by Open Cowork CrewAI"
+                    title_slide.placeholders[1].text = "Created by LocalAI Cowork CrewAI"
                 for section in sections:
                     slide = presentation.slides.add_slide(presentation.slide_layouts[1])
                     slide.shapes.title.text = section["title"]

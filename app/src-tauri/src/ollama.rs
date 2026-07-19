@@ -749,7 +749,7 @@ fn build_chat_prompt(prompt: &str, history: &[ChatMessage]) -> String {
     }
 
     format!(
-        "You are Open_Cowork, a local assistant agent. Answer concisely, clearly, and in English.\n\
+        "You are LocalAI Cowork, a local assistant agent. Answer concisely, clearly, and in English.\n\
     If the task could contain risky or destructive actions, suggest a plan and mark it as requiring approval.\n\
     WICHTIGE REGELN:\n\
     - Never output placeholder or waiting answers such as 'I am analyzing', 'please wait', 'coming soon', or similar text.\n\

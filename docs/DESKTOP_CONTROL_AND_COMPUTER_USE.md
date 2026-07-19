@@ -1,6 +1,6 @@
 # Desktop-Steuerung und Computer Use
 
-Diese Seite beschreibt die drei unterschiedlichen Desktop-Steuerungswege in Open_Cowork. Die Trennung ist wichtig, weil die Namen aehnlich klingen, aber unterschiedliche Modelle und Schnittstellen verwenden.
+Diese Seite beschreibt die drei unterschiedlichen Desktop-Steuerungswege in LocalAI Cowork. Die Trennung ist wichtig, weil die Namen aehnlich klingen, aber unterschiedliche Modelle und Schnittstellen verwenden.
 
 ## Uebersicht
 
@@ -41,7 +41,7 @@ Koordinatenregel:
 - Standard ist `coordinate_space="display"`.
 - `x` und `y` sind dann Pixelkoordinaten im zuletzt gesehenen Screenshot.
 - Ursprung ist links oben im Screenshot: `(0, 0)`.
-- Bei Mehrmonitor-Setups rechnet Open_Cowork den Display-Ursprung automatisch in absolute virtuelle Bildschirmkoordinaten um.
+- Bei Mehrmonitor-Setups rechnet LocalAI Cowork den Display-Ursprung automatisch in absolute virtuelle Bildschirmkoordinaten um.
 - `coordinate_space="screen"` ist nur fuer absolute Windows-Bildschirmkoordinaten gedacht.
 
 ## 2. Screenshot-MCP
@@ -49,7 +49,7 @@ Koordinatenregel:
 Der lokale MCP-Server heisst:
 
 ```text
-open-cowork-screenshot-mcp
+localai-cowork-screenshot-mcp
 ```
 
 Dieser Server ist absichtlich nur fuer Screenshots gedacht. Er ist kein vollstaendiger Computer-Use-Server.
@@ -84,12 +84,12 @@ Wichtig: Der Screenshot-MCP kann nicht klicken, tippen oder scrollen. Fuer Aktio
 
 Der Ablauf:
 
-1. Open_Cowork nimmt lokal einen rohen Desktop-Screenshot auf.
-2. Open_Cowork sendet Screenshot und Zielbeschreibung an die OpenAI Responses API.
+1. LocalAI Cowork nimmt lokal einen rohen Desktop-Screenshot auf.
+2. LocalAI Cowork sendet Screenshot und Zielbeschreibung an die OpenAI Responses API.
 3. Die Anfrage aktiviert das OpenAI-Tool `computer_use_preview`.
 4. OpenAI antwortet mit einer Computer-Aktion, z. B. Klick, Scroll, Tastendruck oder Texteingabe.
-5. Open_Cowork fuehrt diese Aktion lokal ueber die Windows/Tauri-Desktop-Kommandos aus.
-6. Danach nimmt Open_Cowork einen neuen Screenshot auf.
+5. LocalAI Cowork fuehrt diese Aktion lokal ueber die Windows/Tauri-Desktop-Kommandos aus.
+6. Danach nimmt LocalAI Cowork einen neuen Screenshot auf.
 7. Der Loop laeuft bis `completed`, `blocked` oder `max_steps`.
 
 Konfiguration:
@@ -112,7 +112,7 @@ Empfohlene gedankliche Trennung:
 
 - `ComputerUseAppTest` = OpenAI-basierter Debug-/Vibecoding-Testloop.
 - `DesktopScreenshot` plus `DesktopClick` usw. = lokaler Gemma/Ollama Desktop-Control-Loop.
-- `open-cowork-screenshot-mcp` = MCP-Screenshot-Provider ohne Aktionssteuerung.
+- `localai-cowork-screenshot-mcp` = MCP-Screenshot-Provider ohne Aktionssteuerung. Persistierte Konfigurationen mit dem früheren Namen `open-cowork-screenshot-mcp` bleiben kompatibel.
 
 ## Wann welchen Pfad nutzen?
 
@@ -141,4 +141,4 @@ Der Begriff "Computer Use" kann zwei Dinge meinen:
 1. Allgemein: ein Modell sieht den Bildschirm und steuert Maus/Tastatur.
 2. Spezifisch: OpenAI `computer_use_preview`.
 
-In Open_Cowork meint `ComputerUseAppTest` die zweite Bedeutung. Fuer allgemeine lokale Desktop-Steuerung sind die `Desktop*`-Tools der richtige Einstieg.
+In LocalAI Cowork meint `ComputerUseAppTest` die zweite Bedeutung. Fuer allgemeine lokale Desktop-Steuerung sind die `Desktop*`-Tools der richtige Einstieg.

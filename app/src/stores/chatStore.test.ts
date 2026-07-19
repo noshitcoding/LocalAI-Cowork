@@ -91,7 +91,7 @@ describe('chatStore', () => {
     expect(result.pairsRemoved).toBe(1)
     expect(result.messagesRemoved).toBe(2)
     expect(thread.messages.map((message) => message.content)).toEqual([
-      'Open_Cowork is ready. Send a task to start planning and execution in chat mode.',
+      'LocalAI Cowork is ready. Send a task to start planning and execution in chat mode.',
       'question 1',
       'answer 1',
     ])

@@ -336,7 +336,7 @@ describe('SettingsView', () => {
     expect(screen.getByText('llama3.1:8b')).toBeInTheDocument()
     expect(screen.getByText('Creator')).toBeInTheDocument()
     expect(screen.getByText('noshitcoding')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'github.com/noshitcoding/Open_Cowork' })).toHaveAttribute('href', 'https://github.com/noshitcoding/Open_Cowork')
+    expect(screen.getByRole('link', { name: 'github.com/noshitcoding/LocalAI Cowork' })).toHaveAttribute('href', 'https://github.com/noshitcoding/LocalAI-Cowork')
     expect(screen.getByText('Disclaimer')).toBeInTheDocument()
     expect(screen.getByText(/Use it at your own risk/)).toBeInTheDocument()
   })
@@ -459,6 +459,34 @@ describe('SettingsView', () => {
         .toBe('0xSero/Hy3-preview-nvfp4')
     })
     expect(await within(profileCard).findByText('Model automatically set to 0xSero/Hy3-preview-nvfp4.')).toBeInTheDocument()
+  })
+
+  it('does not report cached external models as freshly loaded after a refresh fails', async () => {
+    ;(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
+    useConfigStore.getState().updateLlmProfile('default-openrouter', {
+      model: 'openai/gpt-4o-mini',
+    })
+    useConfigStore.getState().setLlmProfileModels('default-openrouter', [
+      'openai/gpt-4o-mini',
+      'google/gemini-2.5-pro',
+    ])
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'crew_provider_models_list') {
+        return Promise.reject(new Error('error sending request for url (https://openrouter.ai/api/v1/models)'))
+      }
+      return defaultInvoke(cmd)
+    })
+
+    renderSettingsView(['/settings?provider=openrouter'])
+    const profileName = screen.getAllByText('OpenRouter', { selector: 'strong' })
+      .find((element) => element.closest('.llm-profile-card'))
+    const profileCard = profileName?.closest('.llm-profile-card') as HTMLElement
+
+    expect(within(profileCard).getByText(/2 model\(s\) loaded/i)).toBeInTheDocument()
+    fireEvent.click(within(profileCard).getByRole('button', { name: 'Load models' }))
+
+    expect(await within(profileCard).findByText(/error sending request for url/i)).toBeInTheDocument()
+    expect(within(profileCard).queryByText(/2 model\(s\) loaded/i)).not.toBeInTheDocument()
   })
 
   /* 17. Number input for maxToolCalls */

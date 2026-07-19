@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Privacy – LocalAI Cowork</title>
+    <meta name="description" content="How the LocalAI Cowork desktop app and project website handle local files, model requests, credentials, logs, and website data.">
+    <meta name="robots" content="index, follow">
+    <meta name="theme-color" content="#0A0A0B">
+    <link rel="canonical" href="https://noshitcoding.github.io/LocalAI-Cowork/privacy.html">
+    <link rel="alternate" hreflang="en" href="https://noshitcoding.github.io/LocalAI-Cowork/privacy.html">
+    <link rel="alternate" hreflang="de" href="https://noshitcoding.github.io/LocalAI-Cowork/de/datenschutz.html">
+    <link rel="icon" href="assets/logo.png" type="image/png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <nav class="nav shell" aria-label="Main navigation">
+        <a class="brand" href="./"><img src="assets/logo.png" width="34" height="34" alt=""><span>LocalAI Cowork</span></a>
+        <div class="nav-links"><a href="./">Home</a><a href="de/datenschutz.html" hreflang="de" lang="de">DE</a><a class="nav-cta" href="https://github.com/noshitcoding/LocalAI-Cowork">Source</a></div>
+      </nav>
+    </header>
+    <main class="legal-page shell" id="main">
+      <article>
+        <p class="eyebrow">Effective 16 July 2026</p>
+        <h1>Privacy</h1>
+        <p class="notice"><strong>Short version:</strong> the project website contains no analytics or advertising code. The desktop app runs locally. Data leaves your device only when you configure and use a remote provider, connector, MCP server, or network-enabled tool.</p>
+
+        <h2>Project website</h2>
+        <p>This static site does not set its own cookies, create user accounts, load third-party fonts, or include analytics, advertising, pixels, or session-replay scripts. It is hosted by GitHub Pages. GitHub may process technical request data such as IP addresses and browser information under the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>.</p>
+
+        <h2>Desktop app data</h2>
+        <p>LocalAI Cowork stores application state, task history, audit information, and selected workspace context locally on the computer. The app does not operate a LocalAI Cowork cloud account or synchronization service.</p>
+
+        <h2>Model providers and connected tools</h2>
+        <p>When you choose a remote model provider, connector, MCP server, webhook, or web-enabled tool, the app sends the information required to perform your requested action to that endpoint. The recipient and its privacy terms depend on the endpoint you configure. Ollama can be used locally to avoid sending model prompts to a hosted provider.</p>
+
+        <h2>Credentials</h2>
+        <p>On Windows, supported provider keys and connector secrets are stored through Windows Credential Manager. Sensitive values are removed from ordinary persisted frontend state. Backend audit and diagnostic paths redact common secret fields and token formats before storage.</p>
+
+        <h2>Telemetry</h2>
+        <p>The current release has no implemented telemetry sender, and the telemetry preference defaults to disabled. Future releases must update this notice before introducing any project-operated analytics or telemetry transport.</p>
+
+        <h2>Local permissions</h2>
+        <p>LocalAI Cowork can work with local files, terminals, processes, and connected tools. These capabilities are powerful. Review workspace access, permission settings, approval prompts, and third-party configurations before using the app with sensitive material.</p>
+
+        <h2>Security reports</h2>
+        <p>Do not publish credentials or sensitive data in a public issue. Report security vulnerabilities privately through <a href="https://github.com/noshitcoding/LocalAI-Cowork/security/advisories/new">GitHub Security Advisories</a>.</p>
+
+        <h2>Questions</h2>
+        <p>For non-sensitive privacy questions, open a <a href="https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=privacy_question.yml">privacy question</a>. This notice describes the open-source project and is not a substitute for the terms of any model provider or service you connect.</p>
+      </article>
+    </main>
+    <footer class="site-footer"><div class="footer-row shell"><span>© 2026 LocalAI Cowork</span><div class="footer-links"><a href="./">Home</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/security">Security</a><a href="https://github.com/noshitcoding/LocalAI-Cowork">Source</a></div></div></footer>
+  </body>
+</html>

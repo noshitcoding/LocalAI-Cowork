@@ -34,7 +34,7 @@ type McpRuntimeServerStatus = {
   lastError: string | null
 }
 
-const SCREENSHOT_MCP_COMMAND = 'open-cowork-screenshot-mcp'
+const SCREENSHOT_MCP_COMMAND = 'localai-cowork-screenshot-mcp'
 
 type ClaudeMcpServer = {
   type?: string

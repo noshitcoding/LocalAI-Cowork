@@ -597,8 +597,8 @@ export async function* streamOpenAiCompatibleMessages(
     }
 
     if (config.provider === 'openrouter') {
-      headers['HTTP-Referer'] = 'https://open-cowork.local'
-      headers['X-Title'] = 'Open Cowork'
+      headers['HTTP-Referer'] = 'https://localai-cowork.local'
+      headers['X-Title'] = 'LocalAI Cowork'
     }
 
     let requestModel = config.model.trim()

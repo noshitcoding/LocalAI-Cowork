@@ -349,7 +349,7 @@ function normalizeTauriInvokeError(error: unknown): Error {
 
   if (isBridgeMissing) {
     return new Error(
-      'Tauri bridge is not available. The app is probably not running as a Tauri desktop app. Start Open_Cowork with "npm run tauri dev" (or as a built desktop app).',
+      'Tauri bridge is not available. The app is probably not running as a Tauri desktop app. Start LocalAI Cowork with "npm run tauri dev" (or as a built desktop app).',
     )
   }
 

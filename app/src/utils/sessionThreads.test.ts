@@ -57,7 +57,7 @@ describe('sessionThreads', () => {
     expect(hydrated.debugContent).toBe(serialized)
   })
 
-  it('hydrates Open Cowork chat payload metadata from the database', () => {
+  it('hydrates LocalAI Cowork chat payload metadata from the database', () => {
     const serialized = serializeChatMessageForStorage({
       id: 'assistant-1',
       role: 'assistant',

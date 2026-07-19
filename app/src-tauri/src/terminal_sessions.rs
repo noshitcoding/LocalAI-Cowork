@@ -225,7 +225,7 @@ pub fn create_terminal_session(
         session_id: session_id.clone(),
         stream: "system".to_string(),
         data: format!(
-            "Open Cowork terminal started: {}{} ({}x{})\n",
+            "LocalAI Cowork terminal started: {}{} ({}x{})\n",
             shell,
             request
                 .cwd

@@ -266,7 +266,7 @@ function SupportBundlePanel() {
     try {
       const date = new Date().toISOString().slice(0, 10)
       const path = await save({
-        defaultPath: `open-cowork-support-${date}.zip`,
+        defaultPath: `localai-cowork-support-${date}.zip`,
         filters: [{ name: 'ZIP', extensions: ['zip'] }],
       })
       if (!path) return
@@ -777,13 +777,13 @@ export default function SettingsView() {
 
             <ConnectorPanel />
 
-            <Section title={tr("About Open_Cowork")} icon={Info}>
-              <div className="card about-open-cowork-card">
-                <div className="about-open-cowork-intro">
-                  <strong>{tr("Open_Cowork")}</strong>
+            <Section title={tr("About LocalAI Cowork")} icon={Info}>
+              <div className="card about-cowork-card">
+                <div className="about-cowork-intro">
+                  <strong>{tr("LocalAI Cowork")}</strong>
                   <span>{tr("Local desktop workspace for chat, tools, tasks, and multi-agent runs.")}</span>
                 </div>
-                <dl className="about-open-cowork-details">
+                <dl className="about-cowork-details">
                   <div>
                     <dt>{tr("Creator")}</dt>
                     <dd>noshitcoding</dd>
@@ -791,8 +791,8 @@ export default function SettingsView() {
                   <div>
                     <dt>{tr("Project page")}</dt>
                     <dd>
-                      <a href="https://github.com/noshitcoding/Open_Cowork" target="_blank" rel="noreferrer">
-                        github.com/noshitcoding/Open_Cowork
+                      <a href="https://github.com/noshitcoding/LocalAI-Cowork" target="_blank" rel="noreferrer">
+                        github.com/noshitcoding/LocalAI Cowork
                       </a>
                     </dd>
                   </div>
@@ -813,9 +813,9 @@ export default function SettingsView() {
                     <dd>{preferences.workspaceDefaultPath || tr("Last used")}</dd>
                   </div>
                 </dl>
-                <div className="about-open-cowork-disclaimer">
+                <div className="about-cowork-disclaimer">
                   <strong>{tr("Disclaimer")}</strong>
-                  <p>{tr("Open_Cowork can execute commands, use tools, and modify local files. Use it at your own risk, review AI output before relying on it, and do not treat responses as legal, medical, financial, or safety-critical advice.")}</p>
+                  <p>{tr("LocalAI Cowork can execute commands, use tools, and modify local files. Use it at your own risk, review AI output before relying on it, and do not treat responses as legal, medical, financial, or safety-critical advice.")}</p>
                 </div>
               </div>
             </Section>

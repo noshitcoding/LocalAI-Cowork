@@ -62,7 +62,8 @@ data/
 storage/
 uploads/
 sessions/
-memory/
+/memory/
+graphify-out/memory/
 chroma/
 chromadb/
 qdrant_storage/
@@ -77,6 +78,43 @@ temp/
 .cache/
 .playwright-mcp/
 graphify-out/.graphify_python
+graphify-out/cache/
 
 # External example repositories
 andere_ai_agenten_beispiele/
+
+# Private development workspace and internal artifacts
+.internal/
+.cowork/
+.codex/
+graphify-out/
+tasks/
+AGENTS.md
+skills.md
+.graphifyignore
+CHANGES_SUMMARY.txt
+FEHLENDE_FEATURES_IM_CODE.md
+FINAL_VERIFICATION.md
+IMPLEMENTATION_COMPLETE.md
+PERMISSION_FIX_SUMMARY.md
+app/ui-audit-current/
+app/smoke-screenshots/
+app/open-cowork-*-smoke.png
+.github/copilot-instructions.md
+.github/instructions/
+.github/skills/
+scripts/validate-agent-discipline.mjs
+scripts/validate-product-docs.mjs
+docs/ARCHITECTURE.md
+docs/ARCHITECTURE_CURRENT.md
+docs/CLAUDE_CODE_FEATURE_ADOPTION.md
+docs/DESKTOP_SMOKE_TEST.md
+docs/DEVELOPMENT_AND_OPERATIONS.md
+docs/FEATURE_IMPLEMENTIERUNGSVERGLEICH.md
+docs/OPENCLAW_HERMES_FEATURE_ADOPTION_DEEP_SPEC.md
+docs/OPENCLAW_HERMES_P0_IMPLEMENTATION_BACKLOG.md
+docs/OPENCLAW_HERMES_P0_SMOKE_CHECKLIST.md
+docs/PRODUCTION_MASTER_PLAN.md
+docs/SOURCE_OF_TRUTH.md
+docs/UI_ANFORDERUNGEN.md
+docs/product/

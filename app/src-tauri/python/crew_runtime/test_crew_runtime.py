@@ -548,15 +548,15 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("OPEN_COWORK_RUN_CREW_INTEGRATION") == "1"
+    os.environ.get("LOCALAI_COWORK_RUN_CREW_INTEGRATION") == "1"
     and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
-    "Set OPEN_COWORK_RUN_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live OpenRouter smoke test.",
+    "Set LOCALAI_COWORK_RUN_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live OpenRouter smoke test.",
 )
 class CrewRuntimeIntegrationTests(unittest.TestCase):
     def test_live_research_coding_and_powerpoint_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            selected_task = os.environ.get("OPEN_COWORK_CREW_TEST_TASK", "all").strip().lower()
+            selected_task = os.environ.get("LOCALAI_COWORK_CREW_TEST_TASK", "all").strip().lower()
             agents = [
                 {
                     "id": "researcher",
@@ -624,7 +624,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
             if selected_task != "all":
                 tasks = [task for task in tasks if task["id"] == selected_task]
                 if not tasks:
-                    self.fail(f"Unknown OPEN_COWORK_CREW_TEST_TASK: {selected_task}")
+                    self.fail(f"Unknown LOCALAI_COWORK_CREW_TEST_TASK: {selected_task}")
             used_agent_ids = {task["agentId"] for task in tasks}
             agents = [agent for agent in agents if agent["id"] in used_agent_ids]
             allowed_by_agent = {agent["id"]: agent["tools"] for agent in agents}
@@ -650,7 +650,7 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
                     "openRouter": {
                         "baseUrl": "https://openrouter.ai/api/v1",
                         "model": os.environ.get(
-                            "OPEN_COWORK_CREW_TEST_MODEL",
+                            "LOCALAI_COWORK_CREW_TEST_MODEL",
                             TEST_OPENROUTER_NEMOTRON_MODEL,
                         ),
                         "apiKey": os.environ["OPENROUTER_API_KEY"],
@@ -699,9 +699,9 @@ class CrewRuntimeIntegrationTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("OPEN_COWORK_RUN_PARALLEL_CREW_INTEGRATION") == "1"
+    os.environ.get("LOCALAI_COWORK_RUN_PARALLEL_CREW_INTEGRATION") == "1"
     and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
-    "Set OPEN_COWORK_RUN_PARALLEL_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live parallel Crew test.",
+    "Set LOCALAI_COWORK_RUN_PARALLEL_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the live parallel Crew test.",
 )
 class CrewRuntimeParallelIntegrationTests(unittest.TestCase):
     def test_two_free_model_agents_start_llm_requests_concurrently(self) -> None:
@@ -846,9 +846,9 @@ class CrewRuntimeParallelIntegrationTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("OPEN_COWORK_RUN_COMPLEX_CREW_INTEGRATION") == "1"
+    os.environ.get("LOCALAI_COWORK_RUN_COMPLEX_CREW_INTEGRATION") == "1"
     and bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
-    "Set OPEN_COWORK_RUN_COMPLEX_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the complex live Crew test.",
+    "Set LOCALAI_COWORK_RUN_COMPLEX_CREW_INTEGRATION=1 and OPENROUTER_API_KEY to run the complex live Crew test.",
 )
 class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
     def test_live_complex_dependency_workflow(self) -> None:
@@ -1004,7 +1004,7 @@ class CrewRuntimeComplexIntegrationTests(unittest.TestCase):
                     "openRouter": {
                         "baseUrl": "https://openrouter.ai/api/v1",
                         "model": os.environ.get(
-                            "OPEN_COWORK_CREW_TEST_MODEL",
+                            "LOCALAI_COWORK_CREW_TEST_MODEL",
                             TEST_OPENROUTER_COMPLEX_NEMOTRON_MODEL,
                         ),
                         "apiKey": os.environ["OPENROUTER_API_KEY"],

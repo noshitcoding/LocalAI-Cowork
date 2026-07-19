@@ -492,7 +492,7 @@ mod tests {
 
     fn test_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "open-cowork-file-safety-{}-{}",
+            "localai-cowork-file-safety-{}-{}",
             label,
             uuid::Uuid::new_v4()
         ));

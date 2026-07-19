@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64" fill="none">
+  <title>LocalAI Cowork Open Workframe</title>
+  <rect width="64" height="64" rx="12" fill="#0A0A0B"/>
+  <path d="M44 16H16V48H44" stroke="#F5F5F2" stroke-width="7" stroke-linecap="square" stroke-linejoin="miter"/>
+  <path d="M48 27H29V38H48" stroke="#90908B" stroke-width="6" stroke-linecap="square" stroke-linejoin="miter"/>
+  <rect x="42" y="10" width="12" height="12" fill="#FFD84D"/>
+</svg>

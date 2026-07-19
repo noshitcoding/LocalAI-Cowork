@@ -1,13 +1,13 @@
 {
-  "name": "open-cowork",
+  "name": "localai-cowork",
   "private": true,
   "version": "0.1.8",
-  "description": "Local-first desktop workspace for agentic work with Ollama, MCP, tasks, and tools.",
+  "description": "Open-source, local-first AI coworker for Windows with Ollama, MCP, tasks, approvals, and tools.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/noshitcoding/Open_Cowork.git"
+    "url": "https://github.com/noshitcoding/LocalAI-Cowork.git"
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
@@ -19,6 +19,9 @@
     "typecheck": "tsc -b",
     "build": "npm run typecheck && vite build",
     "budgets:build": "node ./scripts/check-budgets.mjs",
+    "brand:assets": "node ./scripts/generate-brand-assets.mjs",
+    "brand:verify": "node ./scripts/verify-carbon-signal.mjs",
+    "marketing:screenshot": "npm run build && node ./scripts/capture-marketing-preview.mjs",
     "installer": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-installer.ps1",
     "lint": "eslint .",
     "lint:ci": "eslint . --max-warnings 0",

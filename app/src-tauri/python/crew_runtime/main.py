@@ -203,7 +203,7 @@ def emit_protocol_log(log: dict, stream_id: str | None, run_id: str | None) -> N
         return
 
     envelope = {
-        "openCoworkEvent": "crew_log",
+        "localAiCoworkEvent": "crew_log",
         "payload": log,
     }
     if stream_id:
@@ -614,7 +614,28 @@ def classify_runtime_error(exc: Exception) -> str:
             f"Original: {raw}"
         )
 
+    if "authentication" in lowered or "unauthorized" in lowered or "401" in lowered:
+        return (
+            "AuthenticationError: The configured provider rejected the credentials. "
+            "Check the selected Crew provider profile and API key. "
+            f"Original: {raw}"
+        )
+
     if "connection" in lowered or "connecterror" in lowered or "connection refused" in lowered:
+        return (
+            "ConnectionError: The configured model provider is unreachable. "
+            "Check its base URL and whether the local/provider service is running. "
+            f"Original: {raw}"
+        )
+
+    if "timeout" in lowered or "timed out" in lowered:
+        return (
+            "TimeoutError: The provider or a Crew tool exceeded its time limit. "
+            "Retry the task or increase the configured runtime timeout. "
+            f"Original: {raw}"
+        )
+
+    if "utf-8" in lowered or "unicode" in lowered:
         return (
             "ConnectionError: The configured model provider is unreachable. "
             "Check its base URL and whether the local/provider service is running. "
@@ -640,6 +661,43 @@ def classify_runtime_error(exc: Exception) -> str:
 
 def mark_recovered_provider_logs(logs: list[dict], status: str) -> None:
     if status != "completed":
+        return
+    retryable_markers = (
+        "resourceexhausted",
+        "request limit reached",
+        "rate_limit",
+        "ratelimit",
+        "status code: 429",
+    )
+    for entry in logs:
+        if entry.get("action") != "runtime_stderr":
+            continue
+        result = str(entry.get("result") or "")
+        if not any(marker in result.lower() for marker in retryable_markers):
+            continue
+        entry.update({
+            "action": "provider_retry_recovered",
+            "agentName": "Runtime",
+            "phase": "status",
+            "summary": "Provider retry recovered",
+            "detail": result,
+            "severity": "warning",
+        })
+
+
+def normalize_model_name(provider: str, model: str) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
+        raise ValueError(f"No model configured for provider '{provider}'.")
+    if provider == "openrouter":
+        return normalized if normalized.startswith("openrouter/") else f"openrouter/{normalized}"
+    if provider == "openai-compatible":
+        return normalized if normalized.startswith("openai/") else f"openai/{normalized}"
+    return normalized if normalized.startswith("ollama/") else f"ollama/{normalized}"
+
+
+def configure_litellm_tls_verification(verify_tls_certificates: object) -> None:
+    if verify_tls_certificates is not False:
         return
     retryable_markers = (
         "resourceexhausted",
@@ -829,7 +887,7 @@ def bridge_textual_tool_call(result: Any, tools: list[dict] | None) -> Any:
         return result
     name, arguments = parsed
     return [{
-        "id": f"open_cowork_text_call_{uuid.uuid4().hex}",
+        "id": f"localai_cowork_text_call_{uuid.uuid4().hex}",
         "type": "function",
         "function": {"name": name, "arguments": json.dumps(arguments)},
     }]
@@ -847,7 +905,188 @@ def runtime_llm_class():
 
     class RuntimeToolCompatibleLLM(LLM):
         def supports_function_calling(self) -> bool:
-            if getattr(self, "_open_cowork_force_native_tools", False):
+            if getattr(self, "_localai_cowork_force_native_tools", False):
+                return True
+            return super().supports_function_calling()
+
+        def call(self, *args, **kwargs):
+            tools = kwargs.get("tools") if "tools" in kwargs else (args[1] if len(args) > 1 else None)
+            result = super().call(*args, **kwargs)
+            return bridge_textual_tool_call(result, tools)
+
+        async def acall(self, *args, **kwargs):
+            tools = kwargs.get("tools") if "tools" in kwargs else (args[1] if len(args) > 1 else None)
+            result = await super().acall(*args, **kwargs)
+            return bridge_textual_tool_call(result, tools)
+
+    _RUNTIME_LLM_CLASS = RuntimeToolCompatibleLLM
+    return _RUNTIME_LLM_CLASS
+
+
+def build_llm(request: dict, agent: dict):
+    suppress_runtime_deprecation_warnings()
+    LLM = runtime_llm_class()
+
+    provider = resolve_agent_provider(agent)
+    model_override = str(agent.get("modelOverride") or "").strip()
+    request_config = request.get("config") or {}
+    provider_configs = request.get("providerConfigs") or {}
+    provider = resolve_agent_provider(agent)
+    provider_config: dict = {}
+    if provider == "openrouter":
+        provider_config = provider_configs.get("openRouter") or {}
+    elif provider == "openai-compatible":
+        provider_config = provider_configs.get("openAICompatible") or {}
+
+    fallback = parse_int(request_config.get("timeoutMs"), 600_000)
+    return max(1_000, parse_int(provider_config.get("timeoutMs"), fallback))
+
+
+def resolve_llm_max_retries(request: dict, model: str) -> int:
+    configured = max(0, min(5, parse_int(request.get("retryCount"), 0)))
+    provider_default = 4 if is_openrouter_free_model(model) else 2
+    return max(provider_default, configured)
+
+
+def _openai_tool_definitions(tools: list[dict] | None) -> dict[str, dict]:
+    definitions: dict[str, dict] = {}
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        name = str(function.get("name") or "").strip()
+        if name:
+            definitions[name] = function
+    return definitions
+
+
+def _decode_textual_tool_payloads(text: str) -> list[Any] | None:
+    candidate = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+    tagged = re.fullmatch(r"<tool_call>\s*(.*?)\s*</tool_call>", candidate, flags=re.DOTALL | re.IGNORECASE)
+    if tagged:
+        candidate = tagged.group(1).strip()
+    decoder = json.JSONDecoder()
+    payloads: list[Any] = []
+    offset = 0
+    try:
+        while offset < len(candidate):
+            while offset < len(candidate) and candidate[offset].isspace():
+                offset += 1
+            if offset >= len(candidate):
+                break
+            payload, consumed = decoder.raw_decode(candidate, offset)
+            payloads.append(payload)
+            offset = consumed
+    except (TypeError, ValueError):
+        return None
+    return payloads or None
+
+
+def _decode_tool_arguments(value: Any) -> dict | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
+def _named_textual_tool_call(payload: dict, definitions: dict[str, dict]) -> tuple[str, dict] | None:
+    if isinstance(payload.get("function"), dict):
+        function = payload["function"]
+        name = str(function.get("name") or "").strip()
+        arguments = _decode_tool_arguments(function.get("arguments"))
+    else:
+        name = str(payload.get("tool") or payload.get("tool_name") or payload.get("name") or "").strip()
+        raw_arguments = next(
+            (
+                payload[key]
+                for key in ("arguments", "args", "input", "parameters")
+                if key in payload
+            ),
+            None,
+        )
+        arguments = _decode_tool_arguments(raw_arguments)
+    if name in definitions and arguments is not None:
+        return name, arguments
+    return None
+
+
+def _inferred_textual_tool_call(payload: dict, definitions: dict[str, dict]) -> tuple[str, dict] | None:
+    payload_keys = set(payload)
+    if not payload_keys:
+        return None
+    matches: list[tuple[int, str]] = []
+    for name, definition in definitions.items():
+        parameters = definition.get("parameters") if isinstance(definition.get("parameters"), dict) else {}
+        properties = parameters.get("properties") if isinstance(parameters.get("properties"), dict) else {}
+        required = {
+            str(value)
+            for value in parameters.get("required") or []
+            if str(value).strip()
+        }
+        property_names = set(properties)
+        if not property_names or not payload_keys.issubset(property_names) or not required.issubset(payload_keys):
+            continue
+        score = len(payload_keys) * 10 + len(required)
+        matches.append((score, name))
+    matches.sort(reverse=True)
+    if not matches or (len(matches) > 1 and matches[0][0] == matches[1][0]):
+        return None
+    return matches[0][1], payload
+
+
+def bridge_textual_tool_call(result: Any, tools: list[dict] | None) -> Any:
+    """Turn strict JSON tool-call text into the native structure CrewAI executes.
+
+    Some OpenAI-compatible models return a requested function call in the text
+    content instead of ``message.tool_calls``. Only a complete JSON value (or a
+    JSON value wrapped by a tool-call tag/fence) is accepted, and it must match
+    one of the schemas CrewAI supplied for the current agent.
+    """
+    if not isinstance(result, str) or not result.strip() or not tools:
+        return result
+    definitions = _openai_tool_definitions(tools)
+    payloads = _decode_textual_tool_payloads(result)
+    if not definitions or payloads is None:
+        return result
+    payload = payloads[0]
+    if isinstance(payload, list):
+        payload = payload[0] if payload else None
+    if isinstance(payload, dict) and isinstance(payload.get("tool_calls"), list):
+        payload = payload["tool_calls"][0] if payload["tool_calls"] else None
+    if not isinstance(payload, dict):
+        return result
+    parsed = _named_textual_tool_call(payload, definitions) or _inferred_textual_tool_call(payload, definitions)
+    if parsed is None:
+        return result
+    name, arguments = parsed
+    return [{
+        "id": f"localai_cowork_text_call_{uuid.uuid4().hex}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }]
+
+
+_RUNTIME_LLM_CLASS = None
+
+
+def runtime_llm_class():
+    global _RUNTIME_LLM_CLASS
+    if _RUNTIME_LLM_CLASS is not None:
+        return _RUNTIME_LLM_CLASS
+
+    from crewai import LLM  # type: ignore
+
+    class RuntimeToolCompatibleLLM(LLM):
+        def supports_function_calling(self) -> bool:
+            if getattr(self, "_localai_cowork_force_native_tools", False):
                 return True
             return super().supports_function_calling()
 
@@ -882,7 +1121,7 @@ def build_llm(request: dict, agent: dict):
         llm_kwargs = {
             "model": model,
             "base_url": str(config.get("baseUrl") or request_config.get("baseUrl") or "https://api.openai.com/v1"),
-            "api_key": str(config.get("apiKey") or "open-cowork"),
+            "api_key": str(config.get("apiKey") or "localai-cowork"),
             "timeout": timeout_seconds,
             "max_retries": resolve_llm_max_retries(request, model),
             "max_tokens": 4096,
@@ -914,7 +1153,7 @@ def build_llm(request: dict, agent: dict):
         # OpenRouter models may support the OpenAI tools request while LiteLLM's
         # static capability registry still reports False (notably Nemotron).
         # The runtime bridge safely handles models that put the call in content.
-        setattr(llm, "_open_cowork_force_native_tools", True)
+        setattr(llm, "_localai_cowork_force_native_tools", True)
         return llm
 
     model = normalize_model_name(provider, model_override or str(request_config.get("model") or ""))
@@ -956,7 +1195,30 @@ def build_agent(request: dict, agent_payload: dict):
     agent_kwargs = {
         "role": str(agent_payload.get("role") or agent_payload.get("name") or "Crew Agent"),
         "goal": str(agent_payload.get("goal") or "Complete tasks successfully in the crew."),
-        "backstory": backstory or "A specialized crew agent for Open_Cowork.",
+        "backstory": backstory or "A specialized crew agent for LocalAI Cowork.",
+        "llm": build_llm(request, agent_payload),
+        "tools": runtime_tools,
+        "verbose": bool(agent_payload.get("verbose")),
+        "allow_delegation": bool(agent_payload.get("allowDelegation")),
+        "max_iter": max(1, int(agent_payload.get("maxIterations") or 20)),
+        "max_retry_limit": retry_count,
+        "max_execution_time": max(1, timeout_ms // 1000),
+        "respect_context_window": True,
+        "cache": True,
+    }
+    if max_rpm > 0:
+        agent_kwargs["max_rpm"] = max_rpm
+
+    return Agent(**agent_kwargs)
+
+    max_rpm = int(agent_payload.get("maxRpm") or request.get("_effectiveAgentMaxRpm") or 0)
+    retry_count = max(0, min(5, parse_int(request.get("retryCount"), 0)))
+    timeout_ms = resolve_agent_timeout_ms(request, agent_payload)
+
+    agent_kwargs = {
+        "role": str(agent_payload.get("role") or agent_payload.get("name") or "Crew Agent"),
+        "goal": str(agent_payload.get("goal") or "Complete tasks successfully in the crew."),
+        "backstory": backstory or "A specialized crew agent for LocalAI Cowork.",
         "llm": build_llm(request, agent_payload),
         "tools": runtime_tools,
         "verbose": bool(agent_payload.get("verbose")),
@@ -998,6 +1260,21 @@ def build_task_description(request: dict, task_payload: dict, agent_payload: dic
         additions.append("Output contract: return a concise bullet report with explicit evidence and artifact paths.")
     elif output_mode == "json":
         additions.append("Output contract: return valid JSON only, without Markdown fences or commentary outside the JSON value.")
+
+    additions.append(
+        "Execution contract:\n"
+        "- Use the provided runtime tools for facts, files, commands, and artifacts; never pretend a tool was called.\n"
+        "- For research, include the source URLs returned by web_search/web_fetch.\n"
+        "- For coding, inspect existing files first, make the smallest complete change, and run relevant verification.\n"
+        "- For PPTX/DOCX work, call office_workflow directly with output_path, title, and a sections_json JSON array; "
+        "do not describe or print a proposed tool call. Report the exact path returned by the tool.\n"
+        "- If a required tool returns ERROR, explain the concrete blocker instead of fabricating a result."
+    )
+
+    if additions:
+        return f"{description}\n\n" + "\n\n".join(additions)
+    return description
+
 
     additions.append(
         "Execution contract:\n"
@@ -1185,6 +1462,200 @@ OFFICE_ARTIFACT_PATTERN = re.compile(
 EDIT_ARTIFACT_PATTERN = re.compile(
     r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:md|py|json|csv|txt|ts|tsx|js|jsx|rs))"
 )
+
+
+def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
+    tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
+    if "office_workflow" not in tools:
+        return []
+
+    root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
+    task_contract = "\n".join([
+        str(task_payload.get("description") or ""),
+        str(task_payload.get("expectedOutput") or ""),
+    ])
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for match in OFFICE_ARTIFACT_PATTERN.finditer(task_contract):
+        value = match.group("path")
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if resolved not in seen:
+            paths.append(resolved)
+            seen.add(resolved)
+    return paths
+
+
+def expected_edit_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
+    tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
+    if "edit_file" not in tools:
+        return []
+    description = str(task_payload.get("description") or "")
+    if not re.search(r"(?i)\b(create|write|save|generate|implement|erstelle|schreib|speicher|erzeug)\w*\b", description):
+        return []
+
+    root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
+    task_contract = "\n".join([description, str(task_payload.get("expectedOutput") or "")])
+    raw_matches = [match.group("path") for match in EDIT_ARTIFACT_PATTERN.finditer(task_contract)]
+    qualified_names = {
+        Path(value).name.lower()
+        for value in raw_matches
+        if Path(value).parent != Path(".")
+    }
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for value in raw_matches:
+        candidate = Path(value)
+        if candidate.parent == Path(".") and candidate.name.lower() in qualified_names:
+            continue
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if resolved not in seen:
+            paths.append(resolved)
+            seen.add(resolved)
+    return paths
+
+
+def expected_required_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
+    paths = expected_office_artifact_paths(request, task_payload, agent_payload)
+    seen = set(paths)
+    for path in expected_edit_artifact_paths(request, task_payload, agent_payload):
+        if path not in seen:
+            paths.append(path)
+            seen.add(path)
+    return paths
+
+
+def missing_required_artifacts(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
+    return [
+        path
+        for path in expected_required_artifact_paths(request, task_payload, agent_payload)
+        if not path.is_file() or path.stat().st_size <= 0
+    ]
+
+
+def build_artifact_repair_description(
+    request: dict,
+    task_payload: dict,
+    agent_payload: dict,
+    missing: list[Path],
+    context_outputs: list[str],
+) -> str:
+    root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
+    relative_paths = []
+    for path in missing:
+        try:
+            relative_paths.append(path.relative_to(root).as_posix())
+        except ValueError:
+            relative_paths.append(path.name)
+    context = "\n\n".join(context_outputs)
+    tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
+    repair_contract = (
+        "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
+        "sections_json must be a JSON array of objects with title plus body or bullets. "
+        "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
+        if "office_workflow" in tools
+        else "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
+        "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
+    )
+    return (
+        f"{build_task_description(request, task_payload, agent_payload)}\n\n"
+        "ARTIFACT REPAIR REQUIRED:\n"
+        f"The previous attempt returned text but did not create: {', '.join(relative_paths)}.\n"
+        + repair_contract
+        + (f"\n\nUpstream results to use:\n{truncate_text(context, 12_000)}" if context else "")
+    )
+
+
+MARKDOWN_ARTIFACT_PATTERN = re.compile(
+    r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.md)"
+)
+
+
+def deterministic_office_fallback(
+    request: dict,
+    task_payload: dict,
+    agent_payload: dict,
+    missing: list[Path],
+) -> str | None:
+    if not missing:
+        return None
+    tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
+    if "office_workflow" not in tools:
+        return None
+
+    root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
+    description = str(task_payload.get("description") or "")
+    source_path: Path | None = None
+    for match in MARKDOWN_ARTIFACT_PATTERN.finditer(description):
+        candidate = Path(match.group("path"))
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            source_path = resolved
+            break
+    if source_path is None:
+        return None
+
+    sections: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for raw_line in source_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        heading = re.match(r"^#{1,3}\s+(.+)$", line)
+        if heading:
+            if current is not None:
+                sections.append(current)
+            current = {"title": heading.group(1).strip(), "bullets": []}
+            continue
+        if not line or current is None or line.startswith("```"):
+            continue
+        content = re.sub(r"^[-*+]\s+", "", line).strip()
+        if content:
+            bullets = current["bullets"]
+            if isinstance(bullets, list) and len(bullets) < 12:
+                bullets.append(content[:500])
+    if current is not None:
+        sections.append(current)
+    sections = [section for section in sections if section.get("title")][:20]
+    if not sections:
+        return None
+
+    title_match = re.search(r"(?i)\btitle\s+['\"]([^'\"]+)['\"]", description)
+    title = title_match.group(1).strip() if title_match else str(request.get("name") or "Crew Artifact")
+    from crew_tools import OfficeWorkflowTool
+
+    results: list[str] = []
+    for target in missing:
+        relative = target.relative_to(root).as_posix()
+        result = OfficeWorkflowTool(root)._run(relative, title, json.dumps(sections, ensure_ascii=False))
+        if result.startswith("ERROR"):
+            raise RuntimeError(result)
+        results.append(result)
+    return "\n".join(results)
+
+
+def resolve_process(process_name: str):
+    from crewai import Process  # type: ignore
+
+    if process_name.lower() == "hierarchical":
+        return Process.hierarchical
+    return Process.sequential
 
 
 def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:

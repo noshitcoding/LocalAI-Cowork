@@ -5,7 +5,7 @@
 Die Modellanbindung ist auf lokale bzw. netzinterne Ollama-Instanzen ausgelegt.
 
 Standardendpoint im Projekt:
-- `http://192.168.178.82:11434`
+- `http://localhost:11434`
 
 ## Konfigurationsquellen
 
@@ -43,7 +43,7 @@ Symptom:
 Pruefung:
 
 ```powershell
-curl http://192.168.178.82:11434/api/tags
+curl http://localhost:11434/api/tags
 ```
 
 Massnahmen:

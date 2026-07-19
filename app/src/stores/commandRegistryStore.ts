@@ -251,13 +251,13 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'init', command: '/init', label: 'Initialize project', description: 'Initializes a new Open_Cowork project in the current folder',
+      id: 'init', command: '/init', label: 'Initialize project', description: 'Initializes a new LocalAI Cowork project in the current folder',
       category: 'workspace', execute: async () => {
         await safeInvokeVoid('audit_event', { area: 'project', action: 'init', details: 'Project init started' })
         const store = useChatStore.getState()
         if (store.activeThreadId) {
           store.addMessage(store.activeThreadId, {
-            role: 'system', content: 'Project initialized. Open_Cowork configuration was created.',
+            role: 'system', content: 'Project initialized. LocalAI Cowork configuration was created.',
             timestamp: Date.now(),
           })
         }
@@ -959,7 +959,7 @@ export function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Open_Cowork v1.0\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Hermes-style memory and session search\n- Plugin and MCP integration',
+            role: 'system', content: 'LocalAI Cowork v1.0\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Hermes-style memory and session search\n- Plugin and MCP integration',
             timestamp: Date.now(),
           })
         }

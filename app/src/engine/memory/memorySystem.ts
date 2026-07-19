@@ -41,7 +41,7 @@ const MEMORY_FILES = [
   'AGENTS.md',
 ]
 
-/** Additional memory files for OpenCowork-specific features */
+/** Additional memory files for LocalAI Cowork-specific features */
 const COWORK_MEMORY_FILES = [
   '.cowork/memory.md',
   '.cowork/DRAFT_MEMORY.md',

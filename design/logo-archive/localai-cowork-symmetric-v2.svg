@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1600"
+  height="512"
+  viewBox="0 0 1600 512"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">LocalAI Cowork logo</title>
+  <desc id="description">
+    A symmetrical open-loop symbol beside the words LocalAI Cowork.
+  </desc>
+
+  <!--
+    The circle circumference is approximately 728.8496 at r=116.
+    Repeating 283.4415-unit arcs and 80.9833-unit gaps produces two
+    geometrically identical segments and exact 180-degree symmetry.
+  -->
+  <circle
+    cx="236"
+    cy="256"
+    r="116"
+    fill="none"
+    stroke="#AD4E08"
+    stroke-width="58"
+    stroke-linecap="round"
+    stroke-dasharray="283.4415 80.9833"
+    transform="rotate(-45 236 256)"
+  />
+
+  <text
+    x="440"
+    y="292"
+    fill="#1A1A1A"
+    font-family="Inter, 'Segoe UI', Arial, sans-serif"
+    font-size="108"
+    font-weight="650"
+    letter-spacing="-2"
+  >LocalAI Cowork</text>
+</svg>

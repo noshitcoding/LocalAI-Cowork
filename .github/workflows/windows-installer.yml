@@ -68,14 +68,21 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Install Chromium for UI quality gates
+        working-directory: app
+        run: npm exec -- playwright install --with-deps chromium
+
       - name: Verify release source
         working-directory: app
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           npm run verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run supply-chain:check -- --tag "$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Audit Rust dependencies
         shell: pwsh
@@ -87,23 +94,23 @@ jobs:
         working-directory: app
         shell: pwsh
         run: |
-          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'open-cowork-target'
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'localai-cowork-target'
           npm run installer
 
       - name: Prepare release assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
-          Copy-Item -LiteralPath dist-installers\Open-Cowork-Setup.exe -Destination release-assets\Open-Cowork-Setup-x64.exe -Force
+          Copy-Item -LiteralPath dist-installers\LocalAI-Cowork-Setup.exe -Destination release-assets\LocalAI-Cowork-Setup-x64.exe -Force
 
       - name: Sign and verify Windows installer
         shell: pwsh
         env:
-          OPEN_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
-          OPEN_COWORK_CODESIGN_PASSWORD: ${{ secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
-          OPEN_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
+          LOCALAI_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 || secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
+          LOCALAI_COWORK_CODESIGN_PASSWORD: ${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD || secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
+          LOCALAI_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT || secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
         run: |
-          .\app\scripts\sign-windows-installer.ps1 -InstallerPath release-assets\Open-Cowork-Setup-x64.exe
+          .\app\scripts\sign-windows-installer.ps1 -InstallerPath release-assets\LocalAI-Cowork-Setup-x64.exe
 
       - name: Generate SBOM, notices, provenance, and checksums
         working-directory: app
@@ -121,13 +128,13 @@ jobs:
       - name: Attest installer SBOM
         uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
         with:
-          subject-path: release-assets/Open-Cowork-Setup-x64.exe
-          sbom-path: release-assets/open-cowork.cdx.json
+          subject-path: release-assets/LocalAI-Cowork-Setup-x64.exe
+          sbom-path: release-assets/localai-cowork.cdx.json
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: Open-Cowork-Windows-Installer
+          name: LocalAI-Cowork-Windows-Installer
           path: release-assets/*
           if-no-files-found: error
 
@@ -135,7 +142,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
-          name: Open Cowork ${{ steps.release.outputs.tag }}
+          name: LocalAI Cowork ${{ steps.release.outputs.tag }}
           target_commitish: ${{ github.sha }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
           generate_release_notes: true

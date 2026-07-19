@@ -1,0 +1,27 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
+  "author": "LocalAI Cowork maintainers",
+  "timestamp": "2026-07-16T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "GHSA-wrw7-89jp-8q8g"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/app@0.1.8",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib@0.18.5"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "LocalAI Cowork maintains and publishes Windows 10 and Windows 11 builds. glib 0.18.5 is pulled only through Tauri's Linux GTK dependency graph and is not compiled into or executed by the supported Windows application. Reassess this statement before adding Linux as a maintained release target."
+    }
+  ]
+}

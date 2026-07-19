@@ -298,18 +298,19 @@ export function releaseWorkflowSigningErrors(text) {
     if (index >= 0 && signingIndex >= index) errors.push(`Authenticode signing must run before ${name}`)
   }
   for (const variable of [
-    'OPEN_COWORK_CODESIGN_PFX_BASE64',
-    'OPEN_COWORK_CODESIGN_PASSWORD',
-    'OPEN_COWORK_CODESIGN_THUMBPRINT',
+    'LOCALAI_COWORK_CODESIGN_PFX_BASE64',
+    'LOCALAI_COWORK_CODESIGN_PASSWORD',
+    'LOCALAI_COWORK_CODESIGN_THUMBPRINT',
   ]) {
-    if (!text.includes(`${variable}: \${{ secrets.${variable} }}`)) {
+    const assignment = new RegExp(`${variable}:\\s*\\$\\{\\{\\s*secrets\\.${variable}(?:\\s*\\|\\|[^}]*)?\\s*}}`)
+    if (!assignment.test(text)) {
       errors.push(`release workflow is missing secret-backed ${variable}`)
     }
   }
   if (/sign-windows-installer\.ps1[^\r\n]*(?:Password|Pfx)/i.test(text)) {
     errors.push('code-signing secret material must not be passed on the command line')
   }
-  if (/OPEN_COWORK_AUTHENTICODE_TEST_MODE|TestAllowUntrustedCertificate|TestSkipTimestamp/i.test(text)) {
+  if (/LOCALAI_COWORK_AUTHENTICODE_TEST_MODE|TestAllowUntrustedCertificate|TestSkipTimestamp/i.test(text)) {
     errors.push('Authenticode test bypasses are forbidden in the release workflow')
   }
   return errors
@@ -459,7 +460,7 @@ export function collectInventory(appRoot = defaultAppRoot, options = {}) {
     components,
     records: [...npmRecords, ...cargoRecords],
     dependencies: [
-      { ref: `pkg:generic/open-cowork@${packageJson.version}`, dependsOn: [...new Set(rootDependencies)].sort() },
+      { ref: `pkg:generic/localai-cowork@${packageJson.version}`, dependsOn: [...new Set(rootDependencies)].sort() },
       ...[...dependencyMap].map(([ref, dependsOn]) => ({ ref, dependsOn })).sort((a, b) => a.ref.localeCompare(b.ref)),
     ],
     materialSeed: Buffer.concat([readFileSync(packageLockPath), readFileSync(cargoLockPath)]),
@@ -477,17 +478,17 @@ export function createSbom(appRoot = defaultAppRoot, options = {}) {
     version: 1,
     metadata: {
       timestamp: context.timestamp,
-      tools: { components: [{ type: 'application', name: 'open-cowork-supply-chain', version: '1' }] },
+      tools: { components: [{ type: 'application', name: 'localai-cowork-supply-chain', version: '1' }] },
       component: {
         type: 'application',
-        'bom-ref': `pkg:generic/open-cowork@${version}`,
-        name: 'open-cowork',
+        'bom-ref': `pkg:generic/localai-cowork@${version}`,
+        name: 'localai-cowork',
         version,
-        purl: `pkg:generic/open-cowork@${version}`,
+        purl: `pkg:generic/localai-cowork@${version}`,
       },
       properties: [
-        { name: 'open-cowork:git-commit', value: context.commit },
-        { name: 'open-cowork:target', value: inventory.target },
+        { name: 'localai-cowork:git-commit', value: context.commit },
+        { name: 'localai-cowork:target', value: inventory.target },
       ],
     },
     components: inventory.components,
@@ -504,7 +505,7 @@ function notices(inventory, version, context) {
       license: normalizeLicenseExpression(record.license),
     }))
     .sort((left, right) => `${left.ecosystem}:${left.name}@${left.version}`.localeCompare(`${right.ecosystem}:${right.name}@${right.version}`))
-  return { schemaVersion: 1, product: 'open-cowork', version, commit: context.commit, generatedAt: context.timestamp, packages }
+  return { schemaVersion: 1, product: 'localai-cowork', version, commit: context.commit, generatedAt: context.timestamp, packages }
 }
 
 function writeJson(path, value) {
@@ -530,7 +531,7 @@ export function writeSbomArtifacts(appRoot, targetDir, options = {}) {
   const inventory = collectInventory(appRoot, options)
   const context = options.context ?? commitContext(appRoot)
   const sbom = createSbom(appRoot, { ...options, context, inventory })
-  writeJson(join(targetDir, 'open-cowork.cdx.json'), sbom)
+  writeJson(join(targetDir, 'localai-cowork.cdx.json'), sbom)
   writeJson(join(targetDir, 'THIRD_PARTY_NOTICES.json'), notices(inventory, version, context))
   return { inventory, context, version }
 }
@@ -551,10 +552,10 @@ export function writeReleaseProvenance(appRoot, assetsDir, options = {}) {
   const materials = materialNames.map((name) => ({ path: name.replaceAll('\\', '/'), ...fileHash(join(appRoot, name)) }))
   const provenance = {
     schemaVersion: 1,
-    predicateType: 'https://open-cowork.dev/provenance/release/v1',
+    predicateType: 'https://localai-cowork.dev/provenance/release/v1',
     subject: assets,
     build: {
-      product: 'open-cowork',
+      product: 'localai-cowork',
       version,
       tag: releaseTag || null,
       commit: context.commit,
@@ -593,7 +594,7 @@ function main() {
     validateWorkflowHardening(defaultAppRoot, inventory.policy)
     const npmCount = inventory.records.filter((entry) => entry.ecosystem === 'npm').length
     const cargoCount = inventory.records.filter((entry) => entry.ecosystem === 'cargo').length
-    console.log(`Supply-chain policy passed for Open Cowork ${version}: ${npmCount} npm and ${cargoCount} Cargo package records.`)
+    console.log(`Supply-chain policy passed for LocalAI Cowork ${version}: ${npmCount} npm and ${cargoCount} Cargo package records.`)
     return
   }
 

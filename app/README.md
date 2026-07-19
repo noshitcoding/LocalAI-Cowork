@@ -1,4 +1,4 @@
-# Open Cowork App
+# LocalAI Cowork App
 
 This directory contains the desktop application.
 
@@ -54,7 +54,7 @@ npm run installer
 The repository-level installer copy is written to:
 
 ```text
-../dist-installers/Open-Cowork-Setup.exe
+../dist-installers/LocalAI-Cowork-Setup.exe
 ```
 
 ## Important Paths
@@ -73,5 +73,5 @@ Keep generated build output out of source control. When changing public behavior
 
 ## License
 
-Open Cowork is licensed under the Apache License, Version 2.0. See `../LICENSE`,
+LocalAI Cowork is licensed under the Apache License, Version 2.0. See `../LICENSE`,
 `../NOTICE`, and `../DISCLAIMER.md`.

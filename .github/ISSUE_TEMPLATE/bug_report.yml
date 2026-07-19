@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible problem in LocalAI Cowork
+title: "[Bug]: "
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve LocalAI Cowork. Search existing issues first and never paste API keys, tokens, private file contents, or personal data.
+
+  - type: input
+    id: version
+    attributes:
+      label: LocalAI Cowork version
+      description: Find the version in Settings or the release name.
+      placeholder: v0.1.7
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - GitHub Release installer
+        - Built from source
+        - Development mode
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe one clear problem and its impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Configure …
+        3. Click …
+        4. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Paste only the minimum relevant, redacted output. Remove usernames, local paths, prompts, document contents, endpoints, API keys, tokens, cookies, and webhook URLs.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add redacted screenshots or details that make the issue easier to reproduce.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I searched for an existing report.
+          required: true
+        - label: I removed credentials, private data, private paths, and sensitive file contents.
+          required: true
+        - label: This is not a security vulnerability. Security issues must be reported privately.
+          required: true
+

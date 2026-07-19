@@ -9,12 +9,12 @@ $ErrorActionPreference = 'Stop'
 
 $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
 $signingScript = Join-Path $PSScriptRoot 'sign-windows-installer.ps1'
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "open-cowork-authenticode-smoke-$([guid]::NewGuid().ToString('N'))"
-$temporaryInstaller = Join-Path $temporaryRoot 'Open-Cowork-Setup-x64.exe'
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) "localai-cowork-authenticode-smoke-$([guid]::NewGuid().ToString('N'))"
+$temporaryInstaller = Join-Path $temporaryRoot 'LocalAI-Cowork-Setup-x64.exe'
 $temporaryPfx = Join-Path $temporaryRoot 'ephemeral-code-signing.pfx'
-$passwordText = "OpenCowork-Smoke-$([guid]::NewGuid().ToString('N'))"
+$passwordText = "LocalAICowork-Smoke-$([guid]::NewGuid().ToString('N'))"
 $password = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
-$subject = "CN=Open Cowork Ephemeral Authenticode Smoke $([guid]::NewGuid().ToString('N'))"
+$subject = "CN=LocalAI Cowork Ephemeral Authenticode Smoke $([guid]::NewGuid().ToString('N'))"
 $thumbprint = $null
 $previousEnvironment = @{}
 
@@ -42,17 +42,17 @@ try {
     Start-Sleep -Milliseconds 500
 
     foreach ($name in @(
-        'OPEN_COWORK_CODESIGN_PFX_BASE64',
-        'OPEN_COWORK_CODESIGN_PASSWORD',
-        'OPEN_COWORK_CODESIGN_THUMBPRINT',
-        'OPEN_COWORK_AUTHENTICODE_TEST_MODE'
+        'LOCALAI_COWORK_CODESIGN_PFX_BASE64',
+        'LOCALAI_COWORK_CODESIGN_PASSWORD',
+        'LOCALAI_COWORK_CODESIGN_THUMBPRINT',
+        'LOCALAI_COWORK_AUTHENTICODE_TEST_MODE'
     )) {
         $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
-    $env:OPEN_COWORK_CODESIGN_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($temporaryPfx))
-    $env:OPEN_COWORK_CODESIGN_PASSWORD = $passwordText
-    $env:OPEN_COWORK_CODESIGN_THUMBPRINT = $thumbprint
-    $env:OPEN_COWORK_AUTHENTICODE_TEST_MODE = '1'
+    $env:LOCALAI_COWORK_CODESIGN_PFX_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($temporaryPfx))
+    $env:LOCALAI_COWORK_CODESIGN_PASSWORD = $passwordText
+    $env:LOCALAI_COWORK_CODESIGN_THUMBPRINT = $thumbprint
+    $env:LOCALAI_COWORK_AUTHENTICODE_TEST_MODE = '1'
 
     $signResult = & $signingScript -InstallerPath $temporaryInstaller `
         -TestAllowUntrustedCertificate -TestSkipTimestamp -SignToolTimeoutSeconds 30 | ConvertFrom-Json

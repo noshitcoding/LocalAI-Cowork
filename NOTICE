@@ -1,23 +1,27 @@
-Open Cowork
+LocalAI Cowork
 Copyright 2026 noshitcoding
 
 This product includes software developed by noshitcoding.
 
-Open Cowork is a local-first desktop workspace for AI-assisted work with chat,
+LocalAI Cowork is a local-first desktop workspace for AI-assisted work with chat,
 task planning, tool execution, file context, MCP servers, and local or
 self-hosted model providers.
 
-When redistributing Open Cowork or a derivative work, please preserve this
+When redistributing LocalAI Cowork or a derivative work, please preserve this
 notice and the attribution to noshitcoding as required by the Apache License,
 Version 2.0.
 
-The project name "Open Cowork", the repository name "Open_Cowork", and
+The project name "LocalAI Cowork", the repository name "LocalAI-Cowork", and
 associated project branding identify the original upstream project. The Apache
 License, Version 2.0 permits reasonable and customary use of those names for
 attribution and origin description, but does not grant broader trademark or
 branding rights.
 
-Open Cowork depends on third-party open source software, including components
+LocalAI Cowork is an independent project and is not affiliated with or endorsed
+by Anthropic, Microsoft, or the separate LocalAI project at localai.io. All
+third-party product names and trademarks belong to their respective owners.
+
+LocalAI Cowork depends on third-party open source software, including components
 from the Tauri, React, Rust, npm, and PDFium ecosystems. Those components remain
 under their respective licenses. Bundled third-party license files, dependency
 manifests, and package metadata should be reviewed and preserved where required

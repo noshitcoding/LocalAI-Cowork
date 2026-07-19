@@ -55,13 +55,13 @@ function Import-MsvcEnvironment {
 # Keep local release artifacts in a temp target dir unless the caller
 # explicitly configured CARGO_TARGET_DIR.
 if (-not $env:CARGO_TARGET_DIR -and $targetRoot -match "\s") {
-    $env:CARGO_TARGET_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "open-cowork-target"
+    $env:CARGO_TARGET_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "localai-cowork-target"
 }
 
 $effectiveTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { $targetRoot }
 $targetSegment = if ($env:TAURI_BUILD_TARGET) { "$($env:TAURI_BUILD_TARGET)\" } else { "" }
 $bundleDir = Join-Path $effectiveTargetRoot "$($targetSegment)release\bundle\nsis"
-$stableInstallerPath = Join-Path $installerDir "Open-Cowork-Setup.exe"
+$stableInstallerPath = Join-Path $installerDir "LocalAI-Cowork-Setup.exe"
 
 Push-Location $appRoot
 try {

@@ -33,7 +33,7 @@ import { useEngineStore } from '../stores/engineStore'
 import { useUiStore } from '../stores/uiStore'
 import i18n, { tr } from '../i18n'
 
-const THREAD_DND_MIME = 'application/open-cowork-thread-id'
+const THREAD_DND_MIME = 'application/localai-cowork-thread-id'
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString(i18n.resolvedLanguage ?? i18n.language ?? 'en', {

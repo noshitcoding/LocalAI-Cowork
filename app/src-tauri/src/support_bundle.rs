@@ -247,7 +247,7 @@ pub fn create(
     });
     let database = whitelist_database_diagnostics(database_diagnostics);
     let readme = concat!(
-        "Open_Cowork support bundle\n\n",
+        "LocalAI Cowork support bundle\n\n",
         "Included: app/runtime metadata, aggregate database diagnostics, recent run states, ",
         "audit integrity status, and verified audit event names/timestamps.\n",
         "Excluded: database files, prompts, responses, tool input/output, file contents, paths, ",
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn bundle_is_whitelisted_manifested_and_contains_no_input_secrets() {
-        let root = std::env::temp_dir().join(format!("open_cowork_bundle_{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("localai_cowork_bundle_{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("test root creates");
         let audit_lines = vec![
             r#"{"timestamp":"2026-07-10T12:00:00Z","area":"runtime","action":"failed","details":{"unknown":"SENTINEL_AUDIT_SECRET","apiKey":"SENTINEL_KEY"}}"#.to_string(),
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn tampered_audit_is_reported_but_its_event_tail_is_omitted() {
-        let root = std::env::temp_dir().join(format!("open_cowork_bundle_{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("localai_cowork_bundle_{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("test root creates");
         let audit_lines = vec![
             "{\"timestamp\":\"2026-07-10T12:00:00Z\",\"area\":\"SENTINEL_TAMPERED_AREA\",\"action\":\"failed\"}".to_string(),

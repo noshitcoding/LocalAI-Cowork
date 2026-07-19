@@ -12,7 +12,7 @@ const MAX_REDIRECTS: usize = 5;
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const USER_AGENT: &str = "OpenCowork/0.1 secure-web-fetch";
+const USER_AGENT: &str = "LocalAICowork/0.1 secure-web-fetch";
 
 pub(crate) const MAX_TEXT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 

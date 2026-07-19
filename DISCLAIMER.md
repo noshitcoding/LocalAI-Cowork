@@ -1,6 +1,6 @@
 # Disclaimer
 
-Open Cowork is provided "as is", without warranties or conditions of any kind,
+LocalAI Cowork is provided "as is", without warranties or conditions of any kind,
 to the maximum extent permitted by applicable law.
 
 The maintainers, contributors, and copyright holders are not liable for errors,
@@ -12,7 +12,7 @@ software.
 
 Users are responsible for reviewing configuration, permissions, model output,
 tool calls, file operations, terminal commands, generated artifacts, and any
-other automated actions before using Open Cowork in personal, professional, or
+other automated actions before using LocalAI Cowork in personal, professional, or
 commercial environments.
 
 This additional disclaimer is intended to summarize and reinforce the warranty
