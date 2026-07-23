@@ -424,4 +424,67 @@ describe('QueryEngine approval event flow', () => {
     expect(events).toContain('tool_use_complete')
     expect(seenLastUserTexts[1]).toContain('Execute the last described next step now')
   })
+
+  it('does not request approval for fallback plans in bypass mode', async () => {
+    const { QueryEngine } = await import('./queryEngine')
+
+    streamOllamaMessagesMock.mockReset()
+    const seenLastUserTexts: string[] = []
+    streamOllamaMessagesMock
+      .mockImplementationOnce((_config: unknown, messages: Array<{ role: 'user' | 'assistant'; content: string | Array<{ type: string; text?: string }> }>) => {
+        seenLastUserTexts.push(getLastUserText(messages))
+        return onePlanOnlyTurn()
+      })
+      .mockImplementationOnce((_config: unknown, messages: Array<{ role: 'user' | 'assistant'; content: string | Array<{ type: string; text?: string }> }>) => {
+        seenLastUserTexts.push(getLastUserText(messages))
+        return oneToolUseTurn()
+      })
+      .mockImplementationOnce(() => oneTextTurn())
+
+    const moveTool: Tool = {
+      name: 'MovePath',
+      description: 'move path',
+      category: 'filesystem',
+      riskLevel: 'medium' as const,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          source_path: { type: 'string', description: 'source' },
+          destination_path: { type: 'string', description: 'destination' },
+        },
+        required: ['source_path', 'destination_path'],
+      },
+      async call(): Promise<ToolResult<string>> {
+        return { data: 'moved' }
+      },
+      isConcurrencySafe: () => false,
+      isReadOnly: () => false,
+    }
+
+    const engine = new QueryEngine({
+      backend: 'ollama',
+      ollama: {
+        baseUrl: 'http://localhost:11434',
+        model: 'test-model',
+        timeoutMs: 10_000,
+        contextWindow: 16_000,
+        temperature: 0,
+      },
+      cwd: 'C:/workspace',
+      systemPrompt: 'test',
+      permissionMode: 'bypass',
+      maxTurns: 6,
+      customTools: [moveTool],
+    })
+
+    const events: string[] = []
+    for await (const event of engine.query([], 'sort the files into two folders')) {
+      events.push(event.type)
+    }
+
+    expect(streamOllamaMessagesMock).toHaveBeenCalledTimes(3)
+    expect(events).not.toContain('approval_required')
+    expect(events).toContain('tool_use_complete')
+    expect(seenLastUserTexts[1]).toContain('Permission bypass is enabled')
+  })
 })

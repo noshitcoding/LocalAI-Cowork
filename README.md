@@ -33,6 +33,10 @@ The project is early, but already usable as a Windows-first Tauri app. Start wit
 - Task lifecycle with approval states, progress, and audit events
 - Skills, prompt templates, runtime instructions, and reusable workflows
 - Terminal, process, memory, insight, and pipeline panels
+- CDP developer browser with localhost preview, interaction, annotations, DOM,
+  console, and network inspection
+- GitHub workbench for local changes, branches, commits, pull requests, reviews,
+  comments, and merges
 - Windows installer workflow for tagged releases
 
 ## Current Scope
@@ -164,6 +168,7 @@ npm run smoke:desktop
 
 - [Ollama configuration](docs/OLLAMA_CONFIGURATION.md)
 - [Desktop control and computer use](docs/DESKTOP_CONTROL_AND_COMPUTER_USE.md)
+- [Developer browser and GitHub workbench](docs/DEVELOPER_BROWSER_AND_GITHUB.md)
 
 ## Release Workflow
 

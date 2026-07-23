@@ -263,15 +263,16 @@ async function callOllamaGenerate(
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       if (signal?.aborted) {
-        throw new Error('Generierung abgebrochen.')
+        throw new Error('Generierung abgebrochen.', { cause: error })
       }
-      throw new Error(`Timeout after ${config.timeoutMs}ms while calling ${config.baseUrl}/api/generate`)
+      throw new Error(`Timeout after ${config.timeoutMs}ms while calling ${config.baseUrl}/api/generate`, { cause: error })
     }
 
     const message = error instanceof Error ? error.message : String(error)
     if (message.toLowerCase().includes('failed to fetch')) {
       throw new Error(
         `Ollama is not reachable from the browser (${config.baseUrl}). Check endpoint, HTTPS/CORS, and whether Ollama is running.`,
+        { cause: error },
       )
     }
 
@@ -354,7 +355,7 @@ export async function streamChatTurn(
   }
 
   const streamId = createStreamId()
-  let unlisten: (() => void) | null = null
+  let unlisten: () => void
   const cancelStream = () => {
     void invoke('chat_turn_stream_cancel', { streamId }).catch(() => {})
   }
@@ -394,12 +395,10 @@ export async function streamChatTurn(
     } catch (fallbackError) {
       const streamMessage = streamError instanceof Error ? streamError.message : String(streamError)
       const fallbackMessage = normalizeTauriInvokeError(fallbackError).message
-      throw new Error(`${streamMessage}\nFallback failed: ${fallbackMessage}`)
+      throw new Error(`${streamMessage}\nFallback failed: ${fallbackMessage}`, { cause: fallbackError })
     }
   } finally {
     options?.signal?.removeEventListener('abort', cancelStream)
-    if (unlisten) {
-      unlisten()
-    }
+    unlisten()
   }
 }

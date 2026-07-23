@@ -12,6 +12,7 @@ import {
   sanitizeMcpServerForPersistence,
   sanitizeProfilesForPersistence,
 } from '../security/credentialPersistence'
+import { normalizeProviderModels, resolveProviderModelFromCatalog } from '../utils/providerModels'
 
 export type OllamaConfig = {
   baseUrl: string
@@ -158,7 +159,7 @@ function createBaseLlmProfile(provider: LlmProviderKind): LlmProfile {
           apiKey: DEFAULT_OPENAI_COMPATIBLE_PROFILE.apiKey,
           timeoutMs: DEFAULT_OPENAI_COMPATIBLE_PROFILE.timeoutMs,
           verifyTlsCertificates: true,
-          contextWindow: null,
+          contextWindow: 128000,
           temperature: null,
         }
       : {
@@ -170,7 +171,7 @@ function createBaseLlmProfile(provider: LlmProviderKind): LlmProfile {
           apiKey: '',
           timeoutMs: DEFAULT_OLLAMA.timeoutMs,
           verifyTlsCertificates: true,
-          contextWindow: null,
+          contextWindow: 128000,
           temperature: null,
         }
 }
@@ -191,9 +192,10 @@ function normalizeLlmProfile(profile: Partial<LlmProfile> & Pick<LlmProfile, 'pr
     apiKey: profile.apiKey?.trim() ?? baseProfile.apiKey,
     timeoutMs: Math.max(1000, Number.isFinite(rawTimeout) ? rawTimeout : baseProfile.timeoutMs),
     verifyTlsCertificates: profile.verifyTlsCertificates ?? baseProfile.verifyTlsCertificates,
-    contextWindow: profile.provider === 'ollama'
-      ? Math.max(512, Number.isFinite(Number(rawContextWindow)) ? Number(rawContextWindow) : DEFAULT_OLLAMA.contextWindow)
-      : null,
+    contextWindow: Math.max(
+      512,
+      Number.isFinite(Number(rawContextWindow)) ? Number(rawContextWindow) : DEFAULT_OLLAMA.contextWindow,
+    ),
     temperature: profile.provider === 'ollama'
       ? (Number.isFinite(Number(rawTemperature)) ? Number(rawTemperature) : DEFAULT_OLLAMA.temperature)
       : null,
@@ -540,13 +542,25 @@ export const useConfigStore = create<ConfigState>()(
           }
         }),
       setLlmProfileModels: (id, models) =>
-        set((state) => ({
-          llmProfileModels: {
-            ...state.llmProfileModels,
-            [id]: models,
-          },
-          availableModels: id === state.defaultLlmProfileIds.ollama ? models : state.availableModels,
-        })),
+        set((state) => {
+          const normalizedModels = normalizeProviderModels(models)
+          const llmProfiles = state.llmProfiles.map((profile) => {
+            if (profile.id !== id || profile.provider === 'ollama') return profile
+            const resolvedModel = resolveProviderModelFromCatalog(profile.model, normalizedModels)
+            return resolvedModel && resolvedModel !== profile.model
+              ? normalizeLlmProfile({ ...profile, model: resolvedModel })
+              : profile
+          })
+
+          return {
+            llmProfiles,
+            llmProfileModels: {
+              ...state.llmProfileModels,
+              [id]: normalizedModels,
+            },
+            availableModels: id === state.defaultLlmProfileIds.ollama ? normalizedModels : state.availableModels,
+          }
+        }),
       setPreference: (key, value) =>
         set((state) => ({
           preferences: {
@@ -706,15 +720,25 @@ export const useConfigStore = create<ConfigState>()(
         const llmProfiles = ensureLlmProfiles(state.ollama, state.llmProfiles)
         const defaultLlmProfileIds = ensureDefaultLlmProfileIds(state.defaultLlmProfileIds, llmProfiles)
         const availableModels = Array.isArray(state.availableModels) ? state.availableModels : []
-        const llmProfileModels = {
+        const llmProfileModels: Record<string, string[]> = {
           [defaultLlmProfileIds.ollama]: availableModels,
           ...(state.llmProfileModels ?? {}),
         }
+        const syncedLlmProfiles = llmProfiles.map((profile) => {
+          if (profile.provider === 'ollama') return profile
+          const resolvedModel = resolveProviderModelFromCatalog(
+            profile.model,
+            llmProfileModels[profile.id] ?? [],
+          )
+          return resolvedModel && resolvedModel !== profile.model
+            ? normalizeLlmProfile({ ...profile, model: resolvedModel })
+            : profile
+        })
         return {
           ...current,
           ...persistedState,
-          ollama: syncLegacyOllamaConfig(llmProfiles, defaultLlmProfileIds, state.ollama),
-          llmProfiles,
+          ollama: syncLegacyOllamaConfig(syncedLlmProfiles, defaultLlmProfileIds, state.ollama),
+          llmProfiles: syncedLlmProfiles,
           defaultLlmProfileIds,
           llmProfileModels,
           preferences: {

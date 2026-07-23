@@ -1,8 +1,7 @@
 ﻿// ── Query Engine (Core) ─────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/core/query.ts + QueryEngine.ts
 // The agentic loop: send messages → get response → execute tools → repeat
-// Enhanced with: auto-compaction, context management, retry logic,
-// tool result budgets, session persistence
+// Enhanced with deterministic context trimming, retry logic, and tool-result budgets.
 
 import type {
   Message,
@@ -59,6 +58,7 @@ import {
 } from '../api/openaiCompatibleClient'
 import { getAllTools, getToolDefinitions, registerAllBuiltinTools } from '../tools/registry'
 import { ContextManager } from '../services/contextManager'
+import { estimateTokens } from '../services/compact'
 
 // ── Engine Configuration ───────────────────────────────────────────────────
 
@@ -92,8 +92,8 @@ export type EngineConfig = {
   appendSystemPrompt?: string
   /** Current persisted run ID */
   runId?: string
-  /** Current session ID */
-  sessionId?: string
+  /** Chat that owns the current run */
+  threadId?: string
   /** Active toolset policy used for this run */
   toolsetPolicyId?: string
   /** Current worker sandbox ID */
@@ -114,7 +114,7 @@ export type EngineEvent =
   | { type: 'usage_update'; usage: TokenUsage; costUsd: number; totalCostUsd: number }
   | { type: 'turn_complete'; turnCount: number; stopReason: string | null }
   | { type: 'approval_required'; request: ApprovalRequest }
-  | { type: 'compaction'; removedCount: number; summary: string }
+  | { type: 'context_coverage'; totalPrevious: number; sentPrevious: number; omittedPrevious: number; maxInputTokens: number }
   | { type: 'context_warning'; level: 'warning' | 'critical'; estimatedTokens: number }
   | { type: 'retry'; reason: string; attempt: number }
   | { type: 'error'; error: string }
@@ -146,9 +146,8 @@ export class QueryEngine {
     // Initialize context manager (Claude Code feature)
     this.contextManager = new ContextManager(
       {
-        autoCompactEnabled: true,
         toolResultBudgetEnabled: true,
-        maxPromptTooLongRetries: 2,
+        maxPromptTooLongRetries: 3,
       },
       config.ollama?.contextWindow ?? 120000,
     )
@@ -205,18 +204,6 @@ export class QueryEngine {
     return this.contextManager.getSnapshot(messages)
   }
 
-  /** Force manual compaction */
-  async forceCompact(messages: Message[]): Promise<{ messages: Message[]; summary: string }> {
-    if (!this.config.ollama) {
-      return { messages, summary: '' }
-    }
-    const result = await this.contextManager.compactIfNeeded(messages, this.config.ollama)
-    return {
-      messages: result.messages,
-      summary: result.summary ?? '',
-    }
-  }
-
   // ── The Main Query Loop (async generator) ────────────────────────────────
   // This is the heart — mirrors Claude Code's query() function
   //
@@ -250,6 +237,32 @@ export class QueryEngine {
     // Build system prompt
     const fullSystemPrompt = this.buildSystemPrompt()
     const toolDefs = getToolDefinitions()
+    const fixedOverheadTokens = estimateTokens(fullSystemPrompt)
+      + estimateTokens(JSON.stringify(toolDefs))
+    const totalPrevious = messages.length
+    let omittedPrevious = 0
+    const initialTrim = this.contextManager.trimToBudget(
+      conversation,
+      fixedOverheadTokens,
+      0.8,
+    )
+    conversation = initialTrim.messages
+    omittedPrevious = Math.min(totalPrevious, initialTrim.droppedCount)
+
+    yield {
+      type: 'context_coverage',
+      totalPrevious,
+      sentPrevious: Math.max(0, totalPrevious - initialTrim.droppedCount),
+      omittedPrevious,
+      maxInputTokens: initialTrim.maxInputTokens,
+    }
+
+    if (!initialTrim.fits) {
+      const error = `The current message and required instructions exceed this model's context limit (${initialTrim.maxInputTokens} input tokens). Shorten the message or select a model with a larger context window.`
+      yield { type: 'error', error }
+      yield { type: 'done', messages: conversation, totalUsage, totalCostUsd }
+      return
+    }
 
     // ── Agentic Loop ──────────────────────────────────────────────────────
     while (turnCount < maxTurns) {
@@ -260,28 +273,6 @@ export class QueryEngine {
 
       turnCount++
       this.appState = { ...this.appState, turnCount }
-
-      // ── Auto-Compaction (Claude Code feature) ────────────────────────────
-      // Check context size before API call, compact if needed
-      if (this.config.ollama && this.contextManager.shouldCompact(conversation)) {
-        try {
-          const compactResult = await this.contextManager.compactIfNeeded(
-            conversation,
-            this.config.ollama,
-            this.abortController.signal,
-          )
-          if (compactResult.didCompact) {
-            conversation = compactResult.messages
-            yield {
-              type: 'compaction',
-              removedCount: conversation.length,
-              summary: compactResult.summary ?? '',
-            }
-          }
-        } catch {
-          // compaction failure is non-fatal
-        }
-      }
 
       // ── Context Warning ──────────────────────────────────────────────────
       const snapshot = this.contextManager.getSnapshot(conversation)
@@ -302,7 +293,7 @@ export class QueryEngine {
       // ── Stream from API (with retry for prompt-too-long) ─────────────────
       let sampleResult: SampleResult
       let retryAttempt = 0
-      const MAX_RETRIES = 2
+      const RETRY_INPUT_RATIOS = [0.6, 0.4, 0.2] as const
 
       while (true) {
         try {
@@ -371,18 +362,29 @@ export class QueryEngine {
             msg.toLowerCase().includes('maximum context') ||
             msg.includes('num_ctx')
 
-          if (isPromptTooLong && retryAttempt < MAX_RETRIES && this.config.ollama) {
+          if (isPromptTooLong && retryAttempt < RETRY_INPUT_RATIOS.length) {
             retryAttempt++
-            yield { type: 'retry', reason: 'Context zu lang — komprimiere...', attempt: retryAttempt }
-
-            const compacted = await this.contextManager.handlePromptTooLong(
+            const retryTrim = this.contextManager.trimToBudget(
               conversation,
-              this.config.ollama,
-              this.abortController.signal,
+              fixedOverheadTokens,
+              RETRY_INPUT_RATIOS[retryAttempt - 1],
             )
+            yield {
+              type: 'retry',
+              reason: 'Context too long — omitting additional oldest chat turns.',
+              attempt: retryAttempt,
+            }
 
-            if (compacted) {
-              conversation = compacted
+            if (retryTrim.fits && retryTrim.droppedCount > 0) {
+              conversation = retryTrim.messages
+              yield {
+                type: 'context_coverage',
+                totalPrevious,
+                sentPrevious: Math.max(0, totalPrevious - Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount)),
+                omittedPrevious: Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount),
+                maxInputTokens: retryTrim.maxInputTokens,
+              }
+              omittedPrevious = Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount)
               // Rebuild API messages and retry
               const newApiMessages = this.toAPIConversation(
                 this.contextManager.applyBudget(conversation),
@@ -461,17 +463,20 @@ export class QueryEngine {
           const fallbackApproval = this.buildTextPlanApprovalRequest(assistantText, latestUserText)
           if (fallbackApproval) {
             textExecutionRecoveryCount += 1
-            const approvalPromise = this.beginApprovalRequest(fallbackApproval)
-            yield { type: 'approval_required', request: fallbackApproval }
-            const approved = await approvalPromise
+            if (this.config.permissionMode !== 'bypass') {
+              const approvalPromise = this.beginApprovalRequest(fallbackApproval)
+              yield { type: 'approval_required', request: fallbackApproval }
+              const approved = await approvalPromise
 
-            if (!approved.allowed) {
-              yield { type: 'turn_complete', turnCount, stopReason: 'approval_denied' }
-              break
+              if (!approved.allowed) {
+                yield { type: 'turn_complete', turnCount, stopReason: 'approval_denied' }
+                break
+              }
             }
 
             conversation.push(createUserMessage(
-              'Approval granted. Execute the last described plan directly with the available tools. '
+              `${this.config.permissionMode === 'bypass' ? 'Permission bypass is enabled.' : 'Approval granted.'} `
+              + 'Execute the last described plan directly with the available tools. '
               + 'Do not respond with another plan. Use tool calls for execution, then return only the result.',
             ))
             continue
@@ -804,10 +809,16 @@ export class QueryEngine {
     for (const msg of messages) {
       switch (msg.type) {
         case 'user':
-          apiMsgs.push({ role: 'user', content: msg.content })
+          apiMsgs.push({
+            role: 'user',
+            content: msg.content.filter((block) => block.type !== 'thinking'),
+          })
           break
         case 'assistant':
-          apiMsgs.push({ role: 'assistant', content: msg.content })
+          apiMsgs.push({
+            role: 'assistant',
+            content: msg.content.filter((block) => block.type !== 'thinking'),
+          })
           break
         case 'system':
           // System messages become user messages with [system] prefix
@@ -885,7 +896,7 @@ export class QueryEngine {
       agentDefinitions: this.config.agentDefinitions ?? [],
       memoryContent: this.config.memoryContent,
       runId: this.config.runId,
-      sessionId: this.config.sessionId,
+      threadId: this.config.threadId,
       sandboxId: this.config.sandboxId,
       messages,
     }

@@ -1,15 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { SessionRecord } from '../engine/services/sessionPersistence'
 
 const invokeMock = vi.fn(async (_command?: string, _args?: unknown): Promise<unknown> => undefined)
-const autoSaveSessionMock = vi.fn(async () => undefined)
-const loadSessionMock = vi.fn(async (_sessionId?: string): Promise<SessionRecord | null> => null)
 const buildSystemPromptWithMemoryMock = vi.fn(async (_cwd: string, systemPrompt: string, _options?: unknown) => ({
   systemPrompt,
   memoryContent: '',
 }))
-const loadFrozenMemorySnapshotMock = vi.fn(async (_sessionId?: string) => null)
-const captureAutomaticMemoryDraftMock = vi.fn(async (_cwd: string, _input: string, _sessionId?: string) => [])
+const loadFrozenMemorySnapshotMock = vi.fn(async (_threadId?: string) => null)
+const captureAutomaticMemoryDraftMock = vi.fn(async (_cwd: string, _input: string, _runId?: string) => [])
 const queryCalls: Array<{ messages: unknown[]; userInput?: string }> = []
 const queryBarriers: Array<Promise<void>> = []
 
@@ -104,19 +101,10 @@ vi.mock('../engine/api/ollamaClient', () => ({
   checkOllamaConnection: vi.fn(async () => true),
 }))
 
-vi.mock('../engine/services/sessionPersistence', () => ({
-  autoSaveSession: () => autoSaveSessionMock(),
-  createSession: vi.fn(async () => undefined),
-  generateSessionTitle: vi.fn(() => 'Seeded Session'),
-  loadSession: (sessionId: string) => loadSessionMock(sessionId),
-  listSessions: vi.fn(async () => []),
-  deleteSession: vi.fn(async () => undefined),
-}))
-
 vi.mock('../engine/memory/memorySystem', () => ({
   buildSystemPromptWithMemory: (cwd: string, systemPrompt: string, options?: unknown) => buildSystemPromptWithMemoryMock(cwd, systemPrompt, options),
-  loadFrozenMemorySnapshot: (sessionId: string) => loadFrozenMemorySnapshotMock(sessionId),
-  captureAutomaticMemoryDraft: (cwd: string, input: string, sessionId: string) => captureAutomaticMemoryDraftMock(cwd, input, sessionId),
+  loadFrozenMemorySnapshot: (threadId: string) => loadFrozenMemorySnapshotMock(threadId),
+  captureAutomaticMemoryDraft: (cwd: string, input: string, runId: string) => captureAutomaticMemoryDraftMock(cwd, input, runId),
 }))
 
 describe('engineStore history seeding', () => {
@@ -124,8 +112,6 @@ describe('engineStore history seeding', () => {
     queryCalls.length = 0
     queryBarriers.length = 0
     invokeMock.mockClear()
-    autoSaveSessionMock.mockClear()
-    loadSessionMock.mockClear()
     buildSystemPromptWithMemoryMock.mockClear()
     loadFrozenMemorySnapshotMock.mockClear()
     captureAutomaticMemoryDraftMock.mockClear()
@@ -202,10 +188,10 @@ describe('engineStore history seeding', () => {
     await expect(secondPromise).resolves.toBeUndefined()
   })
 
-  it('continues a loaded persisted session without flattening tool messages', async () => {
+  it('continues persisted chat history without flattening tool messages', async () => {
     const { useEngineStore } = await import('./engineStore')
 
-    // Mock session with engine-format messages (structured content)
+    // Persisted chat messages retain the structured engine payload in debug content.
     const structuredAssistantMessage = JSON.stringify({
       type: 'assistant',
       uuid: 'assistant-tool-1',
@@ -216,37 +202,13 @@ describe('engineStore history seeding', () => {
       timestamp: 100,
     })
 
-    loadSessionMock.mockResolvedValueOnce({
-      id: 'session-1',
-      title: 'Persisted analysis',
-      cwd: 'C:/workspace',
-      messages: [
-        {
-          type: 'assistant',
-          uuid: 'assistant-tool-1',
-          content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'C:/workspace/a.txt' } }],
-          model: 'llama3.1:8b',
-          usage: { input_tokens: 0, output_tokens: 0 },
-          stopReason: 'tool_use',
-          timestamp: 100,
-        },
-      ],
-      totalUsage: { input_tokens: 0, output_tokens: 0 },
-      totalCostUsd: 0,
-      appState: {},
-      createdAt: 100,
-      updatedAt: 200,
-    })
-
-    await useEngineStore.getState().loadSessionById('session-1')
-
-    // Send message with historySeed containing the structured messages from the session
+    // Send with the structured messages loaded from the chat database.
     await useEngineStore.getState().sendMessage(
       'und jetzt weiter',
       'C:/workspace',
       undefined,
       {
-        threadId: 'session-1',
+        threadId: 'thread-1',
         messages: [
           {
             role: 'assistant',
@@ -304,5 +266,68 @@ describe('engineStore history seeding', () => {
     expect(firstSeededMessage.type).toBe('assistant')
     expect(firstSeededMessage.content[0]?.type).toBe('tool_use')
     expect(firstSeededMessage.content[0]?.name).toBe('ListDir')
+  })
+
+  it('rebuilds the same persisted chat history after switching providers', async () => {
+    const { useEngineStore } = await import('./engineStore')
+    const historySeed = {
+      threadId: 'thread-provider-switch',
+      messages: [
+        { role: 'user' as const, content: 'Remember this decision.' },
+        { role: 'assistant' as const, content: 'The decision is SQLite.' },
+      ],
+    }
+
+    await useEngineStore.getState().sendMessage(
+      'continue locally',
+      'C:/workspace',
+      undefined,
+      historySeed,
+      { provider: 'ollama', model: 'llama3.1:8b' },
+    )
+    await useEngineStore.getState().sendMessage(
+      'continue externally',
+      'C:/workspace',
+      undefined,
+      historySeed,
+      { provider: 'openrouter', model: 'openai/gpt-test' },
+    )
+
+    expect(queryCalls).toHaveLength(2)
+    expect(queryCalls[0]?.messages).toHaveLength(2)
+    expect(queryCalls[1]?.messages).toHaveLength(2)
+    const providerNeutralContent = (messages: unknown[]) => messages.map((message) => {
+      const typed = message as { type: string; content: Array<{ type: string; text?: string }> }
+      return [typed.type, typed.content.map((block) => block.text ?? block.type)]
+    })
+    expect(providerNeutralContent(queryCalls[1]?.messages ?? []))
+      .toEqual(providerNeutralContent(queryCalls[0]?.messages ?? []))
+  })
+
+  it('keeps persisted attachment context but excludes provider debug previews', async () => {
+    const { useEngineStore } = await import('./engineStore')
+
+    await useEngineStore.getState().sendMessage(
+      'continue',
+      'C:/workspace',
+      undefined,
+      {
+        threadId: 'thread-attachment-context',
+        messages: [{
+          role: 'user',
+          content: 'Review the file.',
+          debugContent: 'Review the file.\n\nAttached file: report.txt\nimportant contents\n\n[OLLAMA REQUEST PREVIEW]\ninternal request payload',
+        }],
+      },
+    )
+
+    const seeded = queryCalls[0]?.messages[0] as {
+      content: Array<{ type: string; text?: string }>
+    }
+    const seededText = seeded.content.map((block) => block.text ?? '').join('\n')
+    expect(seededText).toContain('Attached file: report.txt')
+    expect(seededText).toContain('important contents')
+    expect(seededText).not.toContain('OLLAMA REQUEST PREVIEW')
+    expect(seededText).not.toContain('internal request payload')
   })
 })

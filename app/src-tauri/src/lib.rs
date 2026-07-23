@@ -11,9 +11,11 @@ mod cowork_features;
 mod credential_store;
 mod crew_python_bridge;
 mod db;
+mod developer_browser;
 mod event_sink;
 mod file_safety;
 mod file_watch;
+mod github_integration;
 mod insights;
 mod mcp;
 mod memory_engine;
@@ -40,6 +42,20 @@ use crew_python_bridge::{
     crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
 };
 use db::Database;
+use developer_browser::{
+    developer_browser_cdp_call, developer_browser_click, developer_browser_history,
+    developer_browser_inspect, developer_browser_keypress, developer_browser_navigate,
+    developer_browser_reload, developer_browser_scroll, developer_browser_snapshot,
+    developer_browser_start, developer_browser_status, developer_browser_stop,
+    developer_browser_type_text, DeveloperBrowserState,
+};
+use github_integration::{
+    git_repository_commit, git_repository_create_branch, git_repository_diff, git_repository_pull,
+    git_repository_push, git_repository_stage, git_repository_status, git_repository_unstage,
+    github_connection_status, github_create_pull_request, github_get_pull_request,
+    github_list_pull_requests, github_merge_pull_request, github_post_pull_request_comment,
+    github_submit_pull_request_review,
+};
 use mcp::{
     call_tool, probe_server, runtime_call_tool, runtime_has_server, runtime_list_servers,
     runtime_probe_server, runtime_restart_server, runtime_start_server, runtime_stop_server,
@@ -55,7 +71,7 @@ use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -109,7 +125,6 @@ fn is_local_screenshot_mcp_command(command: &str) -> bool {
 }
 const POLICY_FLAG_WEB_FETCH: &str = "allowWebFetch";
 const POLICY_FLAG_FILE_READ: &str = "allowFileReadExtraction";
-const POLICY_FLAG_AUTO_COMPACT: &str = "autoCompactLongContext";
 const POLICY_FLAG_SHELL_EXECUTION: &str = "allowShellExecution";
 const POLICY_FLAG_WEB_SEARCH: &str = "allowWebSearch";
 const POLICY_SETTING_ACTIVE_TOOLSET: &str = "activeToolsetPolicyId";
@@ -383,8 +398,6 @@ struct PolicyFlagsPayload {
     #[serde(default = "default_true")]
     allow_file_read_extraction: bool,
     #[serde(default = "default_true")]
-    auto_compact_long_context: bool,
-    #[serde(default = "default_true")]
     allow_shell_execution: bool,
     #[serde(default = "default_true")]
     allow_web_search: bool,
@@ -427,7 +440,6 @@ struct EngineRunCreateRequest {
     id: String,
     parent_run_id: Option<String>,
     thread_id: Option<String>,
-    session_id: Option<String>,
     title: String,
     input_summary: Option<String>,
     source: Option<String>,
@@ -446,6 +458,8 @@ struct EngineRunCreateRequest {
     resumed_from_run_id: Option<String>,
     checkpoint_json: Option<String>,
     metadata_json: Option<String>,
+    #[serde(default)]
+    authorized_paths: Option<Vec<AuthorizedTaskPath>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -458,6 +472,9 @@ struct EngineRunUpdateRequest {
     result_summary: Option<String>,
     error: Option<String>,
     metadata_json: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -766,6 +783,8 @@ struct ThreadRow {
     updated_at: String,
     provider_settings_json: Option<String>,
     permission_config_json: Option<String>,
+    runner: String,
+    crew_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1129,6 +1148,8 @@ struct CrewExecuteRequest {
     execution_guidelines: String,
     #[serde(default)]
     knowledge_focus: String,
+    #[serde(default)]
+    response_language: Option<String>,
     #[serde(default = "default_crew_governance_mode")]
     governance_mode: String,
     #[serde(default)]
@@ -1159,8 +1180,38 @@ struct CrewExecuteRequest {
     provider_configs: CrewProviderConfigsRequest,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authorized_paths: Option<Vec<AuthorizedTaskPath>>,
     #[serde(default)]
     stream_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedTaskPath {
+    path: String,
+    kind: String,
+    access: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskProjectContextResolveRequest {
+    task_id: Option<String>,
+    thread_id: Option<String>,
+    prompt: String,
+    work_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TaskProjectRunContext {
+    project_id: Option<String>,
+    project_title: Option<String>,
+    prompt_context: String,
+    authorized_paths: Vec<AuthorizedTaskPath>,
+    preferred_cwd: Option<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1181,6 +1232,7 @@ struct CrewGovernancePayload {
     subject: String,
     subject_roles: Vec<String>,
     policy_strict: bool,
+    deny_rules: Vec<String>,
     pending_approval_types: Vec<String>,
     agent_access: Vec<CrewGovernanceAgentAccessPayload>,
 }
@@ -1224,10 +1276,148 @@ struct CrewMemoryPayload {
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct CrewProviderConfigsRequest {
-    #[serde(default)]
+    #[serde(default, rename = "openAICompatible", alias = "openAiCompatible")]
     open_ai_compatible: Option<CrewExternalProviderConfigRequest>,
     #[serde(default)]
     open_router: Option<CrewExternalProviderConfigRequest>,
+}
+
+fn provider_model_suffix(value: &str) -> String {
+    value
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(value.trim())
+        .to_ascii_lowercase()
+}
+
+fn provider_models_share_stem(configured: &str, candidate: &str) -> bool {
+    let configured_suffix = provider_model_suffix(configured);
+    let candidate_suffix = provider_model_suffix(candidate);
+    !configured_suffix.is_empty()
+        && !candidate_suffix.is_empty()
+        && (configured_suffix == candidate_suffix
+            || candidate_suffix.starts_with(&format!("{}-", configured_suffix))
+            || configured_suffix.starts_with(&format!("{}-", candidate_suffix)))
+}
+
+fn enrich_provider_model_from_successful_runs(
+    database: &Arc<Database>,
+    provider: &str,
+    config: &mut Option<CrewExternalProviderConfigRequest>,
+) {
+    let Some(config) = config.as_mut() else {
+        return;
+    };
+    if !config.models.is_empty() || config.model.trim().is_empty() {
+        return;
+    }
+
+    let Ok(runs) = database.list_engine_runs(100, Some("completed")) else {
+        return;
+    };
+    let candidate = runs.into_iter().find_map(|run| {
+        let run_provider = run.provider.as_deref()?.trim();
+        let run_model = run.model.as_deref()?.trim();
+        let has_result = run
+            .result_summary
+            .as_deref()
+            .is_some_and(|result| !result.trim().is_empty());
+        let has_error = run
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty());
+        (run_provider == provider
+            && has_result
+            && !has_error
+            && provider_models_share_stem(&config.model, run_model))
+        .then(|| run_model.to_string())
+    });
+
+    if let Some(candidate) = candidate {
+        config.model = candidate.clone();
+        config.models = vec![candidate];
+    }
+}
+
+fn enrich_crew_provider_models_from_history(
+    database: &Arc<Database>,
+    request: &mut CrewExecuteRequest,
+) {
+    enrich_provider_model_from_successful_runs(
+        database,
+        "openai-compatible",
+        &mut request.provider_configs.open_ai_compatible,
+    );
+    enrich_provider_model_from_successful_runs(
+        database,
+        "openrouter",
+        &mut request.provider_configs.open_router,
+    );
+}
+
+fn resolve_effective_crew_provider(
+    requested_provider: &str,
+    has_ollama: bool,
+    has_openai_compatible: bool,
+    has_openrouter: bool,
+) -> String {
+    let requested = match requested_provider.trim() {
+        "openai-compatible" => "openai-compatible",
+        "openrouter" => "openrouter",
+        _ => "ollama",
+    };
+    let is_available = |provider: &str| match provider {
+        "openai-compatible" => has_openai_compatible,
+        "openrouter" => has_openrouter,
+        _ => has_ollama,
+    };
+
+    if is_available(requested) {
+        return requested.to_string();
+    }
+
+    let fallbacks = match requested {
+        "openai-compatible" => ["openrouter", "ollama"],
+        "openrouter" => ["openai-compatible", "ollama"],
+        _ => ["openrouter", "openai-compatible"],
+    };
+
+    fallbacks
+        .into_iter()
+        .find(|provider| is_available(provider))
+        .unwrap_or(requested)
+        .to_string()
+}
+
+fn normalize_crew_agent_providers(request: &mut CrewExecuteRequest) {
+    let has_ollama = request
+        .config
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+    let has_openai_compatible = request
+        .provider_configs
+        .open_ai_compatible
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+    let has_openrouter = request
+        .provider_configs
+        .open_router
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+
+    for agent in &mut request.agents {
+        let requested = agent.provider_kind.as_deref().unwrap_or("ollama");
+        agent.provider_kind = Some(resolve_effective_crew_provider(
+            requested,
+            has_ollama,
+            has_openai_compatible,
+            has_openrouter,
+        ));
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1236,8 +1426,12 @@ struct CrewExternalProviderConfigRequest {
     base_url: String,
     model: String,
     #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
     api_key: String,
     timeout_ms: u64,
+    #[serde(default = "default_true")]
+    verify_tls_certificates: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1604,24 +1798,65 @@ fn build_crew_memory_query(request: &CrewExecuteRequest) -> String {
     dedupe_strings(parts).join(" | ")
 }
 
+fn crew_request_needs_live_news(request: &CrewExecuteRequest) -> bool {
+    let searchable = build_crew_memory_query(request).to_ascii_lowercase();
+    [
+        "fresh-news",
+        "daily news",
+        "world news",
+        "last 24 hours",
+        "nachrichten",
+    ]
+    .iter()
+    .any(|marker| searchable.contains(marker))
+}
+
+fn crew_memory_entry_is_relevant(entry: &db::MemoryEntryRow, live_news: bool) -> bool {
+    if entry.scope.eq_ignore_ascii_case("legacy") || entry.confidence < 0.5 {
+        return false;
+    }
+
+    if entry.category.eq_ignore_ascii_case("crew-run") {
+        if live_news {
+            return false;
+        }
+        let content = entry.content.to_ascii_lowercase();
+        if content.contains("status: failed") || content.contains("status: canceled") {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn collect_crew_memory_payload(
     database: &Arc<Database>,
     request: &CrewExecuteRequest,
 ) -> CrewMemoryPayload {
     let query = build_crew_memory_query(request);
-    let mut entries = if query.is_empty() {
+    let live_news = crew_request_needs_live_news(request);
+    let candidates = if query.is_empty() {
         Vec::new()
     } else {
         database
-            .search_memory_entries(&query, None, None, 8)
+            .search_memory_entries(&query, None, None, None, 32)
             .unwrap_or_default()
     };
+    let mut entries = candidates
+        .into_iter()
+        .filter(|entry| crew_memory_entry_is_relevant(entry, live_news))
+        .take(8)
+        .collect::<Vec<_>>();
 
-    if entries.is_empty() {
+    if entries.is_empty() && !live_news {
         entries = database
             .list_memory_entries("shared", None, 4)
             .or_else(|_| database.list_memory_entries("agent", None, 4))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| crew_memory_entry_is_relevant(entry, false))
+            .take(4)
+            .collect();
     }
 
     for entry in &entries {
@@ -1909,6 +2144,7 @@ fn collect_crew_governance_payload(
         subject,
         subject_roles,
         policy_strict: policy.flags.strict_policy_enforcement,
+        deny_rules: policy.deny_rules,
         pending_approval_types,
         agent_access,
     })
@@ -1972,6 +2208,7 @@ fn persist_crew_run_memory_summary(
         let _ = database.upsert_memory_entry(
             &uuid::Uuid::new_v4().to_string(),
             "shared",
+            None,
             "crew-run",
             &key,
             &summary,
@@ -2248,11 +2485,26 @@ fn extract_replay_provider_config(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        models: profile
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         api_key: profile
             .get("apiKey")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        verify_tls_certificates: profile
+            .get("verifyTlsCertificates")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         timeout_ms: profile
             .get("timeoutMs")
             .and_then(Value::as_u64)
@@ -2396,11 +2648,14 @@ async fn execute_crew_request(
     database: &Arc<Database>,
     registry: &CrewExecutionRegistry,
     bridge: &CrewPythonBridge,
-    request: CrewExecuteRequest,
+    mut request: CrewExecuteRequest,
 ) -> Result<CrewExecutionResponse, String> {
     if request.tasks.is_empty() {
         return Err("Crew contains no tasks".to_string());
     }
+
+    enrich_crew_provider_models_from_history(database, &mut request);
+    normalize_crew_agent_providers(&mut request);
 
     let enabled_agents: HashMap<String, CrewExecuteAgentRequest> = request
         .agents
@@ -4786,6 +5041,451 @@ fn exec_command(
 
 // -- Persistence commands ---------------------------------------------------
 
+const TASK_PROJECT_MAX_CONTEXT_CHARS: usize = 60_000;
+const TASK_PROJECT_MAX_SOURCE_CHARS: usize = 10_000;
+const TASK_PROJECT_MAX_FILES: usize = 24;
+const TASK_PROJECT_MAX_LINK_CHARS: usize = 4_000;
+
+fn add_authorized_task_path(
+    authorized_paths: &mut Vec<AuthorizedTaskPath>,
+    seen_paths: &mut HashSet<String>,
+    path: &Path,
+    kind: &str,
+) {
+    let rendered = path.display().to_string();
+    let key = rendered.to_lowercase();
+    if !seen_paths.insert(key) {
+        return;
+    }
+    authorized_paths.push(AuthorizedTaskPath {
+        path: rendered,
+        kind: kind.to_string(),
+        access: "read_write".to_string(),
+    });
+}
+
+fn collect_project_folder_files(root: &Path, max_files: usize) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut pending = VecDeque::from([root.to_path_buf()]);
+
+    while let Some(directory) = pending.pop_front() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            if result.len() >= max_files {
+                return result;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if ![".git", ".next", ".venv", "dist", "node_modules", "target"]
+                    .contains(&name.as_str())
+                {
+                    pending.push_back(entry.path());
+                }
+            } else if file_type.is_file() {
+                result.push(entry.path());
+            }
+        }
+    }
+
+    result
+}
+
+fn append_bounded_project_context(output: &mut String, block: &str) -> bool {
+    if output.chars().count() >= TASK_PROJECT_MAX_CONTEXT_CHARS {
+        return false;
+    }
+    let remaining = TASK_PROJECT_MAX_CONTEXT_CHARS.saturating_sub(output.chars().count());
+    let bounded = truncate_chars(block, remaining);
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str(&bounded);
+    bounded.chars().count() == block.chars().count()
+}
+
+async fn resolve_task_project_run_context(
+    database: &Arc<Database>,
+    request: &TaskProjectContextResolveRequest,
+) -> Result<TaskProjectRunContext, String> {
+    let task = request
+        .task_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| {
+            database
+                .get_work_task(id)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?
+        .flatten();
+    let thread_id = request
+        .thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| task.as_ref().and_then(|row| row.thread_id.clone()));
+    let explicit_work_dir = request
+        .work_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            task.as_ref()
+                .map(|row| row.work_dir.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+
+    let mut warnings = Vec::new();
+    let mut authorized_paths = Vec::new();
+    let mut seen_paths = HashSet::new();
+    let mut preferred_cwd = None;
+
+    if let Some(work_dir) = explicit_work_dir {
+        let path = PathBuf::from(&work_dir);
+        if path.is_absolute() && path.is_dir() {
+            match path.canonicalize() {
+                Ok(canonical) => {
+                    preferred_cwd = Some(canonical.display().to_string());
+                    add_authorized_task_path(
+                        &mut authorized_paths,
+                        &mut seen_paths,
+                        &canonical,
+                        "folder",
+                    );
+                }
+                Err(error) => warnings.push(format!(
+                    "Task working folder could not be resolved ({}): {}",
+                    work_dir, error
+                )),
+            }
+        } else {
+            warnings.push(format!(
+                "Task working folder is missing or not an absolute folder: {}",
+                work_dir
+            ));
+        }
+    }
+
+    let Some(thread_id) = thread_id else {
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+    let project_id = database
+        .list_project_threads()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find_map(|(project_id, candidate_thread_id)| {
+            (candidate_thread_id == thread_id).then_some(project_id)
+        });
+    let Some(project_id) = project_id else {
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+    let project = database
+        .list_projects()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|project| project.id == project_id);
+    let Some(project) = project else {
+        warnings.push(
+            "The assigned project no longer exists; the task will run without it.".to_string(),
+        );
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+
+    let resources = database
+        .list_project_resources()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|resource| resource.project_id == project.id && resource.enabled)
+        .collect::<Vec<_>>();
+    let mut prompt_context = format!("Project context: \"{}\"", project.title);
+    if !project.instructions.trim().is_empty() {
+        append_bounded_project_context(
+            &mut prompt_context,
+            &format!("Project instructions:\n{}", project.instructions.trim()),
+        );
+    }
+    if !request.prompt.trim().is_empty() {
+        append_bounded_project_context(
+            &mut prompt_context,
+            &format!(
+                "Resolve the following project sources for the current task focus:\n{}",
+                truncate_chars(request.prompt.trim(), 1_000)
+            ),
+        );
+    }
+
+    let source_overview = resources
+        .iter()
+        .map(|resource| {
+            format!(
+                "- {}: {} ({})",
+                resource.kind,
+                resource.label.as_deref().unwrap_or(&resource.path),
+                resource.path
+            )
+        })
+        .collect::<Vec<_>>();
+    let source_overview_context = if source_overview.is_empty() {
+        "Enabled project sources: none".to_string()
+    } else {
+        format!("Enabled project sources:\n{}", source_overview.join("\n"))
+    };
+    append_bounded_project_context(&mut prompt_context, &source_overview_context);
+
+    let mut extracted_file_count = 0_usize;
+    let policy = load_policy_state(database)?;
+    for resource in &resources {
+        match resource.kind.as_str() {
+            "folder" => {
+                let source = PathBuf::from(&resource.path);
+                if !source.is_dir() {
+                    warnings.push(format!("Project folder is missing: {}", resource.path));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(
+                    &policy,
+                    "read_file",
+                    &resource.path,
+                    policy.flags.allow_file_read_extraction,
+                ) {
+                    warnings.push(format!(
+                        "Project folder context was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                let canonical = match source.canonicalize() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Project folder could not be resolved ({}): {}",
+                            resource.path, error
+                        ));
+                        continue;
+                    }
+                };
+                if preferred_cwd.is_none() {
+                    preferred_cwd = Some(canonical.display().to_string());
+                }
+                add_authorized_task_path(
+                    &mut authorized_paths,
+                    &mut seen_paths,
+                    &canonical,
+                    "folder",
+                );
+                let remaining_files = TASK_PROJECT_MAX_FILES.saturating_sub(extracted_file_count);
+                for file in collect_project_folder_files(&canonical, remaining_files) {
+                    if extracted_file_count >= TASK_PROJECT_MAX_FILES {
+                        break;
+                    }
+                    if enforce_tool_policy(
+                        &policy,
+                        "read_file",
+                        &file.display().to_string(),
+                        policy.flags.allow_file_read_extraction,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    if let Ok((text, truncated)) = artifact_pipeline::extract_text_for_llm_limited(
+                        &file,
+                        TASK_PROJECT_MAX_SOURCE_CHARS,
+                    ) {
+                        extracted_file_count += 1;
+                        let relative = file.strip_prefix(&canonical).unwrap_or(&file);
+                        let block = format!(
+                            "Project file: {}/{}\n{}{}",
+                            resource.label.as_deref().unwrap_or(&resource.path),
+                            relative.display(),
+                            text,
+                            if truncated { "\n[truncated]" } else { "" }
+                        );
+                        if !append_bounded_project_context(&mut prompt_context, &block) {
+                            break;
+                        }
+                    }
+                }
+            }
+            "file" => {
+                let source = PathBuf::from(&resource.path);
+                if !source.is_file() {
+                    warnings.push(format!("Project file is missing: {}", resource.path));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(
+                    &policy,
+                    "read_file",
+                    &resource.path,
+                    policy.flags.allow_file_read_extraction,
+                ) {
+                    warnings.push(format!(
+                        "Project file context was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                let canonical = match source.canonicalize() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Project file could not be resolved ({}): {}",
+                            resource.path, error
+                        ));
+                        continue;
+                    }
+                };
+                add_authorized_task_path(
+                    &mut authorized_paths,
+                    &mut seen_paths,
+                    &canonical,
+                    "file",
+                );
+                if extracted_file_count < TASK_PROJECT_MAX_FILES {
+                    match artifact_pipeline::extract_text_for_llm_limited(
+                        &canonical,
+                        TASK_PROJECT_MAX_SOURCE_CHARS,
+                    ) {
+                        Ok((text, truncated)) => {
+                            extracted_file_count += 1;
+                            append_bounded_project_context(
+                                &mut prompt_context,
+                                &format!(
+                                    "Project file: {}\n{}{}",
+                                    resource.label.as_deref().unwrap_or(&resource.path),
+                                    text,
+                                    if truncated { "\n[truncated]" } else { "" }
+                                ),
+                            );
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            "link" => {
+                if !policy.flags.allow_web_fetch {
+                    warnings.push(format!(
+                        "Project link was not loaded because web fetch is disabled: {}",
+                        resource.path
+                    ));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(&policy, "web_fetch", &resource.path, true)
+                {
+                    warnings.push(format!(
+                        "Project link was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                match network_safety::fetch_public_text(
+                    &resource.path,
+                    network_safety::MAX_TEXT_RESPONSE_BYTES,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        if !response.status.is_success() {
+                            warnings.push(format!(
+                                "Project link returned HTTP {}: {}",
+                                response.status.as_u16(),
+                                resource.path
+                            ));
+                            continue;
+                        }
+                        let text = strip_html_like_content(&response.body);
+                        append_bounded_project_context(
+                            &mut prompt_context,
+                            &format!(
+                                "Project link: {}\nURL: {}\n{}{}",
+                                resource.label.as_deref().unwrap_or(&resource.path),
+                                response.final_url,
+                                truncate_chars(text.trim(), TASK_PROJECT_MAX_LINK_CHARS),
+                                if response.truncated
+                                    || text.chars().count() > TASK_PROJECT_MAX_LINK_CHARS
+                                {
+                                    "\n[truncated]"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        );
+                    }
+                    Err(error) => warnings.push(format!(
+                        "Project link could not be loaded ({}): {}",
+                        resource.path, error
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if extracted_file_count >= TASK_PROJECT_MAX_FILES {
+        warnings.push(format!(
+            "Project file context was limited to {} files.",
+            TASK_PROJECT_MAX_FILES
+        ));
+    }
+    if prompt_context.chars().count() >= TASK_PROJECT_MAX_CONTEXT_CHARS {
+        warnings.push(format!(
+            "Project prompt context was limited to {} characters.",
+            TASK_PROJECT_MAX_CONTEXT_CHARS
+        ));
+    }
+
+    Ok(TaskProjectRunContext {
+        project_id: Some(project.id),
+        project_title: Some(project.title),
+        prompt_context,
+        authorized_paths,
+        preferred_cwd,
+        warnings,
+    })
+}
+
+#[tauri::command]
+async fn task_project_context_resolve(
+    state: tauri::State<'_, Arc<Database>>,
+    request: TaskProjectContextResolveRequest,
+) -> Result<TaskProjectRunContext, String> {
+    resolve_task_project_run_context(state.inner(), &request).await
+}
+
 #[tauri::command]
 fn project_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ProjectRecord>, String> {
     let projects = state.list_projects().map_err(|e| e.to_string())?;
@@ -4945,7 +5645,14 @@ fn db_save_thread(
     created_at: String,
     provider_settings_json: Option<String>,
     permission_config_json: Option<String>,
+    runner: Option<String>,
+    crew_id: Option<String>,
 ) -> Result<(), String> {
+    let normalized_runner = if runner.as_deref() == Some("crew") {
+        "crew"
+    } else {
+        "model"
+    };
     state
         .insert_thread(
             &id,
@@ -4953,6 +5660,12 @@ fn db_save_thread(
             &created_at,
             provider_settings_json.as_deref(),
             permission_config_json.as_deref(),
+            normalized_runner,
+            if normalized_runner == "crew" {
+                crew_id.as_deref()
+            } else {
+                None
+            },
         )
         .map_err(|e| e.to_string())
 }
@@ -4962,13 +5675,24 @@ fn db_list_threads(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ThreadR
     state.list_threads().map_err(|e| e.to_string()).map(|rows| {
         rows.into_iter()
             .map(
-                |(id, title, ca, ua, provider_settings_json, permission_config_json)| ThreadRow {
+                |(
+                    id,
+                    title,
+                    ca,
+                    ua,
+                    provider_settings_json,
+                    permission_config_json,
+                    runner,
+                    crew_id,
+                )| ThreadRow {
                     id,
                     title,
                     created_at: ca,
                     updated_at: ua,
                     provider_settings_json,
                     permission_config_json,
+                    runner,
+                    crew_id,
                 },
             )
             .collect()
@@ -4994,6 +5718,18 @@ fn db_update_thread_permission_config(
 ) -> Result<(), String> {
     state
         .update_thread_permission_config(&id, permission_config_json.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_update_thread_runner(
+    state: tauri::State<'_, Arc<Database>>,
+    id: String,
+    runner: String,
+    crew_id: Option<String>,
+) -> Result<(), String> {
+    state
+        .update_thread_runner(&id, &runner, crew_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -6676,6 +7412,40 @@ fn run_scheduled_task_once(
     if !claimed {
         return Err("scheduled task already has a running execution".to_string());
     }
+    let scheduled_work_task_exists = database
+        .get_work_task(task_id)
+        .map(|task| task.is_some())
+        .unwrap_or(false);
+    let project_context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+        database,
+        &TaskProjectContextResolveRequest {
+            task_id: Some(task_id.to_string()),
+            thread_id: None,
+            prompt: task_prompt.to_string(),
+            work_dir: None,
+        },
+    ))
+    .unwrap_or_else(|error| TaskProjectRunContext {
+        project_id: None,
+        project_title: None,
+        prompt_context: String::new(),
+        authorized_paths: Vec::new(),
+        preferred_cwd: None,
+        warnings: vec![format!("Project context could not be resolved: {}", error)],
+    });
+    let project_warnings = if project_context.warnings.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Project context warnings:\n{}",
+            project_context
+                .warnings
+                .iter()
+                .map(|warning| format!("- {}", warning))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     let execution_result: Result<(String, Option<String>, Option<String>), String> = if task_kind
         .eq_ignore_ascii_case("crew")
     {
@@ -6685,7 +7455,20 @@ fn run_scheduled_task_once(
 
         match snapshot {
             Ok(snapshot_json) => match serde_json::from_str::<CrewExecuteRequest>(snapshot_json) {
-                Ok(request) => {
+                Ok(mut request) => {
+                    request.execution_guidelines = [
+                        request.execution_guidelines.trim(),
+                        project_context.prompt_context.trim(),
+                        project_warnings.trim(),
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                    if scheduled_work_task_exists || project_context.project_id.is_some() {
+                        request.authorized_paths = Some(project_context.authorized_paths.clone());
+                    }
+                    request.cwd = project_context.preferred_cwd.clone().or(request.cwd);
                     let registry = app.state::<CrewExecutionRegistry>();
                     let bridge = app.state::<CrewPythonBridge>();
                     match tauri::async_runtime::block_on(execute_crew_request(
@@ -6723,9 +7506,12 @@ fn run_scheduled_task_once(
         match runtime_config {
             Ok(runtime_config) => {
                 let config = runtime_config.as_ref().map(|entry| entry.config.clone());
-                let history = runtime_config
-                    .as_ref()
-                    .and_then(|entry| entry.cwd.as_deref())
+                let effective_cwd = project_context.preferred_cwd.as_deref().or_else(|| {
+                    runtime_config
+                        .as_ref()
+                        .and_then(|entry| entry.cwd.as_deref())
+                });
+                let history = effective_cwd
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(|value| {
@@ -6738,7 +7524,15 @@ fn run_scheduled_task_once(
 
                 tauri::async_runtime::block_on(chat_turn_internal(
                     config,
-                    task_prompt.to_string(),
+                    [
+                        task_prompt.trim(),
+                        project_context.prompt_context.trim(),
+                        project_warnings.trim(),
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
                     history,
                     vec![],
                 ))
@@ -8304,12 +9098,6 @@ fn policy_set(
         .map_err(|err| err.to_string())?;
     state
         .set_policy_flag(
-            POLICY_FLAG_AUTO_COMPACT,
-            request.flags.auto_compact_long_context,
-        )
-        .map_err(|err| err.to_string())?;
-    state
-        .set_policy_flag(
             POLICY_FLAG_SHELL_EXECUTION,
             request.flags.allow_shell_execution,
         )
@@ -8353,7 +9141,6 @@ fn policy_evaluate(
         Some(POLICY_FLAG_MCP) => policy.flags.allow_mcp_tool_calls,
         Some(POLICY_FLAG_WEB_FETCH) => policy.flags.allow_web_fetch,
         Some(POLICY_FLAG_FILE_READ) => policy.flags.allow_file_read_extraction,
-        Some(POLICY_FLAG_AUTO_COMPACT) => policy.flags.auto_compact_long_context,
         Some(POLICY_FLAG_SHELL_EXECUTION) => policy.flags.allow_shell_execution,
         Some(POLICY_FLAG_WEB_SEARCH) => policy.flags.allow_web_search,
         _ => true,
@@ -8371,6 +9158,84 @@ fn policy_evaluate(
     }
 }
 
+fn register_run_authorized_paths(
+    database: &Arc<Database>,
+    run_id: &str,
+    cwd: Option<&str>,
+    authorized_paths: &[AuthorizedTaskPath],
+) -> Result<(), String> {
+    if database
+        .get_worker_sandbox_by_run(run_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in authorized_paths {
+        if entry.access != "read_write" || !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let source = PathBuf::from(entry.path.trim());
+        if !source.is_absolute() || !source.exists() {
+            continue;
+        }
+        let canonical = source.canonicalize().map_err(|error| error.to_string())?;
+        if (entry.kind == "folder" && !canonical.is_dir())
+            || (entry.kind == "file" && !canonical.is_file())
+        {
+            continue;
+        }
+        let rendered = canonical.display().to_string();
+        if seen.insert(rendered.to_lowercase()) {
+            roots.push(rendered);
+        }
+    }
+
+    let source_cwd = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            authorized_paths
+                .iter()
+                .find(|entry| entry.kind == "folder")
+                .map(|entry| entry.path.clone())
+        })
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .display()
+                .to_string()
+        });
+    let policy = load_policy_state(database)?;
+    let sandbox_id = format!("task-run-{}", run_id);
+    database
+        .insert_worker_sandbox(
+            &sandbox_id,
+            run_id,
+            None,
+            None,
+            "active",
+            "native_capabilities",
+            &source_cwd,
+            &source_cwd,
+            &serde_json::to_string(&roots).map_err(|error| error.to_string())?,
+            None,
+            policy.flags.allow_file_read_extraction,
+            true,
+            policy.flags.allow_shell_execution,
+            policy.flags.allow_web_fetch,
+            policy.flags.allow_web_search,
+            policy.flags.allow_mcp_tool_calls,
+            None,
+            Some(r#"{"source":"task_project_context","lifetime":"run"}"#),
+        )
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn engine_run_create(
     state: tauri::State<'_, Arc<Database>>,
@@ -8385,7 +9250,6 @@ fn engine_run_create(
             &request.id,
             request.parent_run_id.as_deref(),
             request.thread_id.as_deref(),
-            request.session_id.as_deref(),
             &request.title,
             request.input_summary.as_deref(),
             status,
@@ -8423,7 +9287,18 @@ fn engine_run_create(
             Some(&event_payload),
             None,
         )
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    if let Some(authorized_paths) = request.authorized_paths.as_deref() {
+        register_run_authorized_paths(
+            state.inner(),
+            &request.id,
+            request.cwd.as_deref(),
+            authorized_paths,
+        )?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -8446,6 +9321,19 @@ fn engine_run_update(
             request.metadata_json.as_deref(),
         )
         .map_err(|err| err.to_string())?;
+    if request.input_tokens.is_some()
+        || request.output_tokens.is_some()
+        || request.cost_usd.is_some()
+    {
+        state
+            .update_engine_run_usage(
+                &request.id,
+                request.input_tokens,
+                request.output_tokens,
+                request.cost_usd,
+            )
+            .map_err(|err| err.to_string())?;
+    }
 
     if let (Some(before), Some(after)) = (previous_status, request.status.as_deref()) {
         if before != after {
@@ -8465,6 +9353,19 @@ fn engine_run_update(
                     None,
                 )
                 .map_err(|err| err.to_string())?;
+        }
+    }
+
+    if request
+        .status
+        .as_deref()
+        .is_some_and(|status| ["completed", "failed", "canceled", "interrupted"].contains(&status))
+    {
+        if let Some(sandbox) = state
+            .get_worker_sandbox_by_run(&request.id)
+            .map_err(|error| error.to_string())?
+        {
+            let _ = state.update_worker_sandbox(&sandbox.id, request.status.as_deref(), None);
         }
     }
 
@@ -8572,7 +9473,6 @@ fn engine_run_retry(state: tauri::State<'_, Arc<Database>>, id: String) -> Resul
             &new_id,
             existing.parent_run_id.as_deref(),
             existing.thread_id.as_deref(),
-            existing.session_id.as_deref(),
             &existing.title,
             existing.input_summary.as_deref(),
             "pending",
@@ -9059,7 +9959,6 @@ fn default_policy_flags() -> PolicyFlagsPayload {
         allow_mcp_tool_calls: true,
         allow_web_fetch: true,
         allow_file_read_extraction: true,
-        auto_compact_long_context: true,
         allow_shell_execution: true,
         allow_web_search: true,
     }
@@ -9684,7 +10583,6 @@ fn load_policy_state(state: &Arc<Database>) -> Result<PolicyStatePayload, String
             POLICY_FLAG_MCP => flags.allow_mcp_tool_calls = value,
             POLICY_FLAG_WEB_FETCH => flags.allow_web_fetch = value,
             POLICY_FLAG_FILE_READ => flags.allow_file_read_extraction = value,
-            POLICY_FLAG_AUTO_COMPACT => flags.auto_compact_long_context = value,
             POLICY_FLAG_SHELL_EXECUTION => flags.allow_shell_execution = value,
             POLICY_FLAG_WEB_SEARCH => flags.allow_web_search = value,
             _ => {}
@@ -10271,25 +11169,29 @@ fn memory_upsert(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
     scope: String,
+    scope_ref: Option<String>,
     category: String,
     key: String,
     content: String,
-    source_session_id: Option<String>,
+    source_run_id: Option<String>,
     confidence: Option<f64>,
 ) -> Result<(), String> {
     memory_engine::validate_scope(&scope)?;
     let conf = confidence.unwrap_or(1.0);
-    if memory_engine::is_duplicate_memory(&state, &scope, &category, &key, &content) {
+    if scope != "chat"
+        && memory_engine::is_duplicate_memory(&state, &scope, &category, &key, &content)
+    {
         return Ok(());
     }
     state
         .upsert_memory_entry(
             &id,
             &scope,
+            scope_ref.as_deref(),
             &category,
             &key,
             &content,
-            source_session_id.as_deref(),
+            source_run_id.as_deref(),
             conf,
         )
         .map_err(|e| e.to_string())
@@ -10302,7 +11204,7 @@ fn memory_mutate(
     target: String,
     content: Option<String>,
     old_text: Option<String>,
-    source_session_id: Option<String>,
+    source_run_id: Option<String>,
 ) -> Result<memory_engine::MemoryMutationResponse, String> {
     let db_arc = state.inner().clone();
     memory_engine::mutate_curated_memory(
@@ -10311,7 +11213,7 @@ fn memory_mutate(
         &target,
         content.as_deref(),
         old_text.as_deref(),
-        source_session_id.as_deref(),
+        source_run_id.as_deref(),
     )
 }
 
@@ -10324,14 +11226,21 @@ fn memory_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<(
 fn memory_search(
     state: tauri::State<'_, Arc<Database>>,
     scope: Option<String>,
+    scope_ref: Option<String>,
     category: Option<String>,
     keyword: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<db::MemoryEntryRow>, String> {
     let lim = limit.unwrap_or(100);
-    if let Some(ref kw) = keyword {
+    let rows = if let Some(ref kw) = keyword {
         state
-            .search_memory_entries(kw, scope.as_deref(), category.as_deref(), lim)
+            .search_memory_entries(
+                kw,
+                scope.as_deref(),
+                scope_ref.as_deref(),
+                category.as_deref(),
+                lim,
+            )
             .map_err(|e| e.to_string())
     } else if let Some(requested_scope) = scope {
         state
@@ -10341,7 +11250,15 @@ fn memory_search(
         state
             .list_all_memory_entries(category.as_deref(), lim)
             .map_err(|e| e.to_string())
-    }
+    }?;
+    Ok(rows
+        .into_iter()
+        .filter(|entry| {
+            scope_ref
+                .as_deref()
+                .is_none_or(|expected| entry.scope_ref.as_deref() == Some(expected))
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -10497,126 +11414,48 @@ fn skill_auto_generate(
     ))
 }
 
-// -- Session commands -------------------------------------------------------
+// -- Chat context commands --------------------------------------------------
 
 #[tauri::command]
-fn session_create(
+fn chat_memory_snapshot(
     state: tauri::State<'_, Arc<Database>>,
-    id: String,
-    thread_id: Option<String>,
-    title: String,
-    model_used: Option<String>,
-    provider: Option<String>,
-    personality: Option<String>,
-) -> Result<(), String> {
-    let db_arc = state.inner().clone();
-    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = id.clone();
-    let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
-    state
-        .insert_session(
-            &id,
-            thread_id.as_deref(),
-            &title,
-            Some(&snapshot_json),
-            model_used.as_deref(),
-            provider.as_deref(),
-            personality.as_deref(),
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_memory_snapshot(
-    state: tauri::State<'_, Arc<Database>>,
-    session_id: String,
+    thread_id: String,
 ) -> Result<memory_engine::FrozenMemorySnapshot, String> {
     if let Some(snapshot_json) = state
-        .get_session_memory_snapshot(&session_id)
+        .get_chat_memory_snapshot(&thread_id)
         .map_err(|error| error.to_string())?
     {
-        return serde_json::from_str(&snapshot_json).map_err(|error| error.to_string());
+        let mut snapshot: memory_engine::FrozenMemorySnapshot =
+            serde_json::from_str(&snapshot_json).map_err(|error| error.to_string())?;
+        snapshot.thread_id = thread_id.clone();
+        snapshot.chat_entries = state
+            .list_memory_entries_for_ref("chat", &thread_id, 500)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot);
     }
 
     let db_arc = state.inner().clone();
     let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = session_id.clone();
+    snapshot.thread_id = thread_id.clone();
+    snapshot.chat_entries = state
+        .list_memory_entries_for_ref("chat", &thread_id, 500)
+        .map_err(|error| error.to_string())?;
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     state
-        .save_session_snapshot(&session_id, &snapshot_json)
+        .save_chat_memory_snapshot(&thread_id, &snapshot_json)
         .map_err(|error| error.to_string())?;
     Ok(snapshot)
 }
 
 #[tauri::command]
-fn session_end(
-    state: tauri::State<'_, Arc<Database>>,
-    id: String,
-    summary: Option<String>,
-    total_messages: Option<i32>,
-    total_tokens_est: Option<i64>,
-    outcome: Option<String>,
-) -> Result<(), String> {
-    state
-        .end_session(
-            &id,
-            summary.as_deref(),
-            total_messages.unwrap_or(0),
-            total_tokens_est.unwrap_or(0),
-            outcome.as_deref(),
-            None,
-            None,
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_list(
-    state: tauri::State<'_, Arc<Database>>,
-    limit: Option<i64>,
-) -> Result<Vec<db::SessionRow>, String> {
-    state
-        .list_sessions(limit.unwrap_or(100))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_search(
+fn chat_search(
     state: tauri::State<'_, Arc<Database>>,
     query: String,
     limit: Option<i64>,
-) -> Result<Vec<db::SessionSearchResultRow>, String> {
+) -> Result<Vec<db::ChatSearchResultRow>, String> {
     state
-        .fulltext_search_sessions(&query, limit.unwrap_or(50))
+        .fulltext_search_chats(&query, limit.unwrap_or(50))
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_freeze_snapshot(
-    state: tauri::State<'_, Arc<Database>>,
-    session_id: String,
-) -> Result<String, String> {
-    let db_arc = state.inner().clone();
-    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = session_id.clone();
-    let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| e.to_string())?;
-    state
-        .save_session_snapshot(&session_id, &snapshot_json)
-        .map_err(|e| e.to_string())?;
-    Ok(snapshot_json)
-}
-
-#[tauri::command]
-fn session_get(
-    state: tauri::State<'_, Arc<Database>>,
-    id: String,
-) -> Result<Option<db::SessionRow>, String> {
-    state.get_session(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<(), String> {
-    state.delete_session(&id).map_err(|e| e.to_string())
 }
 
 // -- Learning outcome commands ----------------------------------------------
@@ -10625,7 +11464,8 @@ fn session_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<
 fn learning_upsert(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
-    session_id: Option<String>,
+    run_id: Option<String>,
+    thread_id: Option<String>,
     task_id: Option<String>,
     outcome_type: String,
     description: String,
@@ -10635,7 +11475,8 @@ fn learning_upsert(
     state
         .insert_learning_outcome(
             &id,
-            session_id.as_deref(),
+            run_id.as_deref(),
+            thread_id.as_deref(),
             task_id.as_deref(),
             &outcome_type,
             &description,
@@ -10912,6 +11753,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn crew_provider_config_uses_python_runtime_key() {
+        let configs = CrewProviderConfigsRequest {
+            open_ai_compatible: Some(CrewExternalProviderConfigRequest {
+                base_url: "https://inference.example.test/v1".to_string(),
+                model: "example/model".to_string(),
+                models: vec!["vendor/example-model".to_string()],
+                api_key: "test-key".to_string(),
+                timeout_ms: 600_000,
+                verify_tls_certificates: false,
+            }),
+            open_router: None,
+        };
+
+        let value = serde_json::to_value(&configs).unwrap();
+        assert!(value.get("openAICompatible").is_some());
+        assert!(value.get("openAiCompatible").is_none());
+        assert_eq!(value["openAICompatible"]["verifyTlsCertificates"], false);
+        assert_eq!(
+            value["openAICompatible"]["models"][0],
+            "vendor/example-model"
+        );
+
+        let parsed: CrewProviderConfigsRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.open_ai_compatible.unwrap().model, "example/model");
+    }
+
+    #[test]
+    fn crew_provider_falls_back_from_missing_openai_to_openrouter() {
+        assert_eq!(
+            resolve_effective_crew_provider("openai-compatible", true, false, true),
+            "openrouter"
+        );
+    }
+
+    #[test]
+    fn crew_provider_keeps_configured_requested_provider() {
+        assert_eq!(
+            resolve_effective_crew_provider("openai-compatible", true, true, true),
+            "openai-compatible"
+        );
+    }
+
+    #[test]
+    fn crew_provider_model_alias_matches_a_successful_quantized_model() {
+        assert!(provider_models_share_stem(
+            "google/gemma-4-31B-it",
+            "RedHatAI/gemma-4-31B-it-FP8-block"
+        ));
+        assert!(!provider_models_share_stem(
+            "google/gemma-4-31B-it",
+            "vendor/unrelated-model"
+        ));
+    }
+
+    #[test]
+    fn live_news_memory_rejects_stale_and_failed_crew_runs() {
+        let entry = db::MemoryEntryRow {
+            id: "memory".to_string(),
+            scope: "shared".to_string(),
+            category: "crew-run".to_string(),
+            key: "crew::news::latest".to_string(),
+            content: "Crew: News\nStatus: completed\nYesterday's report".to_string(),
+            scope_ref: None,
+            source_run_id: None,
+            confidence: 0.82,
+            access_count: 0,
+            last_accessed_at: None,
+            created_at: "2026-07-22".to_string(),
+            updated_at: "2026-07-22".to_string(),
+        };
+
+        assert!(!crew_memory_entry_is_relevant(&entry, true));
+        assert!(crew_memory_entry_is_relevant(&entry, false));
+
+        let failed = db::MemoryEntryRow {
+            content: "Crew: News\nStatus: failed\nNo model configured".to_string(),
+            confidence: 0.45,
+            ..entry
+        };
+        assert!(!crew_memory_entry_is_relevant(&failed, false));
+    }
+
+    #[test]
     fn toolset_policy_definitions_are_canonical() {
         let safe_research = find_toolset_policy("safe_research").unwrap();
 
@@ -10980,6 +11904,99 @@ mod tests {
             "C:\\workspace\\generated"
         )
         .is_err());
+    }
+
+    #[test]
+    fn task_project_context_resolves_current_enabled_sources_and_rights() {
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let now = chrono::Utc::now().to_rfc3339();
+        let root = std::env::temp_dir().join(format!(
+            "localai-cowork-task-project-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let enabled_file = root.join("enabled.txt");
+        let disabled_file = root.with_extension("disabled.txt");
+        fs::write(&enabled_file, "current enabled content").unwrap();
+        fs::write(&disabled_file, "must stay hidden").unwrap();
+
+        database
+            .upsert_project(
+                "project-1",
+                "Resolver project",
+                "Always use the current project instruction.",
+                &now,
+                &now,
+            )
+            .unwrap();
+        database
+            .insert_thread("thread-1", "Task chat", &now, None, None, "model", None)
+            .unwrap();
+        database
+            .attach_project_thread("project-1", "thread-1")
+            .unwrap();
+        database
+            .upsert_project_resource(
+                "resource-folder",
+                "project-1",
+                "folder",
+                &root.display().to_string(),
+                Some("Workspace"),
+                true,
+                &now,
+            )
+            .unwrap();
+        database
+            .upsert_project_resource(
+                "resource-disabled",
+                "project-1",
+                "file",
+                &disabled_file.display().to_string(),
+                Some("Disabled"),
+                false,
+                &now,
+            )
+            .unwrap();
+
+        let context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+            &database,
+            &TaskProjectContextResolveRequest {
+                task_id: None,
+                thread_id: Some("thread-1".to_string()),
+                prompt: "Use the source".to_string(),
+                work_dir: None,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(context.project_id.as_deref(), Some("project-1"));
+        assert!(context.prompt_context.contains("current enabled content"));
+        assert!(!context.prompt_context.contains("must stay hidden"));
+        assert_eq!(
+            context.preferred_cwd,
+            Some(root.canonicalize().unwrap().display().to_string())
+        );
+        assert!(context
+            .authorized_paths
+            .iter()
+            .any(|entry| entry.kind == "folder"
+                && entry.path == root.canonicalize().unwrap().display().to_string()));
+
+        database.delete_project("project-1", false).unwrap();
+        let deleted_context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+            &database,
+            &TaskProjectContextResolveRequest {
+                task_id: None,
+                thread_id: Some("thread-1".to_string()),
+                prompt: "Continue".to_string(),
+                work_dir: None,
+            },
+        ))
+        .unwrap();
+        assert!(deleted_context.project_id.is_none());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(disabled_file);
     }
 
     #[test]
@@ -11087,7 +12104,6 @@ mod tests {
         database
             .insert_engine_run(
                 "run-sandboxed",
-                None,
                 None,
                 None,
                 "Sandboxed test run",
@@ -11226,7 +12242,6 @@ mod tests {
                 "run-secure",
                 None,
                 None,
-                None,
                 "Secure config migration",
                 None,
                 "running",
@@ -11358,7 +12373,8 @@ fn insights_record(
     category: String,
     value_num: Option<f64>,
     value_text: Option<String>,
-    session_id: Option<String>,
+    run_id: Option<String>,
+    thread_id: Option<String>,
     metadata_json: Option<String>,
 ) -> Result<String, String> {
     let db_arc = state.inner().clone();
@@ -11367,7 +12383,8 @@ fn insights_record(
         category,
         value_num,
         value_text,
-        session_id,
+        run_id,
+        thread_id,
         metadata_json,
     };
     insights::record_event(&db_arc, &req)
@@ -11798,6 +12815,7 @@ pub fn run() {
             app.manage(CrewExecutionRegistry::default());
             app.manage(ChatStreamRegistry::default());
             app.manage(TerminalSessionRegistry::default());
+            app.manage(DeveloperBrowserState::default());
             app.manage(CrewPythonBridge::default());
             app.manage(ClaudeCodeBridge::new());
             configure_pdfium_search_paths(app.handle());
@@ -11830,6 +12848,34 @@ pub fn run() {
             desktop_type_text,
             desktop_keypress,
             desktop_scroll,
+            developer_browser_start,
+            developer_browser_stop,
+            developer_browser_status,
+            developer_browser_navigate,
+            developer_browser_reload,
+            developer_browser_history,
+            developer_browser_snapshot,
+            developer_browser_click,
+            developer_browser_scroll,
+            developer_browser_type_text,
+            developer_browser_keypress,
+            developer_browser_inspect,
+            developer_browser_cdp_call,
+            git_repository_status,
+            git_repository_diff,
+            git_repository_stage,
+            git_repository_unstage,
+            git_repository_commit,
+            git_repository_push,
+            git_repository_pull,
+            git_repository_create_branch,
+            github_connection_status,
+            github_list_pull_requests,
+            github_get_pull_request,
+            github_create_pull_request,
+            github_post_pull_request_comment,
+            github_submit_pull_request_review,
+            github_merge_pull_request,
             mcp_runtime_start,
             mcp_runtime_stop,
             mcp_runtime_restart,
@@ -11841,6 +12887,7 @@ pub fn run() {
             shell_command_validate,
             exec_command,
             project_list,
+            task_project_context_resolve,
             project_upsert,
             project_delete,
             project_resource_upsert,
@@ -11852,6 +12899,7 @@ pub fn run() {
             db_list_threads,
             db_update_thread_provider_settings,
             db_update_thread_permission_config,
+            db_update_thread_runner,
             db_delete_thread,
             db_save_message,
             db_update_message_content,
@@ -11967,15 +13015,9 @@ pub fn run() {
             skill_improve,
             skill_match,
             skill_auto_generate,
-            // Sessions
-            session_create,
-            session_memory_snapshot,
-            session_end,
-            session_list,
-            session_search,
-            session_freeze_snapshot,
-            session_get,
-            session_delete,
+            // Chat memory and search
+            chat_memory_snapshot,
+            chat_search,
             // Learning
             learning_upsert,
             learning_list,

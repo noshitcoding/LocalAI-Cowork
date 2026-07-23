@@ -31,6 +31,20 @@ class CrewRuntimeStatusTests(unittest.TestCase):
         self.assertEqual(status["crewaiVersion"], crew_runtime.EXPECTED_CREWAI_VERSION)
         self.assertEqual(status["runtimeSchemaVersion"], crew_runtime.RUNTIME_SCHEMA_VERSION)
 
+    def test_openai_service_root_uses_the_standard_v1_api_base(self) -> None:
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test"),
+            "https://inference.example.test/v1",
+        )
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test/v1/chat/completions"),
+            "https://inference.example.test/v1",
+        )
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test/api/v1"),
+            "https://inference.example.test/api/v1",
+        )
+
 
 class CrewRuntimeToolTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -128,6 +142,44 @@ class CrewRuntimeToolTests(unittest.TestCase):
         self.assertIn("outside the authorized working directory", escape_result)
         self.assertFalse((self.root.parent / "escape.txt").exists())
 
+    def test_exact_file_authorization_does_not_expose_neighboring_files(self) -> None:
+        allowed = self.root / "allowed.txt"
+        neighbor = self.root / "neighbor.txt"
+        allowed.write_text("allowed", encoding="utf-8")
+        neighbor.write_text("secret", encoding="utf-8")
+        self.request["cwd"] = ""
+        self.request["authorizedPaths"] = [
+            {"path": str(allowed), "kind": "file", "access": "read_write"}
+        ]
+        tools = self._tools()
+
+        self.assertIn("allowed", tools["read_file"]._run(str(allowed)))
+        self.assertIn(
+            "outside the authorized working directory",
+            tools["read_file"]._run(str(neighbor)),
+        )
+        self.assertIn(
+            "outside the authorized working directory",
+            tools["edit_file"]._run(str(neighbor), content="changed"),
+        )
+        self.assertEqual(neighbor.read_text(encoding="utf-8"), "secret")
+
+    def test_global_path_deny_rules_still_restrict_project_roots(self) -> None:
+        blocked = self.root / "blocked.txt"
+        blocked.write_text("secret", encoding="utf-8")
+        self.request["governance"]["denyRules"] = [
+            "read_file:*blocked.txt",
+            "edit_file:*blocked.txt",
+        ]
+        tools = self._tools()
+
+        self.assertIn("Global deny rule blocks read_file", tools["read_file"]._run(str(blocked)))
+        self.assertIn(
+            "Global deny rule blocks edit_file",
+            tools["edit_file"]._run(str(blocked), content="changed"),
+        )
+        self.assertEqual(blocked.read_text(encoding="utf-8"), "secret")
+
     def test_bash_uses_runtime_python_without_inheriting_pythonhome(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -196,6 +248,34 @@ class CrewRuntimeToolTests(unittest.TestCase):
         self.assertIn("CrewAI docs", result)
         self.assertNotIn("ERROR", result)
 
+    def test_web_search_uses_live_news_feed_with_publication_times(self) -> None:
+        feed = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel>
+          <item>
+            <title>Verified current headline - Example Wire</title>
+            <link>https://news.google.com/rss/articles/current-story</link>
+            <pubDate>Thu, 23 Jul 2026 06:00:00 GMT</pubDate>
+            <source>Example Wire</source>
+            <description><![CDATA[<a href="https://example.test/story">Current report</a>]]></description>
+          </item>
+        </channel></rss>"""
+
+        with mock.patch.object(
+            crew_tools,
+            "_fetch_public_text",
+            return_value=("https://news.google.com/rss", feed, 200, False),
+        ) as fetch:
+            result = self._tools()["web_search"]._run(
+                "top global news stories today",
+                6,
+            )
+
+        self.assertIn("Provider: Google News RSS", result)
+        self.assertIn("Published: Thu, 23 Jul 2026 06:00:00 GMT", result)
+        self.assertIn("Source: Example Wire", result)
+        self.assertIn("https://news.google.com/rss/articles/current-story", result)
+        self.assertIn("news.google.com/rss?", fetch.call_args.args[0])
+
     def test_office_workflow_creates_a_real_powerpoint(self) -> None:
         sections = json.dumps([
             {"title": "Research", "bullets": ["Search works", "Sources included"]},
@@ -219,6 +299,102 @@ class CrewRuntimeToolTests(unittest.TestCase):
 
 
 class CrewRuntimeTaskTests(unittest.TestCase):
+    def test_shared_crew_rpm_is_not_divided_into_one_request_agent_limits(self) -> None:
+        self.assertEqual(
+            crew_runtime.effective_max_rpm(
+                {"maxRpm": 3},
+                agent_count=14,
+                uses_openrouter_free=False,
+            ),
+            0,
+        )
+
+    def test_fresh_news_task_treats_runtime_time_as_authoritative(self) -> None:
+        description = crew_runtime.build_task_description(
+            {
+                "executionGuidelines": (
+                    "Current run date: 2026-07-23\n"
+                    "Create verified world news for the last 24 hours."
+                ),
+                "knowledgeFocus": "Fresh global news",
+            },
+            {
+                "description": "Search current sources.",
+                "expectedOutput": "Daily News Brief",
+            },
+            {"id": "news-scout"},
+        )
+
+        self.assertIn("authoritative live system time", description)
+        self.assertIn("Never describe that date as future", description)
+        self.assertIn("revised search query", description)
+
+    def test_fresh_news_memory_excludes_previous_crew_runs_and_failures(self) -> None:
+        note = crew_runtime.build_memory_note({
+            "executionGuidelines": "Create verified world news for the last 24 hours.",
+            "memoryContext": {
+                "entries": [
+                    {
+                        "scope": "shared",
+                        "category": "crew-run",
+                        "key": "crew::news::latest",
+                        "content": "Status: completed\nNo current sources were found.",
+                        "confidence": 0.82,
+                    },
+                    {
+                        "scope": "shared",
+                        "category": "rules",
+                        "key": "source-policy",
+                        "content": "Prefer primary sources.",
+                        "confidence": 0.95,
+                    },
+                    {
+                        "scope": "shared",
+                        "category": "crew-run",
+                        "key": "crew::news::failed",
+                        "content": "Status: failed\nNo model configured.",
+                        "confidence": 0.45,
+                    },
+                ],
+            },
+        })
+
+        self.assertIn("Prefer primary sources", note)
+        self.assertNotIn("No current sources", note)
+        self.assertNotIn("No model configured", note)
+
+    def test_work_task_prompt_language_overrides_fixed_german_crew_template(self) -> None:
+        request = {
+            "executionGuidelines": (
+                "Mission: create a verified briefing.\n"
+                "Final answer language: German.\n\n"
+                "Work task request: Daily News Report\n\n"
+                "Create a verified report with current sources.\n\n"
+                "Expected overall result:\nA concise report."
+            ),
+            "tasks": [{
+                "description": "Write the final Daily News Brief in German.",
+            }],
+        }
+
+        self.assertEqual(crew_runtime.resolve_response_language(request), "English")
+        description = crew_runtime.build_task_description(
+            request,
+            request["tasks"][0],
+            {"id": "editor"},
+        )
+        self.assertIn("Required final-output language: English", description)
+        self.assertIn("overrides fixed language defaults", description)
+
+    def test_response_language_falls_back_to_selected_interface_language(self) -> None:
+        self.assertEqual(
+            crew_runtime.resolve_response_language({
+                "responseLanguage": "de",
+                "description": "Q3 2026",
+            }),
+            "German",
+        )
+
     def test_openrouter_respects_selected_models_and_agent_overrides(self) -> None:
         request = {
             "providerConfigs": {
@@ -299,6 +475,39 @@ class CrewRuntimeTaskTests(unittest.TestCase):
         self.assertEqual(llm.additional_params.get("max_retries"), 4)
         self.assertIs(llm.additional_params.get("_skip_mcp_handler"), True)
         self.assertEqual(built_agent.max_execution_time, 180)
+
+    def test_openai_compatible_uses_the_loaded_model_for_a_stale_alias(self) -> None:
+        request = {
+            "providerConfigs": {
+                "openAICompatible": {
+                    "baseUrl": "https://inference.example.test/v1",
+                    "model": "google/gemma-4-31B-it",
+                    "models": ["RedHatAI/gemma-4-31B-it-FP8-block"],
+                    "apiKey": "test-key",
+                    "timeoutMs": 180_000,
+                }
+            },
+        }
+        agent = {
+            "id": "runtime-agent",
+            "providerKind": "openai-compatible",
+            "tools": [],
+        }
+
+        llm = crew_runtime.build_llm(request, agent)
+
+        self.assertEqual(
+            crew_runtime.resolve_agent_model_label(request, agent),
+            "RedHatAI/gemma-4-31B-it-FP8-block",
+        )
+        self.assertEqual(llm.model, "openai/RedHatAI/gemma-4-31B-it-FP8-block")
+
+    def test_model_does_not_exist_is_classified_as_model_not_found(self) -> None:
+        classified = crew_runtime.classify_runtime_error(
+            RuntimeError("The model `stale/model` does not exist.")
+        )
+
+        self.assertTrue(classified.startswith("ModelNotFoundError:"))
 
     def test_configured_retry_count_can_raise_provider_default(self) -> None:
         request = {"retryCount": 5}

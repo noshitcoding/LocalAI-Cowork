@@ -104,6 +104,10 @@ describe('CrewPanel', () => {
         'openai-compatible': 'openai-default',
         openrouter: 'openrouter-default',
       },
+      llmProfileModels: {
+        'openai-default': ['gpt-4.1-mini'],
+        'openrouter-default': [],
+      },
       mcpServer: { name: '', command: '', args: '', env: {} },
       mcpServers: [],
     })
@@ -334,6 +338,138 @@ describe('CrewPanel', () => {
     expect(defaultAgent?.providerKind).toBe('openai-compatible')
     expect(customAgent?.providerKind).toBe('openai-compatible')
     expect(screen.getByText('The crew provider applies to all members. Only the model can still be overridden per member.')).toBeInTheDocument()
+  })
+
+  it('syncs the crew model catalog and effective model from Settings', async () => {
+    useConfigStore.setState((state) => ({
+      llmProfiles: state.llmProfiles.map((profile) => profile.id === 'openai-default'
+        ? { ...profile, model: 'settings/current-model' }
+        : profile),
+      llmProfileModels: {
+        ...state.llmProfileModels,
+        'openai-default': ['settings/current-model', 'settings/alternate-model'],
+      },
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        defaultProvider: 'openai-compatible',
+        defaultModel: 'legacy/removed-model',
+        agents: crew.agents.map((agent) => ({
+          ...agent,
+          providerKind: 'openai-compatible',
+          modelOverride: null,
+          inheritCrewModel: true,
+        })),
+      })),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+
+    const modelSelect = screen.getByRole('combobox', { name: 'Crew-Model' })
+    expect(within(modelSelect).getByRole('option', { name: 'settings/current-model' })).toBeInTheDocument()
+    expect(within(modelSelect).getByRole('option', { name: 'settings/alternate-model' })).toBeInTheDocument()
+    expect(within(modelSelect).queryByRole('option', { name: 'legacy/removed-model' })).not.toBeInTheDocument()
+    expect(useCrewStore.getState().crews[0].defaultModel).toBe('')
+    expect(within(modelSelect).getByRole('option', {
+      name: 'Use global settings (settings/current-model)',
+    })).toBeInTheDocument()
+  })
+
+  it('allows selecting OpenRouter before a model has been chosen', async () => {
+    await act(async () => {
+      renderCrewPanel()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+    const providerSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    const openRouterOption = within(providerSelect).getByRole('option', { name: 'OpenRouter' })
+    expect(openRouterOption).not.toBeDisabled()
+
+    fireEvent.change(providerSelect, { target: { value: 'openrouter' } })
+
+    expect(useCrewStore.getState().crews[0].defaultProvider).toBe('openrouter')
+  })
+
+  it('enables OpenRouter from a configured global profile when the crew override is disabled', async () => {
+    useConfigStore.setState((state) => ({
+      llmProfiles: state.llmProfiles.map((profile) => profile.provider === 'openrouter'
+        ? { ...profile, model: 'openai/gpt-4o-mini' }
+        : profile),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+
+    const providerSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    const openRouterOption = within(providerSelect).getByRole('option', { name: 'OpenRouter' })
+    expect(openRouterOption).not.toBeDisabled()
+
+    fireEvent.change(providerSelect, { target: { value: 'openrouter' } })
+
+    const crew = useCrewStore.getState().crews[0]
+    expect(crew.defaultProvider).toBe('openrouter')
+    expect(crew.agents.every((agent) => agent.providerKind === 'openrouter')).toBe(true)
+  })
+
+  it('applies the selected crew model to every member with one click', async () => {
+    usePersonalityStore.setState((state) => ({
+      ...state,
+      personalities: [{
+        id: 'profile-agent',
+        name: 'Profile Agent',
+        description: 'Profile agent',
+        role: 'researcher',
+        goal: 'Research',
+        system_prompt: 'Research carefully.',
+        skills_markdown: '',
+        temperature: null,
+        model_override: 'llama3.1:70b',
+        icon: null,
+        is_default: false,
+        created_at: '2026-07-22T00:00:00.000Z',
+        updated_at: '2026-07-22T00:00:00.000Z',
+      }],
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        agents: [
+          ...crew.agents,
+          { ...baseAgent, id: 'agent-profile', personalityId: 'profile-agent', modelOverride: 'llama3.1:70b' },
+        ],
+      })),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply crew model to all' }))
+
+    const crew = useCrewStore.getState().crews[0]
+    expect(crew.agents.every((agent) => agent.modelOverride === null)).toBe(true)
+    expect(crew.agents.every((agent) => agent.inheritCrewModel)).toBe(true)
+    expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
+    expect(screen.getByText(`Crew model applied to ${crew.agents.length} members.`)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Crew-members/ }))
+    const profileAgentHeader = screen.getByRole('button', { name: /Profile Agent/ })
+    fireEvent.click(profileAgentHeader)
+    const profileAgentCard = profileAgentHeader.closest('.crew-agent-card')
+    expect(profileAgentCard).not.toBeNull()
+    fireEvent.change(within(profileAgentCard as HTMLElement).getByRole('combobox', { name: 'Model' }), {
+      target: { value: 'qwen3:14b' },
+    })
+
+    const overriddenAgent = useCrewStore.getState().crews[0].agents.find((agent) => agent.id === 'agent-profile')
+    expect(overriddenAgent).toMatchObject({ modelOverride: 'qwen3:14b', inheritCrewModel: false })
+    expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
   })
 
   it('can grant a tool to all crew members from the crew-level access panel', async () => {

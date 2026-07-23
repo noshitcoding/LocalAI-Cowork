@@ -30,7 +30,7 @@ export function parseScheduledTaskInput(input: string): ParsedScheduleInput | nu
   if (tokens.length < 3) return null
 
   const first = tokens[0].toLowerCase()
-  let scheduleTokenCount = 0
+  let scheduleTokenCount: number
 
   if (first === 'every' || first === 'alle') {
     if (tokens.length >= 3 && /^\d+(min|m|h|hr|hrs|hour|hours|std|stunde|stunden)$/i.test(tokens[1])) {

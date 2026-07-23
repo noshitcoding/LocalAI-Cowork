@@ -1,6 +1,6 @@
 ﻿import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/sessionThreads'
+import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/chatMessages'
 import type { ChatAttachment } from '../utils/chatAttachments'
 import { normalizeChatProviderSelection, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
@@ -122,9 +122,12 @@ type ChatState = {
   addThread: (title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => string
   ensureThread: (id: string, title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => { id: string; created: boolean }
   hydrateThread: (thread: ChatThread) => void
-  setActiveThread: (id: string | null) => void
+  ensureThreadLoaded: (id: string) => Promise<void>
+  reloadThreadMessages: (id: string) => Promise<void>
+  setActiveThread: (id: string | null) => Promise<void>
   setThreadProviderSettings: (threadId: string, providerSettings?: ChatProviderSelection) => void
   setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => void
+  setThreadRunner: (threadId: string, runner: 'crew' | 'model', crewId?: string | null) => void
   addMessage: (threadId: string, message: Omit<ChatMessage, 'id'>) => string
   updateMessage: (
     threadId: string,
@@ -143,6 +146,11 @@ type ChatState = {
 type DbMessage = { id: string; role: string; content: string; timestamp: number }
 
 const loadedThreadMessages = new Set<string>()
+const databaseBackedThreadIds = new Set<string>()
+const loadingThreadMessages = new Map<string, Promise<void>>()
+const pendingMessagePersists = new Map<string, { threadId: string; message: ChatMessage }>()
+const messagePersistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const STREAM_PERSIST_INTERVAL_MS = 750
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -211,6 +219,37 @@ async function loadThreadMessagesFromDb(threadId: string): Promise<ChatMessage[]
   return (Array.isArray(dbMsgs) ? dbMsgs : []).map((message) => hydrateStoredMessage(message))
 }
 
+function persistMessageUpdate(threadId: string, message: ChatMessage): void {
+  void persistInvoke('db_update_message_content', {
+    id: message.id,
+    content: serializeChatMessageForStorage(message),
+  }, `db_update_message_content ${threadId}`)
+}
+
+function scheduleMessagePersist(threadId: string, message: ChatMessage): void {
+  if (!isTauriRuntime()) return
+  pendingMessagePersists.set(message.id, { threadId, message })
+  if (messagePersistTimers.has(message.id)) return
+
+  const timer = setTimeout(() => {
+    messagePersistTimers.delete(message.id)
+    const pending = pendingMessagePersists.get(message.id)
+    pendingMessagePersists.delete(message.id)
+    if (pending) {
+      persistMessageUpdate(pending.threadId, pending.message)
+    }
+  }, STREAM_PERSIST_INTERVAL_MS)
+  messagePersistTimers.set(message.id, timer)
+}
+
+function flushMessagePersist(threadId: string, message: ChatMessage): void {
+  const timer = messagePersistTimers.get(message.id)
+  if (timer) clearTimeout(timer)
+  messagePersistTimers.delete(message.id)
+  pendingMessagePersists.delete(message.id)
+  persistMessageUpdate(threadId, message)
+}
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   threads: [],
   activeThreadId: null,
@@ -231,8 +270,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         providerSettingsJson?: string | null
         permission_config_json?: string | null
         permissionConfigJson?: string | null
+        runner?: string | null
+        crew_id?: string | null
+        crewId?: string | null
       }
       const dbThreads = await invoke<DbThread[]>('db_list_threads')
+      dbThreads.forEach((thread) => databaseBackedThreadIds.add(thread.id))
       const currentActiveThreadId = get().activeThreadId
       const sortedDbThreads = [...dbThreads].sort((a, b) => {
         const aTime = parseTimestamp(a.updated_at ?? a.updatedAt)
@@ -258,6 +301,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           updatedAt: parseTimestamp(dt.updated_at ?? dt.updatedAt),
           providerSettings: parseThreadProviderSettings(dt.provider_settings_json ?? dt.providerSettingsJson),
           permissionConfig: parsePermissionConfig(dt.permission_config_json || dt.permissionConfigJson || '{}'),
+          runner: dt.runner === 'crew' ? 'crew' : 'model',
+          crewId: dt.runner === 'crew' ? (dt.crew_id ?? dt.crewId ?? null) : null,
         })
       }
       const hydratedThreads = threads.map((thread) => ({
@@ -348,7 +393,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       createdAt: isoNow,
       providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
       permissionConfigJson: serializePermissionConfig(permissionConfig),
-    }, 'db_save_thread')
+      runner: runner ?? 'model',
+      crewId: runner === 'crew' ? crewId ?? null : null,
+    }, 'db_save_thread').then(() => databaseBackedThreadIds.add(id))
     void persistInvoke('db_save_message', {
       id: systemMsg.id,
       threadId: id,
@@ -432,7 +479,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       createdAt: isoNow,
       providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
       permissionConfigJson: serializePermissionConfig(permissionConfig),
+      runner: runner ?? 'model',
+      crewId: runner === 'crew' ? crewId ?? null : null,
     }, 'db_save_thread restored task chat')
+      .then(() => databaseBackedThreadIds.add(normalizedId))
     void persistInvoke('db_save_message', {
       id: systemMsg.id,
       threadId: normalizedId,
@@ -463,11 +513,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     })
   },
 
-  setActiveThread: (id) => {
-    set({ activeThreadId: id })
-    if (!id || loadedThreadMessages.has(id) || !isTauriRuntime()) return
+  ensureThreadLoaded: async (id) => {
+    if (!id || loadedThreadMessages.has(id)) return
+    if (!isTauriRuntime()) {
+      loadedThreadMessages.add(id)
+      return
+    }
 
-    void loadThreadMessagesFromDb(id)
+    const existingLoad = loadingThreadMessages.get(id)
+    if (existingLoad) {
+      await existingLoad
+      return
+    }
+
+    const load = loadThreadMessagesFromDb(id)
       .then((messages) => {
         loadedThreadMessages.add(id)
         set((state) => ({
@@ -478,7 +537,42 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           )),
         }))
       })
-      .catch((error) => console.warn('[chatStore] db_list_messages failed', error))
+      .catch((error) => {
+        console.warn('[chatStore] db_list_messages failed', error)
+        throw error
+      })
+      .finally(() => {
+        loadingThreadMessages.delete(id)
+      })
+
+    loadingThreadMessages.set(id, load)
+    await load
+  },
+
+  reloadThreadMessages: async (id) => {
+    if (!id || !isTauriRuntime() || !databaseBackedThreadIds.has(id)) {
+      await get().ensureThreadLoaded(id)
+      return
+    }
+
+    const existingLoad = loadingThreadMessages.get(id)
+    if (existingLoad) await existingLoad
+
+    const messages = await loadThreadMessagesFromDb(id)
+    loadedThreadMessages.add(id)
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === id
+          ? { ...thread, messages }
+          : thread
+      )),
+    }))
+  },
+
+  setActiveThread: async (id) => {
+    set({ activeThreadId: id })
+    if (!id) return
+    await get().ensureThreadLoaded(id)
   },
 
   setThreadProviderSettings: (threadId, providerSettings) => {
@@ -509,6 +603,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       id: threadId,
       permissionConfigJson: serialized,
     }, 'db_update_thread_permission_config')
+  },
+
+  setThreadRunner: (threadId, runner, crewId) => {
+    const normalizedCrewId = runner === 'crew' && crewId?.trim() ? crewId.trim() : null
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === threadId
+          ? { ...thread, runner, crewId: normalizedCrewId, updatedAt: Date.now() }
+          : thread
+      )),
+    }))
+    void persistInvoke('db_update_thread_runner', {
+      id: threadId,
+      runner,
+      crewId: normalizedCrewId,
+    }, 'db_update_thread_runner')
   },
 
   addMessage: (threadId, message) => {
@@ -558,11 +668,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ),
     }))
 
-    if (options?.persist && messageToPersist) {
-      void persistInvoke('db_update_message_content', {
-        id: messageId,
-        content: serializeChatMessageForStorage(messageToPersist),
-      }, 'db_update_message_content')
+    if (messageToPersist) {
+      flushMessagePersist(threadId, messageToPersist)
+    } else {
+      const currentMessage = get().threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.find((message) => message.id === messageId)
+      if (currentMessage) {
+        scheduleMessagePersist(threadId, currentMessage)
+      }
     }
   },
 
@@ -573,6 +687,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   deleteThread: (id) => {
     loadedThreadMessages.delete(id)
+    databaseBackedThreadIds.delete(id)
+    loadingThreadMessages.delete(id)
     set((state) => ({
       threads: state.threads.filter((t) => t.id !== id),
       activeThreadId: state.activeThreadId === id ? null : state.activeThreadId,

@@ -6,6 +6,8 @@ import { safeInvoke } from '../utils/safeInvoke'
 import { crewProviderLocator, deleteCredential, setCredential } from '../security/credentialVault'
 import { sanitizeCrewsForPersistence } from '../security/credentialPersistence'
 import { redactText } from '../security/redaction'
+import { resolveEffectiveCrewProvider, resolveExternalProviderConfig } from '../engine/crew/workTaskCrewRuntime'
+import i18n from '../i18n'
 
 export type AgentRole = 'researcher' | 'writer' | 'reviewer' | 'planner' | 'executor' | 'analyst' | 'custom'
 export type CrewProcess = 'sequential' | 'parallel' | 'hierarchical'
@@ -22,6 +24,7 @@ export type CrewAgent = {
   skillsMarkdown: string
   personalityId: string | null
   modelOverride: string | null
+  inheritCrewModel?: boolean
   providerKind: CrewProviderKind
   tools: string[]
   mcpServerNames: string[]
@@ -431,7 +434,11 @@ export function resolveCrewAgentWithProfile(agent: CrewAgent, profiles: CrewPers
     goal: profile.goal || profile.description || `Work in the style of ${profile.name}.`,
     backstory: profile.systemPrompt,
     skillsMarkdown: profile.skillsMarkdown,
-    modelOverride: profile.modelOverride?.trim() || null,
+    modelOverride: agent.inheritCrewModel === true
+      ? null
+      : agent.inheritCrewModel === false
+        ? agent.modelOverride?.trim() || null
+        : profile.modelOverride?.trim() || null,
     tools: [...agent.tools],
     mcpServerNames: [...agent.mcpServerNames],
   }
@@ -507,24 +514,6 @@ function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig?: OllamaConfig) {
     baseUrl: crew.runtimeConfig.baseUrl.trim() || fallbackConfig?.baseUrl || '',
     model: crew.runtimeConfig.model.trim() || fallbackConfig?.model || '',
     timeoutMs: Math.max(1000, crew.runtimeConfig.timeoutMs || fallbackConfig?.timeoutMs || 600000),
-  }
-}
-
-function resolveExternalProviderConfig(
-  config: CrewExternalProviderConfig,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; verifyTlsCertificates?: boolean } | undefined,
-  fallbackBaseUrl: string,
-) {
-  if (!config.enabled) {
-    return undefined
-  }
-
-  return {
-    baseUrl: config.baseUrl.trim() || fallbackConfig?.baseUrl?.trim() || fallbackBaseUrl,
-    model: config.model.trim() || fallbackConfig?.model?.trim() || '',
-    apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
-    timeoutMs: Math.max(1000, config.timeoutMs || DEFAULT_EXTERNAL_PROVIDER_CONFIG.timeoutMs),
-    verifyTlsCertificates: (config.verifyTlsCertificates ?? true) && (fallbackConfig?.verifyTlsCertificates ?? true),
   }
 }
 
@@ -831,7 +820,7 @@ export const useCrewStore = create<CrewState>()(
           let crewsChanged = false
           const nextCrews = state.crews.map((crew) => {
             let crewAgentsChanged = false
-            let nextCrewAgents = crew.agents.map((agent) => {
+            const nextCrewAgents = crew.agents.map((agent) => {
               if (!agent.personalityId) {
                 return cloneCrewAgent(agent)
               }
@@ -844,13 +833,13 @@ export const useCrewStore = create<CrewState>()(
               crewAgentsChanged = true
               return applyPersonalityProfileToAgent(agent, profile)
             })
-            const missingAgents = syncedAgents.filter(
-              (agent) => !nextCrewAgents.some((existingAgent) => isSamePersonalityAgent(existingAgent, agent.personalityId ?? '')),
-            )
 
-            if (missingAgents.length > 0) {
+            for (const profile of syncableProfiles.filter((entry) => entry.isDefault === false)) {
+              if (nextCrewAgents.some((agent) => isSamePersonalityAgent(agent, profile.id))) {
+                continue
+              }
+              nextCrewAgents.push(buildCrewAgentFromPersonality(profile))
               crewAgentsChanged = true
-              nextCrewAgents = [...nextCrewAgents, ...missingAgents.map(cloneCrewAgent)]
             }
 
             if (!crewAgentsChanged) {
@@ -1036,7 +1025,7 @@ export const useCrewStore = create<CrewState>()(
         let providerConfigs = undefined
         try {
           config = useConfigStore.getState().ollama
-          const { defaultLlmProfileIds, llmProfiles } = useConfigStore.getState()
+          const { defaultLlmProfileIds, llmProfileModels, llmProfiles } = useConfigStore.getState()
           const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
             ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible')
           const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
@@ -1046,11 +1035,13 @@ export const useCrewStore = create<CrewState>()(
               crew.providerProfiles.openAICompatible,
               defaultOpenAICompatibleProfile,
               defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+              defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
             ),
             openRouter: resolveExternalProviderConfig(
               crew.providerProfiles.openRouter,
               defaultOpenRouterProfile,
               defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+              defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
             ),
           }
         } catch {
@@ -1058,16 +1049,16 @@ export const useCrewStore = create<CrewState>()(
         }
 
         config = resolveCrewRuntimeConfig(crew, config)
-        const crewDefaultProvider = crew.defaultProvider ?? DEFAULT_CREW_PROVIDER
+        const requestedCrewProvider = crew.defaultProvider ?? DEFAULT_CREW_PROVIDER
         const crewDefaultModel = crew.defaultModel?.trim() ?? ''
 
         if (crewDefaultModel) {
-          if (crewDefaultProvider === 'ollama') {
+          if (requestedCrewProvider === 'ollama') {
             config = {
               ...(config ?? {}),
               model: crewDefaultModel,
             }
-          } else if (crewDefaultProvider === 'openai-compatible' && providerConfigs?.openAICompatible) {
+          } else if (requestedCrewProvider === 'openai-compatible' && providerConfigs?.openAICompatible) {
             providerConfigs = {
               ...providerConfigs,
               openAICompatible: {
@@ -1075,7 +1066,7 @@ export const useCrewStore = create<CrewState>()(
                 model: crewDefaultModel,
               },
             }
-          } else if (crewDefaultProvider === 'openrouter' && providerConfigs?.openRouter) {
+          } else if (requestedCrewProvider === 'openrouter' && providerConfigs?.openRouter) {
             providerConfigs = {
               ...providerConfigs,
               openRouter: {
@@ -1085,6 +1076,12 @@ export const useCrewStore = create<CrewState>()(
             }
           }
         }
+
+        const crewDefaultProvider = resolveEffectiveCrewProvider(
+          requestedCrewProvider,
+          config,
+          providerConfigs,
+        )
 
         const personalityProfiles = await loadPersonalityProfilesForRuntime()
         const resolvedCrewAgents = resolveCrewAgentsWithProfiles(crew.agents, personalityProfiles)
@@ -1162,6 +1159,7 @@ export const useCrewStore = create<CrewState>()(
               executionSubject: crew.executionSubject,
               executionGuidelines: crew.executionGuidelines,
               knowledgeFocus: crew.knowledgeFocus,
+              responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
               governanceMode: crew.governanceMode,
               outputMode: crew.outputMode,
               stopOnFailure: crew.stopOnFailure,

@@ -147,8 +147,6 @@ export {
   saveProjectMemory,
   storeMemoryEntry,
   getMemoryEntries,
-  estimateConversationTokens,
-  compactConversation,
   buildSystemPromptWithMemory,
   loadProjectSettings,
 } from './memory/memorySystem'
@@ -209,16 +207,12 @@ export type {
 } from './services/contextManager'
 
 export {
-  // Compact / Token Budget
+  // Token Budget
   createTokenBudget,
   estimateTokens,
-  shouldAutoCompact,
   getTokenWarningLevel,
-  autoCompact,
-  fallbackCompact,
   applyToolResultBudget,
   generateToolUseSummary,
-  getMessagesAfterCompactBoundary,
 } from './services/compact'
 export type {
   TokenBudgetState,
@@ -231,19 +225,4 @@ export {
 export type {
   ToolOrchestratorConfig,
 } from './services/toolOrchestrator'
-
-export {
-  // Session Persistence
-  createSession,
-  endSession,
-  loadSession,
-  listSessions,
-  deleteSession,
-  generateSessionTitle,
-  autoSaveSession,
-} from './services/sessionPersistence'
-export type {
-  SessionRecord,
-  SessionSummary,
-} from './services/sessionPersistence'
 

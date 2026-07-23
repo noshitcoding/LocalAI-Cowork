@@ -7,7 +7,7 @@ import {
 
 function snapshot(): FrozenMemorySnapshot {
   return {
-    sessionId: 'session-1',
+    threadId: 'thread-1',
     agentEntries: [
       { id: 'a1', scope: 'agent', category: 'curated', key: 'stack', content: 'The project uses Rust.', confidence: 1 },
       { id: 'a2', scope: 'agent', category: 'run_input', key: 'noise', content: 'transient input', confidence: 1 },
@@ -15,6 +15,10 @@ function snapshot(): FrozenMemorySnapshot {
     sharedEntries: [
       { id: 's1', scope: 'shared', category: 'knowledge', key: 'db', content: 'SQLite is local.', confidence: 1 },
       { id: 's2', scope: 'shared', category: 'draft_knowledge', key: 'draft', content: 'unreviewed draft', confidence: 0.6 },
+    ],
+    chatEntries: [
+      { id: 'c1', scope: 'chat', category: 'context', key: 'decision', content: 'Use the blue variant in this chat.', confidence: 1 },
+      { id: 'c2', scope: 'chat', category: 'run_input', key: 'run-1', content: 'transient duplicate input', confidence: 1 },
     ],
     userProfile: [
       { id: 'u1', key: 'style', value: 'User prefers concise answers.', source: 'test', confidence: 1 },
@@ -32,7 +36,9 @@ describe('Hermes-style memory behavior', () => {
     expect(rendered).toContain('USER PROFILE')
     expect(rendered).toContain('User prefers concise answers.')
     expect(rendered).toContain('[knowledge] db: SQLite is local.')
+    expect(rendered).toContain('[context] decision: Use the blue variant in this chat.')
     expect(rendered).not.toContain('transient input')
+    expect(rendered).not.toContain('transient duplicate input')
     expect(rendered).not.toContain('unreviewed draft')
   })
 

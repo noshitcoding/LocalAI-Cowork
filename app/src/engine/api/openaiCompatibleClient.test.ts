@@ -185,7 +185,7 @@ describe('streamOpenAiCompatibleMessages', () => {
       'Systemprompt',
     )
 
-    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null = null
+    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null
     while (true) {
       const next = await stream.next()
       if (next.done) {
@@ -249,7 +249,7 @@ describe('streamOpenAiCompatibleMessages', () => {
     )
 
     const events = [] as Array<{ type: string; [key: string]: unknown }>
-    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null = null
+    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null
 
     while (true) {
       const next = await stream.next()
@@ -316,7 +316,7 @@ describe('streamOpenAiCompatibleMessages', () => {
     )
 
     const events = [] as Array<{ type: string; [key: string]: unknown }>
-    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null = null
+    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null
 
     while (true) {
       const next = await stream.next()
@@ -468,7 +468,7 @@ describe('streamOpenAiCompatibleMessages', () => {
       [readToolDef],
     )
 
-    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null = null
+    let result: Awaited<ReturnType<typeof stream.next>>['value'] | null
     while (true) {
       const next = await stream.next()
       if (next.done) {
@@ -503,6 +503,76 @@ describe('streamOpenAiCompatibleMessages', () => {
       stopReason: 'end_turn',
       content: [{ type: 'text', text: 'Ich nutze den Textkontext ohne Image.' }],
     })
+  })
+
+  it('retries with the newest images when a compatible provider reports a prompt image limit', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: 'At most 4 image(s) may be provided in one prompt.',
+              type: 'BadRequestError',
+              code: 400,
+            },
+          }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'resp-limited-images',
+            model: 'vision-model',
+            choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { streamOpenAiCompatibleMessages } = await import('./openaiCompatibleClient')
+    const stream = streamOpenAiCompatibleMessages(
+      {
+        provider: 'openai-compatible',
+        apiKey: 'sk-test',
+        model: 'vision-model',
+        baseUrl: 'https://vision.example.test/v1',
+      },
+      Array.from({ length: 5 }, (_, index) => ({
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: `Screenshot ${index + 1}` },
+          { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: `IMAGE-${index + 1}` } },
+        ],
+      })),
+      'Systemprompt',
+    )
+
+    while (!(await stream.next()).done) {
+      // consume stream
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [, retryInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    const retryBody = JSON.parse(String(retryInit.body))
+    const retryImages = retryBody.messages
+      .flatMap((message: { content?: unknown }) => Array.isArray(message.content) ? message.content : [])
+      .filter((part: { type?: string }) => part.type === 'image_url')
+
+    expect(retryImages).toHaveLength(4)
+    expect(retryImages.map((part: { image_url: { url: string } }) => part.image_url.url)).toEqual([
+      'data:image/png;base64,IMAGE-2',
+      'data:image/png;base64,IMAGE-3',
+      'data:image/png;base64,IMAGE-4',
+      'data:image/png;base64,IMAGE-5',
+    ])
   })
 
   it('surfaces normalized OpenRouter choice errors instead of masking them as empty responses', async () => {

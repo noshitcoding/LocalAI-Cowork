@@ -7,7 +7,8 @@ export type InsightsEvent = {
   category: string
   value_num: number | null
   value_text: string | null
-  session_id: string | null
+  run_id: string | null
+  thread_id: string | null
   metadata_json: string | null
   created_at: string
 }
@@ -26,10 +27,11 @@ export type EventSummary = {
 
 export type InsightsSummary = {
   totalEvents: number
-  totalSessions: number
+  totalChats: number
+  totalRuns: number
   totalMessagesSent: number
   totalTokensEst: number
-  avgSessionDurationMin: number
+  avgRunDurationMin: number
   topCategories: CategoryCount[]
   recentEvents: EventSummary[]
   skillUsageCount: number
@@ -61,7 +63,8 @@ const normalizeEvent = (value: unknown): InsightsEvent => {
     category: asString(event.category),
     value_num: typeof (event.value_num ?? event.valueNum) === 'number' ? event.value_num as number : null,
     value_text: asNullableString(event.value_text ?? event.valueText),
-    session_id: asNullableString(event.session_id ?? event.sessionId),
+    run_id: asNullableString(event.run_id ?? event.runId),
+    thread_id: asNullableString(event.thread_id ?? event.threadId),
     metadata_json: asNullableString(event.metadata_json ?? event.metadataJson),
     created_at: asString(event.created_at ?? event.createdAt),
   }
@@ -89,10 +92,11 @@ const normalizeSummary = (value: unknown): InsightsSummary => {
   const summary = asRecord(value)
   return {
     totalEvents: asNumber(summary.totalEvents ?? summary.total_events),
-    totalSessions: asNumber(summary.totalSessions ?? summary.total_sessions),
+    totalChats: asNumber(summary.totalChats ?? summary.total_chats),
+    totalRuns: asNumber(summary.totalRuns ?? summary.total_runs),
     totalMessagesSent: asNumber(summary.totalMessagesSent ?? summary.total_messages_sent),
     totalTokensEst: asNumber(summary.totalTokensEst ?? summary.total_tokens_est),
-    avgSessionDurationMin: asNumber(summary.avgSessionDurationMin ?? summary.avg_session_duration_min),
+    avgRunDurationMin: asNumber(summary.avgRunDurationMin ?? summary.avg_run_duration_min),
     topCategories: asArray(summary.topCategories ?? summary.top_categories, normalizeCategory),
     recentEvents: asArray(summary.recentEvents ?? summary.recent_events, normalizeSummaryEvent),
     skillUsageCount: asNumber(summary.skillUsageCount ?? summary.skill_usage_count),
@@ -127,10 +131,11 @@ function buildLocalSummary(): InsightsSummary {
   }
   return {
     totalEvents: events.length,
-    totalSessions: 0,
+    totalChats: 0,
+    totalRuns: 0,
     totalMessagesSent: events.filter(e => e.event_type === 'message').length,
     totalTokensEst: 0,
-    avgSessionDurationMin: 0,
+    avgRunDurationMin: 0,
     topCategories: Array.from(categories.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
@@ -158,7 +163,7 @@ type InsightsState = {
   recordEvent: (e: {
     eventType: string; category: string
     valueNum?: number; valueText?: string
-    sessionId?: string; metadataJson?: string
+    runId?: string; threadId?: string; metadataJson?: string
   }) => Promise<string>
   loadSummary: () => Promise<void>
 }
@@ -190,7 +195,8 @@ export const useInsightsStore = create<InsightsState>()((set) => ({
         category: e.category,
         valueNum: e.valueNum ?? null,
         valueText: e.valueText ?? null,
-        sessionId: e.sessionId ?? null,
+        runId: e.runId ?? null,
+        threadId: e.threadId ?? null,
         metadataJson: e.metadataJson ?? null,
       }, id)
       return result
@@ -202,7 +208,8 @@ export const useInsightsStore = create<InsightsState>()((set) => ({
         category: e.category,
         value_num: e.valueNum ?? null,
         value_text: e.valueText ?? null,
-        session_id: e.sessionId ?? null,
+        run_id: e.runId ?? null,
+        thread_id: e.threadId ?? null,
         metadata_json: e.metadataJson ?? null,
         created_at: new Date().toISOString(),
       })

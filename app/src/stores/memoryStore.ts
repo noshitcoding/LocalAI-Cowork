@@ -13,7 +13,8 @@ export type MemoryEntry = {
   category: string
   key: string
   content: string
-  source_session_id: string | null
+  scope_ref: string | null
+  source_run_id: string | null
   confidence: number
   access_count: number
   last_accessed_at: string
@@ -58,9 +59,10 @@ export type MemoryHint = {
 }
 
 type BackendFrozenSnapshot = {
-  sessionId: string
+  threadId: string
   agentEntries: MemoryEntry[]
   sharedEntries: MemoryEntry[]
+  chatEntries?: MemoryEntry[]
   userProfile: UserProfileEntry[]
   createdAt: string
 }
@@ -105,9 +107,18 @@ type MemoryState = {
   loading: boolean
   error: string | null
 
-  loadEntries: (scope?: string, category?: string, limit?: number) => Promise<void>
+  loadEntries: (scope?: string, category?: string, limit?: number, scopeRef?: string | null) => Promise<void>
   searchEntries: (query: string, limit?: number) => Promise<void>
-  upsertEntry: (entry: { id: string; scope: string; category: string; key: string; content: string; confidence?: number }) => Promise<void>
+  upsertEntry: (entry: {
+    id: string
+    scope: string
+    scopeRef?: string | null
+    category: string
+    key: string
+    content: string
+    confidence?: number
+    sourceRunId?: string | null
+  }) => Promise<void>
   importKnowledgeText: (title: string, content: string) => Promise<number>
   deleteEntry: (id: string) => Promise<void>
   compactEntries: (scope: string, minConfidence: number) => Promise<{ removed: number; remaining: number }>
@@ -133,11 +144,12 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
   loading: false,
   error: null,
 
-  loadEntries: async (scope, category, limit = 200) => {
+  loadEntries: async (scope, category, limit = 200, scopeRef = null) => {
     set({ loading: true, error: null })
     try {
       const entries = await safeInvoke<MemoryEntry[]>('memory_search', {
         scope: scope ?? null,
+        scopeRef: scope === 'chat' ? scopeRef : null,
         category: category ?? null,
         keyword: null,
         limit,
@@ -171,9 +183,11 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       await safeInvoke('memory_upsert', {
         id: entry.id,
         scope: entry.scope,
+        scopeRef: entry.scope === 'chat' ? entry.scopeRef ?? null : null,
         category: entry.category,
         key: entry.key,
         content: entry.content,
+        sourceRunId: entry.sourceRunId ?? null,
         confidence: entry.confidence ?? 1.0,
       }, undefined)
     } catch {
@@ -191,7 +205,8 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
         key: entry.key,
         content: entry.content,
         confidence: entry.confidence ?? 1.0,
-        source_session_id: null,
+        scope_ref: entry.scope === 'chat' ? entry.scopeRef ?? null : null,
+        source_run_id: entry.sourceRunId ?? null,
         access_count: 0,
         last_accessed_at: now,
         created_at: now,
@@ -244,7 +259,7 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
   createSnapshot: async () => {
     try {
       const backend = await safeInvoke<BackendFrozenSnapshot>('memory_snapshot')
-      const entries = [...backend.agentEntries, ...backend.sharedEntries]
+      const entries = [...backend.agentEntries, ...backend.sharedEntries, ...(backend.chatEntries ?? [])]
       const snapshot: FrozenSnapshot = {
         timestamp: backend.createdAt,
         entries,

@@ -30,6 +30,7 @@ export type ChatProviderState = {
   apiKey: string
   timeoutMs: number
   verifyTlsCertificates: boolean
+  contextWindow: number
   selectableModels: string[]
   profileId?: string
 }
@@ -170,6 +171,7 @@ export function getChatProviderState(
       apiKey: '',
       timeoutMs: context.ollama.timeoutMs,
       verifyTlsCertificates: true,
+      contextWindow: context.ollama.contextWindow,
       selectableModels: collectProviderModels(
         context,
         provider,
@@ -211,6 +213,7 @@ export function getChatProviderState(
     apiKey: profile?.apiKey?.trim() ?? '',
     timeoutMs: Math.max(1000, Number(profile?.timeoutMs ?? 600000)),
     verifyTlsCertificates: profile?.verifyTlsCertificates ?? true,
+    contextWindow: Math.max(512, profile?.contextWindow ?? 128000),
     selectableModels,
     profileId: profile?.id,
   }

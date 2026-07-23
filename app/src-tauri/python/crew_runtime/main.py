@@ -13,6 +13,7 @@ import uuid
 import warnings
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 
 EXPECTED_CREWAI_VERSION = "1.15.2"
@@ -393,9 +394,101 @@ def build_governance_note(payload: dict, agent_payload: dict) -> str:
     return "\n".join(sections)
 
 
+def is_live_news_payload(payload: dict) -> bool:
+    parts = [
+        str(payload.get("executionGuidelines") or ""),
+        str(payload.get("knowledgeFocus") or ""),
+        str(payload.get("name") or ""),
+        str(payload.get("description") or ""),
+    ]
+    for task in payload.get("tasks") or []:
+        if isinstance(task, dict):
+            parts.extend([
+                str(task.get("description") or ""),
+                str(task.get("expectedOutput") or ""),
+            ])
+    searchable = " ".join(parts).lower()
+    return any(marker in searchable for marker in (
+        "fresh-news",
+        "daily news",
+        "world news",
+        "last 24 hours",
+        "nachrichten",
+    ))
+
+
+def extract_work_task_language_text(payload: dict) -> str:
+    guidelines = str(payload.get("executionGuidelines") or "")
+    marker = "Work task request:"
+    if marker not in guidelines:
+        return ""
+    relevant = guidelines.split(marker, 1)[1]
+    for delimiter in (
+        "\n\nExpected overall result:",
+        "\n\nFresh-news requirements:",
+        "\n\nResponse-language contract:",
+    ):
+        relevant = relevant.split(delimiter, 1)[0]
+    return relevant.strip()
+
+
+def resolve_response_language(payload: dict) -> str:
+    prompt_text = extract_work_task_language_text(payload)
+    configured = str(payload.get("responseLanguage") or "").strip().lower()
+    if not prompt_text:
+        prompt_text = " ".join([
+            str(payload.get("description") or ""),
+            str(payload.get("executionGuidelines") or ""),
+        ])
+        for task in payload.get("tasks") or []:
+            if isinstance(task, dict):
+                prompt_text += " " + str(task.get("description") or "")
+
+    explicit_english = re.search(
+        r"(?i)\b(?:answer|respond|write|output)\s+in\s+(?:the\s+)?(?:english|englisch)\b"
+        r"|\b(?:auf|in)\s+englisch\b"
+        r"|\b(?:language|sprache)\s*:\s*(?:english|englisch)\b",
+        prompt_text,
+    )
+    explicit_german = re.search(
+        r"(?i)\b(?:answer|respond|write|output)\s+in\s+(?:the\s+)?(?:german|deutsch)\b"
+        r"|\b(?:auf|in)\s+deutsch\b"
+        r"|\b(?:language|sprache)\s*:\s*(?:german|deutsch)\b",
+        prompt_text,
+    )
+    if explicit_english and (not explicit_german or explicit_english.start() >= explicit_german.start()):
+        return "English"
+    if explicit_german:
+        return "German"
+
+    words = re.findall(r"[^\W\d_]+", prompt_text.lower(), flags=re.UNICODE)
+    german_words = {
+        "der", "die", "das", "den", "dem", "ein", "eine", "einen", "einem", "und",
+        "oder", "ist", "sind", "mit", "für", "von", "im", "auf", "bitte", "erstelle",
+        "schreibe", "antworte", "fasse", "zusammen", "nachrichten", "heute", "quelle", "quellen",
+    }
+    english_words = {
+        "the", "this", "that", "an", "and", "or", "is", "are", "with", "for", "from",
+        "please", "create", "write", "answer", "respond", "summarize", "news", "today",
+        "source", "sources", "report", "current",
+    }
+    german_score = sum(word in german_words for word in words)
+    english_score = sum(word in english_words for word in words)
+    if german_score > english_score:
+        return "German"
+    if english_score > german_score:
+        return "English"
+    if configured.startswith(("de", "german", "deutsch")):
+        return "German"
+    if configured.startswith(("en", "english", "englisch")):
+        return "English"
+    return ""
+
+
 def build_memory_note(payload: dict) -> str:
     memory_context = payload.get("memoryContext") or {}
     sections: list[str] = []
+    live_news = is_live_news_payload(payload)
 
     summary = str(memory_context.get("summary") or "").strip()
     if summary:
@@ -416,6 +509,15 @@ def build_memory_note(payload: dict) -> str:
             key = str(entry.get("key") or "entry").strip()
             confidence = float(entry.get("confidence") or 0.0)
             content = truncate_text(entry.get("content") or "", 260)
+            lowered_content = content.lower()
+            if scope.lower() == "session" or confidence < 0.5:
+                continue
+            if category.lower() == "crew-run" and (
+                live_news
+                or "status: failed" in lowered_content
+                or "status: canceled" in lowered_content
+            ):
+                continue
             entry_lines.append(f"- [{scope}/{category}:{key}] ({confidence:.2f}) {content}")
         if entry_lines:
             sections.append("Relevant memory entries:\n" + "\n".join(entry_lines))
@@ -469,6 +571,43 @@ def resolve_agent_provider(agent_payload: dict) -> str:
     return str(agent_payload.get("providerKind") or "ollama").strip() or "ollama"
 
 
+def resolve_provider_model_from_catalog(configured_model: object, models: object) -> str:
+    configured = str(configured_model or "").strip()
+    normalized_models: list[str] = []
+    seen: set[str] = set()
+    for value in models if isinstance(models, list) else []:
+        model = str(value or "").strip()
+        key = model.lower()
+        if not model or key in seen:
+            continue
+        seen.add(key)
+        normalized_models.append(model)
+
+    if not normalized_models:
+        return configured
+    if not configured:
+        return normalized_models[0] if len(normalized_models) == 1 else ""
+
+    lower_configured = configured.lower()
+    for model in normalized_models:
+        if model.lower() == lower_configured:
+            return model
+
+    configured_suffix = configured.rsplit("/", 1)[-1].lower()
+    for model in normalized_models:
+        if model.rsplit("/", 1)[-1].lower() == configured_suffix:
+            return model
+
+    stem_matches = [
+        model for model in normalized_models
+        if model.rsplit("/", 1)[-1].lower().startswith(f"{configured_suffix}-")
+        or configured_suffix.startswith(f"{model.rsplit('/', 1)[-1].lower()}-")
+    ]
+    if len(stem_matches) == 1:
+        return stem_matches[0]
+    return normalized_models[0] if len(normalized_models) == 1 else configured
+
+
 def resolve_agent_model_label(request: dict, agent_payload: dict) -> str:
     provider = resolve_agent_provider(agent_payload)
     model_override = str(agent_payload.get("modelOverride") or "").strip()
@@ -478,10 +617,10 @@ def resolve_agent_model_label(request: dict, agent_payload: dict) -> str:
     provider_configs = request.get("providerConfigs") or {}
     if provider == "openai-compatible":
         config = provider_configs.get("openAICompatible") or {}
-        return str(config.get("model") or "").strip() or "-"
+        return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
     if provider == "openrouter":
         config = provider_configs.get("openRouter") or {}
-        return str(config.get("model") or "").strip() or "-"
+        return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
 
     request_config = request.get("config") or {}
     return str(request_config.get("model") or "").strip() or "-"
@@ -573,14 +712,13 @@ def has_openrouter_free_agent(payload: dict, agent_payloads: list[dict]) -> bool
 
 
 def effective_max_rpm(payload: dict, agent_count: int, uses_openrouter_free: bool) -> int:
-    requested = parse_int(payload.get("maxRpm"), 0)
-    if requested <= 0:
-        return 0
-
-    if uses_openrouter_free:
-        requested = min(requested, 2)
-
-    return max(1, requested // max(1, agent_count))
+    # CrewAI already applies the shared max_rpm value at Crew level. Applying
+    # a divided copy to every agent creates an unintended one-request-per-minute
+    # limit in crews that contain several members, even when only a few of them
+    # own tasks. A deliberately configured per-agent maxRpm is still honored by
+    # build_agent.
+    del payload, agent_count, uses_openrouter_free
+    return 0
 
 
 def classify_runtime_error(exc: Exception) -> str:
@@ -600,7 +738,12 @@ def classify_runtime_error(exc: Exception) -> str:
             f"Original: {raw}"
         )
 
-    if "model" in lowered and ("not found" in lowered or "404" in lowered):
+    if "model" in lowered and (
+        "not found" in lowered
+        or "does not exist" in lowered
+        or "not exist" in lowered
+        or "404" in lowered
+    ):
         return (
             "ModelNotFoundError: The configured model is not available from the provider. "
             "Select a current model in Crew/LLM profiles. "
@@ -745,6 +888,26 @@ def configure_litellm_tls_verification(verify_tls_certificates: object) -> None:
         litellm.aclient_session = httpx.AsyncClient(verify=False)
     except Exception:
         pass
+
+
+def normalize_openai_compatible_base_url(base_url: object) -> str:
+    trimmed = str(base_url or "").strip().rstrip("/")
+    if not trimmed:
+        return "https://api.openai.com/v1"
+
+    if trimmed.endswith("/chat/completions"):
+        trimmed = trimmed[: -len("/chat/completions")].rstrip("/")
+    elif trimmed.endswith("/models"):
+        trimmed = trimmed[: -len("/models")].rstrip("/")
+
+    try:
+        parsed = urlsplit(trimmed)
+        if parsed.scheme and parsed.netloc and not parsed.path.rstrip("/"):
+            return urlunsplit((parsed.scheme, parsed.netloc, "/v1", parsed.query, parsed.fragment))
+    except ValueError:
+        pass
+
+    return trimmed
 
 
 def resolve_agent_timeout_ms(request: dict, agent: dict) -> int:
@@ -1116,11 +1279,16 @@ def build_llm(request: dict, agent: dict):
     if provider == "openai-compatible":
         config = provider_configs.get("openAICompatible") or {}
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
-        model = normalize_model_name(provider, model_override or str(config.get("model") or ""))
+        configured_model = model_override or resolve_provider_model_from_catalog(
+            config.get("model"), config.get("models")
+        )
+        model = normalize_model_name(provider, configured_model)
         timeout_seconds = resolve_agent_timeout_ms(request, agent) // 1000
         llm_kwargs = {
             "model": model,
-            "base_url": str(config.get("baseUrl") or request_config.get("baseUrl") or "https://api.openai.com/v1"),
+            "base_url": normalize_openai_compatible_base_url(
+                config.get("baseUrl") or request_config.get("baseUrl")
+            ),
             "api_key": str(config.get("apiKey") or "localai-cowork"),
             "timeout": timeout_seconds,
             "max_retries": resolve_llm_max_retries(request, model),
@@ -1132,7 +1300,10 @@ def build_llm(request: dict, agent: dict):
     if provider == "openrouter":
         config = provider_configs.get("openRouter") or {}
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
-        model = normalize_model_name(provider, model_override or str(config.get("model") or ""))
+        configured_model = model_override or resolve_provider_model_from_catalog(
+            config.get("model"), config.get("models")
+        )
+        model = normalize_model_name(provider, configured_model)
         api_key = str(config.get("apiKey") or "").strip()
         if not api_key:
             raise ValueError(
@@ -1211,29 +1382,6 @@ def build_agent(request: dict, agent_payload: dict):
 
     return Agent(**agent_kwargs)
 
-    max_rpm = int(agent_payload.get("maxRpm") or request.get("_effectiveAgentMaxRpm") or 0)
-    retry_count = max(0, min(5, parse_int(request.get("retryCount"), 0)))
-    timeout_ms = resolve_agent_timeout_ms(request, agent_payload)
-
-    agent_kwargs = {
-        "role": str(agent_payload.get("role") or agent_payload.get("name") or "Crew Agent"),
-        "goal": str(agent_payload.get("goal") or "Complete tasks successfully in the crew."),
-        "backstory": backstory or "A specialized crew agent for LocalAI Cowork.",
-        "llm": build_llm(request, agent_payload),
-        "tools": runtime_tools,
-        "verbose": bool(agent_payload.get("verbose")),
-        "allow_delegation": bool(agent_payload.get("allowDelegation")),
-        "max_iter": max(1, int(agent_payload.get("maxIterations") or 20)),
-        "max_retry_limit": retry_count,
-        "max_execution_time": max(1, timeout_ms // 1000),
-        "respect_context_window": True,
-        "cache": True,
-    }
-    if max_rpm > 0:
-        agent_kwargs["max_rpm"] = max_rpm
-
-    return Agent(**agent_kwargs)
-
 
 def build_task_description(request: dict, task_payload: dict, agent_payload: dict) -> str:
     description = str(task_payload.get("description") or "").strip()
@@ -1255,26 +1403,42 @@ def build_task_description(request: dict, task_payload: dict, agent_payload: dic
     if memory_note:
         additions.append(f"Crew memory and knowledge:\n{memory_note}")
 
+    fresh_news_text = " ".join([
+        description,
+        execution_guidelines,
+        knowledge_focus,
+        str(task_payload.get("expectedOutput") or ""),
+    ]).lower()
+    if any(marker in fresh_news_text for marker in (
+        "fresh-news",
+        "daily news",
+        "world news",
+        "last 24 hours",
+        "nachrichten",
+    )):
+        additions.append(
+            "Live-news clock contract:\n"
+            "- The current run date/time in the Crew guidelines is authoritative live system time.\n"
+            "- Never describe that date as future, simulated, impossible, or invalid because it is newer than model training.\n"
+            "- Search the live web without an exact date first, then filter using publication timestamps returned by the tools.\n"
+            "- A poor first result set requires a revised search query, not a claim that current sources cannot exist."
+        )
+
+    response_language = resolve_response_language(request)
+    if response_language:
+        additions.append(
+            "Response-language contract:\n"
+            f"- Required final-output language: {response_language}.\n"
+            "- An explicit language request in the user's work-task prompt has highest priority; otherwise use the prompt language.\n"
+            "- This contract overrides fixed language defaults in Crew guidelines, agent profiles, and Crew task descriptions.\n"
+            "- Keep source titles, URLs, code, and proper names unchanged when appropriate."
+        )
+
     output_mode = str(request.get("outputMode") or "standard").strip().lower()
     if output_mode == "bullet-report":
         additions.append("Output contract: return a concise bullet report with explicit evidence and artifact paths.")
     elif output_mode == "json":
         additions.append("Output contract: return valid JSON only, without Markdown fences or commentary outside the JSON value.")
-
-    additions.append(
-        "Execution contract:\n"
-        "- Use the provided runtime tools for facts, files, commands, and artifacts; never pretend a tool was called.\n"
-        "- For research, include the source URLs returned by web_search/web_fetch.\n"
-        "- For coding, inspect existing files first, make the smallest complete change, and run relevant verification.\n"
-        "- For PPTX/DOCX work, call office_workflow directly with output_path, title, and a sections_json JSON array; "
-        "do not describe or print a proposed tool call. Report the exact path returned by the tool.\n"
-        "- If a required tool returns ERROR, explain the concrete blocker instead of fabricating a result."
-    )
-
-    if additions:
-        return f"{description}\n\n" + "\n\n".join(additions)
-    return description
-
 
     additions.append(
         "Execution contract:\n"
@@ -1643,7 +1807,9 @@ def deterministic_office_fallback(
     results: list[str] = []
     for target in missing:
         relative = target.relative_to(root).as_posix()
-        result = OfficeWorkflowTool(root)._run(relative, title, json.dumps(sections, ensure_ascii=False))
+        result = OfficeWorkflowTool([(root.resolve(), "folder")], [])._run(
+            relative, title, json.dumps(sections, ensure_ascii=False)
+        )
         if result.startswith("ERROR"):
             raise RuntimeError(result)
         results.append(result)
@@ -1837,7 +2003,9 @@ def deterministic_office_fallback(
     results: list[str] = []
     for target in missing:
         relative = target.relative_to(root).as_posix()
-        result = OfficeWorkflowTool(root)._run(relative, title, json.dumps(sections, ensure_ascii=False))
+        result = OfficeWorkflowTool([(root.resolve(), "folder")], [])._run(
+            relative, title, json.dumps(sections, ensure_ascii=False)
+        )
         if result.startswith("ERROR"):
             raise RuntimeError(result)
         results.append(result)

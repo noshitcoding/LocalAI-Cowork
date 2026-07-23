@@ -13,10 +13,11 @@ pub const CURATED_MEMORY_CATEGORY: &str = "curated";
 #[allow(dead_code)]
 pub struct MemoryUpsertRequest {
     pub scope: String,
+    pub scope_ref: Option<String>,
     pub category: String,
     pub key: String,
     pub content: String,
-    pub source_session_id: Option<String>,
+    pub source_run_id: Option<String>,
     pub confidence: Option<f64>,
 }
 
@@ -67,9 +68,11 @@ pub struct MemoryProviderUpsertRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrozenMemorySnapshot {
-    pub session_id: String,
+    pub thread_id: String,
     pub agent_entries: Vec<MemoryEntryRow>,
     pub shared_entries: Vec<MemoryEntryRow>,
+    #[serde(default)]
+    pub chat_entries: Vec<MemoryEntryRow>,
     pub user_profile: Vec<UserProfileRow>,
     pub created_at: String,
 }
@@ -113,7 +116,7 @@ pub fn is_duplicate_memory(
         .unwrap_or(false)
 }
 
-/// Create a frozen snapshot of memory for a session
+/// Create a frozen snapshot of memory for a chat
 pub fn create_memory_snapshot(db: &Arc<Database>) -> Result<FrozenMemorySnapshot, String> {
     let agent_entries = db
         .list_memory_entries("agent", None, 500)
@@ -124,9 +127,10 @@ pub fn create_memory_snapshot(db: &Arc<Database>) -> Result<FrozenMemorySnapshot
     let user_profile = db.list_user_profile().map_err(|e| e.to_string())?;
 
     Ok(FrozenMemorySnapshot {
-        session_id: uuid::Uuid::new_v4().to_string(),
+        thread_id: String::new(),
         agent_entries,
         shared_entries,
+        chat_entries: Vec::new(),
         user_profile,
         created_at: chrono::Utc::now().to_rfc3339(),
     })
@@ -248,7 +252,7 @@ pub fn mutate_curated_memory(
     target: &str,
     content: Option<&str>,
     old_text: Option<&str>,
-    source_session_id: Option<&str>,
+    source_run_id: Option<&str>,
 ) -> Result<MemoryMutationResponse, String> {
     let normalized_action = action.trim().to_lowercase();
     let normalized_target = target.trim().to_lowercase();
@@ -302,10 +306,11 @@ pub fn mutate_curated_memory(
             db.upsert_memory_entry(
                 &id,
                 "agent",
+                None,
                 CURATED_MEMORY_CATEGORY,
                 &format!("memory-{}", &id[..8]),
                 &value,
-                source_session_id,
+                source_run_id,
                 1.0,
             )
             .map_err(|error| error.to_string())?;
@@ -344,10 +349,11 @@ pub fn mutate_curated_memory(
                 db.upsert_memory_entry(
                     &row.id,
                     &row.scope,
+                    None,
                     &row.category,
                     &row.key,
                     &value,
-                    source_session_id.or(row.source_session_id.as_deref()),
+                    source_run_id.or(row.source_run_id.as_deref()),
                     row.confidence,
                 )
                 .map_err(|error| error.to_string())?;
@@ -528,9 +534,9 @@ pub fn compact_low_confidence(
 /// Validate and normalize memory scope
 pub fn validate_scope(scope: &str) -> Result<&str, String> {
     match scope {
-        "agent" | "user" | "session" | "shared" => Ok(scope),
+        "agent" | "user" | "chat" | "shared" => Ok(scope),
         _ => Err(format!(
-            "Invalid memory scope: {}. Allowed: agent, user, session, shared",
+            "Invalid memory scope: {}. Allowed: agent, user, chat, shared",
             scope
         )),
     }
@@ -562,10 +568,11 @@ pub fn merge_external_entries(
         db.upsert_memory_entry(
             &id,
             &entry.scope,
+            None,
             &entry.category,
             &entry.key,
             &content,
-            entry.source_session_id.as_deref(),
+            entry.source_run_id.as_deref(),
             entry.confidence.unwrap_or(0.6),
         )
         .map_err(|e| e.to_string())?;
@@ -589,6 +596,7 @@ mod tests {
         db.upsert_memory_entry(
             "entry-1",
             "agent",
+            None,
             "general",
             "project",
             "Uses Rust",
@@ -616,13 +624,30 @@ mod tests {
     #[test]
     fn curated_memory_supports_add_replace_remove_and_exact_deduplication() {
         let db = database();
+        db.insert_engine_run(
+            "run-1",
+            None,
+            None,
+            "Memory test run",
+            None,
+            "running",
+            "memory",
+            None,
+            None,
+            None,
+            0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let added = mutate_curated_memory(
             &db,
             "add",
             "memory",
             Some("Project uses Rust and TypeScript."),
             None,
-            Some("session-1"),
+            Some("run-1"),
         )
         .unwrap();
         assert!(added.success);
@@ -700,6 +725,7 @@ mod tests {
         db.upsert_memory_entry(
             "agent-1",
             "agent",
+            None,
             CURATED_MEMORY_CATEGORY,
             "memory-1",
             "Agent note",
@@ -710,6 +736,7 @@ mod tests {
         db.upsert_memory_entry(
             "shared-1",
             "shared",
+            None,
             "knowledge",
             "knowledge-1",
             "Shared note",

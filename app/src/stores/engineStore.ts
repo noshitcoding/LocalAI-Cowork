@@ -18,7 +18,6 @@ import type { ContextSnapshot } from '../engine/services/contextManager'
 import {
   createAssistantMessage,
   createInitialAppState,
-  createSystemMessage,
   createUserMessage,
   EMPTY_USAGE,
   extractTextContent,
@@ -29,21 +28,13 @@ import {
   type TokenUsage,
   type ToolUIRequest,
 } from '../engine/types'
-import {
-  autoSaveSession,
-  createSession,
-  deleteSession,
-  generateSessionTitle,
-  loadSession,
-  listSessions,
-  type SessionRecord,
-  type SessionSummary,
-} from '../engine/services/sessionPersistence'
 import { useConfigStore } from './configStore'
 import { useChatStore } from './chatStore'
-import { parsePersistedSessionMessage } from '../utils/sessionThreads'
+import { parsePersistedChatMessage } from '../utils/chatMessages'
+import { splitPromptDebugContent } from '../utils/messageDisplay'
 import { getChatProviderState, normalizeChatProvider, type ChatProviderKind, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
+import type { AuthorizedTaskPath } from '../utils/taskProjectContext'
 import { useCoworkStore } from './coworkStore'
 import { setCredential } from '../security/credentialVault'
 import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
@@ -59,7 +50,8 @@ Important rules:
    If the target is clear, complete it autonomously and ask only when critical information is missing or a destructive step is involved.
 6. Do not create files that are not needed.
 7. Proactively preserve only durable, high-signal facts. Use MemoryWrite for stable user preferences, environment facts, corrections, conventions, and completed-work lessons. Never store secrets, raw logs, or temporary details.
-8. Curated memory is a frozen session-start snapshot. A write is persisted for future sessions; use SessionSearch when exact details from older conversations are needed.
+8. Curated memory is frozen when a chat starts. A write is persisted for future chats; use ChatSearch when exact details from older conversations are needed.
+9. Reusable app skills belong in the central LocalAI Cowork skill store. When the user asks you to create, save, or register a skill, use SaveSkill. Do not create a skill JSON, Markdown file, or script in the current workspace unless the user explicitly asks for a standalone file.
 
 You work in a Windows environment with PowerShell.`
 
@@ -84,17 +76,22 @@ export type EngineStoreConfig = {
   permissionMode: 'default' | 'plan' | 'bypass' | 'strict'
   thinkingEnabled: boolean
   thinkingBudget: number
-  autoCompact: boolean
   appendSystemPrompt: string
   // Ollama-specific (persisted alongside configStore)
   ollamaBaseUrl: string
   ollamaModel: string
-  sessionPersistence: boolean
 }
 
 export type ContextWarning = {
   level: 'none' | 'low' | 'medium' | 'high' | 'critical'
   estimatedTokens: number
+}
+
+export type ContextCoverage = {
+  totalPrevious: number
+  sentPrevious: number
+  omittedPrevious: number
+  maxInputTokens: number
 }
 
 export type ChatHistorySeedMessage = {
@@ -177,6 +174,12 @@ async function appendRunEvent(
   })
 }
 
+type RuntimePermissionConfig = {
+  mode: PermissionMode
+  allowedDirectories: string[]
+  authorizedPaths?: AuthorizedTaskPath[]
+}
+
 export type EngineStoreState = {
   // ── Engine State ───────────────────────────────────────────────────────
   status: EngineStatus
@@ -192,13 +195,12 @@ export type EngineStoreState = {
   activeProvider: EngineProvider
   setActiveProvider: (provider: EngineProvider) => void
 
-  // ── Context & Compaction State ─────────────────────────────────────────
+  // ── Context State ──────────────────────────────────────────────────────
   contextWarning: ContextWarning
-  compactionCount: number
   contextSnapshot: ContextSnapshot | null
+  contextCoverage: ContextCoverage | null
 
-  // ── Session State ──────────────────────────────────────────────────────
-  currentSessionId: string | null
+  // ── Run State ──────────────────────────────────────────────────────────
   currentRunId: string | null
   conversationThreadId: string | null
 
@@ -214,7 +216,7 @@ export type EngineStoreState = {
     onEvent?: (event: EngineEvent) => void,
     historySeed?: ConversationHistorySeed,
     providerSelection?: ChatProviderSelection,
-    permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
+    permissionConfig?: RuntimePermissionConfig,
   ) => Promise<void>
   abort: () => void
   resolveApproval: (result: ApprovalResult) => void
@@ -229,7 +231,7 @@ export type EngineStoreState = {
       onEvent?: (event: EngineEvent) => void
       historySeed?: ConversationHistorySeed
       providerSelection?: ChatProviderSelection
-      permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+      permissionConfig?: RuntimePermissionConfig
       crewId: string | null
       threadId: string
       runId: string
@@ -242,24 +244,20 @@ export type EngineStoreState = {
       onEvent?: (event: EngineEvent) => void
       historySeed?: ConversationHistorySeed
       providerSelection?: ChatProviderSelection
-      permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+      permissionConfig?: RuntimePermissionConfig
       crewId: string | null
       threadId: string
       runId: string
     },
   ) => Promise<void>) | null) => void
   // ── New Actions (CC features) ──────────────────────────────────────────
-  forceCompact: () => Promise<void>
   getContextSnapshot: () => ContextSnapshot | null
-  loadSessionById: (sessionId: string) => Promise<SessionRecord | null>
-  getSessions: () => Promise<SessionSummary[]>
-  deleteSessionById: (sessionId: string) => Promise<void>
   fetchOllamaModels: () => Promise<Array<{ id: string; name: string; size: number }>>
   checkOllamaStatus: () => Promise<boolean>
 
   // ── Internal ───────────────────────────────────────────────────────────
   _engine: QueryEngine | null
-  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }) => Promise<QueryEngine>
+  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: RuntimePermissionConfig) => Promise<QueryEngine>
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -283,11 +281,14 @@ function mapChatHistorySeedToEngineMessages(
   return seedMessages.reduce<Message[]>((acc, message) => {
     // Try to parse structured content from debugContent or content
     const textContent = extractSeedMessageText(message)
-    const rawContent = message.debugContent?.trim() || textContent
-    const structuredMessage = parsePersistedSessionMessage(rawContent)
+    const debugContext = splitPromptDebugContent(message.debugContent).promptDebug
+    const rawContent = debugContext || textContent
+    const structuredMessage = parsePersistedChatMessage(rawContent)
 
     if (structuredMessage) {
-      acc.push(structuredMessage)
+      if (structuredMessage.type !== 'system') {
+        acc.push(structuredMessage)
+      }
       return acc
     }
 
@@ -316,7 +317,7 @@ function mapChatHistorySeedToEngineMessages(
     }
 
     const preferredContent = message.role === 'user'
-      ? (message.debugContent?.trim() || textContent)
+      ? (debugContext || textContent)
       : textContent
 
     if (!preferredContent) return acc
@@ -329,7 +330,6 @@ function mapChatHistorySeedToEngineMessages(
         acc.push(createAssistantMessage([{ type: 'text', text: preferredContent }], model, { ...EMPTY_USAGE }, 'end_turn'))
         return acc
       case 'system':
-        acc.push(createSystemMessage(preferredContent))
         return acc
       default:
         return acc
@@ -346,9 +346,9 @@ function buildChatEngineConfig(
   config: EngineStoreConfig,
   cwd: string,
   runId?: string,
-  sessionId?: string,
+  threadId?: string,
   providerSelection?: ChatProviderSelection,
-  permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
+  permissionConfig?: RuntimePermissionConfig,
 ): EngineConfig {
   const configState = useConfigStore.getState()
   const providerState = getChatProviderState(configState, provider, providerSelection)
@@ -370,7 +370,7 @@ function buildChatEngineConfig(
       baseUrl: providerState.provider === 'ollama' ? providerState.endpoint : ollamaConfig.baseUrl,
       model: providerState.provider === 'ollama' ? providerState.model : ollamaConfig.model,
       temperature: ollamaConfig.temperature,
-      contextWindow: ollamaConfig.contextWindow,
+      contextWindow: providerState.contextWindow,
       timeoutMs: effectiveOllamaTimeoutMs,
       thinkingEnabled: effectiveThinkingEnabled,
     },
@@ -394,7 +394,7 @@ function buildChatEngineConfig(
     agentDefinitions: DEFAULT_AGENTS,
     appendSystemPrompt: config.appendSystemPrompt,
     runId,
-    sessionId,
+    threadId,
     toolsetPolicyId,
   }
 }
@@ -415,13 +415,12 @@ export const useEngineStore = create<EngineStoreState>()(
       error: null,
       activeProvider: 'ollama',
 
-      // Context & Compaction
+      // Context
       contextWarning: { level: 'none', estimatedTokens: 0 },
-      compactionCount: 0,
       contextSnapshot: null,
+      contextCoverage: null,
 
-      // Session
-      currentSessionId: null,
+      // Run
       currentRunId: null,
       conversationThreadId: null,
 
@@ -434,11 +433,9 @@ export const useEngineStore = create<EngineStoreState>()(
         permissionMode: 'default' as const,
         thinkingEnabled: true,
         thinkingBudget: 10000,
-        autoCompact: true,
         appendSystemPrompt: '',
         ollamaBaseUrl: 'http://localhost:11434',
         ollamaModel: 'llama3.1:8b',
-        sessionPersistence: true,
       },
 
       _engine: null,
@@ -454,17 +451,17 @@ export const useEngineStore = create<EngineStoreState>()(
       },
 
       // ── Init Engine ──────────────────────────────────────────────────────
-      _initEngine: async (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }): Promise<QueryEngine> => {
+      _initEngine: async (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: RuntimePermissionConfig): Promise<QueryEngine> => {
         ensureCommandsRegistered()
 
-        const { config, activeProvider, currentRunId, currentSessionId } = get()
+        const { config, activeProvider, currentRunId, conversationThreadId } = get()
         const providerState = getChatProviderState(useConfigStore.getState(), activeProvider, providerSelection)
         const engineConfig = buildChatEngineConfig(
           getResolvedProvider(providerState.provider),
           config,
           cwd,
           currentRunId ?? undefined,
-          currentSessionId ?? undefined,
+          conversationThreadId ?? undefined,
           providerSelection,
           permissionConfig,
         )
@@ -513,17 +510,27 @@ export const useEngineStore = create<EngineStoreState>()(
                 currentRunId: runId,
               })
               
-              return get().crewTaskMessageHandler!({
-                userInput,
-                cwd,
-                onEvent,
-                historySeed,
-                providerSelection,
-                permissionConfig,
-                crewId: activeThread!.crewId!,
-                threadId: activeThread!.id,
-                runId,
-              })
+              try {
+                await get().crewTaskMessageHandler!({
+                  userInput,
+                  cwd,
+                  onEvent,
+                  historySeed,
+                  providerSelection,
+                  permissionConfig,
+                  crewId: activeThread!.crewId!,
+                  threadId: activeThread!.id,
+                  runId,
+                })
+              } finally {
+                set({
+                  status: 'idle',
+                  streamingText: '',
+                  thinkingText: '',
+                  currentRunId: null,
+                })
+              }
+              return
             }
 
             const runId = crypto.randomUUID()
@@ -552,52 +559,26 @@ export const useEngineStore = create<EngineStoreState>()(
                 latestStore.config,
                 cwd,
                 runId,
-                latestStore.currentSessionId ?? undefined,
+                historySeed?.threadId ?? latestStore.conversationThreadId ?? undefined,
                 providerSelection,
                 permissionConfig,
               ))
             }
 
-            const shouldHydrateHistory = Boolean(
-              historySeed &&
-              Array.isArray(historySeed.messages) &&
-              historySeed.messages.length > 0 &&
-              (
-                latestStore.messages.length === 0 ||
-                historySeed.threadId !== latestStore.conversationThreadId
-              ),
-            )
-
-            if (shouldHydrateHistory) {
-              const hydratedMessages = mapChatHistorySeedToEngineMessages(historySeed!.messages, providerState.model)
+            // The persisted chat is the source of truth. Rebuild provider-neutral
+            // engine messages before every request, including after model changes.
+            if (historySeed && Array.isArray(historySeed.messages)) {
+              const hydratedMessages = mapChatHistorySeedToEngineMessages(historySeed.messages, providerState.model)
               set({
                 messages: hydratedMessages,
                 conversationThreadId: historySeed?.threadId ?? null,
-                currentSessionId: null,
                 contextSnapshot: engine.getContextSnapshot(hydratedMessages),
+                contextCoverage: null,
               })
-            } else if (historySeed?.threadId && historySeed.threadId !== latestStore.conversationThreadId) {
-              set({ conversationThreadId: historySeed.threadId })
             }
 
-            let sessionId = get().currentSessionId
-            if (!sessionId) {
-              sessionId = crypto.randomUUID()
-              try {
-                await createSession({
-                  id: sessionId,
-                  threadId: historySeed?.threadId ?? get().conversationThreadId ?? undefined,
-                  title: userInputText.slice(0, 60) || 'New session',
-                  model: providerState.model,
-                  provider: providerState.provider,
-                })
-              } catch {
-                // Browser/dev fallback has no Tauri session table.
-              }
-              set({ currentSessionId: sessionId })
-            }
-
-            const frozenSnapshot = await loadFrozenMemorySnapshot(sessionId)
+            const threadId = historySeed?.threadId ?? get().conversationThreadId ?? undefined
+            const frozenSnapshot = await loadFrozenMemorySnapshot(threadId)
 
             // Load project memory and build enhanced system prompt
             try {
@@ -609,44 +590,53 @@ export const useEngineStore = create<EngineStoreState>()(
               engine.updateConfig({
                 systemPrompt,
                 memoryContent,
-                sessionId,
+                threadId,
               })
             } catch {
               // Memory loading is optional — fall back to default prompt
             }
 
             try {
-              await captureAutomaticMemoryDraft(cwd, userInputText, sessionId)
+              await captureAutomaticMemoryDraft(cwd, userInputText, runId)
             } catch {
               // Automatic draft capture must never block the user turn.
             }
 
-            void invoke('engine_run_create', {
-              request: {
-                id: runId,
-                sessionId: get().currentSessionId,
-                title: userInputText.slice(0, 120) || 'Engine Run',
-                inputSummary: userInputText.slice(0, 1000),
-                status: 'running',
-                phase: 'llm_turn',
-                cwd,
-                model: providerState.model,
-                provider,
-                toolsetPolicyId,
-                metadataJson: JSON.stringify({
-                  permissionMode: latestStore.config.permissionMode,
-                  maxTurns: latestStore.config.maxTurns,
-                }),
-              },
-            }).catch(() => {})
+            try {
+              await invoke('engine_run_create', {
+                request: {
+                  id: runId,
+                  threadId: threadId ?? null,
+                  title: userInputText.slice(0, 120) || 'Engine Run',
+                  inputSummary: userInputText.slice(0, 1000),
+                  status: 'running',
+                  phase: 'llm_turn',
+                  cwd,
+                  model: providerState.model,
+                  provider,
+                  toolsetPolicyId,
+                  authorizedPaths: permissionConfig?.authorizedPaths,
+                  metadataJson: JSON.stringify({
+                    permissionMode: latestStore.config.permissionMode,
+                    maxTurns: latestStore.config.maxTurns,
+                  }),
+                },
+              })
+            } catch (error) {
+              if (permissionConfig?.authorizedPaths) {
+                throw error
+              }
+              // Browser/dev fallback has no persisted engine run.
+            }
 
             void invoke('memory_upsert', {
               id: crypto.randomUUID(),
-              scope: 'session',
+              scope: 'chat',
+              scopeRef: threadId ?? null,
               category: 'run_input',
               key: runId,
               content: userInputText,
-              sourceSessionId: runId,
+              sourceRunId: runId,
               confidence: 1,
             }).catch(() => {})
 
@@ -803,15 +793,19 @@ export const useEngineStore = create<EngineStoreState>()(
                           phase: 'completed',
                           checkpointJson,
                           resultSummary: summary,
+                          inputTokens: event.totalUsage.input_tokens,
+                          outputTokens: event.totalUsage.output_tokens,
+                          costUsd: event.totalCostUsd,
                         },
                       }).catch(() => {})
                       void invoke('memory_upsert', {
                         id: crypto.randomUUID(),
-                        scope: 'session',
+                        scope: 'chat',
+                        scopeRef: threadId ?? null,
                         category: 'run_output',
                         key: runId,
                         content: summary || 'Run completed.',
-                        sourceSessionId: runId,
+                        sourceRunId: runId,
                         confidence: 0.9,
                       }).catch(() => {})
                     }
@@ -828,33 +822,6 @@ export const useEngineStore = create<EngineStoreState>()(
                       conversationThreadId: historySeed?.threadId ?? get().conversationThreadId,
                     })
 
-                    // Auto-save session after completion
-                    if (get().config.sessionPersistence) {
-                      const doneMessages = event.messages
-                      const sessionId = get().currentSessionId ?? crypto.randomUUID()
-                      const title = generateSessionTitle(doneMessages)
-                      const threadId = get().conversationThreadId
-                      void createSession({
-                        id: sessionId,
-                        threadId: threadId ?? undefined,
-                        title,
-                        model: providerState.model,
-                        provider: providerState.provider,
-                      }).catch(() => { /* optional */ })
-                      void autoSaveSession(
-                        sessionId,
-                        title,
-                        cwd,
-                        doneMessages,
-                        event.totalUsage,
-                        event.totalCostUsd,
-                        engine!.getAppState(),
-                        threadId ?? undefined,
-                      )
-                        .then(() => set({ currentSessionId: sessionId }))
-                        .catch(() => { /* session save optional */ })
-                    }
-
                     // Update context snapshot
                     try {
                       const snap = engine!.getContextSnapshot(event.messages)
@@ -862,8 +829,8 @@ export const useEngineStore = create<EngineStoreState>()(
                     } catch { /* optional */ }
                     break
 
-                  case 'compaction':
-                    set((s) => ({ compactionCount: s.compactionCount + 1 }))
+                  case 'context_coverage':
+                    set({ contextCoverage: event })
                     break
 
                   case 'context_warning':
@@ -905,7 +872,12 @@ export const useEngineStore = create<EngineStoreState>()(
       // ── Abort ────────────────────────────────────────────────────────────
       abort: () => {
         const { _engine: engine, currentRunId } = get()
+        const chatState = useChatStore.getState()
+        const activeThread = chatState.threads.find((thread) => thread.id === chatState.activeThreadId)
         if (engine) engine.abort()
+        if (activeThread?.runner === 'crew' && activeThread.crewId) {
+          void invoke('crew_stop', { request: { crewId: activeThread.crewId } }).catch(() => {})
+        }
         if (currentRunId) {
           void invoke('engine_run_cancel', { id: currentRunId }).catch(() => {})
         }
@@ -942,9 +914,8 @@ export const useEngineStore = create<EngineStoreState>()(
         currentToolUI: null,
         appState: createInitialAppState(''),
         contextWarning: { level: 'none', estimatedTokens: 0 },
-        compactionCount: 0,
         contextSnapshot: null,
-        currentSessionId: null,
+        contextCoverage: null,
         currentRunId: null,
         conversationThreadId: null,
       }),
@@ -952,48 +923,10 @@ export const useEngineStore = create<EngineStoreState>()(
       clearError: () => set({ error: null, status: 'idle' }),
 
       // ── New Actions (CC features) ────────────────────────────────────────
-      forceCompact: async () => {
-        const { _engine: engine, messages } = get()
-        if (!engine || messages.length === 0) return
-        const compacted = await engine.forceCompact(messages)
-        set({
-          messages: compacted.messages,
-          compactionCount: get().compactionCount + 1,
-          contextSnapshot: engine.getContextSnapshot(compacted.messages),
-        })
-      },
-
       getContextSnapshot: () => {
         const { _engine: engine, messages } = get()
         if (!engine) return null
         return engine.getContextSnapshot(messages)
-      },
-
-      loadSessionById: async (sessionId: string) => {
-        const session = await loadSession(sessionId)
-        if (session) {
-          set({
-            currentSessionId: session.id,
-            currentRunId: null,
-            conversationThreadId: session.threadId ?? session.id,
-            streamingText: '',
-            thinkingText: '',
-            activeTools: [],
-            status: 'idle',
-          })
-        }
-        return session
-      },
-
-      getSessions: async () => {
-        return listSessions()
-      },
-
-      deleteSessionById: async (sessionId: string) => {
-        await deleteSession(sessionId)
-        if (get().currentSessionId === sessionId) {
-          set({ currentSessionId: null })
-        }
       },
 
       fetchOllamaModels: async () => {
@@ -1019,8 +952,6 @@ export const useEngineStore = create<EngineStoreState>()(
       partialize: (state) => ({
         activeProvider: state.activeProvider,
         config: sanitizeEngineConfigForPersistence(state.config),
-        currentSessionId: state.currentSessionId,
-        currentRunId: state.currentRunId,
       }),
       merge: (persistedState, currentState) => {
         const typedState = persistedState as Partial<EngineStoreState> | undefined
@@ -1047,6 +978,4 @@ export const selectNeedsApproval = (s: EngineStoreState) => s.status === 'waitin
 export const selectIsEngineReady = () => true
 export const selectAvailableModels = (): string[] => []
 export const selectContextWarning = (s: EngineStoreState) => s.contextWarning
-export const selectCompactionCount = (s: EngineStoreState) => s.compactionCount
-export const selectHasSession = (s: EngineStoreState) => s.currentSessionId !== null
 export const selectIsOllamaProvider = (s: EngineStoreState) => s.activeProvider === 'ollama'

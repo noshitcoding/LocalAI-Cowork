@@ -4,6 +4,7 @@ import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
 import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind, type CrewProviderProfiles, type CrewRuntimeConfig } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
+import { resolveEffectiveCrewProvider, resolveExternalProviderConfig } from '../engine/crew/workTaskCrewRuntime'
 import CrewControlPlanePanel from './crew/CrewControlPlanePanel'
 import CrewGovernancePanel from './crew/CrewGovernancePanel'
 import CrewHistoryPanel from './crew/CrewHistoryPanel'
@@ -59,6 +60,7 @@ type ImportedCrewAgent = {
   skillsMarkdown?: unknown
   personalityId?: unknown
   modelOverride?: unknown
+  inheritCrewModel?: unknown
   providerKind?: unknown
   tools?: unknown
   mcpServerNames?: unknown
@@ -150,6 +152,7 @@ function normalizeImportedCrewAgent(value: unknown): CrewAgent {
     skillsMarkdown: typeof agent.skillsMarkdown === 'string' ? agent.skillsMarkdown : '',
     personalityId: typeof agent.personalityId === 'string' ? agent.personalityId : null,
     modelOverride: typeof agent.modelOverride === 'string' ? agent.modelOverride : null,
+    inheritCrewModel: typeof agent.inheritCrewModel === 'boolean' ? agent.inheritCrewModel : undefined,
     providerKind: isCrewProviderKind(agent.providerKind) ? agent.providerKind : 'ollama',
     tools: toStringArray(agent.tools),
     mcpServerNames: toStringArray(agent.mcpServerNames),
@@ -173,24 +176,6 @@ function resolveCrewRuntimeConfig(
     baseUrl: runtimeConfig.baseUrl.trim() || fallbackConfig.baseUrl,
     model: runtimeConfig.model.trim() || fallbackConfig.model,
     timeoutMs: Math.max(1000, runtimeConfig.timeoutMs || fallbackConfig.timeoutMs),
-  }
-}
-
-function resolveExternalProviderConfig(
-  config: CrewExternalProviderConfig | undefined,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; verifyTlsCertificates?: boolean } | undefined,
-  fallbackBaseUrl: string,
-) {
-  if (!config?.enabled) {
-    return undefined
-  }
-
-  return {
-    baseUrl: config.baseUrl.trim() || fallbackConfig?.baseUrl?.trim() || fallbackBaseUrl,
-    model: config.model.trim() || fallbackConfig?.model?.trim() || '',
-    apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
-    timeoutMs: Math.max(1000, config.timeoutMs || 600000),
-    verifyTlsCertificates: (config.verifyTlsCertificates ?? true) && (fallbackConfig?.verifyTlsCertificates ?? true),
   }
 }
 
@@ -233,6 +218,12 @@ function getProviderKey(providerKind: CrewProviderKind): 'openAICompatible' | 'o
   return null
 }
 
+function isExternalLlmProfileSelectable(
+  profile: { baseUrl?: string } | undefined,
+): boolean {
+  return Boolean(profile?.baseUrl?.trim())
+}
+
 type CrewProviderModelsResult = {
   endpoint: string
   models: string[]
@@ -241,6 +232,7 @@ function getCrewDiagnostics(crew: {
   process: CrewProcess
   managerAgentId: string | null
   defaultProvider?: CrewProviderKind
+  defaultModel?: string
   agents: Array<{ id: string; name: string; enabled: boolean; providerKind?: CrewProviderKind; modelOverride?: string | null }>
   providerProfiles?: {
     openAICompatible: CrewExternalProviderConfig
@@ -248,7 +240,8 @@ function getCrewDiagnostics(crew: {
   }
 },
 openAIProfile?: { baseUrl?: string; model?: string; apiKey?: string },
-openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string }) {
+openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string },
+ollamaConfig?: { model?: string }) {
   const errors: string[] = []
   const warnings: string[] = []
   const enabledAgentIds = new Set(crew.agents.filter((agent) => agent.enabled).map((agent) => agent.id))
@@ -258,15 +251,34 @@ openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string }) {
     errors.push('No active Crew-members available.')
   }
 
-  const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
+  const requestedCrewProvider = crew.defaultProvider ?? 'ollama'
+  const resolvedOpenAIProfile = resolveExternalProviderConfig(
+    crew.providerProfiles?.openAICompatible,
+    openAIProfile,
+    'https://api.openai.com/v1',
+  )
+  const resolvedOpenRouterProfile = resolveExternalProviderConfig(
+    crew.providerProfiles?.openRouter,
+    openRouterProfile,
+    'https://openrouter.ai/api/v1',
+  )
+  const crewDefaultProvider = resolveEffectiveCrewProvider(
+    requestedCrewProvider,
+    ollamaConfig,
+    {
+      openAICompatible: resolvedOpenAIProfile,
+      openRouter: resolvedOpenRouterProfile,
+    },
+  )
+  const crewDefaultModel = crewDefaultProvider === requestedCrewProvider ? crew.defaultModel?.trim() : ''
   const openAiAgents = crewDefaultProvider === 'openai-compatible' ? enabledAgents : []
   if (openAiAgents.length > 0) {
-    const profile = crew.providerProfiles?.openAICompatible
-    const effectiveApiKey = profile?.apiKey.trim() || openAIProfile?.apiKey?.trim() || ''
-    const effectiveBaseUrl = profile?.baseUrl.trim() || openAIProfile?.baseUrl?.trim() || ''
-    const effectiveModel = profile?.model.trim() || openAIProfile?.model?.trim() || ''
+    const resolvedProfile = resolvedOpenAIProfile
+    const effectiveApiKey = resolvedProfile?.apiKey ?? ''
+    const effectiveBaseUrl = resolvedProfile?.baseUrl ?? ''
+    const effectiveModel = crewDefaultModel || resolvedProfile?.model || ''
     const needsFallbackModel = openAiAgents.some((agent) => !agent.modelOverride?.trim())
-    if (!profile?.enabled) {
+    if (!resolvedProfile) {
       errors.push('Active crew members use OpenAI-compatible routing, but the crew profile is not enabled.')
     }
     if (!effectiveApiKey) {
@@ -282,12 +294,12 @@ openRouterProfile?: { baseUrl?: string; model?: string; apiKey?: string }) {
 
   const openRouterAgents = crewDefaultProvider === 'openrouter' ? enabledAgents : []
   if (openRouterAgents.length > 0) {
-    const profile = crew.providerProfiles?.openRouter
-    const effectiveApiKey = profile?.apiKey.trim() || openRouterProfile?.apiKey?.trim() || ''
-    const effectiveBaseUrl = profile?.baseUrl.trim() || openRouterProfile?.baseUrl?.trim() || 'https://openrouter.ai/api/v1'
-    const effectiveModel = profile?.model.trim() || openRouterProfile?.model?.trim() || ''
+    const resolvedProfile = resolvedOpenRouterProfile
+    const effectiveApiKey = resolvedProfile?.apiKey ?? ''
+    const effectiveBaseUrl = resolvedProfile?.baseUrl ?? ''
+    const effectiveModel = crewDefaultModel || resolvedProfile?.model || ''
     const needsFallbackModel = openRouterAgents.some((agent) => !agent.modelOverride?.trim())
-    if (!profile?.enabled) {
+    if (!resolvedProfile) {
       errors.push('Active crew members use OpenRouter, but the crew profile is not enabled.')
     }
     if (!effectiveApiKey) {
@@ -331,7 +343,7 @@ export default function CrewPanel() {
     runCrew,
     stopCrew,
   } = useCrewStore()
-  const { availableModels, defaultLlmProfileIds, llmProfiles, mcpServer, mcpServers, ollama } = useConfigStore()
+  const { availableModels, defaultLlmProfileIds, llmProfileModels, llmProfiles, mcpServer, mcpServers, ollama } = useConfigStore()
   const claudeTools = useCoworkStore((state) => state.claudeTools)
   const personalities = usePersonalityStore((state) => state.personalities)
   const loadPersonalities = usePersonalityStore((state) => state.loadPersonalities)
@@ -339,6 +351,7 @@ export default function CrewPanel() {
 
   const [crewName, setCrewName] = useState('')
   const [providerModelOptions, setProviderModelOptions] = useState<Record<string, ProviderModelState>>({})
+  const [crewModelApplyNotice, setCrewModelApplyNotice] = useState<{ crewId: string; memberCount: number } | null>(null)
   const [pendingScrollCrewId, setPendingScrollCrewId] = useState<string | null>(null)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({ general: true, execution: false, provider: false, diagnostics: false, members: false })
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({})
@@ -422,8 +435,8 @@ export default function CrewPanel() {
     [defaultLlmProfileIds.openrouter, llmProfiles],
   )
   const activeCrewDiagnostics = useMemo(
-    () => (activeCrew ? getCrewDiagnostics(activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile) : { errors: [], warnings: [] }),
-    [activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile],
+    () => (activeCrew ? getCrewDiagnostics(activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, ollama) : { errors: [], warnings: [] }),
+    [activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, ollama],
   )
   const resolvedActiveCrewConfig = useMemo(
     () => (activeCrew ? resolveCrewRuntimeConfig(activeCrew.runtimeConfig, ollama) : ollama),
@@ -435,14 +448,16 @@ export default function CrewPanel() {
         activeCrew.providerProfiles.openAICompatible,
         defaultOpenAICompatibleProfile,
         defaultOpenAICompatibleProfile?.baseUrl || activeCrew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+        defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
       ),
       openRouter: resolveExternalProviderConfig(
         activeCrew.providerProfiles.openRouter,
         defaultOpenRouterProfile,
         defaultOpenRouterProfile?.baseUrl || activeCrew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+        defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
       ),
     } : { openAICompatible: undefined, openRouter: undefined },
-    [activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile],
+    [activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, llmProfileModels],
   )
   const configuredMcpServers = (mcpServers.length > 0 ? mcpServers : [mcpServer]).filter((server) => server.name.trim())
 
@@ -469,10 +484,21 @@ export default function CrewPanel() {
     const providerState = providerKind === 'openai-compatible'
       ? providerModelOptions.openAICompatible
       : providerModelOptions.openRouter
+    const settingsProfile = providerKind === 'openai-compatible'
+      ? defaultOpenAICompatibleProfile
+      : defaultOpenRouterProfile
+    const settingsModels = settingsProfile ? llmProfileModels[settingsProfile.id] ?? [] : []
+    const configuredSettingsModel = settingsProfile?.model.trim() ?? ''
+    const models = Array.from(new Set([
+      ...settingsModels,
+      ...(configuredSettingsModel ? [configuredSettingsModel] : []),
+      ...(providerState?.models ?? []),
+    ]))
 
     return {
-      models: providerState?.models ?? [],
-      authoritative: Boolean(providerState && !providerState.loading && !providerState.error),
+      models,
+      authoritative: settingsModels.length > 0
+        || Boolean(providerState && !providerState.loading && !providerState.error),
     }
   }
 
@@ -489,7 +515,7 @@ export default function CrewPanel() {
       return resolvedActiveProviderConfigs.openAICompatible?.model || defaultOpenAICompatibleProfile?.model || 'not set'
     }
 
-    return resolvedActiveProviderConfigs.openRouter?.model || 'not set'
+    return resolvedActiveProviderConfigs.openRouter?.model || defaultOpenRouterProfile?.model || 'not set'
   }
 
   const getCrewDefaultModelOptions = () => {
@@ -514,7 +540,9 @@ export default function CrewPanel() {
 
     return providerKind === 'openai-compatible'
       ? activeCrew.providerProfiles.openAICompatible.enabled
+        || isExternalLlmProfileSelectable(defaultOpenAICompatibleProfile)
       : activeCrew.providerProfiles.openRouter.enabled
+        || isExternalLlmProfileSelectable(defaultOpenRouterProfile)
   }
 
   const getAgentModelOptions = (agent: { modelOverride?: string | null }) => {
@@ -539,6 +567,7 @@ export default function CrewPanel() {
         providerKind,
       })),
     })
+    setCrewModelApplyNotice(null)
 
     const providerKey = getProviderKey(providerKind)
     if (providerKey) {
@@ -602,6 +631,13 @@ export default function CrewPanel() {
   useEffect(() => {
     if (!activeCrew) return
 
+    const catalog = getProviderModelCatalog(activeCrew.defaultProvider || 'ollama')
+    const crewDefaultModel = activeCrew.defaultModel?.trim()
+    if (crewDefaultModel && catalog.authoritative && !catalog.models.includes(crewDefaultModel)) {
+      updateCrew(activeCrew.id, { defaultModel: '' })
+      setCrewModelApplyNotice(null)
+    }
+
     const invalidAgentIds = activeCrew.agents
       .filter((agent) => {
         const profile = agent.personalityId ? personalityProfiles.find((entry) => entry.id === agent.personalityId) : null
@@ -609,7 +645,6 @@ export default function CrewPanel() {
         const modelOverride = effectiveAgent.modelOverride?.trim()
         if (!modelOverride) return false
 
-        const catalog = getProviderModelCatalog(activeCrew.defaultProvider || 'ollama')
         return catalog.authoritative && !catalog.models.includes(modelOverride)
       })
       .map((agent) => agent.id)
@@ -620,7 +655,7 @@ export default function CrewPanel() {
       const agent = activeCrew.agents.find((entry) => entry.id === agentId)
       const profile = agent?.personalityId ? personalityProfiles.find((entry) => entry.id === agent.personalityId) : null
       if (profile) {
-        updateCrewPersonalityProfile(profile, { modelOverride: null })
+        updateCrewAgent(activeCrew.id, agentId, { inheritCrewModel: true })
         return
       }
 
@@ -628,7 +663,7 @@ export default function CrewPanel() {
     })
     // The catalog helper is render-local; this effect tracks its store inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCrew, availableModels, personalityProfiles, providerModelOptions, updateCrewAgent, updateCrewPersonalityProfile])
+  }, [activeCrew, availableModels, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, llmProfileModels, personalityProfiles, providerModelOptions, updateCrew, updateCrewAgent, updateCrewPersonalityProfile])
 
   const handleCreateCrew = () => {
     const nextName = crewName.trim() || buildDefaultCrewName(crews.map((crew) => crew.name))
@@ -659,6 +694,19 @@ export default function CrewPanel() {
     updateActiveCrew({
       agents: activeCrew.agents.map(mapper),
     })
+  }
+
+  const applyCrewModelToAllAgents = () => {
+    if (!activeCrew) return
+
+    const providerKind = activeCrew.defaultProvider || 'ollama'
+    updateAllActiveCrewAgents((agent) => ({
+      ...agent,
+      providerKind,
+      modelOverride: null,
+      inheritCrewModel: true,
+    }))
+    setCrewModelApplyNotice({ crewId: activeCrew.id, memberCount: activeCrew.agents.length })
   }
 
   const setCrewToolForAllAgents = (toolId: string, enabled: boolean) => {
@@ -1021,7 +1069,7 @@ export default function CrewPanel() {
           <div className={`crew-list-column${isCrewListVisible ? '' : ' hidden'}`}>
             <div className="crew-list">
               {crews.map((crew) => {
-                const diag = getCrewDiagnostics(crew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile)
+                const diag = getCrewDiagnostics(crew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, ollama)
                 const enabledCount = crew.agents.filter((a) => a.enabled).length
                 return (
                   <div
@@ -1183,15 +1231,33 @@ export default function CrewPanel() {
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Model")}</span>
-                          <select aria-label={tr("Crew-Model")} className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => updateActiveCrew({ defaultModel: e.target.value })}>
-                            <option value="">{tr("Globale Settings verwenden")}</option>
+                          <select aria-label={tr("Crew-Model")} className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => {
+                            updateActiveCrew({ defaultModel: e.target.value })
+                            setCrewModelApplyNotice(null)
+                          }}>
+                            <option value="">{tr("Globale Settings verwenden")} ({getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama')})</option>
                             {getCrewDefaultModelOptions().map((m) => <option key={m} value={m}>{m}</option>)}
                           </select>
                           {activeCrew.defaultProvider !== 'ollama' && getCrewDefaultModelOptions().length === 0 && (
                             <span className="crew-hint">{tr("No models have been loaded for this provider yet.")}</span>
                           )}
-                          <span className="crew-hint">{tr("Aktuell wirksam:")}{activeCrew.defaultModel || tr('Global settings')}</span>
+                          <span className="crew-hint">{tr("Aktuell wirksam:")} {getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama')}</span>
                           <span className="crew-hint">{tr("Gilt automatisch for alle members ohne eigenes Model-Override.")}</span>
+                          <button
+                            type="button"
+                            className="ui-button ui-button--secondary crew-apply-model-button"
+                            onClick={applyCrewModelToAllAgents}
+                            disabled={activeCrew.agents.length === 0 || getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama') === 'not set'}
+                          >
+                            <UsersRound size={16} aria-hidden="true" />
+                            {tr("Apply crew model to all")}
+                          </button>
+                          <span className="crew-hint">{tr("Removes individual model overrides in this crew. Linked personality profiles remain unchanged.")}</span>
+                          {crewModelApplyNotice?.crewId === activeCrew.id && (
+                            <div className="crew-inline-feedback" role="status">
+                              {tr("Crew model applied to {{count}} members.", { count: crewModelApplyNotice.memberCount })}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1428,7 +1494,13 @@ export default function CrewPanel() {
                                     </div>
                                     <div className="crew-form-group">
                                       <span className="crew-label">{tr("Model")}</span>
-                                      <select aria-label={tr("Model")} className="crew-select" value={selModel} onChange={(e) => updateProfileOrSnapshot({ modelOverride: e.target.value || null })}>
+                                      <select aria-label={tr("Model")} className="crew-select" value={selModel} onChange={(e) => {
+                                        const modelOverride = e.target.value || null
+                                        updateActiveCrewAgent(agent.id, {
+                                          modelOverride,
+                                          inheritCrewModel: modelOverride === null,
+                                        })
+                                      }}>
                                         <option value="">{tr("Crew-Model (")}{getCrewDefaultModelLabel(effectiveProviderKind)})</option>
                                         {amo.map((m) => <option key={m} value={m}>{m}</option>)}
                                       </select>

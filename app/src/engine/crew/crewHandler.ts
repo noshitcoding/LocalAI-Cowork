@@ -2,7 +2,7 @@
 // Handles crew task messages from the engine store.
 
 import { listen } from '@tauri-apps/api/event'
-import { useWorkTasksStore } from '../../stores/workTasksStore'
+import { useWorkTasksStore, type WorkTask } from '../../stores/workTasksStore'
 import { resolveCrewAgentsWithProfiles, useCrewStore, type CrewPersonalityProfile } from '../../stores/crewStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../../stores/chatStore'
@@ -12,6 +12,8 @@ import type { EngineUserInput, ConversationHistorySeed } from '../../stores/engi
 import type { EngineEvent } from '../core/queryEngine'
 import type { ChatProviderSelection } from '../../utils/chatProvider'
 import type { PermissionMode } from '../types/tool'
+import type { AuthorizedTaskPath } from '../../utils/taskProjectContext'
+import i18n from '../../i18n'
 import {
   appendCrewLiveEntry,
   applyCrewDefaultModel,
@@ -33,7 +35,11 @@ export interface CrewTaskMessageParams {
   onEvent?: (event: EngineEvent) => void
   historySeed?: ConversationHistorySeed
   providerSelection?: ChatProviderSelection
-  permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+  permissionConfig?: {
+    mode: PermissionMode
+    allowedDirectories: string[]
+    authorizedPaths?: AuthorizedTaskPath[]
+  }
   crewId: string | null
   threadId: string
   runId: string
@@ -62,21 +68,55 @@ function buildCrewRunOutput(response: CrewExecutionResponse, fallbackTaskId: str
   return response.error || 'Crew-Execution abclosed.'
 }
 
+function extractCrewChatPrompt(userInput: EngineUserInput): string {
+  if (typeof userInput === 'string') return userInput.trim()
+  return userInput
+    .filter((block): block is Extract<(typeof userInput)[number], { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+export function createChatCrewWorkTask(params: Pick<CrewTaskMessageParams, 'userInput' | 'cwd' | 'threadId' | 'crewId' | 'runId'>): WorkTask {
+  const prompt = extractCrewChatPrompt(params.userInput) || 'Complete the user request from this chat.'
+  const title = prompt.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Crew chat request'
+  const now = Date.now()
+  return {
+    id: `chat-${params.runId}`,
+    title,
+    prompt,
+    expectedOutput: 'Return the complete final result to the chat.',
+    workDir: params.cwd,
+    threadId: params.threadId,
+    runner: 'crew',
+    crewId: params.crewId,
+    model: '',
+    scheduleExpr: '',
+    scheduleEnabled: false,
+    status: 'idle',
+    output: null,
+    error: null,
+    lastRunAt: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
 export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Promise<void> {
   const { crewId, threadId } = params
   const workTasksStore = useWorkTasksStore.getState()
   const crewStore = useCrewStore.getState()
 
-  const task = workTasksStore.tasks.find((entry) => entry.threadId === threadId)
-  if (!task) {
-    throw new Error('Task for this chat was not found.')
-  }
+  const persistedTask = workTasksStore.tasks.find((entry) => entry.threadId === threadId) ?? null
+  const task = persistedTask ?? createChatCrewWorkTask(params)
 
-  workTasksStore.updateTask(task.id, {
-    status: 'running',
-    output: '',
-    error: null,
-  })
+  if (persistedTask) {
+    workTasksStore.updateTask(task.id, {
+      status: 'running',
+      output: '',
+      error: null,
+    })
+  }
 
   let crewLiveState: CrewLiveState | null = null
   let crewLiveMessageId: string | null = null
@@ -159,11 +199,13 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
         crew.providerProfiles.openAICompatible,
         defaultOpenAICompatibleProfile,
         defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+        defaultOpenAICompatibleProfile ? configState.llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
       ),
       openRouter: resolveExternalProviderConfig(
         crew.providerProfiles.openRouter,
         defaultOpenRouterProfile,
         defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+        defaultOpenRouterProfile ? configState.llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
       ),
     }
     let config = resolveCrewRuntimeConfig(crew, {
@@ -212,6 +254,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
         executionSubject: crew.executionSubject,
         executionGuidelines: buildWorkTaskCrewGuidelines(crew, task),
         knowledgeFocus: crew.knowledgeFocus,
+        responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
         governanceMode: crew.governanceMode,
         outputMode: crew.outputMode,
         stopOnFailure: crew.stopOnFailure,
@@ -245,6 +288,9 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
         })),
         tasks: runtimeTasks,
         cwd: params.cwd || null,
+        ...(params.permissionConfig?.authorizedPaths !== undefined
+          ? { authorizedPaths: params.permissionConfig.authorizedPaths }
+          : {}),
         config,
       },
     })
@@ -256,12 +302,14 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
     finishCrewLive(mappedStatus === 'completed' ? 'completed' : 'failed')
     const output = buildCrewRunOutput(response, task.id)
 
-    workTasksStore.updateTask(task.id, {
-      status: mappedStatus,
-      output,
-      error: response.error ?? null,
-      lastRunAt: Date.now(),
-    })
+    if (persistedTask) {
+      workTasksStore.updateTask(task.id, {
+        status: mappedStatus,
+        output,
+        error: response.error ?? null,
+        lastRunAt: Date.now(),
+      })
+    }
 
     useChatStore.getState().addMessage(threadId, {
       role: 'assistant',
@@ -272,12 +320,14 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
     const message = error instanceof Error ? error.message : String(error)
     finishCrewLive('failed')
 
-    workTasksStore.updateTask(task.id, {
-      status: 'failed',
-      error: message,
-      output: message,
-      lastRunAt: Date.now(),
-    })
+    if (persistedTask) {
+      workTasksStore.updateTask(task.id, {
+        status: 'failed',
+        error: message,
+        output: message,
+        lastRunAt: Date.now(),
+      })
+    }
 
     useChatStore.getState().addMessage(threadId, {
       role: 'assistant',

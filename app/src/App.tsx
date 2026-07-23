@@ -30,6 +30,8 @@ const TasksView = lazy(() => import('./components/TasksView'))
 const CrewView = lazy(() => import('./components/CrewView'))
 const ProjectView = lazy(() => import('./components/ProjectView'))
 const FeaturesView = lazy(() => import('./components/FeaturesView'))
+const DeveloperBrowserView = lazy(() => import('./components/DeveloperBrowserView'))
+const GitHubView = lazy(() => import('./components/GitHubView'))
 
 type BackendPolicyState = {
   flags: Record<string, boolean>
@@ -87,6 +89,12 @@ function ProductRouteReady({ routeId }: { routeId: ProductRouteId }) {
       break
     case 'features':
       content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><FeaturesView /></div>
+      break
+    case 'browser':
+      content = <DeveloperBrowserView />
+      break
+    case 'github':
+      content = <GitHubView />
       break
     default:
       content = <CoworkView />

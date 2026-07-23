@@ -50,7 +50,7 @@ export default function FeaturesView() {
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const lastIndex = TABS.length - 1
-    let nextIndex = index
+    let nextIndex: number
     if (event.key === 'ArrowRight') nextIndex = index === lastIndex ? 0 : index + 1
     else if (event.key === 'ArrowLeft') nextIndex = index === 0 ? lastIndex : index - 1
     else if (event.key === 'Home') nextIndex = 0

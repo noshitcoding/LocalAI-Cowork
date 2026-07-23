@@ -137,7 +137,7 @@ function normalizeRunner(value: unknown): WorkTaskRunner {
 }
 
 function normalizeStatus(value: unknown): WorkTaskStatus {
-  const status = value === 'idle'
+  return value === 'idle'
     || value === 'waiting_approval'
     || value === 'running'
     || value === 'completed'
@@ -145,11 +145,9 @@ function normalizeStatus(value: unknown): WorkTaskStatus {
     || value === 'canceled'
     ? value
     : 'idle'
-
-  return status === 'running' ? 'failed' : status
 }
 
-export function normalizeTask(raw: RawWorkTask): WorkTask | null {
+export function normalizeTask(raw: RawWorkTask, recoverInterrupted = true): WorkTask | null {
   if (typeof raw.id !== 'string' || !raw.id.trim()) return null
 
   const createdAt = parseDate(raw.createdAt ?? raw.created_at, Date.now())
@@ -162,8 +160,8 @@ export function normalizeTask(raw: RawWorkTask): WorkTask | null {
     || raw.status === 'canceled'
     ? raw.status
     : 'idle'
-  const status = normalizeStatus(raw.status)
-  const interrupted = rawStatus === 'running'
+  const interrupted = recoverInterrupted && rawStatus === 'running'
+  const status = interrupted ? 'failed' : normalizeStatus(raw.status)
   const runner = normalizeRunner(raw.runner)
   const scheduleExpr = pickString(raw.scheduleExpr, raw.schedule_expr).trim()
   const prompt = pickString(raw.prompt).trim()
@@ -281,7 +279,7 @@ function mergeTaskPatch(task: WorkTask, patch: Partial<Omit<WorkTask, 'id' | 'cr
         ? task.scheduleEnabled
         : false,
     updatedAt: Date.now(),
-  })
+  }, false)
 
   return next ?? task
 }
@@ -373,7 +371,7 @@ export const useWorkTasksStore = create<WorkTasksState>()(
         set((state) => {
           const existing = new Map(state.tasks.map((task) => [task.id, task]))
           for (const raw of incoming) {
-            const normalized = normalizeTask(raw as RawWorkTask)
+            const normalized = normalizeTask(raw as RawWorkTask, false)
             if (!normalized) continue
             existing.set(normalized.id, normalized)
             normalizedTasks.push(normalized)

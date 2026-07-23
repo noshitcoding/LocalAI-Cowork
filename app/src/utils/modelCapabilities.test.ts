@@ -11,6 +11,7 @@ function createProviderState(patch: Partial<ChatProviderState>): ChatProviderSta
     apiKey: '',
     timeoutMs: 600000,
     verifyTlsCertificates: true,
+    contextWindow: 128000,
     selectableModels: [],
     ...patch,
   }

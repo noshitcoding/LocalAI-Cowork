@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -256,7 +257,11 @@ fn account_id(locator: &CredentialLocator) -> Result<String, CredentialStoreErro
     digest.update(b"\0");
     digest.update(locator.field.as_bytes());
     let digest = digest.finalize();
-    Ok(format!("v1-{}-{digest:x}", locator.scope))
+    let mut digest_hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut digest_hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(format!("v1-{}-{digest_hex}", locator.scope))
 }
 
 pub fn validate_frontend_access(locator: &CredentialLocator) -> Result<(), CredentialStoreError> {

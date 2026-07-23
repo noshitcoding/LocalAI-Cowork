@@ -1,16 +1,13 @@
 // ── Memory System (ported from Claude Code) ─────────────────────────────────
 // Mirrors: claude-code-main/src/memory/ + memdir/
-// Handles: CLAUDE.md loading, memory entries, conversation compaction
+// Handles: CLAUDE.md loading and memory entries
 //
 // Enhanced with:
 // - Recursive CLAUDE.md discovery (parent directory walking)
-// - LLM-powered compaction via Ollama
-// - Memory hierarchy (session → project → global)
+// - Memory hierarchy (chat → project → global)
 // - .claude/settings.json preferences loading
 
 import { invoke } from '@tauri-apps/api/core'
-import type { Message } from '../types'
-import { extractTextContent, createSystemMessage } from '../types'
 
 // ── Memory Configuration ───────────────────────────────────────────────────
 
@@ -19,10 +16,6 @@ export type MemoryConfig = {
   projectDir: string
   /** Global memory directory */
   globalMemoryDir?: string
-  /** Maximum context size before compaction */
-  maxContextTokens?: number
-  /** Enable auto-compaction */
-  autoCompact?: boolean
   /** Walk parent directories for CLAUDE.md files */
   walkParents?: boolean
   /** Maximum parent levels to walk */
@@ -149,7 +142,7 @@ export async function saveProjectMemory(projectDir: string, filename: string, co
 
 export type MemoryEntry = {
   id: string
-  scope: 'global' | 'project' | 'session'
+  scope: 'global' | 'project' | 'chat'
   key: string
   content: string
   category: string
@@ -179,7 +172,7 @@ function toBackendMemoryScope(scope: MemoryEntry['scope'] | string | undefined):
 function fromBackendMemoryScope(scope: string): MemoryEntry['scope'] {
   if (scope === 'agent') return 'project'
   if (scope === 'shared') return 'global'
-  return 'session'
+  return 'chat'
 }
 
 export type RuntimeInstruction = {
@@ -193,7 +186,7 @@ export type RuntimeInstruction = {
 }
 
 export type FrozenMemorySnapshot = {
-  sessionId: string
+  threadId: string
   agentEntries: Array<{
     id: string
     scope: string
@@ -203,6 +196,14 @@ export type FrozenMemorySnapshot = {
     confidence: number
   }>
   sharedEntries: Array<{
+    id: string
+    scope: string
+    category: string
+    key: string
+    content: string
+    confidence: number
+  }>
+  chatEntries?: Array<{
     id: string
     scope: string
     category: string
@@ -259,6 +260,11 @@ export function renderFrozenMemorySnapshot(snapshot: FrozenMemorySnapshot): stri
     .slice(0, 24)
     .map((entry) => `[${entry.category}] ${entry.key}: ${entry.content.trim()}`)
     .filter(Boolean)
+  const chatEntries = (snapshot.chatEntries ?? [])
+    .filter((entry) => !['run_input', 'run_output', 'draft_knowledge'].includes(entry.category))
+    .slice(0, 24)
+    .map((entry) => `[${entry.category}] ${entry.key}: ${entry.content.trim()}`)
+    .filter(Boolean)
   const userEntries = snapshot.userProfile
     .map((entry) => entry.value.trim())
     .filter(Boolean)
@@ -266,16 +272,19 @@ export function renderFrozenMemorySnapshot(snapshot: FrozenMemorySnapshot): stri
   return [
     renderMemorySection('MEMORY (curated agent notes)', agentEntries, MEMORY_CHAR_LIMIT),
     renderMemorySection('USER PROFILE', userEntries, USER_CHAR_LIMIT),
+    chatEntries.length > 0
+      ? `CHAT MEMORY [${chatEntries.length} entries]\n${chatEntries.join('\nÂ§\n')}`
+      : '',
     sharedEntries.length > 0
       ? `SHARED KNOWLEDGE SNAPSHOT [${sharedEntries.length} entries]\n${sharedEntries.join('\n§\n')}`
       : '',
   ].filter(Boolean).join('\n\n---\n\n')
 }
 
-export async function loadFrozenMemorySnapshot(sessionId?: string): Promise<FrozenMemorySnapshot | null> {
+export async function loadFrozenMemorySnapshot(threadId?: string): Promise<FrozenMemorySnapshot | null> {
   try {
-    return sessionId
-      ? await invoke<FrozenMemorySnapshot>('session_memory_snapshot', { sessionId })
+    return threadId
+      ? await invoke<FrozenMemorySnapshot>('chat_memory_snapshot', { threadId })
       : await invoke<FrozenMemorySnapshot>('memory_snapshot')
   } catch {
     return null
@@ -323,7 +332,7 @@ function stableDraftKey(value: string): string {
 export async function captureAutomaticMemoryDraft(
   projectDir: string,
   userInput: string,
-  sourceSessionId?: string,
+  sourceRunId?: string,
 ): Promise<AutomaticMemoryCandidate[]> {
   const candidates = extractAutomaticMemoryCandidates(userInput)
   if (candidates.length === 0) return []
@@ -350,7 +359,7 @@ export async function captureAutomaticMemoryDraft(
       category: 'draft_knowledge',
       key: stableDraftKey(`${candidate.target}:${candidate.content}`),
       content: candidate.content,
-      sourceSessionId: sourceSessionId ?? null,
+      sourceRunId: sourceRunId ?? null,
       confidence: 0.6,
     })
   }
@@ -377,7 +386,7 @@ export async function storeMemoryEntry(entry: Omit<MemoryEntry, 'id' | 'createdA
     key: entry.key,
     content: entry.content,
     category: entry.category,
-    sourceSessionId: null,
+      sourceRunId: null,
     confidence: entry.confidence,
   })
   return id
@@ -439,83 +448,6 @@ export async function recallRelevantMemory(query: string, limit: number = 6): Pr
 }
 
 // ── Conversation Compaction ────────────────────────────────────────────────
-// Now delegates to services/compact.ts for LLM-powered compaction.
-// This function is kept for backward compatibility.
-// For advanced compaction, use ContextManager from services/contextManager.ts.
-
-/**
- * Estimate token count for a message (rough: ~4 chars per token)
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
-
-/**
- * Estimate total token count for a conversation
- */
-export function estimateConversationTokens(messages: Message[]): number {
-  return messages.reduce((sum, msg) => {
-    return sum + estimateTokens(extractTextContent(msg))
-  }, 0)
-}
-
-/**
- * Compact a conversation by summarizing older messages.
- * Returns a new message list with a summary system message replacing older messages.
- *
- * Note: For LLM-powered compaction, use autoCompact() from services/compact.ts
- */
-export function compactConversation(
-  messages: Message[],
-  maxTokens: number = 100000,
-): Message[] {
-  const totalTokens = estimateConversationTokens(messages)
-  if (totalTokens <= maxTokens) return messages
-
-  // Find the split point — keep at least the last 10 messages
-  const keepCount = Math.max(10, Math.floor(messages.length * 0.3))
-  const toSummarize = messages.slice(0, messages.length - keepCount)
-  const toKeep = messages.slice(messages.length - keepCount)
-
-  // Summarize the older messages
-  const summaryParts: string[] = []
-  const toolUseSummaries: string[] = []
-
-  for (const msg of toSummarize) {
-    if (msg.type === 'assistant') {
-      const text = extractTextContent(msg)
-      if (text.length > 100) {
-        summaryParts.push(`[Assistant]: ${text.slice(0, 200)}...`)
-      }
-      // Track tool uses
-      const toolUses = msg.content.filter(b => b.type === 'tool_use')
-      for (const tu of toolUses) {
-        if (tu.type === 'tool_use') {
-          toolUseSummaries.push(`${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`)
-        }
-      }
-    } else if (msg.type === 'user') {
-      const text = extractTextContent(msg)
-      if (text.length > 50) {
-        summaryParts.push(`[User]: ${text.slice(0, 150)}...`)
-      }
-    }
-  }
-
-  const summary = [
-    `[Komprimierter Chatverlauf — ${toSummarize.length} Messages summarized]`,
-    '',
-    'Summary der bisherigen Konversation:',
-    ...summaryParts.slice(0, 20),
-    '',
-    toolUseSummaries.length > 0 ? `Ausgefuehrte Tools: ${toolUseSummaries.slice(0, 15).join(', ')}` : '',
-  ].filter(Boolean).join('\n')
-
-  const summaryMessage = createSystemMessage(summary, 'compact_boundary')
-
-  return [summaryMessage, ...toKeep]
-}
-
 // ── System Prompt Builder ──────────────────────────────────────────────────
 
 /**

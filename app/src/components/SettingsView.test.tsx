@@ -31,10 +31,9 @@ function defaultInvoke(cmd: string) {
     case 'learning_list': return Promise.resolve([])
     case 'pipeline_list': return Promise.resolve([])
     case 'tool_gateway_list': return Promise.resolve([])
-    case 'session_list': return Promise.resolve([])
-    case 'session_search': return Promise.resolve([])
+    case 'chat_search': return Promise.resolve([])
     case 'insights_list': return Promise.resolve([])
-    case 'insights_summary': return Promise.resolve({ totalSessions: 0, totalEvents: 0 })
+    case 'insights_summary': return Promise.resolve({ totalChats: 0, totalRuns: 0, totalEvents: 0 })
     case 'backend_list': return Promise.resolve([])
     case 'backend_ensure_local': return Promise.resolve(null)
     case 'process_list': return Promise.resolve([])
@@ -170,11 +169,9 @@ function resetEngineStore() {
       maxTurns: 25,
       permissionMode: 'default',
       appendSystemPrompt: '',
-      sessionPersistence: true,
     },
     contextWarning: { level: 'none', estimatedTokens: 0 },
-    compactionCount: 0,
-    currentSessionId: null,
+    contextCoverage: null,
     checkOllamaStatus: checkOllamaStatusMock,
     fetchOllamaModels: fetchOllamaModelsMock,
   })
@@ -348,11 +345,11 @@ describe('SettingsView', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeInTheDocument()
   })
 
-  /* 8. Sessions & Insights category renders */
-  it('switches to Sessions & Insights', () => {
+  /* 8. Runs & Insights category renders */
+  it('switches to Runs & Insights', () => {
     renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Sessions & Insights' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Sessions & Insights' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Runs & Insights' }))
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs & Insights' })).toBeInTheDocument()
   })
 
   /* 9. Terminal & Processes category renders */

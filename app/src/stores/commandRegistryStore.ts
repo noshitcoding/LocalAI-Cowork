@@ -20,7 +20,7 @@ export type SlashCommandCategory =
   | 'model'
   | 'memory'
   | 'tools'
-  | 'session'
+  | 'chat'
   | 'config'
   | 'security'
   | 'display'
@@ -91,7 +91,7 @@ export function buildAllCommands(): SlashCommand[] {
     // ===== Core commands (single source for help, palette, and autocomplete) =====
     {
       id: 'help', command: '/help', label: 'Help', description: 'Show all available slash commands',
-      category: 'session', execute: () => {
+      category: 'chat', execute: () => {
         const commands = useCommandRegistry.getState().commands
         addCommandMessage(['Available slash commands:', ...commands.map((command) => `${command.command} - ${command.description}`)].join('\n'))
       },
@@ -467,20 +467,6 @@ export function buildAllCommands(): SlashCommand[] {
         if (power) useConfigStore.getState().setOllama({ model: power })
       },
     },
-    {
-      id: 'compact', command: '/compact', label: 'Compact context', description: 'Compacts chat context for longer sessions',
-      category: 'model', execute: () => {
-        useCoworkStore.getState().setPolicyFlag('autoCompactLongContext', true)
-        const cs = useChatStore.getState()
-        if (cs.activeThreadId) {
-          cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Context compression enabled. Older messages will be summarized.',
-            timestamp: Date.now(),
-          })
-        }
-      },
-    },
-
     // ===== Memory Commands =====
     {
       id: 'memory', command: '/memory', label: 'Memory', description: 'Manage and search memory entries',
@@ -493,7 +479,7 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'recap', command: '/recap', label: 'Summary', description: 'Summary of the current session',
+      id: 'recap', command: '/recap', label: 'Summary', description: 'Summary of the current chat',
       category: 'memory', execute: () => {
         const cs = useChatStore.getState()
         const active = cs.threads.find(t => t.id === cs.activeThreadId)
@@ -502,17 +488,17 @@ export function buildAllCommands(): SlashCommand[] {
           const assistantMsgs = active.messages.filter(m => m.role === 'assistant')
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
-            content: `Session-Recap:\n- ${userMsgs.length} Benutzer-messages\n- ${assistantMsgs.length} answers\n- Thread: "${active.title}"\n- Started: ${new Date(active.createdAt).toLocaleString('de-DE')}`,
+            content: `Chat recap:\n- ${userMsgs.length} user messages\n- ${assistantMsgs.length} answers\n- Chat: "${active.title}"\n- Started: ${new Date(active.createdAt).toLocaleString('de-DE')}`,
             timestamp: Date.now(),
           })
         }
       },
     },
 
-    // ===== Session Commands =====
+    // ===== Chat Commands =====
     {
       id: 'clear', command: '/clear', label: 'Clear chat', description: 'Reset current chat history',
-      category: 'session', execute: () => {
+      category: 'chat', execute: () => {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.deleteThread(cs.activeThreadId)
@@ -521,8 +507,8 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'resume', command: '/resume', label: 'Resume', description: 'Resume latest session',
-      category: 'session', execute: () => {
+      id: 'resume', command: '/resume', label: 'Resume', description: 'Resume latest chat',
+      category: 'chat', execute: () => {
         const cs = useChatStore.getState()
         const latest = cs.threads.sort((a, b) => b.updatedAt - a.updatedAt)[0]
         if (latest) cs.setActiveThread(latest.id)
@@ -530,7 +516,7 @@ export function buildAllCommands(): SlashCommand[] {
     },
     {
       id: 'rewind', command: '/rewind', label: 'Rewind', description: 'Remove the latest N messages',
-      category: 'session', execute: (args) => {
+      category: 'chat', execute: (args) => {
         const count = Number.parseInt(args ?? '1', 10) || 1
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
@@ -546,8 +532,8 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'exit', command: '/exit', label: 'Exit', description: 'End current session',
-      category: 'session', execute: () => {
+      id: 'exit', command: '/exit', label: 'Exit', description: 'Close the current chat',
+      category: 'chat', execute: () => {
         useChatStore.getState().setActiveThread(null)
       },
     },
@@ -635,7 +621,7 @@ export function buildAllCommands(): SlashCommand[] {
         if (cs.activeThreadId && summary) {
           cs.addMessage(cs.activeThreadId, {
             role: 'system',
-            content: `Statistics:\n- Events: ${summary.totalEvents}\n- Sessions: ${summary.totalSessions}\n- messages: ${summary.totalMessagesSent}\n- Token (est.): ${summary.totalTokensEst}\n- Skills: ${summary.skillUsageCount}\n- Memory: ${summary.memoryEntryCount}`,
+            content: `Statistics:\n- Events: ${summary.totalEvents}\n- Chats: ${summary.totalChats}\n- Runs: ${summary.totalRuns}\n- Messages: ${summary.totalMessagesSent}\n- Token (est.): ${summary.totalTokensEst}\n- Skills: ${summary.skillUsageCount}\n- Memory: ${summary.memoryEntryCount}`,
             timestamp: Date.now(),
           })
         }
@@ -649,7 +635,7 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'cost', command: '/cost', label: 'Costs', description: 'Estimated costs of the current session',
+      id: 'cost', command: '/cost', label: 'Costs', description: 'Estimated costs of the current run',
       category: 'debug', execute: async () => {
         const summary = useInsightsStore.getState().summary
           ?? (await useInsightsStore.getState().loadSummary(), useInsightsStore.getState().summary)
@@ -835,10 +821,10 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
 
-    // ===== Session Management =====
+    // ===== Chat Management =====
     {
       id: 'schedule', command: '/schedule', label: 'Schedule', description: 'Schedule a task',
-      category: 'session', execute: async (args) => {
+      category: 'chat', execute: async (args) => {
         if (args?.trim()) {
           const parsed = parseScheduledTaskInput(args)
           if (!parsed) return
@@ -867,7 +853,12 @@ export function buildAllCommands(): SlashCommand[] {
       category: 'agent', execute: (args) => {
         if (!args?.trim()) return
         useMemoryStore.getState().upsertEntry({
-          id: uid(), scope: 'session', category: 'context', key: 'btw', content: args.trim(),
+          id: uid(),
+          scope: 'chat',
+          scopeRef: useChatStore.getState().activeThreadId,
+          category: 'context',
+          key: 'btw',
+          content: args.trim(),
         })
       },
     },
@@ -879,7 +870,7 @@ export function buildAllCommands(): SlashCommand[] {
     },
     {
       id: 'feedback', command: '/feedback', label: 'Feedback', description: 'Give feedback on the current answer',
-      category: 'session', execute: (args) => {
+      category: 'chat', execute: (args) => {
         void safeInvokeVoid('audit_event', {
           area: 'feedback', action: 'user_feedback', details: args ?? 'No comment',
         })
@@ -959,7 +950,7 @@ export function buildAllCommands(): SlashCommand[] {
         const cs = useChatStore.getState()
         if (cs.activeThreadId) {
           cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'LocalAI Cowork v1.0\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Hermes-style memory and session search\n- Plugin and MCP integration',
+            role: 'system', content: 'LocalAI Cowork v1.0\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI multi-agent support\n- Hermes-style memory and chat search\n- Plugin and MCP integration',
             timestamp: Date.now(),
           })
         }

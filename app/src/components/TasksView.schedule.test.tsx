@@ -128,7 +128,7 @@ describe('TasksView scheduling', () => {
 
     expect(await screen.findByDisplayValue('daily 09:00')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('checkbox', { name: /Active/ }))
 
     await waitFor(() => {
       expect(upsertScheduledTask).toHaveBeenCalledWith(expect.objectContaining({

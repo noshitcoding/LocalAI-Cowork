@@ -101,7 +101,6 @@ export type CoworkPolicyFlags = {
   allowWebFetch: boolean
   allowWebSearch: boolean
   allowFileReadExtraction: boolean
-  autoCompactLongContext: boolean
 }
 
 type PolicySyncRequest = {
@@ -252,7 +251,6 @@ const DEFAULT_POLICY_FLAGS: CoworkPolicyFlags = {
   allowWebFetch: true,
   allowWebSearch: true,
   allowFileReadExtraction: true,
-  autoCompactLongContext: true,
 }
 
 let policySyncReady = false
@@ -420,7 +418,6 @@ async function flushQueuedPolicySync(): Promise<void> {
 
   const request = queuedPolicySync
   const requestKey = queuedPolicySyncKey
-  let queuedDuringFlightKey: string | null = null
   queuedPolicySync = null
   queuedPolicySyncKey = null
   policySyncInFlight = true
@@ -435,7 +432,7 @@ async function flushQueuedPolicySync(): Promise<void> {
     }
     console.error('Failed to sync cowork policy to backend', error)
   } finally {
-    queuedDuringFlightKey = queuedPolicySyncKey
+    const queuedDuringFlightKey = queuedPolicySyncKey
     policySyncInFlight = false
     if (
       queuedDuringFlightKey &&

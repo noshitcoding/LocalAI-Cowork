@@ -37,7 +37,6 @@ import InsightsPanel from './InsightsPanel'
 import ProcessPanel from './ProcessPanel'
 import TerminalPanel from './TerminalPanel'
 import PersonalitySelector from './PersonalitySelector'
-import SessionSearchPanel from './SessionSearchPanel'
 import PipelinePanel from './PipelinePanel'
 import ConnectorPanel from './ConnectorPanel'
 import McpView from './McpView'
@@ -299,7 +298,7 @@ const CATEGORIES = [
   { key: 'ai', label: 'AI & model', description: 'Configure multiple LLM profiles, global provider defaults, and personalities', keywords: ['API key needed', 'Endpoint', 'Model', 'Streaming', 'Manage personalities'], icon: Bot },
   { key: 'agent', label: 'Agent & Skills', description: 'Control agent behavior, manage skills, and configure pipelines', keywords: ['Agent behavior', 'Permission mode', 'System prompts', 'Crew configuration', 'Skills'], icon: Zap },
   { key: 'memory', label: 'Memory', description: 'Manage agent memory, profile, provider, and notes', keywords: ['Knowledge import'], icon: Brain },
-  { key: 'sessions', label: 'Sessions & Insights', description: 'Search past sessions and review usage statistics', keywords: ['Insights dashboard'], icon: FolderOpen },
+  { key: 'runs', label: 'Runs & Insights', description: 'Review chat runs and usage statistics', keywords: ['Insights dashboard'], icon: FolderOpen },
   { key: 'terminal', label: 'Terminal & Processes', description: 'Configure terminal backends and managed processes', keywords: ['Terminal backends'], icon: SquareTerminal },
   { key: 'mcp', label: 'MCP Server', description: 'Manage and test Model Context Protocol servers', keywords: ['MCP Settings', 'Manual JSON import'], icon: PlugZap },
   { key: 'ui', label: 'Interface', description: 'Customize display, notifications, and audio feedback', keywords: ['Appearance', 'Desktop notifications', 'Font size (%)', 'Focus mode', 'Compact mode'], icon: Palette },
@@ -410,7 +409,7 @@ export default function SettingsView() {
     const currentIndex = visibleCategories.findIndex((item) => item.key === category)
     if (currentIndex < 0 || !visibleCategories.length) return
 
-    let nextIndex = currentIndex
+    let nextIndex: number
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % visibleCategories.length
     else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + visibleCategories.length) % visibleCategories.length
     else if (event.key === 'Home') nextIndex = 0
@@ -528,15 +527,10 @@ export default function SettingsView() {
               <div className="grid">
                 <label>{tr("Max turns per request")}<input type="number" min={1} max={100} value={engineConfig.maxTurns} onChange={(e) => setEngineConfig({ maxTurns: Number(e.target.value) })} />
                 </label>
-                <label>{tr("Session Persistence")}<select value={engineConfig.sessionPersistence ? 'enabled' : 'disabled'} onChange={(e) => setEngineConfig({ sessionPersistence: e.target.value === 'enabled' })}>
-                    <option value="enabled">{tr("Enabled")}</option>
-                    <option value="disabled">{tr("Disabled")}</option>
-                  </select>
-                </label>
                 <label>{tr("Permission mode")}<select value={engineConfig.permissionMode} onChange={(e) => setEngineConfig({ permissionMode: e.target.value as 'default' | 'plan' | 'bypass' | 'strict' })}>
                     <option value="default">{tr("Standard")}</option>
                     <option value="plan">{tr("Plan-Mode")}</option>
-                    <option value="bypass">{tr("Bypass (allow everything)")}</option>
+                    <option value="bypass">{tr("Bypass (skip approvals)")}</option>
                     <option value="strict">{tr("Strict (ask everything)")}</option>
                   </select>
                 </label>
@@ -594,11 +588,10 @@ export default function SettingsView() {
           </div>
         )}
 
-        {/* Sessions and insights */}
-        {activeCategoryMatchesSearch && activeCategory === 'sessions' && (
-          <div className="settings-view" {...getPanelProps('sessions')}>
-            <SettingsPageHeader category="sessions" />
-            <SessionSearchPanel />
+        {/* Runs and insights */}
+        {activeCategoryMatchesSearch && activeCategory === 'runs' && (
+          <div className="settings-view" {...getPanelProps('runs')}>
+            <SettingsPageHeader category="runs" />
             <InsightsPanel />
             <RunPanel />
           </div>

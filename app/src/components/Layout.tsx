@@ -6,6 +6,8 @@ import {
   Blocks,
   Command,
   FolderKanban,
+  Globe2,
+  GitPullRequest,
   ListTodo,
   Menu,
   MessagesSquare,
@@ -36,6 +38,8 @@ const PRODUCT_ROUTE_ICONS = {
   crew: UsersRound,
   projects: FolderKanban,
   features: Blocks,
+  browser: Globe2,
+  github: GitPullRequest,
   settings: Settings2,
 } as const
 
@@ -56,7 +60,9 @@ export default function Layout() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
-  const settingsFocused = location.pathname === getProductRouteById('settings').path
+  const focusedRoute = ['settings', 'browser', 'github'].some(
+    (routeId) => location.pathname === getProductRouteById(routeId as 'settings' | 'browser' | 'github').path,
+  )
   
   const {
     leftSidebarOpen,
@@ -83,7 +89,7 @@ export default function Layout() {
   const [compactSidebarOpen, setCompactSidebarOpen] = useState(false)
   const resolvedLeftSidebarWidth = clampLeftSidebarWidth(leftSidebarWidth)
   const resolvedLeftSidebarOpen = compactSidebar ? compactSidebarOpen : leftSidebarOpen
-  const workspaceSidebarVisible = resolvedLeftSidebarOpen && !focusMode && !settingsFocused
+  const workspaceSidebarVisible = resolvedLeftSidebarOpen && !focusMode && !focusedRoute
   const leftSidebarFrameStyle = {
     '--left-sidebar-width': `${resolvedLeftSidebarWidth}px`,
   } as CSSProperties
@@ -96,13 +102,13 @@ export default function Layout() {
   }, [navigate, setActiveMode])
 
   const handleToggleLeftSidebar = useCallback(() => {
-    if (settingsFocused) return
+    if (focusedRoute) return
     if (compactSidebar) {
       setCompactSidebarOpen((open) => !open)
       return
     }
     toggleLeftSidebar()
-  }, [compactSidebar, settingsFocused, toggleLeftSidebar])
+  }, [compactSidebar, focusedRoute, toggleLeftSidebar])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return undefined
@@ -236,7 +242,7 @@ export default function Layout() {
     <div className="app-shell" data-doc-id="element:/app/shell">
       <div className="top-bar">
         <div className="top-bar-brand">
-          {settingsFocused ? (
+          {focusedRoute ? (
             <button
               type="button"
               className="top-icon-button"
@@ -304,7 +310,7 @@ export default function Layout() {
       </div>
 
       <div className="app-body">
-        {compactSidebar && compactSidebarOpen && !focusMode && !settingsFocused && (
+        {compactSidebar && compactSidebarOpen && !focusMode && !focusedRoute && (
           <button
             type="button"
             className="sidebar-backdrop"

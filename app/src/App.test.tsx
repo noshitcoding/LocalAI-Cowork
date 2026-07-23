@@ -85,6 +85,20 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Tools and knowledge' })).toBeInTheDocument()
   })
 
+  it('loads the developer browser URL', async () => {
+    window.history.pushState({}, '', '/browser')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Preview, inspect, annotate, verify' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'CDP' })).toBeInTheDocument()
+  })
+
+  it('loads the GitHub workbench URL', async () => {
+    window.history.pushState({}, '', '/github')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Changes, pull requests, reviews' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Choose repository' })).toBeInTheDocument()
+  })
+
   it('loads the tasks page without crashing', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('link', { name: 'Tasks' }, { timeout: 10_000 }))

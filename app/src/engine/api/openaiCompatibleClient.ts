@@ -248,6 +248,53 @@ function requestMessagesContainImages(messages: OpenAiCompatibleRequestMessage[]
   return messages.some((message) => message.role === 'user' && userContentHasImageParts(message.content))
 }
 
+function countImageParts(messages: OpenAiCompatibleRequestMessage[]): number {
+  return messages.reduce((count, message) => {
+    if (message.role !== 'user' || !Array.isArray(message.content)) return count
+    return count + message.content.filter((part) => part.type === 'image_url').length
+  }, 0)
+}
+
+function getPromptImageLimit(error: unknown): number | null {
+  if (!(error instanceof Error)) return null
+
+  const failure = error as RequestFailure
+  const normalized = `${error.message}\n${failure.bodyText ?? ''}`
+  const match = normalized.match(/at most\s+(\d+)\s+image\(s\)\s+may be provided in (?:one|the) prompt/i)
+    ?? normalized.match(/maximum (?:of )?(\d+)\s+images? (?:are )?allowed/i)
+  if (!match) return null
+
+  const limit = Number.parseInt(match[1], 10)
+  return Number.isFinite(limit) && limit >= 0 ? limit : null
+}
+
+function limitImagePartsInMessages(
+  messages: OpenAiCompatibleRequestMessage[],
+  maxImages: number,
+): OpenAiCompatibleRequestMessage[] {
+  let imagesToRemove = Math.max(0, countImageParts(messages) - maxImages)
+  if (imagesToRemove === 0) return messages
+
+  const limited: OpenAiCompatibleRequestMessage[] = []
+  for (const message of messages) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) {
+      limited.push(message)
+      continue
+    }
+
+    const content = message.content.filter((part) => {
+      if (part.type !== 'image_url' || imagesToRemove === 0) return true
+      imagesToRemove -= 1
+      return false
+    })
+    if (content.length > 0) {
+      limited.push({ role: 'user', content })
+    }
+  }
+
+  return limited
+}
+
 function stripImagesFromUserContent(content: string | OpenAiCompatibleContentPart[]): string | OpenAiCompatibleContentPart[] | null {
   if (typeof content === 'string') return content
 
@@ -701,7 +748,15 @@ export async function* streamOpenAiCompatibleMessages(
     try {
       payload = await executeRequest(requestMessages, requestModel)
     } catch (error) {
-      if (
+      const promptImageLimit = getPromptImageLimit(error)
+      if (promptImageLimit !== null && countImageParts(requestMessages) > promptImageLimit) {
+        requestMessages = limitImagePartsInMessages(requestMessages, promptImageLimit)
+        try {
+          payload = await executeRequest(requestMessages, requestModel)
+        } catch (retryError) {
+          payload = await retryWithModelSuggestion(retryError, requestMessages)
+        }
+      } else if (
         config.provider === 'openrouter'
         && requestMessagesContainImages(requestMessages)
         && isUnsupportedOpenRouterImageInputError(error)

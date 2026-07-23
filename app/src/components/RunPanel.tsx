@@ -13,7 +13,6 @@ type EngineRunRow = {
   id: string
   parentRunId: string | null
   threadId: string | null
-  sessionId: string | null
   title: string
   inputSummary: string | null
   source: string
@@ -104,7 +103,6 @@ const normalizeRun = (value: unknown): EngineRunRow | null => {
     id,
     parentRunId: asNullableString(row.parentRunId ?? row.parent_run_id),
     threadId: asNullableString(row.threadId ?? row.thread_id),
-    sessionId: asNullableString(row.sessionId ?? row.session_id),
     title: asString(row.title, 'Untitleder Run'),
     inputSummary: asNullableString(row.inputSummary ?? row.input_summary),
     source: asString(row.source, 'desktop'),

@@ -27,7 +27,6 @@ describe('RunPanel', () => {
           {
             id: 'run-1',
             parent_run_id: null,
-            session_id: 'session-1',
             title: 'Plan migration',
             input_summary: 'Summarized input',
             status: 'running',

@@ -78,7 +78,7 @@ describe('memorySystem IPC contracts', () => {
     const candidates = await captureAutomaticMemoryDraft(
       'C:/workspace',
       'Merke dir: Das Projekt nutzt SQLite fuer die lokale Langzeit-Memory.',
-      'session-1',
+      'run-1',
     )
 
     expect(candidates).toEqual([
@@ -89,7 +89,7 @@ describe('memorySystem IPC contracts', () => {
       expect.objectContaining({
         scope: 'shared',
         category: 'draft_knowledge',
-        sourceSessionId: 'session-1',
+        sourceRunId: 'run-1',
       }),
     )
     expect(invokeMock).toHaveBeenCalledWith(
@@ -111,7 +111,7 @@ describe('memorySystem IPC contracts', () => {
 
     const result = await buildSystemPromptWithMemory('C:/workspace', 'BASE PROMPT', {
       frozenSnapshot: {
-        sessionId: 'session-1',
+        threadId: 'thread-1',
         agentEntries: [{
           id: 'a1', scope: 'agent', category: 'curated', key: 'stack', content: 'The project uses Rust.', confidence: 1,
         }],

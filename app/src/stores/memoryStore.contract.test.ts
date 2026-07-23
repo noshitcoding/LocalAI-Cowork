@@ -15,7 +15,8 @@ const entry: MemoryEntry = {
   category: 'curated',
   key: 'stack',
   content: 'The project uses Rust.',
-  source_session_id: null,
+  scope_ref: null,
+  source_run_id: null,
   confidence: 1,
   access_count: 0,
   last_accessed_at: '2026-07-16T10:00:00Z',
@@ -39,7 +40,7 @@ describe('memory store backend contracts', () => {
 
   it('maps the backend frozen snapshot object into the UI snapshot shape', async () => {
     safeInvokeMock.mockResolvedValue({
-      sessionId: 'snapshot-1',
+      threadId: 'thread-1',
       agentEntries: [entry],
       sharedEntries: [{ ...entry, id: 'shared-1', scope: 'shared', category: 'knowledge' }],
       userProfile: [{
@@ -74,6 +75,7 @@ describe('memory store backend contracts', () => {
 
     expect(safeInvokeMock).toHaveBeenCalledWith('memory_search', {
       scope: null,
+      scopeRef: null,
       category: null,
       keyword: null,
       limit: 200,

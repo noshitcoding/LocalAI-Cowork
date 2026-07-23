@@ -44,7 +44,7 @@ export default function InsightsPanel() {
   const recentSummaryEvents = summary?.recentEvents ?? []
   const topCategories = summary?.topCategories ?? []
   const totalTokensEst = summary?.totalTokensEst ?? 0
-  const avgSessionDurationMin = summary?.avgSessionDurationMin ?? 0
+  const avgRunDurationMin = summary?.avgRunDurationMin ?? 0
 
   return (
     <div className="panel insights-panel">
@@ -57,7 +57,8 @@ export default function InsightsPanel() {
       {summary && (
         <>
           <div className="insights-metric-grid">
-            <MetricCard value={summary.totalSessions} label={tr("Sessions")} tone="accent" />
+            <MetricCard value={summary.totalChats} label={tr("Chats")} tone="accent" />
+            <MetricCard value={summary.totalRuns} label={tr("Runs")} tone="info" />
             <MetricCard value={summary.skillUsageCount} label={tr("Skill uses")} tone="info" />
             <MetricCard value={summary.memoryEntryCount} label={tr("Memory")} tone="success" />
             <MetricCard value={summary.totalEvents} label={tr("Events")} tone="warning" />
@@ -66,7 +67,7 @@ export default function InsightsPanel() {
           <div className="insights-metric-grid insights-metric-grid-compact">
             <MetricCard value={summary.totalMessagesSent} label={tr("Messages")} compact />
             <MetricCard value={totalTokensEst.toLocaleString(locale)} label={tr("Tokens (est.)")} compact />
-            <MetricCard value={`${avgSessionDurationMin.toFixed(1)}${tr("min")}`} label={tr("Avg. duration")} compact />
+            <MetricCard value={`${avgRunDurationMin.toFixed(1)}${tr("min")}`} label={tr("Avg. run duration")} compact />
           </div>
 
           {recentSummaryEvents.length > 0 && (

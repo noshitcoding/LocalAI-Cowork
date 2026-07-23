@@ -5,7 +5,7 @@ use crate::context::RequestContext;
 use crate::sensitive_data::{diagnostic_label, redact_and_bound_json_text, MAX_AUDIT_EVENT_BYTES};
 use crate::service_error::ServiceResult;
 use chrono::Utc;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;

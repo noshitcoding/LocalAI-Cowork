@@ -146,8 +146,8 @@ export type ToolUseContext = {
   memoryContent?: string
   /** Current engine run ID */
   runId?: string
-  /** Current session ID */
-  sessionId?: string
+  /** Chat that owns the current run */
+  threadId?: string
   /** Agent ID (for sub-agents) */
   agentId?: string
   /** Worker sandbox ID for isolated child runs */
@@ -238,7 +238,7 @@ export function getEmptyToolPermissionContext(): ToolPermissionContext {
 
 export type AppState = {
   cwd: string
-  sessionId: string
+  threadId: string | null
   turnCount: number
   totalTokens: { input: number; output: number }
   totalCostUsd: number
@@ -251,7 +251,7 @@ export type AppState = {
 export function createInitialAppState(cwd: string): AppState {
   return {
     cwd,
-    sessionId: crypto.randomUUID(),
+    threadId: null,
     turnCount: 0,
     totalTokens: { input: 0, output: 0 },
     totalCostUsd: 0,
@@ -276,7 +276,7 @@ export type Command = {
 }
 
 export type CommandCategory =
-  | 'session'
+  | 'chat'
   | 'config'
   | 'code'
   | 'git'

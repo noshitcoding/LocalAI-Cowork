@@ -41,6 +41,38 @@ const baseTask: WorkTask = {
 }
 
 describe('task panels', () => {
+  it('disables project context creation when no project exists', () => {
+    render(
+      <TaskCreatePanel
+        crews={[]}
+        projects={[]}
+        defaultModel="qwen3"
+        open
+        title=""
+        prompt="Draft a task"
+        expectedOutput=""
+        workDir=""
+        runner="model"
+        crewId=""
+        model=""
+        canCreateTask
+        onOpenChange={vi.fn()}
+        onTitleChange={vi.fn()}
+        onPromptChange={vi.fn()}
+        onExpectedOutputChange={vi.fn()}
+        onWorkDirChange={vi.fn()}
+        onRunnerChange={vi.fn()}
+        onCrewIdChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onPickWorkDir={vi.fn()}
+        onCreateTask={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('checkbox', { name: /Use project context/ })).toBeDisabled()
+    expect(screen.getByText('Create a project first to use project context.')).toBeInTheDocument()
+  })
+
   it('points empty crew setup to the Crew workspace, not Settings', () => {
     render(
       <TaskCreatePanel

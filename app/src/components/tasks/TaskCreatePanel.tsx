@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { ChevronDown, FolderOpen, Plus, SlidersHorizontal, Sparkles } from 'lucide-react'
 import type { Crew } from '../../stores/crewStore'
+import type { Project } from '../../stores/projectStore'
 import type { WorkTaskRunner } from '../../stores/workTasksStore'
 import { tr } from '../../i18n'
 import { isAbsolutePath } from '../../engine/tasks/workTaskExecutionService'
 
 type TaskCreatePanelProps = {
   crews: Crew[]
+  projects?: Project[]
   defaultModel: string
   open: boolean
   title: string
@@ -16,6 +18,8 @@ type TaskCreatePanelProps = {
   runner: WorkTaskRunner
   crewId: string
   model: string
+  useProjectContext?: boolean
+  projectId?: string
   canCreateTask: boolean
   onOpenChange: (open: boolean) => void
   onTitleChange: (value: string) => void
@@ -25,12 +29,15 @@ type TaskCreatePanelProps = {
   onRunnerChange: (runner: WorkTaskRunner) => void
   onCrewIdChange: (crewId: string) => void
   onModelChange: (model: string) => void
+  onUseProjectContextChange?: (enabled: boolean) => void
+  onProjectIdChange?: (projectId: string) => void
   onPickWorkDir: () => void
   onCreateTask: () => void
 }
 
 export default function TaskCreatePanel({
   crews,
+  projects = [],
   defaultModel,
   open,
   title,
@@ -40,6 +47,8 @@ export default function TaskCreatePanel({
   runner,
   crewId,
   model,
+  useProjectContext = false,
+  projectId = '',
   canCreateTask,
   onOpenChange,
   onTitleChange,
@@ -49,6 +58,8 @@ export default function TaskCreatePanel({
   onRunnerChange,
   onCrewIdChange,
   onModelChange,
+  onUseProjectContextChange = () => {},
+  onProjectIdChange = () => {},
   onPickWorkDir,
   onCreateTask,
 }: TaskCreatePanelProps) {
@@ -111,6 +122,34 @@ export default function TaskCreatePanel({
             <label className="task-field-full">
               {tr('Task')}
               <textarea className="ui-field" value={prompt} onChange={(e) => onPromptChange(e.target.value)} rows={3} placeholder={tr('What should the task do?')} />
+            </label>
+            <label className="task-field-full">
+              <span>{tr('Project context')}</span>
+              <span className="task-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={useProjectContext}
+                  disabled={projects.length === 0}
+                  onChange={(event) => onUseProjectContextChange(event.target.checked)}
+                  data-doc-id="button:/tasks/task-create-panel/project-context"
+                />
+                <span>{tr('Use project context')}</span>
+              </span>
+              {useProjectContext && projects.length > 0 ? (
+                <select
+                  className="ui-field"
+                  aria-label={tr('Project')}
+                  value={projectId}
+                  onChange={(event) => onProjectIdChange(event.target.value)}
+                >
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>{project.title}</option>
+                  ))}
+                </select>
+              ) : null}
+              {projects.length === 0 ? (
+                <span className="hint-text">{tr('Create a project first to use project context.')}</span>
+              ) : null}
             </label>
           </div>
           <button

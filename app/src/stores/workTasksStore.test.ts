@@ -90,6 +90,22 @@ describe('workTasksStore', () => {
     expect(safeInvokeVoidMock).toHaveBeenCalledWith('work_task_delete', { id })
   })
 
+  it('keeps a task running during an active in-memory execution', () => {
+    hasTauriRuntimeMock.mockReturnValue(true)
+    const id = useWorkTasksStore.getState().addTask({
+      title: 'Running report',
+      prompt: 'Summarize',
+      runner: 'model',
+    })
+
+    useWorkTasksStore.getState().updateTask(id, { status: 'running' })
+
+    expect(useWorkTasksStore.getState().tasks[0].status).toBe('running')
+    expect(safeInvokeVoidMock).toHaveBeenLastCalledWith('work_task_upsert', {
+      request: expect.objectContaining({ id, status: 'running' }),
+    })
+  })
+
   it('persists empty prompt edits so SQLite does not keep stale task text', () => {
     hasTauriRuntimeMock.mockReturnValue(true)
 

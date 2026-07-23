@@ -11,7 +11,8 @@ pub struct InsightsEventRequest {
     pub category: String,
     pub value_num: Option<f64>,
     pub value_text: Option<String>,
-    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub thread_id: Option<String>,
     pub metadata_json: Option<String>,
 }
 
@@ -28,10 +29,11 @@ pub struct InsightsQueryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct InsightsSummary {
     pub total_events: i64,
-    pub total_sessions: i64,
+    pub total_chats: i64,
+    pub total_runs: i64,
     pub total_messages_sent: i64,
     pub total_tokens_est: i64,
-    pub avg_session_duration_min: f64,
+    pub avg_run_duration_min: f64,
     pub top_categories: Vec<CategoryCount>,
     pub recent_events: Vec<EventSummary>,
     pub skill_usage_count: i64,
@@ -65,7 +67,8 @@ pub fn record_event(db: &Arc<Database>, req: &InsightsEventRequest) -> Result<St
         &req.category,
         req.value_num,
         req.value_text.as_deref(),
-        req.session_id.as_deref(),
+        req.run_id.as_deref(),
+        req.thread_id.as_deref(),
         req.metadata_json.as_deref(),
     )
     .map_err(|e| e.to_string())?;
@@ -90,7 +93,7 @@ pub fn build_summary(db: &Arc<Database>) -> Result<InsightsSummary, String> {
         .into_iter()
         .map(|(category, count)| CategoryCount { category, count })
         .collect();
-    top_categories.sort_by(|a, b| b.count.cmp(&a.count));
+    top_categories.sort_by_key(|category| std::cmp::Reverse(category.count));
     top_categories.truncate(10);
 
     // Recent events
@@ -105,19 +108,29 @@ pub fn build_summary(db: &Arc<Database>) -> Result<InsightsSummary, String> {
         })
         .collect();
 
-    // Session stats
-    let sessions = db.list_sessions(1000).map_err(|e| e.to_string())?;
-    let total_sessions = sessions.len() as i64;
-    let total_messages_sent: i64 = sessions.iter().map(|s| s.total_messages as i64).sum();
-    let total_tokens_est: i64 = sessions.iter().map(|s| s.total_tokens_est).sum();
+    let chats = db.list_threads().map_err(|e| e.to_string())?;
+    let total_chats = chats.len() as i64;
+    let total_messages_sent = chats
+        .iter()
+        .map(|thread| {
+            db.list_messages(&thread.0)
+                .map(|messages| messages.len() as i64)
+                .unwrap_or(0)
+        })
+        .sum();
+    let runs = db
+        .list_engine_runs(10_000, None)
+        .map_err(|e| e.to_string())?;
+    let total_runs = runs.len() as i64;
+    let total_tokens_est = runs.iter().map(|run| run.total_tokens_est).sum();
 
-    // Average session duration
-    let avg_session_duration_min = if !sessions.is_empty() {
-        let durations: Vec<f64> = sessions
+    let avg_run_duration_min = if !runs.is_empty() {
+        let durations: Vec<f64> = runs
             .iter()
-            .filter_map(|s| {
-                let start = chrono::DateTime::parse_from_rfc3339(&s.started_at).ok()?;
-                let end = chrono::DateTime::parse_from_rfc3339(s.ended_at.as_deref()?).ok()?;
+            .filter_map(|run| {
+                let start =
+                    chrono::DateTime::parse_from_rfc3339(run.started_at.as_deref()?).ok()?;
+                let end = chrono::DateTime::parse_from_rfc3339(run.ended_at.as_deref()?).ok()?;
                 Some((end - start).num_seconds() as f64 / 60.0)
             })
             .collect();
@@ -141,10 +154,11 @@ pub fn build_summary(db: &Arc<Database>) -> Result<InsightsSummary, String> {
 
     Ok(InsightsSummary {
         total_events,
-        total_sessions,
+        total_chats,
+        total_runs,
         total_messages_sent,
         total_tokens_est,
-        avg_session_duration_min,
+        avg_run_duration_min,
         top_categories,
         recent_events,
         skill_usage_count,

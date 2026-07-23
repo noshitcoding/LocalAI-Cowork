@@ -4,6 +4,7 @@ import { ChevronDown } from 'lucide-react'
 import { checkOllamaConnection, listOllamaModels } from '../engine/api/ollamaClient'
 import { useConfigStore, type LlmProfile, type LlmProviderKind } from '../stores/configStore'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
+import { resolveProviderModelFromCatalog } from '../utils/providerModels'
 import { tr } from '../i18n'
 import SecureCredentialInput from './SecureCredentialInput'
 
@@ -71,27 +72,8 @@ function supportsApiKey(provider: LlmProviderKind): boolean {
   return provider !== 'ollama'
 }
 
-function modelSuffix(model: string): string {
-  return model.trim().split('/').filter(Boolean).at(-1) ?? model.trim()
-}
-
 function resolveLoadedModel(currentModel: string, models: string[]): string {
-  const current = currentModel.trim()
-  const normalizedModels = models.map((model) => model.trim()).filter(Boolean)
-  if (normalizedModels.length === 0) return current
-  if (!current) return normalizedModels.length === 1 ? normalizedModels[0] : ''
-
-  const exact = normalizedModels.find((model) => model === current)
-  if (exact) return exact
-
-  const lowerCurrent = current.toLowerCase()
-  const caseInsensitive = normalizedModels.find((model) => model.toLowerCase() === lowerCurrent)
-  if (caseInsensitive) return caseInsensitive
-
-  const suffixMatch = normalizedModels.find((model) => modelSuffix(model).toLowerCase() === lowerCurrent)
-  if (suffixMatch) return suffixMatch
-
-  return normalizedModels.length === 1 ? normalizedModels[0] : current
+  return resolveProviderModelFromCatalog(currentModel, models)
 }
 
 export default function LlmProfilesPanel() {
@@ -570,17 +552,15 @@ export default function LlmProfilesPanel() {
                             onChange={(event) => updateLlmProfile(profile.id, { timeoutMs: parseNumericInput(event.target.value, profile.timeoutMs) })}
                           />
                         </label>
-                        {profile.provider === 'ollama' && (
-                          <label>{tr("Context Window")}<input
+                        <label>{tr("Context Window")}<input
                               type="number"
                               min={512}
-                              max={262144}
+                              max={2000000}
                               step={512}
                               value={profile.contextWindow ?? 128000}
                               onChange={(event) => updateLlmProfile(profile.id, { contextWindow: parseNumericInput(event.target.value, profile.contextWindow ?? 128000) })}
                             />
                           </label>
-                        )}
                         {profile.provider === 'ollama' && (
                           <label>{tr("Temperature")}<input
                               type="number"

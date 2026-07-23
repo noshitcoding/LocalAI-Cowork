@@ -78,7 +78,7 @@ export class AgentCoordinator {
       request: {
         id: childRunId,
         parentRunId: this.baseConfig.runId,
-        sessionId: this.baseConfig.sessionId,
+        threadId: this.baseConfig.threadId,
         title: definition.name,
         inputSummary: task.slice(0, 1000),
         status: 'running',
@@ -99,7 +99,7 @@ export class AgentCoordinator {
       ? parentMessages.slice(-5)
       : []
 
-    let sandboxWorkspace = this.baseConfig.cwd
+    let sandboxWorkspace: string
     try {
       const sandbox = await safeInvoke<{ id: string; workspaceRoot: string }>('worker_sandbox_create', {
         request: {
@@ -158,7 +158,7 @@ export class AgentCoordinator {
       maxTurns: definition.maxTurns ?? 10,
       maxBudgetUsd: definition.budget?.totalUsd ?? this.baseConfig.maxBudgetUsd,
       runId: childRunId,
-      sessionId: this.baseConfig.sessionId,
+      threadId: this.baseConfig.threadId,
       sandboxId,
     }
 
@@ -459,7 +459,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Researcher',
     description: 'Specialized in research and analysis.',
     type: 'research',
-    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'SessionSearch'],
+    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'ChatSearch'],
     maxTurns: 10,
   },
   {
@@ -475,7 +475,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Planner',
     description: 'Specialized in project planning and task decomposition.',
     type: 'planning',
-    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'SessionSearch'],
+    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'ChatSearch'],
     maxTurns: 5,
   },
 ]

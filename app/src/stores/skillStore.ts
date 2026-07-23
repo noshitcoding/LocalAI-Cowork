@@ -28,7 +28,8 @@ export type SkillAutoGenResult = {
 
 export type LearningOutcome = {
   id: string
-  session_id: string | null
+  run_id: string | null
+  thread_id: string | null
   task_id: string | null
   outcome_type: string
   description: string
@@ -78,7 +79,7 @@ type SkillState = {
 
   loadLearnings: (limit?: number) => Promise<void>
   addLearning: (l: {
-    sessionId?: string; taskId?: string; outcomeType: string; description: string
+    runId?: string; threadId?: string; taskId?: string; outcomeType: string; description: string
     learnedPattern?: string; confidence?: number
   }) => Promise<void>
 }
@@ -212,7 +213,8 @@ export const useSkillStore = create<SkillState>()((set) => ({
     try {
       await safeInvoke('learning_upsert', {
         id,
-        sessionId: l.sessionId ?? null,
+        runId: l.runId ?? null,
+        threadId: l.threadId ?? null,
         taskId: l.taskId ?? null,
         outcomeType: l.outcomeType,
         description: l.description,
@@ -224,7 +226,8 @@ export const useSkillStore = create<SkillState>()((set) => ({
       const local = getLocalLearnings()
       local.unshift({
         id,
-        session_id: l.sessionId ?? null,
+        run_id: l.runId ?? null,
+        thread_id: l.threadId ?? null,
         task_id: l.taskId ?? null,
         outcome_type: l.outcomeType,
         description: l.description,

@@ -8,12 +8,12 @@ import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
 import { resolveCrewAgentsWithProfiles, useCrewStore, type CrewPersonalityProfile } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
-import { useProjectStore } from '../stores/projectStore'
+import { getProjectForThread, useProjectStore } from '../stores/projectStore'
 import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
-import { tr } from '../i18n'
-import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
+import i18n, { tr } from '../i18n'
+import { safeInvoke } from '../utils/safeInvoke'
 import { streamChatTurn } from '../utils/ollamaStreaming'
 import {
   appendCrewLiveEntry,
@@ -23,6 +23,7 @@ import {
   buildCrewRuntimeTasks,
   buildWorkTaskCrewGuidelines,
   createCrewLiveEntry,
+  resolveEffectiveCrewProvider,
   resolveCrewRuntimeConfig,
   resolveExternalProviderConfig,
   type CrewExecutionLog,
@@ -46,6 +47,11 @@ import {
   readCrewScheduleSnapshotMetadata,
   resolveCrewScheduleSource,
 } from '../engine/tasks/workTaskScheduleService'
+import {
+  appendTaskProjectPrompt,
+  resolveTaskProjectRunContext,
+  type TaskProjectRunContext,
+} from '../utils/taskProjectContext'
 import TaskCreatePanel from './tasks/TaskCreatePanel'
 import TaskDetailPane from './tasks/TaskDetailPane'
 import TaskListPane from './tasks/TaskListPane'
@@ -66,6 +72,9 @@ export default function TasksView() {
   const addChatMessage = useChatStore((s) => s.addMessage)
   const updateChatMessage = useChatStore((s) => s.updateMessage)
   const projects = useProjectStore((s) => s.projects)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const attachProjectThread = useProjectStore((s) => s.attachThread)
+  const detachProjectThreadFromAll = useProjectStore((s) => s.detachThreadFromAll)
   const setActiveMode = useUiStore((s) => s.setActiveMode)
   const setWorkingFolder = useUiStore((s) => s.setWorkingFolder)
 
@@ -82,6 +91,7 @@ export default function TasksView() {
 
   const ollamaConfig = useConfigStore((s) => s.ollama)
   const defaultLlmProfileIds = useConfigStore((s) => s.defaultLlmProfileIds)
+  const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
   const llmProfiles = useConfigStore((s) => s.llmProfiles)
 
   const personalityProfiles = useMemo<CrewPersonalityProfile[]>(() => (
@@ -107,6 +117,8 @@ export default function TasksView() {
   const [newRunner, setNewRunner] = useState<WorkTaskRunner>('crew')
   const [newCrewId, setNewCrewId] = useState<string>('')
   const [newModel, setNewModel] = useState<string>('')
+  const [newUseProjectContext, setNewUseProjectContext] = useState(false)
+  const [newProjectId, setNewProjectId] = useState<string>('')
   const [createPanelOpen, setCreatePanelOpen] = useState(tasks.length === 0)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [importCrewId, setImportCrewId] = useState<string>('')
@@ -134,6 +146,15 @@ export default function TasksView() {
     if (newCrewId && crews.some((crew) => crew.id === newCrewId)) return
     setNewCrewId(crews[0]?.id ?? '')
   }, [crews, newCrewId, newRunner])
+
+  useEffect(() => {
+    if (newProjectId && projects.some((project) => project.id === newProjectId)) return
+    const preferredProjectId = activeProjectId && projects.some((project) => project.id === activeProjectId)
+      ? activeProjectId
+      : projects[0]?.id ?? ''
+    setNewProjectId(preferredProjectId)
+    if (!preferredProjectId) setNewUseProjectContext(false)
+  }, [activeProjectId, newProjectId, projects])
 
   useEffect(() => {
     if (importCrewId && crews.some((crew) => crew.id === importCrewId)) return
@@ -258,15 +279,9 @@ export default function TasksView() {
   const selectedScheduledTask = selectedTask ? findScheduledTask(scheduledTasks, selectedTask.id) : null
   const selectedProjectContext = useMemo(() => {
     if (!selectedTask?.threadId) return null
-    const project = projects.find((item) => item.threadIds.includes(selectedTask.threadId as string))
-    return project ? { title: project.title } : null
+    const project = getProjectForThread(projects, selectedTask.threadId)
+    return project ? { id: project.id, title: project.title } : null
   }, [projects, selectedTask?.threadId])
-
-  const ensureAllowedTaskFolder = async (workDir: string) => {
-    const normalized = workDir.trim()
-    if (!normalized || !isAbsolutePath(normalized)) return
-    await safeInvokeVoid('fs_add_allowed_folder', { path: normalized })
-  }
 
   const createTaskThread = (task: WorkTask, preserveCurrentThread = true): string => {
     const existingThreadId = task.threadId && useChatStore.getState().threads.some((thread) => thread.id === task.threadId)
@@ -274,6 +289,11 @@ export default function TasksView() {
       : null
 
     if (existingThreadId) {
+      useChatStore.getState().setThreadRunner(
+        existingThreadId,
+        task.runner,
+        task.runner === 'crew' ? task.crewId : null,
+      )
       return existingThreadId
     }
 
@@ -325,7 +345,6 @@ export default function TasksView() {
   const applyTaskWorkingFolder = async (task: WorkTask) => {
     const normalizedWorkDir = task.workDir.trim()
     if (normalizedWorkDir && isAbsolutePath(normalizedWorkDir)) {
-      await ensureAllowedTaskFolder(normalizedWorkDir)
       setWorkingFolder(normalizedWorkDir)
       return
     }
@@ -350,7 +369,6 @@ export default function TasksView() {
     const selected = await pickWorkDir()
     if (selected) {
       setNewWorkDir(selected)
-      await ensureAllowedTaskFolder(selected)
     }
   }
 
@@ -359,9 +377,6 @@ export default function TasksView() {
     if (selected === null) return
 
     updateTask(task.id, { workDir: selected })
-    if (isAbsolutePath(selected)) {
-      await ensureAllowedTaskFolder(selected)
-    }
   }
 
   const handleOpenTaskChat = async (task: WorkTask) => {
@@ -405,8 +420,10 @@ export default function TasksView() {
     }
 
     if (createdTask) {
-      void ensureAllowedTaskFolder(createdTask.workDir)
-      createTaskThread(createdTask, true)
+      const threadId = createTaskThread(createdTask, true)
+      if (newUseProjectContext && newProjectId) {
+        attachProjectThread(newProjectId, threadId)
+      }
       setSelectedTaskId(createdTask.id)
       setCreatePanelOpen(false)
     }
@@ -416,6 +433,27 @@ export default function TasksView() {
     setNewPrompt('')
     setNewExpectedOutput('')
     setNewWorkDir('')
+    setNewUseProjectContext(false)
+  }
+
+  const handleTaskProjectContextEnabledChange = (task: WorkTask, enabled: boolean) => {
+    if (!enabled) {
+      if (task.threadId) detachProjectThreadFromAll(task.threadId)
+      return
+    }
+
+    const projectId = activeProjectId && projects.some((project) => project.id === activeProjectId)
+      ? activeProjectId
+      : projects[0]?.id
+    if (!projectId) return
+    const threadId = createTaskThread(task, true)
+    attachProjectThread(projectId, threadId)
+  }
+
+  const handleTaskProjectChange = (task: WorkTask, projectId: string) => {
+    if (!projects.some((project) => project.id === projectId)) return
+    const threadId = createTaskThread(task, true)
+    attachProjectThread(projectId, threadId)
   }
 
   const handleImportCrewTasks = () => {
@@ -444,10 +482,12 @@ export default function TasksView() {
       return
     }
 
+    if (runningTaskControllersRef.current.has(task.id)) return
+
     const taskForRun = normalizedWorkDir ? { ...task, workDir: normalizedWorkDir } : task
-    await loadChatFromDb()
-    const threadId = createTaskThread(taskForRun, true)
     const startedAt = Date.now()
+    const abortController = new AbortController()
+    runningTaskControllersRef.current.set(task.id, abortController)
 
     updateTask(task.id, {
       status: 'running',
@@ -455,10 +495,30 @@ export default function TasksView() {
       error: null,
     })
     canceledTaskIdsRef.current.delete(task.id)
-    const abortController = new AbortController()
-    runningTaskControllersRef.current.set(task.id, abortController)
 
-    await ensureAllowedTaskFolder(normalizedWorkDir)
+    let threadId: string
+    let projectRunContext: TaskProjectRunContext
+    try {
+      await loadChatFromDb()
+      threadId = createTaskThread(taskForRun, true)
+      projectRunContext = await resolveTaskProjectRunContext({
+        taskId: task.id,
+        threadId,
+        prompt: task.prompt,
+        workDir: normalizedWorkDir,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      updateTask(task.id, {
+        status: 'failed',
+        error: message,
+        output: message,
+        lastRunAt: Date.now(),
+      })
+      runningTaskControllersRef.current.delete(task.id)
+      return
+    }
+
     addChatMessage(threadId, {
       role: 'system',
       content: [
@@ -469,6 +529,14 @@ export default function TasksView() {
       visibleInChat: true,
       timestamp: startedAt,
     })
+    if (projectRunContext.warnings.length > 0) {
+      addChatMessage(threadId, {
+        role: 'system',
+        content: `${tr('Project context warnings')}:\n${projectRunContext.warnings.map((warning) => `- ${warning}`).join('\n')}`,
+        visibleInChat: true,
+        timestamp: Date.now(),
+      })
+    }
     addChatMessage(threadId, {
       role: 'user',
       content: buildTaskPromptMessage(taskForRun),
@@ -490,10 +558,13 @@ export default function TasksView() {
 
       try {
         let buffered = ''
+        const promptWithProjectContext = appendTaskProjectPrompt(task.prompt, projectRunContext)
         const response = await streamChatTurn(
           {
-            prompt: task.prompt,
-            history: normalizedWorkDir ? [{ role: 'system', content: `Working directory: ${normalizedWorkDir}` }] : [],
+            prompt: promptWithProjectContext,
+            history: projectRunContext.preferredCwd
+              ? [{ role: 'system', content: `Working directory: ${projectRunContext.preferredCwd}` }]
+              : [],
             config,
           },
           (chunk) => {
@@ -629,11 +700,13 @@ export default function TasksView() {
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
           defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+          defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
         ),
         openRouter: resolveExternalProviderConfig(
           crew.providerProfiles.openRouter,
           defaultOpenRouterProfile,
           defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+          defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
         ),
       }
 
@@ -645,7 +718,11 @@ export default function TasksView() {
       const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
       config = appliedCrewDefault.config
       providerConfigs = appliedCrewDefault.providerConfigs
-      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
+      const crewDefaultProvider = resolveEffectiveCrewProvider(
+        crew.defaultProvider ?? 'ollama',
+        config,
+        providerConfigs,
+      )
       runningCrewTaskIdsRef.current.set(task.id, crew.id)
 
       try {
@@ -665,8 +742,12 @@ export default function TasksView() {
           name: crew.name,
           description: crew.description,
           executionSubject: crew.executionSubject,
-          executionGuidelines: buildWorkTaskCrewGuidelines(crew, taskForRun),
+          executionGuidelines: appendTaskProjectPrompt(
+            buildWorkTaskCrewGuidelines(crew, taskForRun),
+            projectRunContext,
+          ),
           knowledgeFocus: crew.knowledgeFocus,
+          responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
           governanceMode: crew.governanceMode,
           outputMode: crew.outputMode,
           stopOnFailure: crew.stopOnFailure,
@@ -699,7 +780,8 @@ export default function TasksView() {
             maxIterations: agent.maxIterations,
           })),
           tasks: runtimeTasks,
-          cwd: normalizedWorkDir || null,
+          cwd: projectRunContext.preferredCwd,
+          authorizedPaths: projectRunContext.authorizedPaths,
           config,
         },
       })
@@ -790,10 +872,6 @@ export default function TasksView() {
       updateTask(task.id, { scheduleEnabled: false })
       return
     }
-    if (normalizedWorkDir) {
-      await ensureAllowedTaskFolder(normalizedWorkDir)
-    }
-
     let scheduled: ScheduledTask | null = findScheduledTask(scheduledTasks, task.id)
     const active = activeOverride ?? scheduled?.active ?? task.scheduleEnabled
 
@@ -835,11 +913,13 @@ export default function TasksView() {
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
           defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+          defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
         ),
         openRouter: resolveExternalProviderConfig(
           crew.providerProfiles.openRouter,
           defaultOpenRouterProfile,
           defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+          defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
         ),
       }
 
@@ -851,7 +931,11 @@ export default function TasksView() {
       const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
       config = appliedCrewDefault.config
       providerConfigs = appliedCrewDefault.providerConfigs
-      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
+      const crewDefaultProvider = resolveEffectiveCrewProvider(
+        crew.defaultProvider ?? 'ollama',
+        config,
+        providerConfigs,
+      )
 
       const crewSnapshotJson = JSON.stringify({
         id: crew.id,
@@ -860,6 +944,7 @@ export default function TasksView() {
         executionSubject: crew.executionSubject,
         executionGuidelines: buildWorkTaskCrewGuidelines(crew, task),
         knowledgeFocus: crew.knowledgeFocus,
+        responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
         governanceMode: crew.governanceMode,
         outputMode: crew.outputMode,
         stopOnFailure: crew.stopOnFailure,
@@ -987,6 +1072,7 @@ export default function TasksView() {
 
       <TaskCreatePanel
         crews={crews}
+        projects={projects}
         defaultModel={ollamaConfig.model}
         open={createPanelOpen}
         title={newTitle}
@@ -996,6 +1082,8 @@ export default function TasksView() {
         runner={newRunner}
         crewId={newCrewId}
         model={newModel}
+        useProjectContext={newUseProjectContext}
+        projectId={newProjectId}
         canCreateTask={canCreateTask}
         onOpenChange={setCreatePanelOpen}
         onTitleChange={setNewTitle}
@@ -1005,6 +1093,8 @@ export default function TasksView() {
         onRunnerChange={setNewRunner}
         onCrewIdChange={setNewCrewId}
         onModelChange={setNewModel}
+        onUseProjectContextChange={setNewUseProjectContext}
+        onProjectIdChange={setNewProjectId}
         onPickWorkDir={() => void handlePickNewWorkDir()}
         onCreateTask={handleCreateTask}
       />
@@ -1024,10 +1114,13 @@ export default function TasksView() {
         <TaskDetailPane
           task={selectedTask}
           crews={crews}
+          projects={projects}
           defaultModel={ollamaConfig.model}
           scheduled={selectedScheduledTask}
           crewScheduleMetadata={selectedCrewScheduleMetadata}
           projectContext={selectedProjectContext}
+          onProjectContextEnabledChange={handleTaskProjectContextEnabledChange}
+          onProjectContextProjectChange={handleTaskProjectChange}
           onUpdateTask={updateTask}
           onPickWorkDir={(task) => void handlePickTaskWorkDir(task)}
           onOpenChat={(task) => void handleOpenTaskChat(task)}

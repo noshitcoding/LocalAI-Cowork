@@ -236,7 +236,8 @@ type MemoryEntry = {
   category: string
   key: string
   content: string
-  sourceSessionId?: string | null
+  scopeRef?: string | null
+  sourceRunId?: string | null
   confidence: number
   accessCount: number
   lastAccessedAt?: string | null
@@ -462,7 +463,7 @@ function normalizeMemoryScope(scope?: string): string | undefined {
       return 'shared'
     case 'agent':
     case 'user':
-    case 'session':
+    case 'chat':
     case 'shared':
       return scope
     default:
@@ -1603,13 +1604,13 @@ const memoryReadTool: Tool<{ scope?: string; key?: string }> = {
   inputSchema: {
     type: 'object',
     properties: {
-      scope: { type: 'string', description: 'Scope: agent, user, session, shared', enum: ['agent', 'user', 'session', 'shared'] },
+      scope: { type: 'string', description: 'Scope: agent, user, chat, shared', enum: ['agent', 'user', 'chat', 'shared'] },
       key: { type: 'string', description: 'Optional key to filter by' },
     },
   },
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
-  async call(input) {
+  async call(input, context) {
     const scope = normalizeMemoryScope(input.scope)
     if (scope === 'user') {
       const profile = await invoke<Array<{ key: string; value: string; source: string; confidence: number }>>('user_profile_list')
@@ -1621,6 +1622,7 @@ const memoryReadTool: Tool<{ scope?: string; key?: string }> = {
     }
     const entries = await invoke<MemoryEntry[]>('memory_search', {
       scope,
+      scopeRef: scope === 'chat' ? context.threadId ?? null : null,
       category: null,
       keyword: null,
       limit: 100,
@@ -1654,7 +1656,7 @@ type MemoryMutationResponse = {
 const memoryWriteTool: Tool<MemoryWriteInput> = {
   name: 'MemoryWrite',
   aliases: ['memory', 'memory_write', 'remember'],
-  description: 'Curates persistent memory with add, replace, or remove. Target memory for durable project/environment facts and user for stable user preferences. Writes are bounded, deduplicated, and visible from the next session snapshot.',
+  description: 'Curates persistent memory with add, replace, or remove. Target memory for durable project/environment facts and user for stable user preferences. Writes are bounded, deduplicated, and visible from the next chat snapshot.',
   category: 'memory',
   riskLevel: 'low',
   inputSchema: {
@@ -1664,8 +1666,8 @@ const memoryWriteTool: Tool<MemoryWriteInput> = {
       target: { type: 'string', description: 'memory for agent notes, user for user profile', enum: ['memory', 'user'] },
       old_text: { type: 'string', description: 'Unique substring for replace or remove' },
       content: { type: 'string', description: 'New content for add or replace' },
-      scope: { type: 'string', description: 'Legacy scope for compatibility', enum: ['agent', 'user', 'session', 'shared'] },
-      key: { type: 'string', description: 'Legacy unique key for session/shared writes' },
+      scope: { type: 'string', description: 'Optional scope for keyed writes', enum: ['agent', 'user', 'chat', 'shared'] },
+      key: { type: 'string', description: 'Unique key for chat/shared writes' },
     },
     required: ['action', 'target'],
   },
@@ -1675,19 +1677,20 @@ const memoryWriteTool: Tool<MemoryWriteInput> = {
     const action = input.action ?? 'add'
     const target = input.target ?? (input.scope === 'user' ? 'user' : 'memory')
 
-    // Preserve compatibility for explicit session/shared keyed writes.
+    // Preserve compatibility for explicit chat/shared keyed writes.
     const legacyScope = normalizeMemoryScope(input.scope)
-    if (legacyScope === 'session' || legacyScope === 'shared') {
+    if (legacyScope === 'chat' || legacyScope === 'shared') {
       if (!input.key?.trim() || !input.content?.trim()) {
-        return { data: 'Error: key and content are required for session/shared memory.' }
+        return { data: 'Error: key and content are required for chat/shared memory.' }
       }
       await invoke('memory_upsert', {
         id: createToolStreamId(),
         scope: legacyScope,
+        scopeRef: legacyScope === 'chat' ? context.threadId ?? null : null,
         category: legacyScope === 'shared' ? 'knowledge' : 'context',
         key: input.key,
         content: input.content,
-        sourceSessionId: context.sessionId ?? null,
+        sourceRunId: context.runId ?? null,
         confidence: 1.0,
       })
       return { data: `Memory saved: [${legacyScope}/${input.key}]` }
@@ -1698,29 +1701,29 @@ const memoryWriteTool: Tool<MemoryWriteInput> = {
       target,
       oldText: input.old_text ?? null,
       content: input.content ?? null,
-      sourceSessionId: context.sessionId ?? null,
+      sourceRunId: context.runId ?? null,
     })
     return {
       data: [
         response.success ? response.message : `Error: memory mutation rejected: ${response.message}`,
         `Usage: ${response.usageChars}/${response.limitChars} chars`,
-        response.changed ? 'Persisted for future sessions.' : 'No stored entry changed.',
+        response.changed ? 'Persisted for future chats.' : 'No stored entry changed.',
       ].join('\n'),
     }
   },
 }
 
-type SessionSearchRow = {
-  session_id: string
-  session_title: string
-  started_at: string
+type ChatSearchRow = {
+  thread_id: string
+  thread_title: string
+  updated_at: string
   matched_content: string | null
   matched_role: string | null
 }
 
-const sessionSearchTool: Tool<{ query: string; limit?: number }> = {
-  name: 'SessionSearch',
-  aliases: ['session_search', 'search_sessions'],
+const chatSearchTool: Tool<{ query: string; limit?: number }> = {
+  name: 'ChatSearch',
+  aliases: ['chat_search', 'search_chats'],
   description: 'Searches persisted past conversations for exact details that are not in curated memory.',
   category: 'memory',
   riskLevel: 'low',
@@ -1737,14 +1740,14 @@ const sessionSearchTool: Tool<{ query: string; limit?: number }> = {
   async call(input) {
     const query = input.query.trim()
     if (!query) return { data: 'Error: query is required.' }
-    const rows = await invoke<SessionSearchRow[]>('session_search', {
+    const rows = await invoke<ChatSearchRow[]>('chat_search', {
       query,
       limit: Math.max(1, Math.min(50, input.limit ?? 10)),
     })
-    if (rows.length === 0) return { data: `No past-session matches for "${query}".` }
+    if (rows.length === 0) return { data: `No past-chat matches for "${query}".` }
     return {
       data: rows.map((row) => [
-        `[${row.session_id}] ${row.session_title} (${row.started_at})`,
+        `[${row.thread_id}] ${row.thread_title} (${row.updated_at})`,
         row.matched_content ? `${row.matched_role ?? 'message'}: ${row.matched_content}` : '',
       ].filter(Boolean).join('\n')).join('\n\n'),
     }
@@ -1804,8 +1807,85 @@ const skillTool: Tool<{ skill_name: string; input: string }> = {
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
   async call(input) {
-    // Delegate to the existing skill system
-    return { data: `Skill "${input.skill_name}" executed mit: ${input.input}` }
+    const skills = await invoke<Array<{
+      name: string
+      prompt_template: string
+      run_mode: string
+    }>>('skill_list', { limit: 200 })
+    const requestedName = input.skill_name.trim().toLowerCase()
+    const skill = skills.find((entry) => entry.name.trim().toLowerCase() === requestedName)
+    if (!skill) {
+      const available = skills.map((entry) => entry.name).join(', ')
+      throw new Error(`Skill "${input.skill_name}" is not registered.${available ? ` Available skills: ${available}` : ''}`)
+    }
+
+    const renderedPrompt = skill.prompt_template
+      .replace(/{{\s*input\s*}}/gi, input.input)
+      .replace(/{{\s*skill_name\s*}}/gi, skill.name)
+    return {
+      data: [
+        `Run the centrally registered skill "${skill.name}" in ${skill.run_mode || 'execute'} mode.`,
+        renderedPrompt,
+      ].join('\n\n'),
+    }
+  },
+}
+
+const saveSkillTool: Tool<{
+  name: string
+  description: string
+  prompt_template: string
+  trigger_pattern?: string
+  run_mode?: 'execute' | 'plan' | 'hybrid'
+}> = {
+  name: 'SaveSkill',
+  aliases: ['save_skill', 'create_skill', 'register_skill'],
+  description: 'Creates or updates a reusable skill in the central LocalAI Cowork skill store. Always use this instead of writing skill files into the current workspace.',
+  category: 'skill',
+  riskLevel: 'medium',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Unique, human-readable skill name' },
+      description: { type: 'string', description: 'Short explanation of what the skill does' },
+      prompt_template: { type: 'string', description: 'Reusable instructions. Use {{input}} where the caller input should be inserted.' },
+      trigger_pattern: { type: 'string', description: 'Optional text pattern used to match this skill automatically' },
+      run_mode: { type: 'string', description: 'How the skill should run', enum: ['execute', 'plan', 'hybrid'] },
+    },
+    required: ['name', 'description', 'prompt_template'],
+  },
+  isReadOnly: () => false,
+  isConcurrencySafe: () => false,
+  async call(input) {
+    const name = input.name.trim()
+    const promptTemplate = input.prompt_template.trim()
+    if (!name) throw new Error('Skill name must not be empty.')
+    if (!promptTemplate) throw new Error('Skill prompt template must not be empty.')
+
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'skill'
+    const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `skill-${crypto.randomUUID()}`
+      : `skill-${slug}-${Date.now()}`
+
+    await invoke('skill_upsert', {
+      id,
+      name,
+      description: input.description.trim(),
+      promptTemplate,
+      triggerPattern: input.trigger_pattern?.trim() || null,
+      runMode: input.run_mode ?? 'execute',
+      autoGenerated: true,
+      parentSkillId: null,
+      sourceTaskIds: null,
+    })
+
+    return {
+      data: `Skill "${name}" was saved in the central LocalAI Cowork skill store. It will appear under Tools and knowledge > Skills; no workspace file was created.`,
+    }
   },
 }
 
@@ -2264,10 +2344,11 @@ export function registerAllBuiltinTools(): void {
     taskUpdateTool,
     memoryReadTool,
     memoryWriteTool,
-    sessionSearchTool,
+    chatSearchTool,
     enterPlanTool,
     exitPlanTool,
     skillTool,
+    saveSkillTool,
     // Filesystem tools
     officeWorkflowTool,
     listDirTool,

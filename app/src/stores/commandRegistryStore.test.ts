@@ -53,7 +53,7 @@ vi.mock('./coworkStore', () => ({
       toggleConnector: vi.fn(),
       installPluginExamples: vi.fn(),
       upsertScheduledTask: vi.fn(),
-      enabledClaudeToolIds: ['Read', 'MemoryWrite', 'SessionSearch'],
+      enabledClaudeToolIds: ['Read', 'MemoryWrite', 'ChatSearch'],
       claudePermissionMode: 'default',
       setClaudePlanMode: vi.fn(),
       setClaudePermissionMode: vi.fn(),
@@ -152,7 +152,7 @@ const commands: SlashCommand[] = [
     command: '/clear',
     label: 'Clear',
     description: 'Clear chat',
-    category: 'session',
+    category: 'chat',
     execute: vi.fn(),
   },
 ]
@@ -191,7 +191,7 @@ describe('slash command registry integrity', () => {
       try {
         await command.execute()
       } catch (error) {
-        throw new Error(`${command.command} threw during smoke execution: ${String(error)}`)
+        throw new Error(`${command.command} threw during smoke execution: ${String(error)}`, { cause: error })
       }
     }
   })

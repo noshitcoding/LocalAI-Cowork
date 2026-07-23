@@ -74,36 +74,35 @@ fn canonicalize_for_policy(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
-pub fn ensure_path_allowed(path: &Path, allowed_folders: &[String]) -> Result<PathBuf, String> {
-    if allowed_folders.is_empty() {
-        return Err("no allowed folders configured".to_string());
+pub fn ensure_path_allowed(path: &Path, allowed_roots: &[String]) -> Result<PathBuf, String> {
+    if allowed_roots.is_empty() {
+        return Err("no allowed paths configured".to_string());
     }
 
     let canonical_target = canonicalize_for_policy(path)?;
     let mut valid_root_count = 0_usize;
 
-    for folder in allowed_folders {
-        let folder_path = Path::new(folder);
-        if !folder_path.is_absolute() {
+    for root in allowed_roots {
+        let root_path = Path::new(root);
+        if !root_path.is_absolute() {
             continue;
         }
-        let Ok(canonical_folder) = folder_path.canonicalize() else {
+        let Ok(canonical_root) = root_path.canonicalize() else {
             continue;
         };
-        if !canonical_folder.is_dir() {
-            continue;
-        }
         valid_root_count += 1;
-        if canonical_target.starts_with(&canonical_folder) {
+        if (canonical_root.is_dir() && canonical_target.starts_with(&canonical_root))
+            || (canonical_root.is_file() && canonical_target == canonical_root)
+        {
             return Ok(canonical_target);
         }
     }
 
     if valid_root_count == 0 {
-        return Err("no valid allowed folders configured".to_string());
+        return Err("no valid allowed paths configured".to_string());
     }
 
-    Err("path is outside allowed folders".to_string())
+    Err("path is outside allowed paths".to_string())
 }
 
 fn create_backup_path(app_data_dir: &Path, target: &Path) -> Result<PathBuf, String> {
@@ -566,6 +565,25 @@ mod tests {
         assert!(ensure_path_allowed(&secret, &allowed(&allowed_root)).is_err());
 
         let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn exact_file_root_does_not_authorize_neighboring_files() {
+        let root = test_root("exact-file");
+        let allowed_file = root.join("allowed.txt");
+        let neighbor = root.join("neighbor.txt");
+        fs::write(&allowed_file, "allowed").expect("allowed fixture should be written");
+        fs::write(&neighbor, "secret").expect("neighbor fixture should be written");
+        let roots = vec![allowed_file.display().to_string()];
+
+        assert_eq!(
+            ensure_path_allowed(&allowed_file, &roots).unwrap(),
+            allowed_file.canonicalize().unwrap()
+        );
+        assert!(ensure_path_allowed(&neighbor, &roots).is_err());
+        assert!(ensure_path_allowed(&root.join("new.txt"), &roots).is_err());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

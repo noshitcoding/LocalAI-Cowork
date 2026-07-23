@@ -2,15 +2,11 @@
 // New service layer ported from Claude Code
 
 export {
-  // Compact
-  autoCompact,
-  fallbackCompact,
+  // Token budget
   applyToolResultBudget,
   generateToolUseSummary,
-  getMessagesAfterCompactBoundary,
   estimateTokens,
   estimateConversationTokens as estimateConversationTokensCompact,
-  shouldAutoCompact,
   getTokenWarningLevel,
   createTokenBudget,
 } from './compact'
@@ -33,16 +29,4 @@ export type {
   ToolExecutionEvent,
   ToolOrchestratorConfig,
 } from './toolOrchestrator'
-
-export {
-  // Session Persistence
-  createSession,
-  endSession,
-  loadSession,
-  listSessions,
-  deleteSession,
-  generateSessionTitle,
-  autoSaveSession,
-} from './sessionPersistence'
-export type { SessionRecord, SessionSummary } from './sessionPersistence'
 

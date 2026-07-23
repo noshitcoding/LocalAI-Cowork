@@ -1,7 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { SessionSummary } from '../engine'
 import { useChatStore } from '../stores/chatStore'
 import { useUiStore } from '../stores/uiStore'
 import { useConfigStore } from '../stores/configStore'
@@ -117,10 +116,6 @@ export default function LeftSidebar() {
   const tasks = useTaskStore((s) => s.tasks)
   const activeTaskId = useTaskStore((s) => s.activeTaskId)
   const activeProvider = useEngineStore((s) => s.activeProvider)
-  const getSessions = useEngineStore((s) => s.getSessions)
-  const loadSessionById = useEngineStore((s) => s.loadSessionById)
-  const currentSessionId = useEngineStore((s) => s.currentSessionId)
-  const deleteSessionById = useEngineStore((s) => s.deleteSessionById)
   const {
     projects,
     activeProjectId,
@@ -129,12 +124,9 @@ export default function LeftSidebar() {
     attachThread,
     detachThreadFromAll,
   } = useProjectStore()
-  const [persistedSessions, setPersistedSessions] = useState<SessionSummary[]>([])
-  const [loadingSessions, setLoadingSessions] = useState(false)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set())
   const [chatsCollapsed, setChatsCollapsed] = useState(false)
   const [tasksCollapsed, setTasksCollapsed] = useState(false)
-  const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
   const [workspaceStatusOpen, setWorkspaceStatusOpen] = useState(Boolean(activeTaskId))
   const [dropProjectId, setDropProjectId] = useState<string | null>(null)
   const [chatsDropActive, setChatsDropActive] = useState(false)
@@ -166,22 +158,6 @@ export default function LeftSidebar() {
     }
     navigate(route.path)
   }
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      setLoadingSessions(true)
-      try {
-        const sessions = await getSessions()
-        if (!cancelled) setPersistedSessions(sessions)
-      } catch {
-        if (!cancelled) setPersistedSessions([])
-      } finally {
-        if (!cancelled) setLoadingSessions(false)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [getSessions, currentSessionId])
 
   const threadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads])
   const threadById = useMemo(() => new Map(threads.map((thread) => [thread.id, thread])), [threads])
@@ -339,15 +315,6 @@ export default function LeftSidebar() {
     const workDir = task.workDir.trim()
     setWorkingFolder(workDir && isAbsolutePath(workDir) ? workDir : null)
     setActiveThread(threadId)
-    navigateToProductRoute('cowork')
-  }
-
-  const handleOpenSession = async (sessionId: string) => {
-    const session = await loadSessionById(sessionId)
-    if (!session) return
-    if (session.threadId && threadIds.has(session.threadId)) {
-      setActiveThread(session.threadId)
-    }
     navigateToProductRoute('cowork')
   }
 
@@ -628,32 +595,6 @@ export default function LeftSidebar() {
           )}
         </div>
 
-        <div className="sidebar-group">
-          <button type="button" className="sidebar-group-toggle" aria-expanded={!sessionsCollapsed} onClick={() => setSessionsCollapsed((value) => !value)}>
-            <span>{sessionsCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Sessions")}</span>
-            <span>{persistedSessions.length}</span>
-          </button>
-          {!sessionsCollapsed && (
-            <div className="sidebar-thread-list">
-              {persistedSessions.map((session) => (
-                <div key={session.id} className={`sidebar-thread-row${session.id === currentSessionId ? ' active' : ''}`}>
-                  <button type="button" className="sidebar-row-main" onClick={() => void handleOpenSession(session.id)}>
-                    {session.title}
-                  </button>
-                  <button
-                    type="button"
-                    className="sidebar-row-action"
-                    onClick={(event) => { event.stopPropagation(); void deleteSessionById(session.id) }}
-                    title={tr("Delete")}
-                    aria-label={tr("Delete session")}
-                  ><Trash2 size={14} aria-hidden="true" /></button>
-                </div>
-              ))}
-              {loadingSessions && <p className="hint-text">{tr("Loading sessions...")}</p>}
-              {!loadingSessions && persistedSessions.length === 0 && <p className="hint-text">{tr("No persisted sessions")}</p>}
-            </div>
-          )}
-        </div>
       </div>
       {pointerDrag?.active && (
         <div
