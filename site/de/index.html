@@ -3,22 +3,23 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>LocalAI Cowork – Lokaler KI-Arbeitsbereich für Windows</title>
-    <meta name="description" content="Plane Aufgaben, nutze lokale oder gehostete KI-Modelle, verbinde MCP-Tools und arbeite mit Dateien – kontrolliert in einer Open-Source-Windows-App.">
+    <title>LocalAI Cowork – Open-Source-KI-Coworker für Windows</title>
+    <meta name="description" content="Ein lokaler Open-Source-KI-Coworker für Windows. Nutze Ollama oder gehostete Modelle, MCP-Tools, lokale Dateien und kontrollierte Freigaben.">
     <meta name="robots" content="index, follow, max-image-preview:large">
     <meta name="theme-color" content="#0A0A0B">
     <link rel="canonical" href="https://noshitcoding.github.io/LocalAI-Cowork/de/">
     <link rel="alternate" hreflang="en" href="https://noshitcoding.github.io/LocalAI-Cowork/">
     <link rel="alternate" hreflang="de" href="https://noshitcoding.github.io/LocalAI-Cowork/de/">
     <link rel="alternate" hreflang="x-default" href="https://noshitcoding.github.io/LocalAI-Cowork/">
-    <link rel="icon" href="../assets/logo.png" type="image/png">
+    <link rel="icon" href="../assets/logo.png" type="image/png" sizes="128x128">
+    <link rel="apple-touch-icon" href="../assets/logo.png">
     <link rel="manifest" href="../site.webmanifest">
     <link rel="stylesheet" href="../styles.css">
     <meta property="og:type" content="website">
     <meta property="og:locale" content="de_DE">
     <meta property="og:site_name" content="LocalAI Cowork">
-    <meta property="og:title" content="LocalAI Cowork – Ergebnis vorgeben. Kontrolle behalten.">
-    <meta property="og:description" content="Ein lokaler Open-Source-KI-Arbeitsbereich für echte Aufgaben unter Windows.">
+    <meta property="og:title" content="LocalAI Cowork – Dein Open-Source-KI-Coworker">
+    <meta property="og:description" content="Ein lokaler Arbeitsbereich für agentische Arbeit unter Windows – mit Modellwahl, MCP-Tools, Dateien und Freigabekontrollen.">
     <meta property="og:url" content="https://noshitcoding.github.io/LocalAI-Cowork/de/">
     <meta property="og:image" content="https://noshitcoding.github.io/LocalAI-Cowork/assets/github-social-preview.png">
     <meta property="og:image:alt" content="LocalAI Cowork Carbon-Signal-Marke und lokaler Arbeitsbereich">
@@ -43,117 +44,139 @@
   </head>
   <body>
     <a class="skip-link" href="#main">Zum Inhalt springen</a>
+
     <header class="site-header">
       <nav class="nav shell" aria-label="Hauptnavigation">
         <a class="brand" href="./" aria-label="LocalAI Cowork Startseite">
-          <img src="../assets/logo.png" width="34" height="34" alt="">
-          <span>LocalAI Cowork</span>
+          <img src="../assets/logo.png" width="128" height="128" alt="">
+          <span class="brand-name">LocalAI Cowork</span>
           <span class="brand-badge">Open Source</span>
         </a>
         <div class="nav-links">
-          <a href="#funktionen">Funktionen</a>
+          <a href="#produkt">Produkt</a>
+          <a href="#ablauf">Ablauf</a>
+          <a href="#kontrolle">Kontrolle</a>
           <a href="#vergleich">Vergleich</a>
-          <a href="datenschutz.html">Datenschutz</a>
-          <a href="https://github.com/noshitcoding/LocalAI-Cowork">Quellcode</a>
           <a href="../" hreflang="en" lang="en">EN</a>
-          <a class="nav-cta" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">Download</a>
+          <a class="nav-cta" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">Download <span aria-hidden="true">↓</span></a>
         </div>
       </nav>
     </header>
 
     <main id="main">
       <section class="hero shell">
-        <p class="eyebrow">Open-Source-KI-Coworker · Lokal · Windows</p>
-        <h1>Ergebnis delegieren.<br>Kontrolle behalten.</h1>
-        <p class="hero-copy">LocalAI Cowork ist die quelloffene, lokale Alternative für agentische Arbeit neben Claude Cowork und Microsoft Copilot Cowork. Nutze dein eigenes Modell, deine Dateien und deine Werkzeuge in einem prüfbaren Windows-Arbeitsbereich.</p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">Für Windows herunterladen <span aria-hidden="true">↓</span></a>
-          <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork">Quellcode ansehen <span aria-hidden="true">↗</span></a>
+        <div class="hero-grid">
+          <div class="hero-content">
+            <p class="eyebrow">Lokal // Windows // Apache-2.0</p>
+            <h1>Dein Open-Source-<span>KI-Coworker.</span><br>Deine Regeln.</h1>
+            <p class="hero-copy">Plane das Ergebnis, nutze dein eigenes Modell, verbinde die benötigten Werkzeuge und behalte wichtige Aktionen sichtbar. Eine lokale Alternative für alle, die mehr Kontrolle als in einem geschlossenen KI-Arbeitsbereich wollen.</p>
+            <div class="actions hero-actions">
+              <a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">Für Windows herunterladen <span aria-hidden="true">↓</span></a>
+              <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork">Quellcode erkunden <span aria-hidden="true">↗</span></a>
+            </div>
+            <div class="hero-meta" aria-label="Release-Fakten">
+              <span><strong>0 €</strong> App-Preis</span>
+              <span><strong>Lokal</strong> als Standard</span>
+              <span><strong>Du</strong> wählst das Modell</span>
+            </div>
+          </div>
+
+          <aside class="run-console" aria-label="Beispiel für eine kontrollierte KI-Aufgabe">
+            <div class="console-header"><span class="console-id">RUN / 001</span><span class="live-state"><i aria-hidden="true"></i> bereit</span></div>
+            <div class="console-objective"><span class="console-label">Ziel</span><strong>Aus dem Briefing ein geprüftes Ergebnis erstellen.</strong></div>
+            <dl class="console-grid">
+              <div><dt>Arbeitsbereich</dt><dd>Lokales Projekt</dd></div>
+              <div><dt>Modell</dt><dd>Ollama / lokal</dd></div>
+              <div><dt>Kontext</dt><dd>4 gewählte Dateien</dd></div>
+              <div><dt>Risikoregel</dt><dd>Vor Schreiben fragen</dd></div>
+            </dl>
+            <div class="console-plan" aria-label="Aufgabenplan">
+              <div class="plan-row is-done"><span>01</span><b>Kontext lesen</b><em>fertig</em></div>
+              <div class="plan-row is-active"><span>02</span><b>Ergebnis bauen</b><em>aktiv</em></div>
+              <div class="plan-row"><span>03</span><b>Änderungen prüfen</b><em>wartet</em></div>
+            </div>
+            <div class="console-footer"><span>Kontrolle bleibt bei dir</span><span>FREIGABE / AN</span></div>
+          </aside>
         </div>
-        <div class="proof" aria-label="Projektmerkmale">
-          <span>Kein LocalAI-Cowork-Konto</span>
-          <span>Eigenes Modell</span>
-          <span>Freigabekontrollen</span>
-          <span>Apache-2.0</span>
+
+        <div class="signal-rail" aria-label="Kernfunktionen">
+          <span>01 / OLLAMA</span><span>02 / MODELLWAHL</span><span>03 / LOKALE DATEIEN</span><span>04 / MCP-TOOLS</span><span>05 / FREIGABEN</span>
         </div>
-        <figure class="product-frame">
-          <img src="../assets/app-preview.png" width="1920" height="1080" alt="LocalAI Cowork mit einem lokalen Ollama-Modell, bereit für eine Aufgabe">
-          <figcaption>LocalAI Cowork mit einem lokalen Ollama-Modell. Sprache und Anbieter sind konfigurierbar.</figcaption>
+
+        <figure class="product-stage">
+          <div class="product-toolbar" aria-hidden="true"><span class="window-dots"><i></i><i></i><i></i></span><span>LOCALAI COWORK / ARBEITSBEREICH</span><span>LOKALE SITZUNG</span></div>
+          <div class="product-shot">
+            <img src="../assets/app-preview.png" width="1920" height="1080" alt="LocalAI Cowork mit einem lokalen Ollama-Modell, bereit für eine Aufgabe">
+            <span class="shot-marker marker-context" aria-hidden="true">KONTEXT</span><span class="shot-marker marker-control" aria-hidden="true">KONTROLLE</span>
+          </div>
+          <figcaption><span>Echte Produktoberfläche</span><span>Dark Mode · Ollama · Windows</span></figcaption>
         </figure>
       </section>
 
-      <section class="section shell" id="funktionen">
-        <div class="section-heading">
-          <p class="eyebrow">Ein Arbeitsbereich, weniger Toolwechsel</p>
-          <h2>Für Arbeit, die fertig werden muss.</h2>
-          <p class="section-intro">Chat ist nur der Anfang. LocalAI Cowork hält Aufgabe, Kontext, Werkzeuge, Fortschritt und Prüfung zusammen.</p>
-        </div>
-        <div class="grid">
-          <article class="card"><div class="card-icon" aria-hidden="true">◎</div><h3>Ergebnisorientierte Aufgaben</h3><p>Beschreibe das gewünschte Resultat, behalte den Plan sichtbar und verfolge den Fortschritt.</p></article>
-          <article class="card"><div class="card-icon" aria-hidden="true">⌁</div><h3>Dateien im Kontext</h3><p>Wähle gezielt Dateien und Ordner, die eine Aufgabe verwenden darf.</p></article>
-          <article class="card"><div class="card-icon" aria-hidden="true">◇</div><h3>Dein Modell</h3><p>Nutze Ollama lokal oder verbinde kompatible Anbieter wie OpenRouter und OpenAI-ähnliche Endpunkte.</p></article>
-          <article class="card"><div class="card-icon" aria-hidden="true">⌘</div><h3>MCP und lokale Tools</h3><p>Verbinde MCP-Server, Terminals und Skills, wenn eine Aufgabe mehr als eine Textantwort braucht.</p></article>
-          <article class="card"><div class="card-icon" aria-hidden="true">✓</div><h3>Prüfen vor Risiko</h3><p>Berechtigungsregeln und Freigaben machen sensible Aktionen sichtbar, bevor sie ausgeführt werden.</p></article>
-          <article class="card"><div class="card-icon" aria-hidden="true">↺</div><h3>Wiederverwendbare Abläufe</h3><p>Verwandle wiederkehrende Anweisungen in Vorlagen, Skills und Pipelines.</p></article>
+      <section class="fact-band" aria-label="Projektfakten">
+        <div class="shell fact-grid">
+          <div><strong>Kein Konto</strong><span>Start ohne LocalAI-Cowork-Konto.</span></div>
+          <div><strong>Kein Website-Tracking</strong><span>Keine Analyse-, Werbe- oder Tracking-Skripte.</span></div>
+          <div><strong>Prüfbare Releases</strong><span>Quellcode, SBOM, Checksummen und Attestierungen.</span></div>
+          <div><strong>Windows zuerst</strong><span>Gepflegte Installer für Windows 10 und 11.</span></div>
         </div>
       </section>
 
-      <section class="section shell" id="sicherheit">
-        <div class="trust-panel">
-          <div>
-            <p class="eyebrow">Lokal als Grundprinzip</p>
-            <h2>Dein Arbeitsbereich soll deiner bleiben.</h2>
-            <p class="section-intro">LocalAI Cowork ist eine Desktop-App und kein gehostetes Benutzerkonto. Du entscheidest, welches Modell und welche Werkzeuge eine Anfrage erhalten.</p>
+      <section class="section shell" id="produkt">
+        <div class="section-heading split-heading"><div><p class="eyebrow">01 // Der Arbeitsbereich</p><h2>Mehr als nur ein weiteres Chatfenster.</h2></div><p class="section-intro">LocalAI Cowork hält Ziel, Kontext, Ausführung und Prüfung zusammen – damit die Arbeit auch während der Ausführung verständlich bleibt.</p></div>
+        <div class="bento-grid">
+          <article class="bento-card bento-outcome"><span class="card-index">01</span><div><p class="card-kicker">Ergebnis zuerst</p><h3>Arbeite mit einem sichtbaren Plan statt mit einem verschwindenden Prompt.</h3><p>Beschreibe, wie „fertig“ aussieht. Schritte, Aufgabenstatus, Tool-Aktivität und Ergebnis bleiben verbunden.</p></div><div class="mini-plan" aria-hidden="true"><span class="complete">Briefing verstanden</span><span class="active">Ergebnis entsteht</span><span>Prüfung wartet</span></div></article>
+          <article class="bento-card bento-models"><span class="card-index">02</span><div><p class="card-kicker">Modellwahl</p><h3>Nutze das Modell, das zur Arbeit passt.</h3><p>Arbeite lokal mit Ollama oder konfiguriere bei Bedarf einen kompatiblen gehosteten Endpunkt.</p></div><div class="model-stack" aria-label="Unterstützte Modellrouten"><span><i></i>Ollama</span><span><i></i>OpenAI-kompatibel</span><span><i></i>OpenRouter</span></div></article>
+          <article class="bento-card bento-context"><span class="card-index">03</span><div><p class="card-kicker">Gewählter Kontext</p><h3>Deine Dateien gelangen bewusst in die Aufgabe.</h3><p>Wähle Ordner, Dokumente und Projektanweisungen passend zum aktuellen Ziel.</p></div><div class="file-stack" aria-hidden="true"><span>BRIEFING.MD</span><span>RECHERCHE.PDF</span><span>NOTIZEN.DOCX</span></div></article>
+          <article class="bento-card bento-tools"><span class="card-index">04</span><div><p class="card-kicker">Echte Werkzeuge</p><h3>Verbinde Handlung mit Aufsicht.</h3><p>Nutze MCP-Server, lokale Tools, Terminal-Abläufe, Skills und wiederverwendbare Pipelines, ohne die Aktivität zu verstecken.</p></div><div class="tool-line" aria-hidden="true"><span>MCP</span><i></i><span>REGEL</span><i></i><span>ERGEBNIS</span></div></article>
+        </div>
+      </section>
+
+      <section class="section section-rule shell" id="ablauf">
+        <div class="section-heading split-heading"><div><p class="eyebrow">02 // Der Arbeitsablauf</p><h2>Briefing. Lauf. Prüfung. Wieder nutzen.</h2></div><p class="section-intro">Ein klarer Ablauf macht aus einer Anfrage kontrollierte Arbeit und ein Ergebnis, das du vor der Verwendung prüfen kannst.</p></div>
+        <div class="workflow-board">
+          <article class="workflow-step"><span class="step-number">01</span><div><h3>Ergebnis festlegen</h3><p>Definiere Resultat, Projekt, Modell und relevanten Kontext.</p></div></article>
+          <article class="workflow-step"><span class="step-number">02</span><div><h3>Lauf verfolgen</h3><p>Sieh Plan, Tool-Aufrufe, Fortschritt und erzeugte Artefakte.</p></div></article>
+          <article class="workflow-step"><span class="step-number">03</span><div><h3>Risiko freigeben</h3><p>Schütze sensible Aktionen durch klare Regeln und Freigabepunkte.</p></div></article>
+          <article class="workflow-step"><span class="step-number">04</span><div><h3>Gutes bewahren</h3><p>Verwandle wiederholbare Anweisungen in Skills, Vorlagen und Pipelines.</p></div></article>
+        </div>
+      </section>
+
+      <section class="section shell" id="kontrolle">
+        <div class="control-grid">
+          <div class="control-copy"><p class="eyebrow">03 // Lokal gedacht</p><h2>Dein Arbeitsbereich soll deiner bleiben.</h2><p class="section-intro">Die Desktop-App läuft auf deinem Gerät. Du entscheidest, ob eine Aufgabe ein lokales Modell oder einen konfigurierten entfernten Dienst verwendet und welche Dateien und Tools erreichbar sind.</p><a class="text-link" href="datenschutz.html">Datenschutzgrenzen lesen <span aria-hidden="true">→</span></a></div>
+          <div class="policy-ledger" aria-label="Zusammenfassung von Datenschutz und Kontrolle">
+            <div class="ledger-header"><span>KONTROLLREGISTER</span><span>STATUS</span></div>
+            <div><span>Ausführungsoberfläche</span><strong>LOKALER DESKTOP</strong></div>
+            <div><span>Unterstützte Zugangsdaten</span><strong>OS-TRESOR</strong></div>
+            <div><span>Website-Analyse</span><strong>KEINE</strong></div>
+            <div><span>Telemetrie-Sender</span><strong>NICHT IMPLEMENTIERT</strong></div>
+            <div><span>Entfernte Datenroute</span><strong>DEINE KONFIGURATION</strong></div>
+            <div><span>Riskante Aktionen</span><strong class="signal-value">REGEL + FREIGABE</strong></div>
           </div>
-          <div class="trust-list">
-            <div class="trust-item"><span class="trust-mark" aria-hidden="true">✓</span><div><h3>Zugangsdaten im Betriebssystem-Tresor</h3><p>Unterstützte API-Schlüssel und Connector-Secrets werden über die Windows-Anmeldeinformationsverwaltung gespeichert.</p></div></div>
-            <div class="trust-item"><span class="trust-mark" aria-hidden="true">✓</span><div><h3>Secrets werden entfernt</h3><p>Sensible Felder werden nicht im normalen Frontend-Zustand gespeichert und in Audit-Ausgaben redigiert.</p></div></div>
-            <div class="trust-item"><span class="trust-mark" aria-hidden="true">✓</span><div><h3>Kein Website-Tracking</h3><p>Diese Seite enthält keine Analyse-, Werbe-, Tracking- oder externen Schrift-Skripte.</p></div></div>
-            <div class="trust-item"><span class="trust-mark" aria-hidden="true">✓</span><div><h3>Nachprüfbare Releases</h3><p>Quellcode, Prüfabläufe, Abhängigkeiten, Checksummen, SBOM und Build-Attestierungen sind öffentlich.</p></div></div>
-          </div>
         </div>
       </section>
 
-      <section class="section shell">
-        <div class="section-heading"><p class="eyebrow">Ein sichtbarer Arbeitsablauf</p><h2>Von der Anfrage zum geprüften Ergebnis.</h2></div>
-        <div class="steps">
-          <article class="step"><h3>Kontext auswählen</h3><p>Lege Arbeitsordner, relevante Dateien, Modell und erlaubte Werkzeuge fest.</p></article>
-          <article class="step"><h3>Ergebnis beschreiben</h3><p>Definiere, wie „fertig“ aussieht. Ausführung und Fortschritt bleiben an einem Ort.</p></article>
-          <article class="step"><h3>Prüfen und freigeben</h3><p>Kontrolliere wichtige Aktionen, Ausgaben und Audit-Informationen vor der Verwendung.</p></article>
+      <section class="section section-rule shell" id="vergleich">
+        <div class="section-heading split-heading"><div><p class="eyebrow">04 // Unterschiede verstehen</p><h2>Der offene Weg zu AI Cowork.</h2></div><p class="section-intro">Claude Cowork, Microsoft Copilot Cowork und LocalAI Cowork bedienen unterschiedliche Ökosysteme. Vergleiche die praktischen Unterschiede, ohne die Produkte gleichzusetzen.</p></div>
+        <div class="comparison-grid" lang="en">
+          <a class="comparison-card" href="../claude-cowork-alternative/"><span class="comparison-code">GUIDE / 01</span><h3>Free Claude Cowork alternative</h3><p>Source access, local models, execution, subscriptions, and cost.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+          <a class="comparison-card" href="../copilot-cowork-alternative/"><span class="comparison-code">GUIDE / 02</span><h3>Copilot Cowork alternative</h3><p>Local desktop work compared with Microsoft 365 automation.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+          <a class="comparison-card" href="../open-source-ai-cowork/"><span class="comparison-code">GUIDE / 03</span><h3>Open-source AI cowork</h3><p>Inspectable source, control, privacy, and extensibility.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
+          <a class="comparison-card" href="../opencowork-alternative/"><span class="comparison-code">GUIDE / 04</span><h3>OpenCowork alternative</h3><p>Compare LocalAI Cowork with the broader open cowork software category.</p><span class="card-arrow" aria-hidden="true">↗</span></a>
         </div>
-      </section>
-
-      <section class="section shell" id="vergleich">
-        <div class="section-heading">
-          <p class="eyebrow">Passenden Arbeitsbereich wählen</p>
-          <h2>Der Open-Source-Weg zu AI Cowork.</h2>
-          <p class="section-intro">LocalAI Cowork konzentriert sich auf einsehbaren Quellcode, lokale Modelle und selbst kontrollierte Werkzeuge. Die englischen Leitfäden vergleichen die jeweiligen Stärken und Grenzen sachlich.</p>
-        </div>
-        <div class="link-grid" lang="en">
-          <a class="topic-card" href="../claude-cowork-alternative/"><strong>Claude Cowork alternative</strong><span>Local models, source access, execution, and subscriptions.</span></a>
-          <a class="topic-card" href="../copilot-cowork-alternative/"><strong>Copilot Cowork alternative</strong><span>Local desktop work compared with Microsoft 365 automation.</span></a>
-          <a class="topic-card" href="../open-source-ai-cowork/"><strong>Open-source AI cowork</strong><span>Source access, control, privacy, and extensibility.</span></a>
-          <a class="topic-card" href="../local-ai-agent-windows/"><strong>Local AI agent for Windows</strong><span>Files, tools, approvals, and models in one desktop app.</span></a>
-        </div>
+        <div class="resource-row" lang="en"><a href="../local-ai-agent-windows/">Local AI agent for Windows <span>→</span></a><a href="../ollama-ai-agent/">Ollama AI agent <span>→</span></a><a href="../private-ai-workspace/">Private AI workspace <span>→</span></a><a href="../ai-coworker-desktop/">AI coworker desktop app <span>→</span></a></div>
       </section>
 
       <section class="section shell" id="community">
-        <div class="community">
-          <p class="eyebrow">Öffentlich entwickelt</p>
-          <h2>Nutzen. Prüfen. Verbessern.</h2>
-          <p>LocalAI Cowork ist noch jung und freut sich über konkrete Fehlerberichte, Funktionsideen, Dokumentationsverbesserungen und fokussierte Pull Requests.</p>
-          <div class="actions">
-            <a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=bug_report.yml">Fehler melden</a>
-            <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=feature_request.yml">Funktion vorschlagen</a>
-            <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/blob/main/CONTRIBUTING.md">Mitmachen</a>
-          </div>
-        </div>
+        <div class="final-cta"><div class="cta-signal" aria-hidden="true"><span></span><span></span><span></span></div><p class="eyebrow">Öffentlich entwickelt</p><h2>Mach den Arbeitsbereich zu deinem.</h2><p>Lade die App herunter, prüfe jede Ebene und gestalte eine offene Alternative für agentische Arbeit mit.</p><div class="actions"><a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">Neuestes Release laden</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/issues/new?template=bug_report.yml">Fehler melden</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork">Auf GitHub ansehen</a></div></div>
       </section>
 
-      <section class="section shell" id="faq">
-        <div class="section-heading"><p class="eyebrow">Wichtige Details</p><h2>Fragen vor der Installation.</h2></div>
+      <section class="section section-rule shell" id="faq">
+        <div class="section-heading split-heading"><div><p class="eyebrow">05 // Vor der Installation</p><h2>Gute Fragen.<br>Klare Antworten.</h2></div><p class="section-intro">LocalAI Cowork ist Software in einer frühen Phase. Diese Grenzen solltest du kennen, bevor du sie für echte Arbeit einsetzt.</p></div>
         <div class="faq">
           <details><summary>Was ist LocalAI Cowork?</summary><p>LocalAI Cowork ist ein quelloffener Windows-Desktop-Arbeitsbereich für KI-gestützte Arbeit. Er vereint Chat, Aufgaben, Dateikontext, Modellkonfiguration, MCP-Server, Werkzeuge, Freigaben und Audit-Informationen.</p></details>
+          <details><summary>Ist LocalAI Cowork dasselbe wie OpenCowork?</summary><p>Nein. OpenCowork und Open Cowork werden von anderen unabhängigen Projekten genutzt. LocalAI Cowork ist separat; der <a href="../opencowork-alternative/" lang="en">OpenCowork alternative guide</a> erklärt, wie man offene Cowork-Tools vergleicht, ohne Produktnamen zu vermischen.</p></details>
           <details><summary>Gehört LocalAI Cowork zum LocalAI-Projekt?</summary><p>Nein. LocalAI Cowork ist ein unabhängiges Projekt und nutzt derzeit Ollama für lokale Modellausführung. Es ist weder mit dem separaten LocalAI-Projekt auf localai.io noch mit Anthropic oder Microsoft verbunden.</p></details>
           <details><summary>Kann ich ein lokales KI-Modell nutzen?</summary><p>Ja. Ollama wird für lokale Modellausführung unterstützt. Zusätzlich kannst du OpenAI-kompatible oder OpenRouter-Endpunkte konfigurieren.</p></details>
           <details><summary>Verlassen meine Daten das Gerät?</summary><p>Die App läuft lokal und die aktuelle Version besitzt keinen implementierten Telemetrie-Sender. Daten verlassen das Gerät nur, wenn du einen entfernten Modell-Endpunkt, Connector, MCP-Server oder ein netzwerkfähiges Tool auswählst. Diese Dienste erhalten die für deine Aktion benötigten Informationen.</p></details>
@@ -163,6 +186,9 @@
       </section>
     </main>
 
-    <footer class="site-footer"><div class="footer-row shell"><span>© 2026 LocalAI Cowork · Apache-2.0 · Unabhängiges Projekt in früher Phase</span><div class="footer-links"><a href="datenschutz.html">Datenschutz</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/security">Sicherheit</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/issues">Fehler &amp; Ideen</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/releases">Releases</a></div></div></footer>
+    <footer class="site-footer">
+      <div class="footer-main shell"><a class="brand footer-brand" href="./"><img src="../assets/logo.png" width="128" height="128" alt=""><span class="brand-name">LocalAI Cowork</span></a><p>Open-Source-AI-Cowork für nachvollziehbare Arbeit.</p><div class="footer-links"><a href="datenschutz.html">Datenschutz</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/security">Sicherheit</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/issues">Fehler &amp; Ideen</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/releases">Releases</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/blob/main/CONTRIBUTING.md">Mitmachen</a></div></div>
+      <div class="footer-base shell"><span>© 2026 LocalAI Cowork</span><span>Apache-2.0 · Unabhängige Software in früher Phase</span></div>
+    </footer>
   </body>
 </html>
