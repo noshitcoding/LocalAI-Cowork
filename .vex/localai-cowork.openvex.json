@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-07-16T00:00:00Z",
-  "version": 1,
+  "timestamp": "2026-07-28T15:00:00Z",
+  "version": 2,
   "statements": [
     {
       "vulnerability": {
@@ -22,6 +22,45 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "LocalAI Cowork maintains and publishes Windows 10 and Windows 11 builds. glib 0.18.5 is pulled only through Tauri's Linux GTK dependency graph and is not compiled into or executed by the supported Windows application. Reassess this statement before adding Linux as a maintained release target."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53666"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The advisory applies only to React Router Framework or Data Mode applications performing manual SSR and hydration. LocalAI Cowork is a client-only Tauri application using BrowserRouter, Routes, and Route in Declarative Mode; it has no React Router loaders, actions, server rendering, hydration pipeline, or deserializeErrors execution path."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53668"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router-dom@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The advisory requires an application-level open redirect. LocalAI Cowork exposes no untrusted redirect destination: every Link, Navigate, and useNavigate target is a fixed internal route or is constructed from a fixed leading-slash route with dynamic values encoded only into query parameters."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53669"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The advisory requires attacker-supplied paths to reach React Router navigation APIs. LocalAI Cowork passes only fixed internal route constants or leading-slash routes with encodeURIComponent-protected query values to Link, Navigate, and useNavigate, so an adversary cannot supply a protocol-relative or backslash navigation target."
     }
   ]
 }
