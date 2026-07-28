@@ -913,8 +913,8 @@ mod tests {
     #[test]
     fn redacts_tokens_embedded_in_urls() {
         assert_eq!(
-            redact_credentials("failed https://user:secret@github.com/a/b"),
-            "failed https://***@github.com/a/b"
+            redact_credentials("failed https://user:placeholder@example.test/a/b"),
+            "failed https://***@example.test/a/b"
         );
     }
 }

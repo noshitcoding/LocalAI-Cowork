@@ -80,6 +80,7 @@ function allowedPrivacyMatch(rule, match, file) {
     return /^(?:example|user|username|runneradmin|wdagtutilityaccount)$/i.test(match[1] ?? '')
   }
   if (rule === 'email-address') {
+    if ((match[0] ?? '').toLowerCase() === 'git@github.com') return true
     const domain = (match[1] ?? '').toLowerCase()
     const topLevel = domain.split('.').at(-1)
     return domain === 'example.com'
