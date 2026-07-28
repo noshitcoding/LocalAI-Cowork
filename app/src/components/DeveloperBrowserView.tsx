@@ -297,7 +297,10 @@ export default function DeveloperBrowserView() {
     try {
       params = JSON.parse(cdpParams)
     } catch (cause) {
-      throw new Error(`Invalid CDP parameter JSON: ${cause instanceof Error ? cause.message : String(cause)}`)
+      throw new Error(
+        `Invalid CDP parameter JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      )
     }
     const result = await safeInvoke<unknown>('developer_browser_cdp_call', {
       request: { method: cdpMethod, params },

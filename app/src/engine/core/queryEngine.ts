@@ -240,14 +240,13 @@ export class QueryEngine {
     const fixedOverheadTokens = estimateTokens(fullSystemPrompt)
       + estimateTokens(JSON.stringify(toolDefs))
     const totalPrevious = messages.length
-    let omittedPrevious = 0
     const initialTrim = this.contextManager.trimToBudget(
       conversation,
       fixedOverheadTokens,
       0.8,
     )
     conversation = initialTrim.messages
-    omittedPrevious = Math.min(totalPrevious, initialTrim.droppedCount)
+    let omittedPrevious = Math.min(totalPrevious, initialTrim.droppedCount)
 
     yield {
       type: 'context_coverage',
