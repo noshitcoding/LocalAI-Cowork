@@ -103,7 +103,51 @@ jobs:
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
           Copy-Item -LiteralPath dist-installers\LocalAI-Cowork-Setup.exe -Destination release-assets\LocalAI-Cowork-Setup-x64.exe -Force
 
+      - name: Resolve installer signing mode
+        id: signing_mode
+        shell: pwsh
+        env:
+          LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE: ${{ vars.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE }}
+          LOCALAI_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 || secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
+          LOCALAI_COWORK_CODESIGN_PASSWORD: ${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD || secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
+          LOCALAI_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT || secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
+        run: |
+          $signingValues = @(
+            $env:LOCALAI_COWORK_CODESIGN_PFX_BASE64
+            $env:LOCALAI_COWORK_CODESIGN_PASSWORD
+            $env:LOCALAI_COWORK_CODESIGN_THUMBPRINT
+          )
+          $configuredValues = @($signingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+
+          if ($configuredValues -eq $signingValues.Count) {
+            "sign=true" >> $env:GITHUB_OUTPUT
+            "unsigned=false" >> $env:GITHUB_OUTPUT
+            "release_notice=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($configuredValues -ne 0) {
+            throw 'The Authenticode configuration is incomplete. Configure all three code-signing secrets.'
+          }
+          if ($env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE -ne 'true') {
+            throw 'Authenticode secrets are required unless the LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE repository variable is explicitly set to true.'
+          }
+
+          "sign=false" >> $env:GITHUB_OUTPUT
+          "unsigned=true" >> $env:GITHUB_OUTPUT
+          "release_notice=WARNING: The Windows installer in this release is not Authenticode-signed. Windows may display Unknown publisher. Verify SHA256SUMS and the GitHub artifact attestations before running it." >> $env:GITHUB_OUTPUT
+          @"
+          WARNING: This Windows installer is not Authenticode-signed.
+          Windows may display "Unknown publisher".
+
+          Release: ${{ steps.release.outputs.tag }}
+          Commit: ${{ github.sha }}
+
+          Verify SHA256SUMS and the GitHub artifact attestations before running it.
+          This exception required the LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE repository variable.
+          "@ | Set-Content -LiteralPath release-assets\UNSIGNED-WINDOWS-INSTALLER.txt -Encoding utf8
+
       - name: Sign and verify Windows installer
+        if: ${{ steps.signing_mode.outputs.sign == 'true' }}
         shell: pwsh
         env:
           LOCALAI_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 || secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
@@ -111,6 +155,15 @@ jobs:
           LOCALAI_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT || secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
         run: |
           .\app\scripts\sign-windows-installer.ps1 -InstallerPath release-assets\LocalAI-Cowork-Setup-x64.exe
+
+      - name: Verify unsigned installer exception
+        if: ${{ steps.signing_mode.outputs.unsigned == 'true' }}
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath release-assets\LocalAI-Cowork-Setup-x64.exe
+          if ($signature.Status -ne 'NotSigned') {
+            throw "Expected an unsigned installer, but Authenticode reported $($signature.Status)."
+          }
 
       - name: Generate SBOM, notices, provenance, and checksums
         working-directory: app
@@ -146,4 +199,5 @@ jobs:
           target_commitish: ${{ github.sha }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
           generate_release_notes: true
+          body: ${{ steps.signing_mode.outputs.release_notice }}
           files: release-assets/*

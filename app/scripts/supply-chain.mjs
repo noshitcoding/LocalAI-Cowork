@@ -313,6 +313,37 @@ export function releaseWorkflowSigningErrors(text) {
   if (/LOCALAI_COWORK_AUTHENTICODE_TEST_MODE|TestAllowUntrustedCertificate|TestSkipTimestamp/i.test(text)) {
     errors.push('Authenticode test bypasses are forbidden in the release workflow')
   }
+  if (text.includes('LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE')) {
+    const requiredUnsignedControls = [
+      [
+        /LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE:\s*\$\{\{\s*vars\.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE\s*}}/,
+        'unsigned releases must require the repository-scoped LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE variable',
+      ],
+      [
+        /if:\s*\$\{\{\s*steps\.signing_mode\.outputs\.sign\s*==\s*'true'\s*}}/,
+        'the Authenticode step must be controlled by the fail-closed signing mode',
+      ],
+      [
+        /\$env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE\s+-ne\s+'true'/,
+        'unsigned releases must require the exact explicit value true',
+      ],
+      [
+        /Get-AuthenticodeSignature[\s\S]*Status\s+-ne\s+'NotSigned'/,
+        'the unsigned exception must verify that the installer is actually unsigned',
+      ],
+      [
+        /UNSIGNED-WINDOWS-INSTALLER\.txt/,
+        'unsigned releases must publish a warning asset',
+      ],
+      [
+        /body:\s*\$\{\{\s*steps\.signing_mode\.outputs\.release_notice\s*}}/,
+        'unsigned releases must display a warning in the GitHub release body',
+      ],
+    ]
+    for (const [pattern, error] of requiredUnsignedControls) {
+      if (!pattern.test(text)) errors.push(error)
+    }
+  }
   return errors
 }
 

@@ -149,6 +149,37 @@ publish: action-gh-release
   assert.ok(releaseWorkflowSigningErrors(`${valid}\nrun: -TestSkipTimestamp`).some((error) => error.includes('test bypasses')))
 })
 
+test('release policy permits only a fail-closed and prominently disclosed unsigned exception', () => {
+  const valid = `
+env:
+  LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE: \${{ vars.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE }}
+  LOCALAI_COWORK_CODESIGN_PFX_BASE64: \${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 }}
+  LOCALAI_COWORK_CODESIGN_PASSWORD: \${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD }}
+  LOCALAI_COWORK_CODESIGN_THUMBPRINT: \${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT }}
+check: if ($env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE -ne 'true') { throw 'Signing required' }
+if: \${{ steps.signing_mode.outputs.sign == 'true' }}
+run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe
+verify: Get-AuthenticodeSignature installer
+if ($signature.Status -ne 'NotSigned') { throw 'Unexpected signature' }
+warning: UNSIGNED-WINDOWS-INSTALLER.txt
+next: supply-chain:sbom
+then: supply-chain:release
+uses: actions/attest-build-provenance@commit
+body: \${{ steps.signing_mode.outputs.release_notice }}
+publish: action-gh-release
+`
+  assert.deepEqual(releaseWorkflowSigningErrors(valid), [])
+  const missingDisclosure = valid
+    .replace('warning: UNSIGNED-WINDOWS-INSTALLER.txt\n', '')
+    .replace('body: \${{ steps.signing_mode.outputs.release_notice }}\n', '')
+  const errors = releaseWorkflowSigningErrors(missingDisclosure)
+  assert.ok(errors.some((error) => error.includes('warning asset')))
+  assert.ok(errors.some((error) => error.includes('release body')))
+  assert.ok(releaseWorkflowSigningErrors(
+    valid.replace('\${{ vars.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE }}', 'true'),
+  ).some((error) => error.includes('repository-scoped')))
+})
+
 test('installer tool discovery preserves a single vswhere path as an array element', () => {
   const installerScript = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'build-installer.ps1'), 'utf8')
   assert.match(installerScript, /\$vswhere\s*=\s*@\(\$vswhereCandidates\)\[0\]/)
