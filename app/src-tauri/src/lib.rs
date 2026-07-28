@@ -5376,23 +5376,20 @@ async fn resolve_task_project_run_context(
                     "file",
                 );
                 if extracted_file_count < TASK_PROJECT_MAX_FILES {
-                    match artifact_pipeline::extract_text_for_llm_limited(
+                    if let Ok((text, truncated)) = artifact_pipeline::extract_text_for_llm_limited(
                         &canonical,
                         TASK_PROJECT_MAX_SOURCE_CHARS,
                     ) {
-                        Ok((text, truncated)) => {
-                            extracted_file_count += 1;
-                            append_bounded_project_context(
-                                &mut prompt_context,
-                                &format!(
-                                    "Project file: {}\n{}{}",
-                                    resource.label.as_deref().unwrap_or(&resource.path),
-                                    text,
-                                    if truncated { "\n[truncated]" } else { "" }
-                                ),
-                            );
-                        }
-                        Err(_) => {}
+                        extracted_file_count += 1;
+                        append_bounded_project_context(
+                            &mut prompt_context,
+                            &format!(
+                                "Project file: {}\n{}{}",
+                                resource.label.as_deref().unwrap_or(&resource.path),
+                                text,
+                                if truncated { "\n[truncated]" } else { "" }
+                            ),
+                        );
                     }
                 }
             }
