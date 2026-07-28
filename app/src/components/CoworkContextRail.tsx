@@ -26,6 +26,9 @@ type CoworkContextRailProps = {
   approvalSteps: string[]
   toolCalls: LiveToolCall[]
   task: Task | null
+  terminalOpen?: boolean
+  terminalHiddenActivity?: boolean
+  onToggleTerminal?: () => void
   onClose: () => void
   onStop: () => void
   onOpenRuns: () => void
@@ -67,6 +70,9 @@ export default function CoworkContextRail({
   approvalSteps,
   toolCalls,
   task,
+  terminalOpen = false,
+  terminalHiddenActivity = false,
+  onToggleTerminal,
   onClose,
   onStop,
   onOpenRuns,
@@ -183,6 +189,16 @@ export default function CoworkContextRail({
                   : tr('No context sent yet')}
             </small>
           </div>
+          {onToggleTerminal ? (
+            <button type="button" className="context-rail-link" onClick={onToggleTerminal}>
+              {terminalOpen
+                ? tr('Hide terminal')
+                : terminalHiddenActivity
+                  ? tr('Show live terminal')
+                  : tr('Open terminal')}
+              <ExternalLink size={12} aria-hidden="true" />
+            </button>
+          ) : null}
         </section>
 
         <section className="context-rail-section" aria-labelledby="context-rail-plan">

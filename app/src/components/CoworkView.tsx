@@ -5,11 +5,10 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { ArrowRight, CheckCircle2, ChevronDown, Clock3, ListTodo, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, Loader2, Settings2, ShieldAlert, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
-import { formatWorkTaskStatus } from '../engine/tasks/workTaskExecutionService'
 import {
   resolveTaskProjectRunContext,
   type TaskProjectRunContext,
@@ -55,8 +54,6 @@ import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFro
 // Ollama streaming is now handled by the engine
 import { MessageThinking, MessageVerbose } from './MessageThinking'
 import { HighlightedChatText } from './HighlightedChatText'
-import GuidedOnboarding from './GuidedOnboarding'
-import CoworkQuickPrompts from './CoworkQuickPrompts'
 import CoworkContextRail from './CoworkContextRail'
 import { writeAuditEvent } from '../utils/audit'
 import { persistInvoke } from '../stores/chatStore'
@@ -814,7 +811,6 @@ export default function CoworkView() {
   const [askUserFreeText, setAskUserFreeText] = useState('')
   const [slashSuggestionsOpen, setSlashSuggestionsOpen] = useState(false)
   const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] = useState(0)
-  const [contextRailOpen, setContextRailOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1500)
   const [contextEvidenceRun, setContextEvidenceRun] = useState<{ runId: string; threadId: string | null } | null>(null)
   const ollama = useConfigStore((s) => s.ollama)
   const availableModels = useConfigStore((s) => s.availableModels)
@@ -839,6 +835,8 @@ export default function CoworkView() {
   const liveThinkingThreadId = useEngineStore((s) => s.conversationThreadId)
   const workingFolder = useUiStore((s) => s.workingFolder)
   const workingPathKind = useUiStore((s) => s.workingPathKind)
+  const contextDrawerOpen = useUiStore((s) => s.contextDrawerOpen)
+  const setContextDrawerOpen = useUiStore((s) => s.setContextDrawerOpen)
   const showTimestamps = useConfigStore((s) => s.preferences.showTimestamps)
   const compactMode = useConfigStore((s) => s.preferences.compactMode)
   const verboseMode = useConfigStore((s) => s.preferences.verboseMode)
@@ -904,13 +902,6 @@ export default function CoworkView() {
     setSearchParams(next, { replace: true })
     window.requestAnimationFrame(() => inputRef.current?.focus())
   }, [requestedSlashDraft, searchParams, setSearchParams])
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mediaQuery = window.matchMedia('(min-width: 1500px)')
-    const handleChange = (event: MediaQueryListEvent) => setContextRailOpen(event.matches)
-    mediaQuery.addEventListener('change', handleChange)
-    return () => mediaQuery.removeEventListener('change', handleChange)
-  }, [])
   useEffect(() => {
     setContextEvidenceRun((current) => {
       if (currentRunId) return { runId: currentRunId, threadId: activeThreadId }
@@ -989,11 +980,6 @@ export default function CoworkView() {
   const providerState = useMemo(
     () => getChatProviderState(providerContext, activeProvider, activeThread?.providerSettings),
     [activeProvider, activeThread?.providerSettings, providerContext],
-  )
-  const providerConfigured = Boolean(
-    providerState.endpoint.trim()
-    && providerState.model.trim()
-    && (providerState.provider === 'ollama' || providerState.apiKey.trim()),
   )
   const selectableModels = providerState.selectableModels
 
@@ -3403,32 +3389,7 @@ export default function CoworkView() {
     return null
   }
 
-  const quickPrompts = [
-    tr('Create a clear 5-step plan for the current task.'),
-    tr('Analyze the latest changes and list risks.'),
-    tr('Write the next concrete to-dos with priority.'),
-  ]
   const onboardingWorkingFolder = workingFolder ?? attachments.find((item) => item.kind === 'folder')?.path ?? null
-  const chatRunnerConfigured = chatUsesCrew ? Boolean(selectedChatCrew) : providerConfigured
-  const onboardingPermissionLabel = enginePermissionMode === 'plan'
-    ? tr('Plan-Mode')
-    : enginePermissionMode === 'bypass'
-      ? tr('Bypass')
-      : enginePermissionMode === 'strict'
-        ? tr('Strikt')
-        : tr('Standard')
-  const runStatusLabel = engineStatus === 'streaming'
-    ? tr('Responding')
-    : engineStatus === 'tool_running'
-      ? tr('Using tools')
-      : engineStatus === 'waiting_approval'
-        ? tr('Needs approval')
-        : engineStatus === 'error'
-          ? tr('Action needed')
-          : chatRunnerConfigured
-            ? tr('Ready')
-            : tr('Needs setup')
-  const runbarState = !chatRunnerConfigured && engineStatus === 'idle' ? 'waiting_approval' : engineStatus
 
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -3464,72 +3425,15 @@ export default function CoworkView() {
 
   return (
     <div className={`cowork-view ${compactMode ? 'compact-mode' : ''}`}>
-      <div className={`cowork-workspace${contextRailOpen ? ' context-open' : ''}`}>
+      <div className={`cowork-workspace${contextDrawerOpen ? ' context-open' : ''}`}>
         {/* Chat Pane */}
         <div className="cowork-pane">
-          <div className="cowork-runbar">
-            <div className={`cowork-runbar-state state-${runbarState}`}>
-              <span aria-hidden="true" />
-              <div><strong>{runStatusLabel}</strong><small>{providerState.label} · {providerState.model || tr('no model set')}</small></div>
-            </div>
-            {activeWorkTask ? (
-              <button
-                type="button"
-                className="cowork-runbar-task"
-                aria-label={`${tr('Open current task')}: ${activeWorkTask.title}`}
-                onClick={() => navigate(`/tasks?task=${encodeURIComponent(activeWorkTask.id)}`)}
-              >
-                <ListTodo size={15} aria-hidden="true" />
-                <span className="cowork-runbar-task-copy">
-                  <small>{tr('Back to task')}</small>
-                  <strong>{activeWorkTask.title}</strong>
-                </span>
-                <span className={`cowork-runbar-task-status status-${activeWorkTask.status}`}>
-                  {formatWorkTaskStatus(activeWorkTask.status)}
-                </span>
-                <ArrowRight className="cowork-runbar-task-arrow" size={14} aria-hidden="true" />
-              </button>
-            ) : null}
-            <div className="cowork-runbar-meta">
-              <span>{activeThreadId ? tr('Chat saved') : tr('No chat selected')}</span>
-              <span>{contextWarning.level === 'none' ? tr('Context stable') : `${tr('Context')} · ${tr(contextWarning.level)}`}</span>
-            </div>
-            <div className="cowork-runbar-actions">
-            <button
-              type="button"
-              className="btn-sm"
-              onClick={() => setTerminalDockOpen(terminalThreadId, !terminalDockOpen)}
-            >
-              {terminalDockOpen
-                ? tr('Terminal ausblenden')
-                : terminalHiddenActivity
-                  ? tr('Terminal Live einblenden')
-                  : tr('Terminal Live')}
-            </button>
-            <button
-              type="button"
-              className={`btn-sm cowork-context-toggle${contextRailOpen ? ' active' : ''}`}
-              aria-expanded={contextRailOpen}
-              aria-controls="cowork-context-rail"
-              onClick={() => setContextRailOpen((open) => !open)}
-            >
-              <PanelRightOpen size={14} aria-hidden="true" />{tr('Run context')}
-            </button>
-          </div>
-          </div>
-
         <div className="cowork-messages" ref={logRef}>
           {renderedMessages.length === 0 && !busy && (
-            <GuidedOnboarding
-              providerLabel={chatUsesCrew ? tr('Crew') : providerState.label}
-              model={selectedChatCrew?.name ?? providerState.model}
-              providerConfigured={chatRunnerConfigured}
-              workingFolder={onboardingWorkingFolder}
-              permissionLabel={onboardingPermissionLabel}
-              onChooseFolder={() => void handleAttachFolders()}
-              onOpenSettings={() => navigate(chatUsesCrew ? '/crew' : `/settings?provider=${providerState.provider}`)}
-              onUseStarterTask={applyPromptToInput}
-            />
+            <div className="cowork-empty-hint">
+              <Sparkles size={15} aria-hidden="true" />
+              <span>{tr('Describe what you want to accomplish. Getting started is available in the main menu.')}</span>
+            </div>
           )}
           {hiddenRenderedMessageCount > 0 && (
             <div className="message-window-notice">
@@ -3833,10 +3737,6 @@ export default function CoworkView() {
 
         {error && <p className="error cowork-error">{error}</p>}
 
-        {renderedMessages.length === 0 && !busy && !inputValue.trim() ? (
-          <CoworkQuickPrompts prompts={quickPrompts} onSelect={applyPromptToInput} />
-        ) : null}
-
           <form className="cowork-input" onSubmit={handleSend}>
           <div className="chat-input-main">
             {activeProject && (
@@ -4124,26 +4024,33 @@ export default function CoworkView() {
           </form>
         </div>
 
-        {contextRailOpen && <button type="button" className="context-rail-scrim" onClick={() => setContextRailOpen(false)} aria-hidden="true" tabIndex={-1} />}
-        <CoworkContextRail
-          open={contextRailOpen}
-          engineStatus={engineStatus}
-          error={error}
-          threadId={activeThreadId}
-          runId={contextEvidenceRun?.runId ?? null}
-          providerLabel={chatUsesCrew ? tr('Crew') : providerState.label}
-          model={selectedChatCrew?.name ?? providerState.model}
-          workingContext={onboardingWorkingFolder}
-          contextWarning={contextWarning}
-          contextCoverage={contextCoverage}
-          approvalSteps={approvalSteps}
-          toolCalls={contextToolCalls}
-          task={contextTask}
-          onClose={() => setContextRailOpen(false)}
-          onStop={handleStop}
-          onOpenRuns={() => navigate('/settings?section=runs')}
-          onOpenTasks={() => navigate('/tasks')}
-        />
+        {contextDrawerOpen && (
+          <>
+            <button type="button" className="context-rail-scrim" onClick={() => setContextDrawerOpen(false)} aria-hidden="true" tabIndex={-1} />
+            <CoworkContextRail
+              open
+              engineStatus={engineStatus}
+              error={error}
+              threadId={activeThreadId}
+              runId={contextEvidenceRun?.runId ?? null}
+              providerLabel={chatUsesCrew ? tr('Crew') : providerState.label}
+              model={selectedChatCrew?.name ?? providerState.model}
+              workingContext={onboardingWorkingFolder}
+              contextWarning={contextWarning}
+              contextCoverage={contextCoverage}
+              approvalSteps={approvalSteps}
+              toolCalls={contextToolCalls}
+              task={contextTask}
+              terminalOpen={terminalDockOpen}
+              terminalHiddenActivity={terminalHiddenActivity}
+              onToggleTerminal={() => setTerminalDockOpen(terminalThreadId, !terminalDockOpen)}
+              onClose={() => setContextDrawerOpen(false)}
+              onStop={handleStop}
+              onOpenRuns={() => navigate('/settings?section=runs')}
+              onOpenTasks={() => navigate('/tasks')}
+            />
+          </>
+        )}
       </div>
     </div>
   )

@@ -333,11 +333,6 @@ export default function DeveloperBrowserView() {
   return (
     <main className="developer-browser-view">
       <header className="developer-browser-header">
-        <div>
-          <span className="developer-browser-kicker">Developer browser</span>
-          <h1>Preview, inspect, annotate, verify</h1>
-          <p>Chromium runs in an isolated profile and is controlled through the Chrome DevTools Protocol.</p>
-        </div>
         <div className="developer-browser-session">
           <span className={session.active ? 'is-active' : ''}>
             <Circle size={9} fill="currentColor" aria-hidden="true" />

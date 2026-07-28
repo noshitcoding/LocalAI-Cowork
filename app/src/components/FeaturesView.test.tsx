@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import FeaturesView from './FeaturesView'
@@ -8,7 +8,7 @@ vi.mock('./MemoryPanel', () => ({ default: () => <div>Knowledge workbench conten
 vi.mock('./SkillPanel', () => ({ default: () => <div>Skills workbench content</div> }))
 
 describe('FeaturesView', () => {
-  it('opens the requested operational tab instead of a feature-status page', () => {
+  it('opens the requested workbench without an internal tab bar', () => {
     render(
       <MemoryRouter initialEntries={['/features?tab=knowledge']}>
         <FeaturesView />
@@ -16,31 +16,22 @@ describe('FeaturesView', () => {
     )
 
     expect(screen.getByText('Knowledge workbench content')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Knowledge base' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('region', { name: 'Knowledge base' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
   })
 
-  it('switches directly between MCP, knowledge, and skills tools', () => {
+  it.each([
+    ['mcp', 'MCP Server', 'MCP workbench content'],
+    ['knowledge', 'Knowledge base', 'Knowledge workbench content'],
+    ['skills', 'Skills', 'Skills workbench content'],
+  ])('supports direct URLs for the %s workbench', (tab, label, content) => {
     render(
-      <MemoryRouter initialEntries={['/features?tab=mcp']}>
+      <MemoryRouter initialEntries={[`/features?tab=${tab}`]}>
         <FeaturesView />
       </MemoryRouter>,
     )
 
-    expect(screen.getByText('MCP workbench content')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: 'Skills' }))
-    expect(screen.getByText('Skills workbench content')).toBeInTheDocument()
-  })
-
-  it('supports arrow-key navigation across capability tabs', () => {
-    render(
-      <MemoryRouter initialEntries={['/features?tab=mcp']}>
-        <FeaturesView />
-      </MemoryRouter>,
-    )
-
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'MCP Server' }), { key: 'ArrowRight' })
-
-    expect(screen.getByRole('tab', { name: 'Knowledge base' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('Knowledge workbench content')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: label })).toBeInTheDocument()
+    expect(screen.getByText(content)).toBeInTheDocument()
   })
 })

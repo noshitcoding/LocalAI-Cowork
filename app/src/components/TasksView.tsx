@@ -2,7 +2,6 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { CalendarClock, ListTodo, PlayCircle } from 'lucide-react'
 import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
@@ -1052,24 +1051,8 @@ export default function TasksView() {
   const selectedCrewScheduleMetadata = selectedTask?.runner === 'crew'
     ? readCrewScheduleSnapshotMetadata(selectedScheduledTask?.crewSnapshotJson)
     : null
-  const activeTaskCount = tasks.filter((task) => task.status === 'running' || task.status === 'waiting_approval').length
-  const scheduledTaskCount = tasks.filter((task) => Boolean(findScheduledTask(scheduledTasks, task.id))).length
-
   return (
     <div className="task-view" data-doc-id="view:/tasks">
-      <header className="task-view-header">
-        <div className="task-view-heading">
-          <span className="task-view-kicker">{tr('Task command center')}</span>
-          <h1>{tr('Tasks')}</h1>
-          <p>{tr('Create tasks, assign a crew or model, start them, and schedule each task.')}</p>
-        </div>
-        <div className="task-view-metrics" aria-label={tr('Task overview')}>
-          <span><ListTodo size={16} aria-hidden="true" /><strong>{tasks.length}</strong>{tr('Total')}</span>
-          <span><PlayCircle size={16} aria-hidden="true" /><strong>{activeTaskCount}</strong>{tr('Active')}</span>
-          <span><CalendarClock size={16} aria-hidden="true" /><strong>{scheduledTaskCount}</strong>{tr('Scheduled')}</span>
-        </div>
-      </header>
-
       <TaskCreatePanel
         crews={crews}
         projects={projects}

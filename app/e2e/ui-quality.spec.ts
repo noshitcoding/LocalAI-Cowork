@@ -12,7 +12,7 @@ type ProductTheme = 'light' | 'dark'
 const PRODUCT_SURFACES: ProductSurface[] = [
   { id: 'cowork', path: '/', ready: '.cowork-pane' },
   { id: 'tasks', path: '/tasks', ready: '[data-doc-id="view:/tasks"]' },
-  { id: 'crew', path: '/crew', ready: '.crew-shell-top' },
+  { id: 'crew', path: '/crew', ready: '.crew-shell' },
   { id: 'projects', path: '/projects', ready: '.project-view' },
   { id: 'features', path: '/features', ready: '.feature-workbench' },
   { id: 'settings', path: '/settings', ready: '.settings-layout' },
@@ -87,7 +87,7 @@ test.beforeEach(async ({ context, page }) => {
       state: {
         activeMode: 'work',
         leftSidebarOpen: true,
-        leftSidebarWidth: 320,
+        leftSidebarWidth: 260,
         theme,
       },
       version: 0,
@@ -123,35 +123,57 @@ for (const theme of THEMES) {
   }
 }
 
-test('guided onboarding stays discoverable and prepares a safe first task', async ({ page }) => {
+test('minimal shell keeps onboarding and context inside the two drawers', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 650 })
   await openStableSurface(page, PRODUCT_SURFACES[0])
 
-  await expect(page.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toBeVisible()
-  await page.getByRole('button', { name: 'Run context' }).click()
+  await expect(page.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toHaveCount(0)
+  await expect(page.getByText(/Getting started is available in the main menu/)).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Run context' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  const menu = page.getByRole('dialog', { name: 'Main menu' })
+  await expect(menu).toBeVisible()
+  await expect(menu.getByRole('searchbox', { name: 'Search areas and commands' })).toBeFocused()
+  await menu.getByText('Getting started', { exact: true }).click()
+  await expect(menu.getByText('Choose a model in the chat controls.')).toBeVisible()
+
+  await menu.getByRole('button', { name: /Context & status/ }).click()
+  await expect(menu).toHaveCount(0)
   await expect(page.getByRole('complementary', { name: 'Run context' })).toBeVisible()
   await page.getByRole('button', { name: 'Close run context' }).click()
-  await expect(page.getByRole('complementary', { name: 'Run context' })).toBeHidden()
-  await page.getByRole('button', { name: 'Dismiss onboarding' }).click()
-  await page.getByRole('button', { name: 'Open getting started' }).click()
-  await page.evaluate(() => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {
-        invoke: async (command: string) => (
-          command === 'plugin:dialog|open' ? ['C:\\workspace'] : null
-        ),
-      },
-    })
-  })
-  await page.getByRole('button', { name: 'Context', exact: true }).click()
-  await page.getByRole('button', { name: 'Choose a working folder' }).click()
-  await expect(page.getByRole('button', { name: 'Choose another folder' })).toBeVisible()
-  await page.getByRole('button', { name: 'Control' }).click()
-  await page.getByRole('button', { name: 'Use starter task' }).click()
+  await expect(page.getByRole('complementary', { name: 'Run context' })).toHaveCount(0)
+})
 
-  await expect(page.getByRole('textbox', { name: 'Message input' })).toHaveValue(/create a concise project brief/i)
-  await expect(page.getByRole('button', { name: 'Open getting started' })).toBeVisible()
+test('burger navigation has deterministic focus and closes on route changes', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 650 })
+  await openStableSurface(page, PRODUCT_SURFACES[0])
+
+  await page.keyboard.press('Control+K')
+  const menu = page.getByRole('dialog', { name: 'Main menu' })
+  const search = menu.getByRole('searchbox', { name: 'Search areas and commands' })
+  await expect(search).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(menu.getByRole('button', { name: 'Close menu' })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(search).toBeFocused()
+
+  const menuAccessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze()
+  expect(formatViolations(menuAccessibility.violations)).toEqual([])
+  await expect(page).toHaveScreenshot('burger-menu-light-compact.png', { fullPage: false })
+
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Open main menu' })).toBeFocused()
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  await menu.getByRole('button', { name: /^Settings/ }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page.getByRole('heading', { name: 'AI & model' })).toBeVisible()
+  await expect(menu).toHaveCount(0)
 })
 
 test('run context renders persisted events and artifacts', async ({ page }) => {
@@ -215,6 +237,8 @@ test('run context renders persisted events and artifacts', async ({ page }) => {
   })
 
   await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: '/?preserve-e2e-state=1' })
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  await page.getByRole('dialog', { name: 'Main menu' }).getByRole('button', { name: /Context & status/ }).click()
   await expect(page.getByText('Wrote release report')).toBeVisible()
   await expect(page.getByText('Release report', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Open output: Release report' }).click()

@@ -197,65 +197,26 @@ describe('SettingsView', () => {
     resetEngineStore()
   })
 
-  /* 1. sidebar renders all 9 categories */
-  it('renders all 9 category buttons in sidebar', () => {
-    renderSettingsView()
-    const tabs = screen.getByRole('tablist', { name: 'Settings categories' })
-    const buttons = tabs.querySelectorAll('.settings-nav-item')
-    expect(buttons.length).toBe(9)
+  it('renders only the category selected by the URL', () => {
+    renderSettingsView(['/settings?section=security'])
+
+    expect(screen.getByLabelText('Security & data')).toBeInTheDocument()
+    expect(screen.queryByLabelText('AI & model')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.queryByRole('searchbox', { name: 'Search settings' })).not.toBeInTheDocument()
   })
 
-  it('filters settings categories by label and description', () => {
-    renderSettingsView()
-    const search = screen.getByRole('searchbox', { name: 'Search settings' })
-
-    fireEvent.change(search, { target: { value: 'file access' } })
-
-    const tabs = screen.getAllByRole('tab')
-    expect(tabs).toHaveLength(1)
-    expect(tabs[0]).toHaveTextContent('Security & data')
-
-    fireEvent.click(tabs[0])
-    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
-
-    fireEvent.change(search, { target: { value: 'definitely missing' } })
-    expect(screen.getByRole('status')).toHaveTextContent('No settings sections match your search')
-    expect(screen.queryByRole('heading', { level: 1, name: 'Security & data' })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
-    expect(screen.getAllByRole('tab')).toHaveLength(9)
-    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
-  })
-
-  it('finds the category for a concrete setting instead of only category copy', () => {
-    renderSettingsView(['/settings?section=ui'])
-
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Search settings' }), { target: { value: 'API key' } })
-
-    const tabs = screen.getAllByRole('tab')
-    expect(tabs).toHaveLength(1)
-    expect(tabs[0]).toHaveTextContent('AI & model')
-    expect(screen.getByRole('heading', { level: 1, name: 'AI & model' })).toBeInTheDocument()
-  })
-
-  it('matches German setting terms and umlaut spellings', async () => {
+  it('localizes the directly selected category', async () => {
     await i18n.changeLanguage('de')
     renderSettingsView(['/settings?section=ui'])
-    const search = screen.getByRole('searchbox', { name: 'Einstellungen durchsuchen' })
 
-    fireEvent.change(search, { target: { value: 'API-Schlüssel' } })
-    expect(screen.getAllByRole('tab')).toHaveLength(1)
-    expect(screen.getByRole('heading', { level: 1, name: 'KI & Modell' })).toBeInTheDocument()
-
-    fireEvent.change(search, { target: { value: 'oberflaeche' } })
-    expect(screen.getAllByRole('tab')).toHaveLength(1)
-    expect(screen.getByRole('heading', { level: 1, name: 'Oberfläche' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Oberfläche')).toBeInTheDocument()
   })
 
   /* 2. default category is AI & model */
   it('shows AI & model content by default', () => {
     renderSettingsView()
-    expect(screen.getByRole('heading', { level: 1, name: 'AI & model' })).toBeInTheDocument()
+    expect(screen.getByLabelText('AI & model')).toBeInTheDocument()
   })
 
   it('summarizes provider readiness and highlights OpenRouter free models', () => {
@@ -275,8 +236,8 @@ describe('SettingsView', () => {
 
   it('opens a category from the section query parameter', () => {
     renderSettingsView(['/settings?section=security'])
-    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Security & data' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Security & data')).toBeInTheDocument()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   })
 
   it('opens and focuses a provider requested by the recovery link', async () => {
@@ -287,46 +248,30 @@ describe('SettingsView', () => {
     await waitFor(() => expect(screen.getByLabelText('OpenRouter API Key')).toHaveFocus())
   })
 
-  /* 3. navigation switches categories */
-  it('switches to Agent & Skills when clicked', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Agent & Skills' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Agent & Skills' })).toBeInTheDocument()
-  })
-
-  it('switches categories through the compact selector', () => {
-    renderSettingsView()
-    const selector = screen.getByRole('combobox', { name: 'Settings categories' })
-
-    expect(selector).toHaveValue('ai')
-    fireEvent.change(selector, { target: { value: 'security' } })
-
-    expect(selector).toHaveValue('security')
-    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
+  it('opens Agent & Skills through its direct URL', () => {
+    renderSettingsView(['/settings?section=agent'])
+    expect(screen.getByLabelText('Agent & Skills')).toBeInTheDocument()
   })
 
   /* 4. Interface category */
   it('switches to Interface category', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Interface' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Interface' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=ui'])
+    expect(screen.getByLabelText('Interface')).toBeInTheDocument()
     expect(screen.getByText('Focus mode')).toBeInTheDocument()
     expect(screen.getByText('Compact mode')).toBeInTheDocument()
   })
 
   /* 5. security category */
   it('switches to Security & data category', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Security & data' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Security & data' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=security'])
+    expect(screen.getByLabelText('Security & data')).toBeInTheDocument()
     expect(screen.getByText('Read-only mode')).toBeInTheDocument()
   })
 
   /* 6. System & Info shows runtime info */
   it('switches to System & Info and shows runtime info', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'System & Info' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'System & Info' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=system'])
+    expect(screen.getByLabelText('System & Info')).toBeInTheDocument()
     expect(screen.getByText('Local LLM endpoint')).toBeInTheDocument()
     expect(screen.getByText('http://localhost:11434')).toBeInTheDocument()
     expect(screen.getByText('Default model')).toBeInTheDocument()
@@ -340,31 +285,27 @@ describe('SettingsView', () => {
 
   /* 7. Memory category renders */
   it('switches to Memory category', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Memory' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Memory' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=memory'])
+    expect(screen.getByLabelText('Memory')).toBeInTheDocument()
   })
 
   /* 8. Runs & Insights category renders */
   it('switches to Runs & Insights', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Runs & Insights' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs & Insights' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=runs'])
+    expect(screen.getByLabelText('Runs & Insights')).toBeInTheDocument()
   })
 
   /* 9. Terminal & Processes category renders */
   it('switches to Terminal & Processes', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal & Processes' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Terminal & Processes' })).toBeInTheDocument()
+    renderSettingsView(['/settings?section=terminal'])
+    expect(screen.getByLabelText('Terminal & Processes')).toBeInTheDocument()
     expect(screen.getByText('Terminal dock')).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Persistence' })).toHaveValue('runtime')
   })
 
   /* 10. MCP Server category renders */
   it('switches to MCP Server', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'MCP Server' }))
+    renderSettingsView(['/settings?section=mcp'])
     // McpView also has an h1 "MCP Server", so check for the settings toggle instead
     expect(screen.getByText('Auto-reconnect')).toBeInTheDocument()
     expect(screen.getByText('Verbose logging')).toBeInTheDocument()
@@ -406,8 +347,7 @@ describe('SettingsView', () => {
 
   /* 14. Toggle updates preference */
   it('toggles autoApproveSafeTools preference', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Agent & Skills' }))
+    renderSettingsView(['/settings?section=agent'])
     const toggleBtn = screen.getByText('Automatically approve safe tools').closest('.toggle-row')!.querySelector('button[role="switch"]')!
     expect(toggleBtn.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(toggleBtn)
@@ -488,8 +428,7 @@ describe('SettingsView', () => {
 
   /* 17. Number input for maxToolCalls */
   it('updates maxToolCallsPerLoop preference', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Agent & Skills' }))
+    renderSettingsView(['/settings?section=agent'])
     const input = screen.getByDisplayValue('12')
     fireEvent.change(input, { target: { value: '25' } })
     expect(useConfigStore.getState().preferences.maxToolCallsPerLoop).toBe(25)
@@ -497,50 +436,23 @@ describe('SettingsView', () => {
 
   /* 18. Font scale input in Interface */
   it('updates fontScale preference', () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Interface' }))
+    renderSettingsView(['/settings?section=ui'])
     const input = screen.getByDisplayValue('100')
     fireEvent.change(input, { target: { value: '110' } })
     expect(useConfigStore.getState().preferences.fontScale).toBe(110)
   })
 
-  /* 19. active category button gets active class */
-  it('highlights the active category button', () => {
-    renderSettingsView()
-    const tabs = screen.getByRole('tablist', { name: 'Settings categories' })
-    const aiBtn = tabs.querySelector('.settings-nav-item.active')!
-    expect(aiBtn.textContent).toContain('AI & model')
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Interface' }))
-    const uiBtn = tabs.querySelector('.settings-nav-item.active')!
-    expect(uiBtn.textContent).toContain('Interface')
-  })
-
-  /* 20. sidebar has navigation role */
-  it('sidebar has proper tablist role', () => {
-    renderSettingsView()
-    expect(screen.getByRole('tablist', { name: 'Settings categories' })).toBeInTheDocument()
-  })
-
   it('updates visible settings text when the language changes', async () => {
-    renderSettingsView()
-    fireEvent.click(screen.getByRole('tab', { name: 'Terminal & Processes' }))
+    renderSettingsView(['/settings?section=terminal'])
 
     expect(screen.getByRole('option', { name: 'Runtime only' })).toBeInTheDocument()
 
     await i18n.changeLanguage('de')
 
     await waitFor(() => {
-      expect(screen.getByRole('tablist', { name: 'Einstellungskategorien' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Terminal & Prozesse')).toBeInTheDocument()
     })
     expect(screen.getByRole('option', { name: 'Nur Laufzeit' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('tab', { name: 'KI & Modell' }))
-    expect(screen.getByText('Mehrere Endpunkte parallel verwalten und pro Provider ein globales Standardprofil für Auswahllisten und Rückfälle festlegen.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Persönlichkeiten verwalten' })).toBeInTheDocument()
-    expect(await screen.findByText('Entwickle wartbare Software mit verifizierten Ergebnissen.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Persönlichkeit auswählen Kreativ' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Persönlichkeit löschen Assistent' })).toBeInTheDocument()
   })
 
   it('creates a support bundle from system settings', async () => {

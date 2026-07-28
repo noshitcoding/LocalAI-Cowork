@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useConfigStore, type OllamaConfig } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
 import { resolveCrewAgentWithProfile, useCrewStore, type AgentRole, type CrewAgent, type CrewExternalProviderConfig, type CrewOutputMode, type CrewPersonalityProfile, type CrewProcess, type CrewProviderKind, type CrewProviderProfiles, type CrewRuntimeConfig } from '../stores/crewStore'
@@ -11,7 +11,8 @@ import CrewHistoryPanel from './crew/CrewHistoryPanel'
 import CrewRuntimePanel from './crew/CrewRuntimePanel'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { tr } from '../i18n'
-import { ArrowRight, ChevronDown, ListCollapse, ListTree, MousePointerClick, Settings2, Trash2, UsersRound, Workflow } from 'lucide-react'
+import { SHELL_CONTEXT_ACTION_EVENT, type ShellContextAction } from '../product/shellContextActions'
+import { ArrowRight, ChevronDown, ListCollapse, ListTree, MousePointerClick, Settings2, UsersRound, Workflow } from 'lucide-react'
 
 const ROLE_OPTIONS: AgentRole[] = ['researcher', 'writer', 'reviewer', 'planner', 'executor', 'analyst', 'custom']
 const PROCESS_OPTIONS: Array<{ value: CrewProcess; label: string }> = [
@@ -326,6 +327,7 @@ ollamaConfig?: { model?: string }) {
 
 export default function CrewPanel() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const {
     crews,
     activeCrewId,
@@ -361,6 +363,20 @@ export default function CrewPanel() {
   const activeCrewDetailsRef = useRef<HTMLDivElement | null>(null)
   const diagnosticsHeaderRef = useRef<HTMLButtonElement | null>(null)
   const providerCredentialTokensRef = useRef(new Map<string, string>())
+  const requestedCrewSection = searchParams.get('section')
+  const activeCrewSection = ['general', 'execution', 'provider', 'diagnostics', 'members', 'mission'].includes(requestedCrewSection ?? '')
+    ? requestedCrewSection ?? 'general'
+    : 'general'
+
+  useEffect(() => {
+    setOpenSections({
+      general: activeCrewSection === 'general',
+      execution: activeCrewSection === 'execution',
+      provider: activeCrewSection === 'provider',
+      diagnostics: activeCrewSection === 'diagnostics',
+      members: activeCrewSection === 'members',
+    })
+  }, [activeCrewSection])
 
   useEffect(() => {
     loadAgents()
@@ -857,6 +873,18 @@ export default function CrewPanel() {
     }
   }
 
+  useEffect(() => {
+    const handleContextAction = (event: Event) => {
+      const action = (event as CustomEvent<ShellContextAction>).detail
+      if (action === 'crew-duplicate') void handleDuplicateCrew()
+      if (action === 'crew-export') handleExportCrew()
+      if (action === 'crew-import') importCrewInputRef.current?.click()
+      if (action === 'crew-delete' && activeCrew) deleteCrew(activeCrew.id)
+    }
+    window.addEventListener(SHELL_CONTEXT_ACTION_EVENT, handleContextAction)
+    return () => window.removeEventListener(SHELL_CONTEXT_ACTION_EVENT, handleContextAction)
+  })
+
   const handleLoadProviderModels = async (providerKey: 'openAICompatible' | 'openRouter') => {
     const config = resolvedActiveProviderConfigs[providerKey]
     if (!config) return
@@ -918,8 +946,6 @@ export default function CrewPanel() {
   const profileBackedAgentCount = activeCrew?.agents.filter((agent) => Boolean(agent.personalityId)).length ?? 0
   const configuredToolCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.tools)).size : 0
   const configuredMcpCount = activeCrew ? new Set(activeCrew.agents.flatMap((agent) => agent.mcpServerNames)).size : 0
-  const activeCrewNeedsMission = Boolean(activeCrew && activeCrew.tasks.length === 0)
-  const activeCrewBlockerCount = activeCrewDiagnostics.errors.length + (activeCrewNeedsMission ? 1 : 0)
   const activeCrewHasProviderBlocker = activeCrewDiagnostics.errors.some((entry) => (
     entry.includes('OpenRouter') || entry.includes('OpenAI-compatible')
   ))
@@ -933,30 +959,8 @@ export default function CrewPanel() {
     : activeCrew?.outputMode === 'json'
       ? 'JSON'
       : 'Standard'
-  const reviewActiveCrewBlockers = () => {
-    setOpenSections((sections) => ({ ...sections, diagnostics: true }))
-    diagnosticsHeaderRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
-    diagnosticsHeaderRef.current?.focus({ preventScroll: true })
-  }
-
   return (
     <div className="panel crew-shell">
-      <div className="crew-shell-top">
-        <div className="crew-header">
-          <div className="crew-header-copy">
-            <div className="crew-header-eyebrow">{tr("Crew Workspace")}</div>
-            <div className="crew-header-title">
-              <span className="crew-header-icon" aria-hidden="true"><UsersRound size={24} strokeWidth={1.9} /></span>
-              <span>{tr("Crew AI")}</span>
-            </div>
-            <div className="crew-header-subtitle">{tr("Plan roles, governance, and reproducible runs in a clean workspace instead of cramped individual cards.")}</div>
-          </div>
-          <div className="crew-header-badge" aria-label={tr("Crew-Uebersicht")}>
-            <strong>{crews.length}</strong>
-            <span>{tr(crews.length === 1 ? 'Crew configured' : 'Crews configured')}</span>
-          </div>
-        </div>
-      </div>
       <input ref={importCrewInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={(event) => void handleImportCrew(event)} />
 
       <div className="crew-toolbar">
@@ -984,56 +988,12 @@ export default function CrewPanel() {
               {activeCrew?.status === 'completed' || activeCrew?.status === 'failed' || activeCrew?.status === 'canceled' ? tr('Run again') : tr('Run crew')}
             </button>
           )}
-          <button type="button" className="crew-toolbar-btn secondary" onClick={handleDuplicateCrew} disabled={!activeCrew}>{tr("Duplicate")}</button>
-          <button type="button" className="crew-toolbar-btn secondary" onClick={handleExportCrew} disabled={!activeCrew}>{tr("Export")}</button>
-          <button type="button" className="crew-toolbar-btn secondary" onClick={() => importCrewInputRef.current?.click()}>{tr("Import")}</button>
           <button type="button" className="crew-toolbar-btn secondary crew-toolbar-toggle" aria-pressed={isCrewListVisible} onClick={toggleCrewListVisibility}>
             {isCrewListVisible ? <ListCollapse size={15} aria-hidden="true" /> : <ListTree size={15} aria-hidden="true" />}
             {isCrewListVisible ? tr('Hide list') : tr('Show list')}
           </button>
         </div>
       </div>
-
-      {activeCrew && (
-        <div className="crew-active-compact" aria-label={tr('Crew launch checklist')}>
-          <div className="crew-active-compact-main">
-            <span className={`crew-card-dot${activeCrewBlockerCount > 0 ? ' has-errors' : ''}`} aria-hidden="true" />
-            <div className="crew-active-compact-body">
-              <div className="crew-overview-title-row">
-                <div className="crew-active-compact-name">{activeCrew.name}</div>
-                <span className={`crew-status-pill ${activeCrewBlockerCount > 0 ? 'warning' : 'ready'}`}>
-                  {tr(activeCrewBlockerCount > 0 ? 'Action needed' : 'Ready')}
-                </span>
-              </div>
-              <div className="crew-active-compact-meta">
-                <span>{activeAgentCount} {tr('Active members')}</span>
-                <span> / </span>
-                <span>{activeCrew.tasks.length} {tr('Tasks')}</span>
-                <span> / </span>
-                <span>{activeCrewBlockerCount} {tr(activeCrewBlockerCount === 1 ? 'Blocker' : 'Blockers')}</span>
-              </div>
-              <div className="crew-active-compact-meta">
-                {activeCrewDiagnostics.errors.length > 0
-                  ? tr(activeCrewDiagnostics.errors[0])
-                  : activeCrewNeedsMission
-                    ? tr('Create a mission in Tasks before running this crew.')
-                    : tr('This crew is configured and ready for its next run.')}
-              </div>
-            </div>
-          </div>
-          <div className="crew-overview-actions">
-            {activeCrewDiagnostics.errors.length > 0 && (
-              <button type="button" className="crew-compact-toggle" onClick={reviewActiveCrewBlockers}>{tr('Review blockers')}</button>
-            )}
-            {activeCrewHasProviderBlocker && (
-              <button type="button" className="crew-compact-toggle" onClick={() => navigate(activeCrewProviderSettingsPath)}>{tr('Open settings')}</button>
-            )}
-            <button type="button" className="crew-compact-toggle" onClick={() => navigate(`/tasks?crew=${encodeURIComponent(activeCrew.id)}`)}>
-              {tr('Prepare mission in Tasks')}
-            </button>
-          </div>
-        </div>
-      )}
 
       {crews.length === 0 ? (
         <div className="crew-empty">
@@ -1093,9 +1053,6 @@ export default function CrewPanel() {
                         </span>
                       </span>
                     </button>
-                    <button type="button" className="crew-card-delete" onClick={(e) => { e.stopPropagation(); deleteCrew(crew.id) }} aria-label={tr("Delete crew")}>
-                      <Trash2 size={14} aria-hidden="true" />
-                    </button>
                   </div>
                 )
               })}
@@ -1107,7 +1064,7 @@ export default function CrewPanel() {
             {activeCrew ? (
               <>
                 {/* Section: General */}
-                <div className={`crew-section${openSections.general ? ' open' : ''}`}>
+                <div className={`crew-section${openSections.general ? ' open' : ''}${activeCrewSection !== 'general' ? ' crew-section-route-hidden' : ''}`}>
                   <button type="button" className="crew-section-header" aria-expanded={openSections.general} aria-controls="crew-section-general" onClick={() => toggleSection('general')}>
                     <span className="crew-section-icon" aria-hidden="true">01</span>{tr("General")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
@@ -1150,7 +1107,7 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Section: Execution */}
-                <div className={`crew-section${openSections.execution ? ' open' : ''}`}>
+                <div className={`crew-section${openSections.execution ? ' open' : ''}${activeCrewSection !== 'execution' ? ' crew-section-route-hidden' : ''}`}>
                   <button type="button" className="crew-section-header" aria-expanded={openSections.execution} aria-controls="crew-section-execution" onClick={() => toggleSection('execution')}>
                     <span className="crew-section-icon" aria-hidden="true">02</span>{tr("Execution")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
@@ -1212,7 +1169,7 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Section: Provider & Model */}
-                <div className={`crew-section${openSections.provider ? ' open' : ''}`}>
+                <div className={`crew-section${openSections.provider ? ' open' : ''}${activeCrewSection !== 'provider' ? ' crew-section-route-hidden' : ''}`}>
                   <button type="button" className="crew-section-header" aria-expanded={openSections.provider} aria-controls="crew-section-provider" onClick={() => toggleSection('provider')}>
                     <span className="crew-section-icon" aria-hidden="true">03</span>{tr("Provider & Model")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
@@ -1265,7 +1222,7 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Diagnostics */}
-                <div className={`crew-section${openSections.diagnostics ? ' open' : ''}`}>
+                <div className={`crew-section${openSections.diagnostics ? ' open' : ''}${activeCrewSection !== 'diagnostics' ? ' crew-section-route-hidden' : ''}`}>
                   <button ref={diagnosticsHeaderRef} type="button" className="crew-section-header" aria-expanded={openSections.diagnostics} aria-controls="crew-section-diagnostics" onClick={() => toggleSection('diagnostics')}>
                     <span className="crew-section-icon" aria-hidden="true">04</span>{tr("Diagnostics")}<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
@@ -1296,7 +1253,7 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Agents */}
-                <div className={`crew-section${openSections.members ? ' open' : ''}`}>
+                <div className={`crew-section${openSections.members ? ' open' : ''}${activeCrewSection !== 'members' ? ' crew-section-route-hidden' : ''}`}>
                   <button type="button" className="crew-section-header" aria-expanded={openSections.members} aria-controls="crew-section-members" onClick={() => toggleSection('members')}>
                     <span className="crew-section-icon" aria-hidden="true">05</span>{tr("Crew-members (")}{activeAgentCount}/{activeCrew.agents.length})<ChevronDown className="crew-section-chevron" size={16} aria-hidden="true" />
                   </button>
@@ -1558,7 +1515,7 @@ export default function CrewPanel() {
                 </div>
 
                 {/* Tasks hint */}
-                <div className="crew-task-rail">
+                <div className={`crew-task-rail${activeCrewSection !== 'mission' ? ' crew-section-route-hidden' : ''}`}>
                   <div className="crew-task-rail-copy">
                     <div className="crew-overview-kicker">{tr("Task-Flow")}</div>
                     <strong className="crew-overview-title">{tr("Turn this crew into one complete mission")}</strong>

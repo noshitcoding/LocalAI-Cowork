@@ -21,9 +21,9 @@ function LocationProbe() {
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>
 }
 
-function renderCrewPanel() {
+function renderCrewPanel(initialEntry = '/crew') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <CrewPanel />
       <LocationProbe />
     </MemoryRouter>,
@@ -195,9 +195,13 @@ describe('CrewPanel', () => {
       renderCrewPanel()
     })
 
-    expect(screen.getByText('Crew-Arbeitsbereich')).toBeInTheDocument()
-    expect(screen.getByText('Provider & Modell')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Crew-Mitglieder/ }))
+    expect(screen.queryByText('Crew-Arbeitsbereich')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Neue Crew...')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Crew starten' })).toBeInTheDocument()
+
+    await act(async () => {
+      renderCrewPanel('/crew?section=members')
+    })
     expect(screen.getByText('Rollen, Modelle und Zugriff pro Agent')).toBeInTheDocument()
     expect(screen.getByText('Freigaben für alle Mitglieder')).toBeInTheDocument()
     expect(screen.getAllByText('Alles erlauben').length).toBeGreaterThan(0)
@@ -241,13 +245,10 @@ describe('CrewPanel', () => {
   })
 
   it('hands the active crew to the task mission composer', async () => {
-    renderCrewPanel()
+    renderCrewPanel('/crew?section=mission')
 
-    const launchChecklist = screen.getByLabelText('Crew launch checklist')
-    expect(within(launchChecklist).getByText('Action needed')).toBeInTheDocument()
-    expect(within(launchChecklist).getByText('Create a mission in Tasks before running this crew.')).toBeInTheDocument()
-
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Prepare mission in Tasks' }))
+    expect(screen.getByText('Turn this crew into one complete mission')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare mission in Tasks' }))
 
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks?crew=crew-1')
   })
@@ -300,19 +301,12 @@ describe('CrewPanel', () => {
       })),
     }))
 
-    renderCrewPanel()
+    renderCrewPanel('/crew?section=diagnostics')
 
-    const launchChecklist = screen.getByLabelText('Crew launch checklist')
-    expect(within(launchChecklist).getByText('OpenRouter crew profile has no API key.')).toBeInTheDocument()
+    expect(screen.getByText('OpenRouter crew profile has no API key.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run crew' })).toBeDisabled()
 
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Review blockers' }))
-    expect(screen.getByRole('button', { name: /Diagnostics/i })).toHaveFocus()
-
     fireEvent.click(screen.getByRole('button', { name: 'Fix provider settings' }))
-    expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
-
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Open settings' }))
     expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
   })
 

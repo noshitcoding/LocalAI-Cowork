@@ -419,11 +419,6 @@ export default function GitHubView() {
   return (
     <main className="github-workbench">
       <header className="github-workbench-header">
-        <div>
-          <span className="github-workbench-kicker"><GitPullRequest size={14} /> GitHub workbench</span>
-          <h1>Changes, pull requests, reviews</h1>
-          <p>Local Git stays local. GitHub API credentials remain in the operating-system vault.</p>
-        </div>
         <div className="github-auth">
           {connection?.authenticated && connection.profile ? (
             <>

@@ -5,14 +5,10 @@ import { open } from '@tauri-apps/plugin-dialog'
 import {
   CheckCircle2,
   FilePlus,
-  FolderKanban,
-  FolderOpen,
   FolderPlus,
   Link2,
   MessageSquarePlus,
   MessagesSquare,
-  Plus,
-  Trash2,
   X,
 } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
@@ -32,6 +28,7 @@ import { useConfigStore } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
 import { useUiStore } from '../stores/uiStore'
 import i18n, { tr } from '../i18n'
+import { SHELL_CONTEXT_ACTION_EVENT, type ShellContextAction } from '../product/shellContextActions'
 
 const THREAD_DND_MIME = 'application/localai-cowork-thread-id'
 
@@ -156,6 +153,16 @@ export default function ProjectView() {
     deleteTriggerRef.current = document.activeElement instanceof HTMLButtonElement ? document.activeElement : null
     setDeletePromptOpen(true)
   }
+
+  useEffect(() => {
+    const handleContextAction = (event: Event) => {
+      if ((event as CustomEvent<ShellContextAction>).detail === 'project-delete' && activeProject) {
+        openDeletePrompt()
+      }
+    }
+    window.addEventListener(SHELL_CONTEXT_ACTION_EVENT, handleContextAction)
+    return () => window.removeEventListener(SHELL_CONTEXT_ACTION_EVENT, handleContextAction)
+  })
 
   const closeDeletePrompt = () => {
     setDeletePromptOpen(false)
@@ -298,79 +305,20 @@ export default function ProjectView() {
 
   return (
     <div className="project-view">
-      <aside className="project-list-panel">
-        <div className="project-list-header">
-          <div className="project-list-heading">
-            <span>{tr('Workspace library')}</span>
-            <div className="project-list-title-row">
-              <h1>{tr("Projects")}</h1>
-              <strong>{projects.length}</strong>
-            </div>
-            <p>{tr('Shared context for focused work.')}</p>
-          </div>
-          <button type="button" className="btn-sm project-icon-button" onClick={handleCreateProject} aria-label={tr('New project')}>
-            <Plus size={14} aria-hidden="true" />{tr("New")}</button>
-        </div>
-
-        <div className="project-list">
-          {projects.map((project) => {
-            const existingThreadCount = project.threadIds.filter((threadId) => threadById.has(threadId)).length
-            const active = activeProject?.id === project.id
-            return (
-              <button
-                key={project.id}
-                type="button"
-                className={`project-list-item${active ? ' active' : ''}`}
-                aria-current={active ? 'page' : undefined}
-                onClick={() => setActiveProject(project.id)}
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  event.dataTransfer.dropEffect = 'move'
-                }}
-                onDrop={(event) => handleProjectDrop(event, project.id)}
-              >
-                <span className="project-list-item-title">{project.title}</span>
-                <span className="project-list-item-meta">
-                  {existingThreadCount} {tr("Chats")} / {project.resources.length} {tr("sources")}</span>
-              </button>
-            )
-          })}
-          {projects.length === 0 && (
-            <div className="project-list-empty">
-              <FolderPlus size={20} aria-hidden="true" />
-              <strong>{tr("No projects yet.")}</strong>
-              <span>{tr('Create a focused workspace for related chats and sources.')}</span>
-              <button type="button" className="btn-sm" onClick={handleCreateProject}>{tr('Create first project')}</button>
-            </div>
-          )}
-        </div>
-      </aside>
-
       <main className="project-detail">
         {!activeProject ? (
           <div className="project-empty-state">
-            <div className="project-empty-hero">
-              <span className="project-empty-mark"><FolderOpen size={26} aria-hidden="true" /></span>
-              <span className="project-empty-kicker">{tr('Project workspace')}</span>
-              <h2>{tr('Give focused work a permanent home')}</h2>
-              <p>{tr('Bundle instructions, sources, and conversations so every new chat starts with the right context.')}</p>
-              <button type="button" className="btn-send" onClick={handleCreateProject}>
-                <FolderPlus size={16} aria-hidden="true" />{tr("Create project")}
-              </button>
-            </div>
-            <div className="project-empty-steps" aria-label={tr('Project setup steps')}>
-              <div><FilePlus size={18} aria-hidden="true" /><span><strong>{tr('Add sources')}</strong><small>{tr('Files, folders, and trusted links')}</small></span></div>
-              <div><MessageSquarePlus size={18} aria-hidden="true" /><span><strong>{tr('Start project chats')}</strong><small>{tr('Keep related conversations together')}</small></span></div>
-              <div><CheckCircle2 size={18} aria-hidden="true" /><span><strong>{tr('Reuse the context')}</strong><small>{tr('Carry the brief into every run')}</small></span></div>
-            </div>
+            <h2>{tr('No project selected')}</h2>
+            <p>{tr('Choose a project in the project and chat sidebar or create one here.')}</p>
+            <button type="button" className="btn-send" onClick={handleCreateProject}>
+              <FolderPlus size={16} aria-hidden="true" />{tr("Create project")}
+            </button>
           </div>
         ) : (
           <>
             <header className="project-detail-header">
               <div className="project-title-cluster">
-                <span className="project-detail-mark"><FolderKanban size={22} aria-hidden="true" /></span>
                 <div className="project-title-editor">
-                  <span className="project-empty-kicker">{tr('Project workspace')}</span>
                   <label htmlFor="project-title">{tr("Project name")}</label>
                   <input
                     id="project-title"
@@ -379,12 +327,6 @@ export default function ProjectView() {
                     onBlur={commitTitle}
                     onKeyDown={handleTitleKeyDown}
                   />
-                  <div className="project-title-meta" aria-label={tr('Project overview')}>
-                    <span><strong>{activeProject.resources.length}</strong>{tr('sources')}</span>
-                    <span><strong>{projectThreads.length}</strong>{tr('Chats')}</span>
-                    <span className={activeProject.instructions.trim() ? 'ready' : ''}>
-                      <strong>{activeProject.instructions.trim() ? tr('Ready') : tr('Draft')}</strong>{tr('brief')}</span>
-                  </div>
                 </div>
               </div>
               <div className="project-detail-actions">
@@ -394,26 +336,12 @@ export default function ProjectView() {
                   <FilePlus size={14} aria-hidden="true" />{tr("Files")}</button>
                 <button type="button" className="btn-sm project-icon-button" onClick={handleAddFolders}>
                   <FolderPlus size={14} aria-hidden="true" />{tr("Folder")}</button>
-                <button
-                  ref={deleteTriggerRef}
-                  type="button"
-                  className="btn-sm project-icon-button danger"
-                  onClick={openDeletePrompt}
-                  title={tr("Delete project")}
-                  aria-label={tr("Delete project")}
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                </button>
               </div>
             </header>
 
             <section className="project-brief-card">
               <div className="project-brief-header">
-                <div>
-                  <span className="project-empty-kicker">{tr('Project brief')}</span>
-                  <label htmlFor="project-instructions">{tr("Project instructions")}</label>
-                </div>
-                <span><CheckCircle2 size={14} aria-hidden="true" />{tr('Applied to project chats')}</span>
+                <label htmlFor="project-instructions">{tr("Project instructions")}</label>
               </div>
               <textarea
                 id="project-instructions"

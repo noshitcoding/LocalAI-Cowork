@@ -1,21 +1,7 @@
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
-import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
-import {
-  ArrowLeft,
-  Blocks,
-  Command,
-  FolderKanban,
-  Globe2,
-  GitPullRequest,
-  ListTodo,
-  Menu,
-  MessagesSquare,
-  Moon,
-  Settings2,
-  Sun,
-  UsersRound,
-} from 'lucide-react'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Menu } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import {
   LEFT_SIDEBAR_MAX_WIDTH,
@@ -24,64 +10,61 @@ import {
   useUiStore,
 } from '../stores/uiStore'
 import { useConfigStore } from '../stores/configStore'
+import { useChatStore } from '../stores/chatStore'
 import LeftSidebar from './LeftSidebar'
-import CommandPalette from './CommandPalette'
-import LanguageSwitcher from './LanguageSwitcher'
+import AppMenu from './AppMenu'
+import AppContextDrawer from './AppContextDrawer'
 import { tr } from '../i18n'
-import { PRODUCT_ROUTES, getProductRouteById, getProductRouteByShortcutKey, type ProductRoute } from '../product/routeRegistry'
+import {
+  PRODUCT_ROUTES,
+  getProductRouteByShortcutKey,
+  type ProductRoute,
+  type ProductSubroute,
+} from '../product/routeRegistry'
 
-const COMPACT_SIDEBAR_MEDIA_QUERY = '(max-width: 900px)'
-
-const PRODUCT_ROUTE_ICONS = {
-  cowork: MessagesSquare,
-  tasks: ListTodo,
-  crew: UsersRound,
-  projects: FolderKanban,
-  features: Blocks,
-  browser: Globe2,
-  github: GitPullRequest,
-  settings: Settings2,
-} as const
+const COMPACT_SIDEBAR_MEDIA_QUERY = '(max-width: 899px)'
 
 function ViewLoadingState() {
   const { t } = useTranslation()
 
   return (
     <div className="view-loading-state" aria-busy="true" aria-live="polite">
-      <div className="view-loading-bar" aria-hidden="true">
-        <span />
-      </div>
+      <div className="view-loading-bar" aria-hidden="true"><span /></div>
       <span>{t('common.preparingView')}</span>
     </div>
   )
+}
+
+function routeSubroutes(route: ProductRoute): readonly ProductSubroute[] {
+  return 'subroutes' in route && Array.isArray(route.subroutes) ? route.subroutes : []
 }
 
 export default function Layout() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
-  const focusedRoute = ['settings', 'browser', 'github'].some(
-    (routeId) => location.pathname === getProductRouteById(routeId as 'settings' | 'browser' | 'github').path,
-  )
-  
+  const activeThreadId = useChatStore((state) => state.activeThreadId)
+  const threads = useChatStore((state) => state.threads)
   const {
     leftSidebarOpen,
     leftSidebarWidth,
-    theme,
+    appMenuOpen,
+    contextDrawerOpen,
     toggleLeftSidebar,
     setLeftSidebarWidth,
     toggleTheme,
-    setCommandPaletteOpen,
-    commandPaletteOpen,
-    shortcutsOverlayOpen,
+    setAppMenuOpen,
+    setContextDrawerOpen,
     setShortcutsOverlayOpen,
+    closeShellOverlays,
     setActiveMode,
   } = useUiStore()
-  
-  const focusMode = useConfigStore((s) => s.preferences.focusMode)
-  const shortcutOverlayEnabled = useConfigStore((s) => s.preferences.shortcutOverlayEnabled)
+  const focusMode = useConfigStore((state) => state.preferences.focusMode)
+  const shortcutOverlayEnabled = useConfigStore((state) => state.preferences.shortcutOverlayEnabled)
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const leftSidebarFrameRef = useRef<HTMLDivElement | null>(null)
   const leftSidebarResizeRef = useRef<{ pointerId: number; left: number } | null>(null)
+  const previousMenuOpenRef = useRef(false)
   const [leftSidebarResizing, setLeftSidebarResizing] = useState(false)
   const [compactSidebar, setCompactSidebar] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia?.(COMPACT_SIDEBAR_MEDIA_QUERY).matches === true
@@ -89,105 +72,141 @@ export default function Layout() {
   const [compactSidebarOpen, setCompactSidebarOpen] = useState(false)
   const resolvedLeftSidebarWidth = clampLeftSidebarWidth(leftSidebarWidth)
   const resolvedLeftSidebarOpen = compactSidebar ? compactSidebarOpen : leftSidebarOpen
-  const workspaceSidebarVisible = resolvedLeftSidebarOpen && !focusMode && !focusedRoute
+  const workspaceSidebarVisible = resolvedLeftSidebarOpen && !focusMode
   const leftSidebarFrameStyle = {
     '--left-sidebar-width': `${resolvedLeftSidebarWidth}px`,
   } as CSSProperties
 
-  const navigateToProductRoute = useCallback((route: ProductRoute) => {
-    if (route.activeMode) {
-      setActiveMode(route.activeMode)
+  const activeRoute = PRODUCT_ROUTES.find((route) => route.path === location.pathname) ?? PRODUCT_ROUTES[0]
+  const shellTitle = useMemo(() => {
+    if (activeRoute.id === 'cowork') {
+      const activeThread = threads.find((thread) => thread.id === activeThreadId)
+      return activeThread?.title === 'New chat'
+        ? tr('New chat')
+        : activeThread?.title?.trim() || t(activeRoute.titleKey)
     }
+
+    const params = new URLSearchParams(location.search)
+    const subroutes = routeSubroutes(activeRoute)
+    const selectedSubroute = subroutes.find((subroute) => (
+      params.get(subroute.queryKey) === subroute.queryValue
+    )) ?? subroutes.find((subroute) => subroute.default)
+
+    return selectedSubroute
+      ? tr(selectedSubroute.labelKey)
+      : t(activeRoute.titleKey)
+  }, [activeRoute, activeThreadId, location.search, t, threads])
+
+  const navigateToProductRoute = useCallback((route: ProductRoute) => {
+    if (route.activeMode) setActiveMode(route.activeMode)
     navigate(route.path)
   }, [navigate, setActiveMode])
 
   const handleToggleLeftSidebar = useCallback(() => {
-    if (focusedRoute) return
     if (compactSidebar) {
+      closeShellOverlays()
       setCompactSidebarOpen((open) => !open)
       return
     }
     toggleLeftSidebar()
-  }, [compactSidebar, focusedRoute, toggleLeftSidebar])
+  }, [closeShellOverlays, compactSidebar, toggleLeftSidebar])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return undefined
-
     const mediaQuery = window.matchMedia(COMPACT_SIDEBAR_MEDIA_QUERY)
     const handleChange = (event: MediaQueryListEvent) => {
       setCompactSidebar(event.matches)
       if (event.matches) setCompactSidebarOpen(false)
     }
-
     mediaQuery.addEventListener('change', handleChange)
     return () => mediaQuery.removeEventListener('change', handleChange)
   }, [])
 
   useEffect(() => {
+    closeShellOverlays()
+    setCompactSidebarOpen(false)
+  }, [closeShellOverlays, location.pathname, location.search])
+
+  useEffect(() => {
+    if (previousMenuOpenRef.current && !appMenuOpen) {
+      window.requestAnimationFrame(() => menuButtonRef.current?.focus())
+    }
+    previousMenuOpenRef.current = appMenuOpen
+  }, [appMenuOpen])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const modifierPressed = event.ctrlKey || event.metaKey
-      if (!modifierPressed) {
-        if (event.key === 'Escape' && commandPaletteOpen) {
-          setCommandPaletteOpen(false)
-        }
-        if (event.key === 'Escape' && compactSidebarOpen) {
-          setCompactSidebarOpen(false)
-        }
+      if (event.key === 'Escape') {
+        if (appMenuOpen || contextDrawerOpen) closeShellOverlays()
+        if (compactSidebarOpen) setCompactSidebarOpen(false)
         return
       }
 
+      const modifierPressed = event.ctrlKey || event.metaKey
+      if (!modifierPressed) return
+
       if (event.key.toLowerCase() === 'k') {
         event.preventDefault()
-        setCommandPaletteOpen(true)
+        setCompactSidebarOpen(false)
+        setAppMenuOpen(true, true)
+        return
       }
 
       if (event.shiftKey && event.key.toLowerCase() === 'b') {
         event.preventDefault()
         handleToggleLeftSidebar()
+        return
       }
 
       const shortcutRoute = event.shiftKey ? undefined : getProductRouteByShortcutKey(event.key)
       if (shortcutRoute) {
         event.preventDefault()
         navigateToProductRoute(shortcutRoute)
+        return
       }
 
       if (event.shiftKey && event.key.toLowerCase() === 'l') {
         event.preventDefault()
         toggleTheme()
+        return
       }
 
-      if (event.shiftKey && event.key === '?') {
+      if (event.shiftKey && event.key === '?' && shortcutOverlayEnabled) {
         event.preventDefault()
-        if (shortcutOverlayEnabled) {
-          setShortcutsOverlayOpen(true)
-        }
+        setCompactSidebarOpen(false)
+        setShortcutsOverlayOpen(true)
       }
     }
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [commandPaletteOpen, compactSidebarOpen, handleToggleLeftSidebar, navigateToProductRoute, setCommandPaletteOpen, setShortcutsOverlayOpen, shortcutOverlayEnabled, toggleTheme])
+  }, [
+    appMenuOpen,
+    closeShellOverlays,
+    compactSidebarOpen,
+    contextDrawerOpen,
+    handleToggleLeftSidebar,
+    navigateToProductRoute,
+    setAppMenuOpen,
+    setShortcutsOverlayOpen,
+    shortcutOverlayEnabled,
+    toggleTheme,
+  ])
 
   useEffect(() => {
     if (!leftSidebarResizing) return undefined
-
     const handlePointerMove = (event: PointerEvent) => {
       const resize = leftSidebarResizeRef.current
       if (!resize || event.pointerId !== resize.pointerId) return
-
       event.preventDefault()
       setLeftSidebarWidth(event.clientX - resize.left)
     }
-
     const finishResize = (event: PointerEvent) => {
       const resize = leftSidebarResizeRef.current
       if (resize && event.pointerId !== resize.pointerId) return
-
       leftSidebarResizeRef.current = null
       setLeftSidebarResizing(false)
     }
-
     document.body.classList.add('sidebar-resize-active')
     window.addEventListener('pointermove', handlePointerMove, { passive: false })
     window.addEventListener('pointerup', finishResize)
@@ -202,10 +221,8 @@ export default function Layout() {
 
   const handleLeftSidebarResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
-
     const rect = leftSidebarFrameRef.current?.getBoundingClientRect()
     if (!rect) return
-
     event.preventDefault()
     event.stopPropagation()
     leftSidebarResizeRef.current = { pointerId: event.pointerId, left: rect.left }
@@ -216,101 +233,38 @@ export default function Layout() {
   const handleLeftSidebarResizeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 32 : 16
     let nextWidth: number | null = null
-
     if (event.key === 'ArrowLeft') nextWidth = resolvedLeftSidebarWidth - step
     if (event.key === 'ArrowRight') nextWidth = resolvedLeftSidebarWidth + step
     if (event.key === 'Home') nextWidth = LEFT_SIDEBAR_MIN_WIDTH
     if (event.key === 'End') nextWidth = LEFT_SIDEBAR_MAX_WIDTH
-
     if (nextWidth === null) return
     event.preventDefault()
     setLeftSidebarWidth(nextWidth)
   }
 
-  const shortcuts = [
-    { label: t('shortcuts.commandPalette'), keys: 'Ctrl+K' },
-    ...PRODUCT_ROUTES.map((route) => ({
-      label: t(route.shortcutLabelKey),
-      keys: route.shortcut,
-    })),
-    { label: t('shortcuts.sidebar'), keys: 'Ctrl+Shift+B' },
-    { label: t('shortcuts.theme'), keys: 'Ctrl+Shift+L' },
-    { label: t('shortcuts.show'), keys: 'Ctrl+Shift+?' },
-  ]
-
   return (
     <div className="app-shell" data-doc-id="element:/app/shell">
-      <div className="top-bar">
-        <div className="top-bar-brand">
-          {focusedRoute ? (
-            <button
-              type="button"
-              className="top-icon-button"
-              data-doc-id="button:/app/shell/back-to-cowork"
-              onClick={() => navigateToProductRoute(getProductRouteById('cowork'))}
-              title={t('layout.backToCowork')}
-              aria-label={t('layout.backToCowork')}
-            >
-              <ArrowLeft size={17} strokeWidth={2} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="top-icon-button"
-              data-doc-id="button:/app/shell/toggle-sidebar"
-              onClick={handleToggleLeftSidebar}
-              title={t('layout.sidebarShortcut')}
-              aria-label={t('layout.toggleSidebar')}
-              aria-controls="workspace-sidebar-frame"
-              aria-expanded={workspaceSidebarVisible}
-            >
-              <Menu size={17} strokeWidth={2} />
-            </button>
-          )}
-          <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
-          <span className="brand-name">{t('app.name')}</span>
-        </div>
-
-        <nav className="top-tabs" data-doc-id="element:/app/top-navigation" aria-label={t('layout.mainNavigation')}>
-          {PRODUCT_ROUTES.map((route) => {
-            const RouteIcon = PRODUCT_ROUTE_ICONS[route.id]
-            return (
-              <NavLink
-                key={route.id}
-                to={route.path}
-                end={route.path === '/'}
-                className={({isActive}) => 'top-tab' + (isActive ? ' active' : '')}
-                data-doc-id={route.navButtonDocId}
-                onClick={() => {
-                  if (route.activeMode) {
-                    setActiveMode(route.activeMode)
-                  }
-                  if (compactSidebar) {
-                    setCompactSidebarOpen(false)
-                  }
-                }}
-              >
-                <RouteIcon size={15} strokeWidth={1.9} aria-hidden="true" />
-                <span>{t(route.navLabelKey)}</span>
-              </NavLink>
-            )
-          })}
-        </nav>
-
-        <div className="top-bar-actions">
-          <LanguageSwitcher />
-          <button type="button" className="top-icon-button" data-doc-id="button:/app/shell/toggle-theme" onClick={toggleTheme} title={t('layout.themeShortcut')} aria-label={t('layout.toggleTheme')}>
-            {theme === 'light' ? <Moon size={16} strokeWidth={2} /> : <Sun size={16} strokeWidth={2} />}
-          </button>
-          <button type="button" className="top-command-button" data-doc-id="button:/app/shell/open-command-palette" onClick={() => setCommandPaletteOpen(true)} title={t('layout.commandPaletteShortcut')} aria-label={t('layout.openCommandPalette')}>
-            <Command size={15} strokeWidth={2} />
-            <kbd>{tr("Ctrl K")}</kbd>
-          </button>
-        </div>
-      </div>
+      <header className="top-bar">
+        <button
+          ref={menuButtonRef}
+          type="button"
+          className="top-menu-button"
+          data-doc-id="button:/app/shell/open-menu"
+          onClick={() => {
+            setCompactSidebarOpen(false)
+            setAppMenuOpen(!appMenuOpen)
+          }}
+          aria-label={tr('Open main menu')}
+          aria-controls="app-menu-drawer"
+          aria-expanded={appMenuOpen}
+        >
+          <Menu size={17} strokeWidth={1.9} aria-hidden="true" />
+        </button>
+        <h1 className="shell-title" title={shellTitle}>{shellTitle}</h1>
+      </header>
 
       <div className="app-body">
-        {compactSidebar && compactSidebarOpen && !focusMode && !focusedRoute && (
+        {compactSidebar && compactSidebarOpen && !focusMode && (
           <button
             type="button"
             className="sidebar-backdrop"
@@ -341,47 +295,17 @@ export default function Layout() {
           </div>
         )}
 
-        <div className="main-content" key={i18n.resolvedLanguage ?? i18n.language}>
-          <Suspense fallback={<ViewLoadingState />}>
-            <Outlet />
-          </Suspense>
-        </div>
+        <main className="main-content" key={i18n.resolvedLanguage ?? i18n.language}>
+          <Suspense fallback={<ViewLoadingState />}><Outlet /></Suspense>
+        </main>
       </div>
 
-      <CommandPalette />
-
-      {shortcutsOverlayOpen && (
-        <div className="command-palette-overlay">
-          <button
-            type="button"
-            className="command-palette-backdrop"
-            aria-label={tr("Close shortcuts")}
-            onClick={() => setShortcutsOverlayOpen(false)}
-          />
-          <div
-            className="command-palette"
-            data-doc-id="element:/app/shortcut-overlay"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t('shortcuts.title')}
-          >
-            <div className="command-palette-header">
-              <strong className="shortcut-overlay-title">{t('shortcuts.title')}</strong>
-              <button type="button" data-doc-id="button:/app/shortcut-overlay/close" onClick={() => setShortcutsOverlayOpen(false)}>{tr("Esc")}</button>
-            </div>
-            <ul className="command-palette-list">
-              {shortcuts.map((s, i) => (
-                <li key={i}>
-                  <button type="button" onClick={() => setShortcutsOverlayOpen(false)}>
-                    <span>{s.label}</span>
-                    <kbd>{s.keys}</kbd>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
+      <AppMenu
+        open={appMenuOpen}
+        compactSidebar={compactSidebar || focusMode}
+        onOpenWorkspaceSidebar={handleToggleLeftSidebar}
+      />
+      <AppContextDrawer open={contextDrawerOpen} onClose={() => setContextDrawerOpen(false)} />
     </div>
   )
 }
