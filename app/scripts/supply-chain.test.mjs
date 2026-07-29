@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -17,7 +18,7 @@ import {
 } from './supply-chain.mjs'
 
 const policy = {
-  allowedLicenses: ['Apache-2.0', 'MIT'],
+  allowedLicenses: ['Apache-2.0', 'MIT', 'Python-2.0'],
   allowedExceptions: ['LLVM-exception'],
 }
 
@@ -28,7 +29,9 @@ function writeJson(path, value) {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'localai-cowork-supply-'))
   const tauri = join(root, 'src-tauri')
+  const crewRuntime = join(tauri, 'python', 'crew_runtime')
   mkdirSync(tauri, { recursive: true })
+  mkdirSync(crewRuntime, { recursive: true })
   writeJson(join(root, 'package.json'), {
     name: 'localai-cowork',
     version: '1.2.3',
@@ -46,7 +49,65 @@ function fixture() {
     },
   })
   writeJson(join(root, 'supply-chain-policy.json'), { schemaVersion: 1, ...policy })
-  writeJson(join(tauri, 'tauri.conf.json'), { version: '1.2.3' })
+  writeJson(join(tauri, 'tauri.conf.json'), {
+    version: '1.2.3',
+    bundle: {
+      resources: {
+        'python/crew_runtime/runtime-bundle-manifest.json': 'python/crew_runtime/runtime-bundle-manifest.json',
+      },
+    },
+  })
+  const requirementsPath = join(crewRuntime, 'requirements.txt')
+  const requirements = 'crewai==0.130.0\n'
+  writeFileSync(requirementsPath, requirements, 'utf8')
+  const lockPath = join(crewRuntime, 'requirements.lock')
+  const dependencyLock = `crewai==0.130.0 --hash=sha256:${'d'.repeat(64)}\n`
+  writeFileSync(lockPath, dependencyLock, 'utf8')
+  const pythonArchivePath = join(tauri, 'resources', 'python', 'windows.zip')
+  const wheelArchivePath = join(crewRuntime, 'wheels.zip')
+  const pythonArchive = Buffer.from('portable-python-fixture')
+  const wheelArchive = Buffer.from('wheelhouse-fixture')
+  mkdirSync(dirname(pythonArchivePath), { recursive: true })
+  writeFileSync(pythonArchivePath, pythonArchive)
+  writeFileSync(wheelArchivePath, wheelArchive)
+  const manifestPath = join(crewRuntime, 'runtime-bundle-manifest.json')
+  writeJson(manifestPath, {
+    schemaVersion: 1,
+    python: {
+      name: 'CPython',
+      version: '3.12.9',
+      license: 'Python-2.0',
+      purl: 'pkg:generic/cpython@3.12.9',
+      archive: {
+        path: 'src-tauri/resources/python/windows.zip',
+        bytes: pythonArchive.length,
+        sha256: createHash('sha256').update(pythonArchive).digest('hex'),
+      },
+    },
+    wheelhouse: {
+      requirementsSha256: createHash('sha256').update(requirements).digest('hex'),
+      lockSha256: createHash('sha256').update(dependencyLock).digest('hex'),
+      archive: {
+        path: 'src-tauri/python/crew_runtime/wheels.zip',
+        bytes: wheelArchive.length,
+        sha256: createHash('sha256').update(wheelArchive).digest('hex'),
+      },
+    },
+    packages: [
+      {
+        name: 'crewai',
+        version: '0.130.0',
+        license: 'MIT',
+        purl: 'pkg:pypi/crewai@0.130.0',
+        filename: 'crewai-0.130.0-py3-none-any.whl',
+        sha256: 'd'.repeat(64),
+      },
+    ],
+    smoke: {
+      passed: true,
+      command: 'import crewai',
+    },
+  })
   writeFileSync(join(tauri, 'Cargo.toml'), '[package]\nname = "app"\nversion = "1.2.3"\nrust-version = "1.89"\nlicense = "Apache-2.0"\n', 'utf8')
   writeFileSync(join(tauri, 'Cargo.lock'), `version = 4\n\n[[package]]\nname = "app"\nversion = "1.2.3"\ndependencies = ["example-crate"]\n\n[[package]]\nname = "example-crate"\nversion = "4.5.6"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${'a'.repeat(64)}"\n`, 'utf8')
   const rootId = 'path+file:///fixture#app@1.2.3'
@@ -73,7 +134,7 @@ function fixture() {
       ],
     },
   }
-  return { root, cargoMetadata }
+  return { root, cargoMetadata, manifestPath, requirementsPath, lockPath, pythonArchivePath, wheelArchivePath }
 }
 
 test('license policy supports SPDX choice, conjunction, and exceptions', () => {
@@ -187,14 +248,107 @@ test('installer tool discovery preserves a single vswhere path as an array eleme
 })
 
 test('inventory checks all licenses but excludes dev-only npm packages from release components', () => {
-  const { root, cargoMetadata } = fixture()
+  const { root, cargoMetadata, manifestPath, requirementsPath, lockPath } = fixture()
   try {
     const inventory = collectInventory(root, { policy, cargoMetadata })
-    assert.equal(inventory.records.length, 3)
+    assert.equal(inventory.records.length, 5)
     assert.ok(inventory.records.some((entry) => entry.name === 'build-only'))
     assert.ok(inventory.components.some((entry) => entry.purl === 'pkg:npm/example@1.0.0'))
     assert.ok(!inventory.components.some((entry) => entry.name === 'build-only'))
     assert.ok(inventory.components.some((entry) => entry.purl === 'pkg:cargo/example-crate@4.5.6'))
+    const cpython = inventory.components.find((entry) => entry.purl === 'pkg:generic/cpython@3.12.9')
+    const crewai = inventory.components.find((entry) => entry.purl === 'pkg:pypi/crewai@0.130.0')
+    assert.equal(cpython.hashes[0].content, createHash('sha256').update('portable-python-fixture').digest('hex'))
+    assert.deepEqual(cpython.licenses, [{ expression: 'Python-2.0' }])
+    assert.equal(crewai.hashes[0].content, 'd'.repeat(64))
+    assert.deepEqual(crewai.licenses, [{ expression: 'MIT' }])
+    assert.ok(inventory.dependencies[0].dependsOn.includes(cpython.purl))
+    assert.ok(inventory.dependencies[0].dependsOn.includes(crewai.purl))
+    assert.deepEqual(inventory.materialSeed, Buffer.concat([
+      readFileSync(join(root, 'package-lock.json')),
+      readFileSync(join(root, 'src-tauri', 'Cargo.lock')),
+      readFileSync(manifestPath),
+      readFileSync(requirementsPath),
+      readFileSync(lockPath),
+    ]))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('inventory fails closed when a bundled Crew Runtime manifest is missing or invalid', () => {
+  const missing = fixture()
+  try {
+    rmSync(missing.manifestPath)
+    assert.throws(
+      () => collectInventory(missing.root, { policy, cargoMetadata: missing.cargoMetadata }),
+      /bundle manifest.*missing/i,
+    )
+  } finally {
+    rmSync(missing.root, { recursive: true, force: true })
+  }
+
+  const invalid = fixture()
+  try {
+    writeJson(invalid.manifestPath, { schemaVersion: 1 })
+    assert.throws(
+      () => collectInventory(invalid.root, { policy, cargoMetadata: invalid.cargoMetadata }),
+      /Invalid Crew Runtime bundle manifest/i,
+    )
+  } finally {
+    rmSync(invalid.root, { recursive: true, force: true })
+  }
+})
+
+test('inventory rejects a Crew Runtime manifest that does not match requirements.txt', () => {
+  const { root, cargoMetadata, requirementsPath } = fixture()
+  try {
+    writeFileSync(requirementsPath, 'crewai==9.9.9\n', 'utf8')
+    assert.throws(
+      () => collectInventory(root, { policy, cargoMetadata }),
+      /requirementsSha256 does not match/i,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('inventory rejects a Crew Runtime dependency lock that does not match the manifest', () => {
+  const { root, cargoMetadata, lockPath } = fixture()
+  try {
+    writeFileSync(lockPath, `crewai==9.9.9 --hash=sha256:${'e'.repeat(64)}\n`, 'utf8')
+    assert.throws(
+      () => collectInventory(root, { policy, cargoMetadata }),
+      /lockSha256 does not match/i,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('inventory rejects Crew Runtime archives that do not match the manifest', () => {
+  const { root, cargoMetadata, wheelArchivePath } = fixture()
+  try {
+    writeFileSync(wheelArchivePath, 'tampered-wheelhouse', 'utf8')
+    assert.throws(
+      () => collectInventory(root, { policy, cargoMetadata }),
+      /wheelhouse\.archive\.(?:bytes|sha256) does not match/i,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('inventory applies the dependency license policy to PyPI packages', () => {
+  const { root, cargoMetadata, manifestPath } = fixture()
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.packages[0].license = 'GPL-3.0-only'
+    writeJson(manifestPath, manifest)
+    assert.throws(
+      () => collectInventory(root, { policy, cargoMetadata }),
+      /pypi:crewai@0\.130\.0: GPL-3\.0-only/,
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -234,6 +388,8 @@ test('CycloneDX output is deterministic for identical lockfiles and context', ()
     assert.equal(first.specVersion, '1.6')
     assert.match(first.serialNumber, /^urn:uuid:/)
     assert.ok(first.components.some((entry) => entry.hashes?.[0]?.alg === 'SHA-256'))
+    assert.ok(first.components.some((entry) => entry.purl === 'pkg:generic/cpython@3.12.9'))
+    assert.ok(first.components.some((entry) => entry.purl === 'pkg:pypi/crewai@0.130.0'))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -248,10 +404,24 @@ test('release metadata hashes SBOM, notices, installer, provenance, and material
   try {
     writeSbomArtifacts(root, output, { policy, cargoMetadata, context, releaseTag: 'v1.2.3' })
     const provenance = writeReleaseProvenance(root, output, { context, releaseTag: 'v1.2.3' })
+    const notices = JSON.parse(readFileSync(join(output, 'THIRD_PARTY_NOTICES.json'), 'utf8'))
     const sums = readFileSync(join(output, 'SHA256SUMS'), 'utf8')
     assert.equal(provenance.build.version, '1.2.3')
     assert.ok(provenance.subject.some((entry) => entry.name === 'localai-cowork.cdx.json'))
     assert.ok(provenance.materials.some((entry) => entry.path === 'src-tauri/Cargo.lock'))
+    assert.ok(provenance.materials.some((entry) => entry.path === 'src-tauri/python/crew_runtime/runtime-bundle-manifest.json'))
+    assert.ok(provenance.materials.some((entry) => entry.path === 'src-tauri/python/crew_runtime/requirements.txt'))
+    assert.ok(provenance.materials.some((entry) => entry.path === 'src-tauri/python/crew_runtime/requirements.lock'))
+    assert.ok(notices.packages.some((entry) => (
+      entry.purl === 'pkg:generic/cpython@3.12.9'
+      && entry.license === 'Python-2.0'
+      && entry.sha256 === createHash('sha256').update('portable-python-fixture').digest('hex')
+    )))
+    assert.ok(notices.packages.some((entry) => (
+      entry.purl === 'pkg:pypi/crewai@0.130.0'
+      && entry.license === 'MIT'
+      && entry.sha256 === 'd'.repeat(64)
+    )))
     assert.match(sums, /LocalAI-Cowork-Setup-x64\.exe/)
     assert.match(sums, /localai-cowork\.cdx\.json/)
     assert.match(sums, /THIRD_PARTY_NOTICES\.json/)

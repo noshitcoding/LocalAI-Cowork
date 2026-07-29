@@ -174,6 +174,23 @@ test('burger navigation has deterministic focus and closes on route changes', as
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('heading', { name: 'AI & model' })).toBeVisible()
   await expect(menu).toHaveCount(0)
+
+  const settingsContent = page.locator('.settings-content')
+  const settingsScrollRange = await settingsContent.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }))
+  expect(settingsScrollRange.scrollHeight).toBeGreaterThan(settingsScrollRange.clientHeight)
+  await settingsContent.hover()
+  await page.mouse.wheel(0, 600)
+  await expect.poll(() => settingsContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  const settingsSections = menu.getByLabel('Settings Sections')
+  await expect(settingsSections.getByRole('button')).toHaveCount(9)
+  await settingsSections.getByRole('button', { name: 'Interface' }).click()
+  await expect(page).toHaveURL(/\/settings\?section=ui$/)
+  await expect(page.getByRole('heading', { name: 'Interface' })).toBeVisible()
 })
 
 test('run context renders persisted events and artifacts', async ({ page }) => {

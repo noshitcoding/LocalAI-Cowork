@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-07-28T15:00:00Z",
-  "version": 2,
+  "timestamp": "2026-07-29T12:00:00Z",
+  "version": 3,
   "statements": [
     {
       "vulnerability": {
@@ -11,7 +11,7 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.1.8",
+          "@id": "pkg:cargo/app@0.1.9",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -61,6 +61,19 @@
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
       "impact_statement": "The advisory requires attacker-supplied paths to reach React Router navigation APIs. LocalAI Cowork passes only fixed internal route constants or leading-slash routes with encodeURIComponent-protected query values to Link, Navigate, and useNavigate, so an adversary cannot supply a protocol-relative or backslash navigation target."
+    },
+    {
+      "vulnerability": {
+        "name": "PYSEC-2026-311"
+      },
+      "products": [
+        {
+          "@id": "pkg:pypi/chromadb@1.1.1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The advisory requires ChromaDB's FastAPI collection-creation endpoint or a remote Chroma client loading attacker-controlled collection embedding configuration. LocalAI Cowork neither starts a ChromaDB HTTP server nor configures a remote Chroma endpoint, and its CrewAI runtime does not enable Crew memory, knowledge sources, knowledge, or an embedder. ChromaDB is therefore not initialized on an executable path. Reassess this statement before enabling any Chroma server, remote Chroma client, or CrewAI memory/knowledge feature."
     }
   ]
 }

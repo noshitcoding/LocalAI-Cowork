@@ -16,6 +16,7 @@ app/src-tauri/gen/schemas/
 # Generated Python runtime artifacts
 app/src-tauri/python/crew_runtime/wheels/
 app/src-tauri/python/crew_runtime/wheels.zip
+app/src-tauri/python/crew_runtime/runtime-bundle-manifest.json
 app/src-tauri/resources/python/
 app/src-tauri/resources/WebView2Loader.dll
 .tmp-bundled-python312-venv/

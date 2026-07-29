@@ -84,6 +84,7 @@ export default function AppMenu({
   } = useUiStore()
 
   const activeRoute = PRODUCT_ROUTES.find((route) => route.path === location.pathname) ?? PRODUCT_ROUTES[0]
+  const activeSubroutes = routeSubroutes(activeRoute)
   const activeParams = useMemo(() => new URLSearchParams(location.search), [location.search])
   const normalizedQuery = normalizeSearch(query)
 
@@ -177,7 +178,6 @@ export default function AppMenu({
   const renderRoute = (route: ProductRoute) => {
     const Icon = PRODUCT_ROUTE_ICONS[route.id as keyof typeof PRODUCT_ROUTE_ICONS]
     const active = activeRoute.id === route.id
-    const children = routeSubroutes(route)
 
     return (
       <div key={route.id} className="app-menu-route-group">
@@ -192,26 +192,6 @@ export default function AppMenu({
           <span>{t(route.navLabelKey)}</span>
           <kbd>{route.shortcut}</kbd>
         </button>
-        {active && children.length > 0 && (
-          <div className="app-menu-subroutes" aria-label={`${t(route.navLabelKey)} ${tr('Sections')}`}>
-            {children.map((subroute) => {
-              const selectedValue = activeParams.get(subroute.queryKey)
-              const selected = selectedValue === subroute.queryValue || (!selectedValue && subroute.default)
-              return (
-                <button
-                  key={subroute.id}
-                  type="button"
-                  className={selected ? 'active' : undefined}
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => navigateTo(route, buildSubroutePath(route, subroute))}
-                >
-                  <span>{tr(subroute.labelKey)}</span>
-                  {subroute.descriptionKey ? <small>{tr(subroute.descriptionKey)}</small> : null}
-                </button>
-              )
-            })}
-          </div>
-        )}
       </div>
     )
   }
@@ -276,6 +256,29 @@ export default function AppMenu({
             </section>
           ) : (
             <>
+              {activeSubroutes.length > 0 && (
+                <section className="app-menu-section app-menu-context-section" aria-labelledby="app-menu-current-sections">
+                  <h2 id="app-menu-current-sections">{t(activeRoute.navLabelKey)} · {tr('Sections')}</h2>
+                  <div className="app-menu-subroutes app-menu-context-subroutes" aria-label={`${t(activeRoute.navLabelKey)} ${tr('Sections')}`}>
+                    {activeSubroutes.map((subroute) => {
+                      const selectedValue = activeParams.get(subroute.queryKey)
+                      const selected = selectedValue === subroute.queryValue || (!selectedValue && subroute.default)
+                      return (
+                        <button
+                          key={subroute.id}
+                          type="button"
+                          className={selected ? 'active' : undefined}
+                          aria-current={selected ? 'page' : undefined}
+                          onClick={() => navigateTo(activeRoute, buildSubroutePath(activeRoute, subroute))}
+                        >
+                          <span>{tr(subroute.labelKey)}</span>
+                          {subroute.descriptionKey ? <small>{tr(subroute.descriptionKey)}</small> : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+              )}
               <section className="app-menu-section" aria-labelledby="app-menu-workspace">
                 <h2 id="app-menu-workspace">{tr('Workspace')}</h2>
                 {PRODUCT_ROUTES.filter((route) => route.group === 'workspace').map(renderRoute)}

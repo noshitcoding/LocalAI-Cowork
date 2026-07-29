@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -28,14 +29,80 @@ const EMBEDDED_WINDOWS_PYTHON_RELATIVE_PATH: &str = "python/windows/python.exe";
 const EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH: &str = "python/windows.zip";
 const EMBEDDED_RUNTIME_SCRIPT_DIR: &str = "python/crew_runtime";
 const EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH: &str = "python/crew_runtime/wheels.zip";
+const EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH: &str =
+    "python/crew_runtime/runtime-bundle-manifest.json";
 const ENV_CREW_PYTHON: &str = "LOCALAI_COWORK_CREW_PYTHON";
 const LEGACY_ENV_CREW_PYTHON: &str = "OPEN_COWORK_CREW_PYTHON";
 const MANAGED_PYTHON_VERSION: &str = "3.12";
+const EXPECTED_BUNDLED_PYTHON_VERSION: &str = "3.12.10";
+const EXPECTED_RUNTIME_BUNDLE_SCHEMA_VERSION: u64 = 1;
+const EXPECTED_RUNTIME_SCHEMA_VERSION: u64 = 2;
 const UV_VERSION: &str = "0.11.7";
 const UV_WINDOWS_DOWNLOAD_URL: &str =
     "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip";
 const MIN_SUPPORTED_PYTHON_MINOR: u32 = 10;
 const MAX_SUPPORTED_PYTHON_MINOR_EXCLUSIVE: u32 = 14;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewRuntimeBundleManifest {
+    schema_version: u64,
+    python: CrewRuntimeBundlePython,
+    wheelhouse: CrewRuntimeBundleWheelhouse,
+    #[serde(default)]
+    packages: Vec<CrewRuntimeBundlePackage>,
+    smoke: CrewRuntimeBundleSmoke,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrewRuntimeBundlePython {
+    version: String,
+    archive: CrewRuntimeBundleArchive,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewRuntimeBundleWheelhouse {
+    requirements_sha256: String,
+    lock_sha256: String,
+    archive: CrewRuntimeBundleArchive,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrewRuntimeBundleArchive {
+    bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CrewRuntimeBundlePackage {
+    name: String,
+    version: String,
+    filename: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CrewRuntimeBundleSmoke {
+    verified: bool,
+    offline: bool,
+    tests_passed: bool,
+    python_version: String,
+    crewai_version: String,
+    runtime_compatible: bool,
+    tool_dependencies_installed: bool,
+    runtime_schema_version: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedCrewRuntimeBundle {
+    python_version: String,
+    crewai_version: String,
+    python_archive_sha256: String,
+    wheels_archive_sha256: String,
+    packages: Vec<CrewRuntimeBundlePackage>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -253,9 +320,14 @@ fn resolve_runtime_scripts_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
         .ok()
         .map(|path| path.join(EMBEDDED_RUNTIME_SCRIPT_DIR));
 
-    bundled
-        .filter(|path| path.exists())
-        .unwrap_or_else(dev_script_dir)
+    if let Some(path) = bundled.as_ref().filter(|path| path.exists()) {
+        return path.clone();
+    }
+    if cfg!(debug_assertions) {
+        return dev_script_dir();
+    }
+
+    bundled.unwrap_or_else(|| PathBuf::from(EMBEDDED_RUNTIME_SCRIPT_DIR))
 }
 
 fn resolve_requirements_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
@@ -310,16 +382,58 @@ fn detect_base_python_command<R: Runtime>(app: &AppHandle<R>) -> Option<String> 
     Some("python".to_string())
 }
 
-fn ensure_compatible_base_python<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+fn python_version_matches(version: &str, expected_exact_version: Option<&str>) -> bool {
+    expected_exact_version
+        .map(|expected| version == expected)
+        .unwrap_or_else(|| python_version_supported(version))
+}
+
+fn select_exact_python_command(
+    expected_version: &str,
+    embedded: Option<(String, String)>,
+    configured: Option<(String, String)>,
+) -> Option<String> {
+    [embedded, configured]
+        .into_iter()
+        .flatten()
+        .find_map(|(command, version)| (version == expected_version).then_some(command))
+}
+
+fn detect_python_candidate(command: Option<String>) -> Option<(String, String)> {
+    let command = command?;
+    if !command_available(&command) {
+        return None;
+    }
+    read_python_version(&command).map(|version| (command, version))
+}
+
+fn ensure_compatible_base_python<R: Runtime>(
+    app: &AppHandle<R>,
+    expected_exact_version: Option<&str>,
+) -> Result<String, String> {
+    if let Some(expected_version) = expected_exact_version {
+        let embedded = detect_python_candidate(
+            resolve_embedded_python_path(app).map(|path| path.display().to_string()),
+        );
+        let configured = detect_python_candidate(configured_crew_python());
+        if let Some(command) = select_exact_python_command(expected_version, embedded, configured) {
+            return Ok(command);
+        }
+        return Err(format!(
+            "The verified CrewAI release bundle requires its embedded Python {}, but that interpreter is unavailable or incompatible. Network fallback is disabled.",
+            expected_version
+        ));
+    }
+
     if let Some(command) = configured_crew_python() {
         if command_available(&command) {
             let version = read_python_version(&command)
                 .ok_or_else(|| format!("Python version for {} could not be determined", command))?;
-            if python_version_supported(&version) {
+            if python_version_matches(&version, None) {
                 return Ok(command);
             }
             return Err(format!(
-                "LOCALAI_COWORK_CREW_PYTHON zeigt auf Python {}, CrewAI benoetigt Python 3.10 bis 3.13.",
+                "LOCALAI_COWORK_CREW_PYTHON points to Python {}, but CrewAI requires Python 3.10 through 3.13.",
                 version
             ));
         }
@@ -330,7 +444,7 @@ fn ensure_compatible_base_python<R: Runtime>(app: &AppHandle<R>) -> Result<Strin
         .filter(|command| command_available(command))
     {
         if let Some(version) = read_python_version(&command) {
-            if python_version_supported(&version) {
+            if python_version_matches(&version, None) {
                 return Ok(command);
             }
         }
@@ -542,6 +656,352 @@ fn python_version_supported(version: &str) -> bool {
     matches!((major, minor), (Some(3), Some(minor)) if (MIN_SUPPORTED_PYTHON_MINOR..MAX_SUPPORTED_PYTHON_MINOR_EXCLUSIVE).contains(&minor))
 }
 
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("{} could not be opened: {}", path.display(), error))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("{} could not be read: {}", path.display(), error))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(encoded)
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalized_distribution_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase().replace(['_', '.'], "-")
+}
+
+fn parse_exact_crewai_requirement(path: &Path) -> Result<String, String> {
+    let requirements = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Crew runtime requirements could not be read ({}): {}",
+            path.display(),
+            error
+        )
+    })?;
+    let mut versions = Vec::new();
+
+    for line in requirements.lines() {
+        let requirement = line
+            .split_once('#')
+            .map(|(value, _)| value)
+            .unwrap_or(line)
+            .trim();
+        let Some((name, version)) = requirement.split_once("==") else {
+            continue;
+        };
+        let distribution = name.split_once('[').map(|(value, _)| value).unwrap_or(name);
+        if normalized_distribution_name(distribution) == "crewai" {
+            let version = version
+                .split_once(';')
+                .map(|(value, _)| value)
+                .unwrap_or(version)
+                .trim();
+            if version.is_empty() {
+                return Err("CrewAI must be pinned to an exact non-empty version".to_string());
+            }
+            versions.push(version.to_string());
+        }
+    }
+
+    if versions.len() != 1 {
+        return Err(format!(
+            "requirements.txt must contain exactly one CrewAI == pin, found {}",
+            versions.len()
+        ));
+    }
+
+    Ok(versions.remove(0))
+}
+
+fn parse_runtime_script_crewai_version(path: &Path) -> Result<String, String> {
+    let script = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Crew runtime script could not be read ({}): {}",
+            path.display(),
+            error
+        )
+    })?;
+
+    for line in script.lines() {
+        let trimmed = line.trim();
+        let Some((name, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if name.trim() != "EXPECTED_CREWAI_VERSION" {
+            continue;
+        }
+        let version = value
+            .trim()
+            .trim_matches(|character| character == '"' || character == '\'');
+        if !version.is_empty() {
+            return Ok(version.to_string());
+        }
+    }
+
+    Err(format!(
+        "{} does not declare EXPECTED_CREWAI_VERSION",
+        path.display()
+    ))
+}
+
+fn validate_bundle_archive(
+    path: &Path,
+    descriptor: &CrewRuntimeBundleArchive,
+    label: &str,
+) -> Result<String, String> {
+    if !valid_sha256(&descriptor.sha256) {
+        return Err(format!(
+            "CrewAI release bundle manifest contains an invalid {} SHA-256",
+            label
+        ));
+    }
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "CrewAI release bundle is incomplete: {} is missing ({}). Network fallback is disabled.",
+            path.display(),
+            error
+        )
+    })?;
+    if metadata.len() != descriptor.bytes {
+        return Err(format!(
+            "CrewAI release bundle {} size mismatch: expected {}, found {}",
+            label,
+            descriptor.bytes,
+            metadata.len()
+        ));
+    }
+
+    let expected = descriptor.sha256.to_ascii_lowercase();
+    let actual = sha256_file(path)?;
+    if actual != expected {
+        return Err(format!(
+            "CrewAI release bundle {} SHA-256 mismatch: expected {}, found {}",
+            label, expected, actual
+        ));
+    }
+    Ok(expected)
+}
+
+fn bundled_runtime_indicated(resource_dir: &Path) -> bool {
+    [
+        resource_dir.join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH),
+        resource_dir.join(EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH),
+        resource_dir.join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH),
+        resource_dir
+            .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+            .join("main.py"),
+        resource_dir
+            .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+            .join("requirements.txt"),
+        resource_dir
+            .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+            .join("requirements.lock"),
+    ]
+    .iter()
+    .any(|path| path.exists())
+}
+
+fn validate_bundled_runtime(
+    resource_dir: &Path,
+) -> Result<Option<ValidatedCrewRuntimeBundle>, String> {
+    let python_archive = resource_dir.join(EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH);
+    let wheels_archive = resource_dir.join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH);
+    validate_bundled_runtime_with_archives(resource_dir, &python_archive, &wheels_archive)
+}
+
+fn validate_bundled_runtime_with_archives(
+    resource_dir: &Path,
+    python_archive: &Path,
+    wheels_archive: &Path,
+) -> Result<Option<ValidatedCrewRuntimeBundle>, String> {
+    if !bundled_runtime_indicated(resource_dir) {
+        if cfg!(debug_assertions) {
+            return Ok(None);
+        }
+        return Err(
+            "CrewAI release bundle is missing completely. Network fallback is disabled."
+                .to_string(),
+        );
+    }
+
+    let manifest_path = resource_dir.join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH);
+    let manifest_json = fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "CrewAI release bundle is incomplete: {} is missing ({}). Network fallback is disabled.",
+            manifest_path.display(),
+            error
+        )
+    })?;
+    let manifest: CrewRuntimeBundleManifest =
+        serde_json::from_str(manifest_json.trim_start_matches('\u{feff}')).map_err(|error| {
+            format!(
+                "CrewAI release bundle manifest is invalid ({}): {}. Network fallback is disabled.",
+                manifest_path.display(),
+                error
+            )
+        })?;
+
+    if manifest.schema_version != EXPECTED_RUNTIME_BUNDLE_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported CrewAI release bundle schema {} (expected {})",
+            manifest.schema_version, EXPECTED_RUNTIME_BUNDLE_SCHEMA_VERSION
+        ));
+    }
+    if manifest.python.version != EXPECTED_BUNDLED_PYTHON_VERSION {
+        return Err(format!(
+            "CrewAI release bundle requires CPython {}, but this app expects {}",
+            manifest.python.version, EXPECTED_BUNDLED_PYTHON_VERSION
+        ));
+    }
+    if !manifest.smoke.verified
+        || !manifest.smoke.offline
+        || !manifest.smoke.tests_passed
+        || !manifest.smoke.runtime_compatible
+        || !manifest.smoke.tool_dependencies_installed
+    {
+        return Err(
+            "CrewAI release bundle has no successful offline compatibility and test-suite result"
+                .to_string(),
+        );
+    }
+    if manifest.smoke.runtime_schema_version != EXPECTED_RUNTIME_SCHEMA_VERSION {
+        return Err(format!(
+            "CrewAI runtime schema mismatch: bundle has {}, expected {}",
+            manifest.smoke.runtime_schema_version, EXPECTED_RUNTIME_SCHEMA_VERSION
+        ));
+    }
+    if manifest.smoke.python_version != manifest.python.version {
+        return Err(format!(
+            "CrewAI release bundle Python smoke version {} does not match archive version {}",
+            manifest.smoke.python_version, manifest.python.version
+        ));
+    }
+
+    let runtime_dir = resource_dir.join(EMBEDDED_RUNTIME_SCRIPT_DIR);
+    let requirements_path = runtime_dir.join("requirements.txt");
+    let lock_path = runtime_dir.join("requirements.lock");
+    let main_script_path = runtime_dir.join("main.py");
+    let requirements_hash = sha256_file(&requirements_path).map_err(|error| {
+        format!(
+            "CrewAI release bundle requirements are missing or unreadable: {}. Network fallback is disabled.",
+            error
+        )
+    })?;
+    if !valid_sha256(&manifest.wheelhouse.requirements_sha256)
+        || requirements_hash != manifest.wheelhouse.requirements_sha256.to_ascii_lowercase()
+    {
+        return Err(format!(
+            "CrewAI release bundle requirements SHA-256 mismatch: expected {}, found {}",
+            manifest.wheelhouse.requirements_sha256, requirements_hash
+        ));
+    }
+    let lock_hash = sha256_file(&lock_path).map_err(|error| {
+        format!(
+            "CrewAI release bundle lockfile is missing or unreadable: {}. Network fallback is disabled.",
+            error
+        )
+    })?;
+    if !valid_sha256(&manifest.wheelhouse.lock_sha256)
+        || lock_hash != manifest.wheelhouse.lock_sha256.to_ascii_lowercase()
+    {
+        return Err(format!(
+            "CrewAI release bundle lockfile SHA-256 mismatch: expected {}, found {}",
+            manifest.wheelhouse.lock_sha256, lock_hash
+        ));
+    }
+
+    let requirements_crewai_version = parse_exact_crewai_requirement(&requirements_path)?;
+    let script_crewai_version = parse_runtime_script_crewai_version(&main_script_path)?;
+    if manifest.smoke.crewai_version != requirements_crewai_version
+        || script_crewai_version != requirements_crewai_version
+    {
+        return Err(format!(
+            "CrewAI version mismatch across bundle manifest ({}) / requirements ({}) / runtime script ({})",
+            manifest.smoke.crewai_version, requirements_crewai_version, script_crewai_version
+        ));
+    }
+
+    if manifest.packages.is_empty() {
+        return Err("CrewAI release bundle package manifest is empty".to_string());
+    }
+    let mut package_filenames = HashMap::new();
+    let mut crewai_packages = Vec::new();
+    for package in &manifest.packages {
+        let filename = Path::new(&package.filename);
+        if package.filename.trim().is_empty()
+            || filename.file_name().and_then(|value| value.to_str())
+                != Some(package.filename.as_str())
+            || filename.components().count() != 1
+        {
+            return Err(format!(
+                "CrewAI release bundle contains an unsafe package filename: {}",
+                package.filename
+            ));
+        }
+        if !valid_sha256(&package.sha256) {
+            return Err(format!(
+                "CrewAI release bundle package {} has an invalid SHA-256",
+                package.filename
+            ));
+        }
+        if package_filenames
+            .insert(package.filename.to_ascii_lowercase(), ())
+            .is_some()
+        {
+            return Err(format!(
+                "CrewAI release bundle lists package file {} more than once",
+                package.filename
+            ));
+        }
+        if normalized_distribution_name(&package.name) == "crewai" {
+            crewai_packages.push(package);
+        }
+    }
+    if crewai_packages.len() != 1 || crewai_packages[0].version != requirements_crewai_version {
+        return Err(format!(
+            "CrewAI release bundle must contain exactly CrewAI {}, found {} matching package entries",
+            requirements_crewai_version,
+            crewai_packages.len()
+        ));
+    }
+
+    let python_archive_sha256 =
+        validate_bundle_archive(python_archive, &manifest.python.archive, "Python archive")?;
+    let wheels_archive_sha256 = validate_bundle_archive(
+        wheels_archive,
+        &manifest.wheelhouse.archive,
+        "wheel archive",
+    )?;
+
+    Ok(Some(ValidatedCrewRuntimeBundle {
+        python_version: manifest.python.version,
+        crewai_version: requirements_crewai_version,
+        python_archive_sha256,
+        wheels_archive_sha256,
+        packages: manifest.packages,
+    }))
+}
+
 fn resolve_local_wheels_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
     if let Ok(runtime_root) = resolve_runtime_root(app) {
         let extracted = runtime_root
@@ -572,10 +1032,16 @@ fn local_wheels_available(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_bundled_runtime_assets<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let resource_dir = match app.path().resource_dir() {
-        Ok(path) => path,
-        Err(_) => return Ok(()),
+fn ensure_bundled_runtime_assets<R: Runtime>(
+    app: &AppHandle<R>,
+    verify_cached_wheels: bool,
+) -> Result<Option<ValidatedCrewRuntimeBundle>, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("App resource folder could not be resolved: {}", error))?;
+    let Some(bundle) = validate_bundled_runtime(&resource_dir)? else {
+        return Ok(None);
     };
 
     let runtime_root = resolve_runtime_root(app)?;
@@ -583,51 +1049,133 @@ fn ensure_bundled_runtime_assets<R: Runtime>(app: &AppHandle<R>) -> Result<(), S
         .map_err(|error| format!("Crew runtime root could not be created: {}", error))?;
 
     let python_archive = resource_dir.join(EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH);
-    if python_archive.exists() {
-        extract_zip_if_needed(
-            &python_archive,
-            &runtime_root.join("python").join("windows"),
-        )?;
+    let embedded_python_root = runtime_root.join("python").join("windows");
+    let python_extracted = extract_zip_if_needed(
+        &python_archive,
+        &embedded_python_root,
+        &bundle.python_archive_sha256,
+    )?;
+    let embedded_python = embedded_python_root.join("python.exe");
+    let extracted_python_version = read_python_version(embedded_python.to_string_lossy().as_ref())
+        .ok_or_else(|| {
+            format!(
+                "Bundled Python could not be started after extraction: {}",
+                embedded_python.display()
+            )
+        })?;
+    if extracted_python_version != bundle.python_version {
+        return Err(format!(
+            "Bundled Python version mismatch after extraction: expected {}, found {}",
+            bundle.python_version, extracted_python_version
+        ));
+    }
+    if python_extracted {
+        mark_zip_extraction_complete(&embedded_python_root, &bundle.python_archive_sha256)?;
     }
 
     let wheels_archive = resource_dir.join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH);
-    if wheels_archive.exists() {
-        extract_zip_if_needed(
-            &wheels_archive,
-            &runtime_root
-                .join("python")
-                .join("crew_runtime")
-                .join("wheels"),
-        )?;
+    let wheels_destination = runtime_root
+        .join("python")
+        .join("crew_runtime")
+        .join("wheels");
+    let wheels_extracted = extract_zip_if_needed(
+        &wheels_archive,
+        &wheels_destination,
+        &bundle.wheels_archive_sha256,
+    )?;
+    validate_extracted_wheelhouse(
+        &wheels_destination,
+        &bundle.packages,
+        wheels_extracted || verify_cached_wheels,
+    )?;
+    if wheels_extracted {
+        mark_zip_extraction_complete(&wheels_destination, &bundle.wheels_archive_sha256)?;
+    }
+
+    Ok(Some(bundle))
+}
+
+fn validate_extracted_wheelhouse(
+    wheelhouse: &Path,
+    packages: &[CrewRuntimeBundlePackage],
+    verify_hashes: bool,
+) -> Result<(), String> {
+    let expected_packages = packages
+        .iter()
+        .map(|package| (package.filename.to_ascii_lowercase(), package))
+        .collect::<HashMap<_, _>>();
+    let actual_wheels = fs::read_dir(wheelhouse)
+        .map_err(|error| {
+            format!(
+                "Bundled CrewAI wheelhouse could not be read ({}): {}",
+                wheelhouse.display(),
+                error
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_wheel = path.is_file()
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.eq_ignore_ascii_case("whl"))
+                    .unwrap_or(false);
+            is_wheel.then(|| {
+                (
+                    entry.file_name().to_string_lossy().to_ascii_lowercase(),
+                    path,
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+
+    if actual_wheels.len() != expected_packages.len()
+        || expected_packages
+            .keys()
+            .any(|filename| !actual_wheels.contains_key(filename))
+    {
+        return Err(format!(
+            "Bundled CrewAI wheelhouse does not match its package manifest (expected {} wheels, found {})",
+            expected_packages.len(),
+            actual_wheels.len()
+        ));
+    }
+
+    if verify_hashes {
+        for (filename, package) in expected_packages {
+            let path = actual_wheels
+                .get(&filename)
+                .expect("wheel set equality was checked above");
+            let actual = sha256_file(path)?;
+            if actual != package.sha256.to_ascii_lowercase() {
+                return Err(format!(
+                    "Bundled CrewAI wheel {} SHA-256 mismatch: expected {}, found {}",
+                    package.filename, package.sha256, actual
+                ));
+            }
+        }
     }
 
     Ok(())
 }
 
-fn extract_zip_if_needed(zip_path: &Path, destination: &Path) -> Result<(), String> {
+fn extract_zip_if_needed(
+    zip_path: &Path,
+    destination: &Path,
+    archive_sha256: &str,
+) -> Result<bool, String> {
     let marker = destination.join(".localai_cowork_extract_complete");
-    let zip_metadata = fs::metadata(zip_path).map_err(|error| {
-        format!(
-            "archive could not be read ({}): {}",
-            zip_path.display(),
-            error
-        )
-    })?;
-    let zip_len = zip_metadata.len().to_string();
-    let zip_modified = zip_metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|value| value.as_secs().to_string())
-        .unwrap_or_else(|| "0".to_string());
-    let expected_marker = format!("{}:{}", zip_len, zip_modified);
+    let expected_marker = format!("sha256:{}", archive_sha256);
 
     if marker.exists() {
         if let Ok(current_marker) = fs::read_to_string(&marker) {
             if current_marker.trim() == expected_marker {
-                return Ok(());
+                return Ok(false);
             }
         }
+    }
+    if destination.exists() {
         fs::remove_dir_all(destination).map_err(|error| {
             format!(
                 "Outdated archive data could not be removed ({}): {}",
@@ -669,7 +1217,11 @@ fn extract_zip_if_needed(zip_path: &Path, destination: &Path) -> Result<(), Stri
             )
         })?;
         let Some(entry_name) = entry.enclosed_name() else {
-            continue;
+            return Err(format!(
+                "archive contains an unsafe entry ({} at index {})",
+                zip_path.display(),
+                index
+            ));
         };
         let output_path = destination.join(entry_name);
 
@@ -710,14 +1262,18 @@ fn extract_zip_if_needed(zip_path: &Path, destination: &Path) -> Result<(), Stri
         })?;
     }
 
-    fs::write(&marker, expected_marker).map_err(|error| {
+    Ok(true)
+}
+
+fn mark_zip_extraction_complete(destination: &Path, archive_sha256: &str) -> Result<(), String> {
+    let marker = destination.join(".localai_cowork_extract_complete");
+    fs::write(&marker, format!("sha256:{}", archive_sha256)).map_err(|error| {
         format!(
             "archive marker could not be written ({}): {}",
             marker.display(),
             error
         )
-    })?;
-    Ok(())
+    })
 }
 
 fn run_python_json_command(
@@ -752,6 +1308,7 @@ where
     command
         .arg(script)
         .arg(subcommand)
+        .env("LITELLM_LOCAL_MODEL_COST_MAP", "True")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -971,11 +1528,52 @@ fn build_status_from_json<R: Runtime>(
     }
 }
 
+fn enforce_bundle_status(
+    status: &mut CrewRuntimeStatusResponse,
+    bundle: Option<&ValidatedCrewRuntimeBundle>,
+) {
+    let Some(bundle) = bundle else {
+        return;
+    };
+
+    status.expected_crewai_version = Some(bundle.crewai_version.clone());
+    let python_matches = status
+        .python_version
+        .as_deref()
+        .map(|version| version == bundle.python_version)
+        .unwrap_or(false);
+    let crewai_matches = status
+        .crewai_version
+        .as_deref()
+        .map(|version| version == bundle.crewai_version)
+        .unwrap_or(false);
+    let schema_matches = status.runtime_schema_version == Some(EXPECTED_RUNTIME_SCHEMA_VERSION);
+
+    if status.ready && (!python_matches || !crewai_matches || !schema_matches) {
+        status.ready = false;
+        status.bootstrap_required = true;
+        status.runtime_compatible = false;
+        status.message = format!(
+            "Installed Crew runtime does not match the verified release bundle (Python {}, CrewAI {}, schema {}). Reinitialization is required.",
+            bundle.python_version, bundle.crewai_version, EXPECTED_RUNTIME_SCHEMA_VERSION
+        );
+    } else if status.crewai_installed && !crewai_matches {
+        status.ready = false;
+        status.bootstrap_required = true;
+        status.runtime_compatible = false;
+        status.message = format!(
+            "Installed CrewAI {} does not match bundled CrewAI {}. Reinitialization is required.",
+            status.crewai_version.as_deref().unwrap_or("unknown"),
+            bundle.crewai_version
+        );
+    }
+}
+
 fn crew_runtime_status_internal<R: Runtime>(
     app: &AppHandle<R>,
     bridge: &CrewPythonBridge,
 ) -> Result<CrewRuntimeStatusResponse, String> {
-    ensure_bundled_runtime_assets(app)?;
+    let bundle = ensure_bundled_runtime_assets(app, false)?;
     let runtime_root = resolve_runtime_root(app)?;
     if !runtime_root.exists() {
         fs::create_dir_all(&runtime_root)
@@ -999,7 +1597,12 @@ fn crew_runtime_status_internal<R: Runtime>(
         .and_then(|command| read_python_version(command));
     let python_compatible = detected_python_version
         .as_deref()
-        .map(python_version_supported)
+        .map(|version| {
+            python_version_matches(
+                version,
+                bundle.as_ref().map(|value| value.python_version.as_str()),
+            )
+        })
         .unwrap_or(false);
 
     if !main_script.exists() {
@@ -1029,19 +1632,33 @@ fn crew_runtime_status_internal<R: Runtime>(
     let message = if status_json.is_some() {
         "Crew runtime status loaded successfully".to_string()
     } else if detected_python_path.is_some() && !python_compatible {
-        format!(
-            "Detected Python interpreter ({}) is not compatible with CrewAI. The app-internal runtime will be prepared with Python 3.12 during initialization.",
-            detected_python_version
-                .clone()
-                .unwrap_or_else(|| "unbekannt".to_string())
-        )
+        if bundle.is_some() {
+            format!(
+                "Detected Python interpreter ({}) does not match the verified CrewAI runtime. It will be reinitialized from bundled offline assets.",
+                detected_python_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
+            )
+        } else {
+            format!(
+                "Detected Python interpreter ({}) is not compatible with CrewAI. The app-internal runtime will be prepared with Python 3.12 during initialization.",
+                detected_python_version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string())
+            )
+        }
     } else if preferred_python.is_none() {
-        "Crew runtime must be initialized. Python 3.12 and CrewAI will be downloaded in isolation into the app data folder.".to_string()
+        if bundle.is_some() {
+            "Crew runtime must be initialized from the bundled offline Python and CrewAI assets."
+                .to_string()
+        } else {
+            "Crew runtime must be initialized. Python 3.12 and CrewAI will be downloaded in isolation into the app data folder.".to_string()
+        }
     } else {
         "Crew runtime exists but is not prepared yet".to_string()
     };
 
-    Ok(build_status_from_json(
+    let mut status = build_status_from_json(
         app,
         bridge,
         &runtime_root,
@@ -1049,7 +1666,9 @@ fn crew_runtime_status_internal<R: Runtime>(
         detected_python_version,
         status_json,
         message,
-    ))
+    );
+    enforce_bundle_status(&mut status, bundle.as_ref());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1066,7 +1685,7 @@ pub fn crew_runtime_bootstrap(
     bridge: State<'_, CrewPythonBridge>,
     request: Option<CrewRuntimeBootstrapRequest>,
 ) -> Result<CrewRuntimeBootstrapResponse, String> {
-    ensure_bundled_runtime_assets(&app)?;
+    let bundle = ensure_bundled_runtime_assets(&app, true)?;
     let runtime_root = resolve_runtime_root(&app)?;
     fs::create_dir_all(&runtime_root)
         .map_err(|error| format!("Crew runtime root could not be created: {}", error))?;
@@ -1084,8 +1703,17 @@ pub fn crew_runtime_bootstrap(
         ));
     }
 
-    let base_python = ensure_compatible_base_python(&app)?;
+    let base_python = ensure_compatible_base_python(
+        &app,
+        bundle.as_ref().map(|value| value.python_version.as_str()),
+    )?;
     let use_local_wheels = local_wheels_available(&wheels_path);
+    if bundle.is_some() && !use_local_wheels {
+        return Err(
+            "The verified CrewAI release bundle has no usable local wheelhouse. Network fallback is disabled."
+                .to_string(),
+        );
+    }
 
     let force_reinstall = request
         .as_ref()
@@ -1094,7 +1722,12 @@ pub fn crew_runtime_bootstrap(
     let venv_python_supported = if venv_python.exists() {
         read_python_version(venv_python.to_string_lossy().as_ref())
             .as_deref()
-            .map(python_version_supported)
+            .map(|version| {
+                python_version_matches(
+                    version,
+                    bundle.as_ref().map(|value| value.python_version.as_str()),
+                )
+            })
             .unwrap_or(false)
     } else {
         true
@@ -1166,7 +1799,14 @@ pub fn crew_runtime_bootstrap(
         command
     };
     if use_local_wheels {
-        install_requirements_command.args(["--no-index", "--find-links", wheels_path_arg.as_str()]);
+        install_requirements_command.arg("--no-index");
+        if !base_python.ends_with("uv.exe") {
+            install_requirements_command.arg("--no-compile");
+        }
+        install_requirements_command.args(["--find-links", wheels_path_arg.as_str()]);
+        install_requirements_command
+            .env("PIP_NO_INDEX", "1")
+            .env("PIP_DISABLE_PIP_VERSION_CHECK", "1");
     }
     install_requirements_command.args(["-r", requirements_path_arg.as_str()]);
     suppress_command_window(&mut install_requirements_command);
@@ -1274,4 +1914,289 @@ pub fn crew_runtime_validate_definition(
         None,
     )?;
     serde_json::from_value::<CrewRuntimeValidateResponse>(result).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    struct TestBundleDirectory {
+        path: PathBuf,
+    }
+
+    impl TestBundleDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "localai-cowork-rust-bundle-test-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&path).expect("test resource root should be created");
+            Self { path }
+        }
+    }
+
+    impl Drop for TestBundleDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write_valid_test_bundle() -> TestBundleDirectory {
+        let bundle = TestBundleDirectory::new();
+        let runtime_dir = bundle.path.join(EMBEDDED_RUNTIME_SCRIPT_DIR);
+        let python_archive = bundle
+            .path
+            .join(EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH);
+        let wheels_archive = bundle
+            .path
+            .join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH);
+        fs::create_dir_all(&runtime_dir).expect("runtime directory should be created");
+        fs::create_dir_all(
+            python_archive
+                .parent()
+                .expect("python archive should have a parent"),
+        )
+        .expect("python archive directory should be created");
+
+        fs::write(
+            runtime_dir.join("requirements.txt"),
+            b"crewai[litellm]==1.15.8\npydantic==2.12.5\n",
+        )
+        .expect("requirements should be written");
+        fs::write(
+            runtime_dir.join("requirements.lock"),
+            b"crewai==1.15.8 --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+        )
+        .expect("lockfile should be written");
+        fs::write(
+            runtime_dir.join("main.py"),
+            b"EXPECTED_CREWAI_VERSION = \"1.15.8\"\n",
+        )
+        .expect("runtime script should be written");
+        fs::write(&python_archive, b"test-python-archive")
+            .expect("python archive should be written");
+        fs::write(&wheels_archive, b"test-wheel-archive").expect("wheel archive should be written");
+
+        let requirements_hash =
+            sha256_file(&runtime_dir.join("requirements.txt")).expect("requirements should hash");
+        let lock_hash =
+            sha256_file(&runtime_dir.join("requirements.lock")).expect("lockfile should hash");
+        let python_hash =
+            sha256_file(&python_archive).expect("python archive should hash successfully");
+        let wheels_hash =
+            sha256_file(&wheels_archive).expect("wheel archive should hash successfully");
+        let manifest = json!({
+            "schemaVersion": 1,
+            "python": {
+                "version": "3.12.10",
+                "archive": {
+                    "bytes": fs::metadata(&python_archive).expect("python metadata").len(),
+                    "sha256": python_hash
+                }
+            },
+            "wheelhouse": {
+                "requirementsSha256": requirements_hash,
+                "lockSha256": lock_hash,
+                "archive": {
+                    "bytes": fs::metadata(&wheels_archive).expect("wheel metadata").len(),
+                    "sha256": wheels_hash
+                }
+            },
+            "packages": [{
+                "name": "crewai",
+                "version": "1.15.8",
+                "filename": "crewai-1.15.8-py3-none-any.whl",
+                "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            }],
+            "smoke": {
+                "verified": true,
+                "offline": true,
+                "testsPassed": true,
+                "pythonVersion": "3.12.10",
+                "crewaiVersion": "1.15.8",
+                "runtimeCompatible": true,
+                "toolDependenciesInstalled": true,
+                "runtimeSchemaVersion": 2
+            }
+        });
+        fs::write(
+            runtime_dir.join("runtime-bundle-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should be written");
+        bundle
+    }
+
+    #[test]
+    fn exact_bundle_python_prefers_embedded_over_incompatible_custom_python() {
+        let selected = select_exact_python_command(
+            "3.12.10",
+            Some(("embedded-python".to_string(), "3.12.10".to_string())),
+            Some(("custom-python".to_string(), "3.14.0".to_string())),
+        );
+
+        assert_eq!(selected.as_deref(), Some("embedded-python"));
+    }
+
+    #[test]
+    fn validates_consistent_offline_release_bundle() {
+        let bundle = write_valid_test_bundle();
+        let validated = validate_bundled_runtime(&bundle.path)
+            .expect("valid bundle should pass")
+            .expect("release bundle should be detected");
+
+        assert_eq!(validated.python_version, "3.12.10");
+        assert_eq!(validated.crewai_version, "1.15.8");
+        assert_eq!(validated.packages.len(), 1);
+    }
+
+    #[test]
+    fn validates_generated_release_bundle_assets() {
+        let tauri_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let validated = validate_bundled_runtime_with_archives(
+            tauri_root,
+            &tauri_root
+                .join("resources")
+                .join("python")
+                .join("windows.zip"),
+            &tauri_root
+                .join("python")
+                .join("crew_runtime")
+                .join("wheels.zip"),
+        )
+        .expect("generated release bundle should pass Rust validation")
+        .expect("generated release bundle should be detected");
+
+        assert_eq!(validated.python_version, EXPECTED_BUNDLED_PYTHON_VERSION);
+        assert_eq!(validated.crewai_version, "1.15.8");
+        assert!(validated.packages.len() > 100);
+    }
+
+    #[test]
+    fn rejects_bundle_when_requirements_change_after_manifest_generation() {
+        let bundle = write_valid_test_bundle();
+        fs::write(
+            bundle
+                .path
+                .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+                .join("requirements.txt"),
+            b"crewai[litellm]==1.15.3\n",
+        )
+        .expect("requirements should be changed");
+
+        let error = validate_bundled_runtime(&bundle.path)
+            .expect_err("tampered requirements must be rejected");
+        assert!(error.contains("requirements SHA-256 mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_bundle_when_lockfile_changes_after_manifest_generation() {
+        let bundle = write_valid_test_bundle();
+        fs::write(
+            bundle
+                .path
+                .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+                .join("requirements.lock"),
+            b"crewai==1.15.3 --hash=sha256:2222222222222222222222222222222222222222222222222222222222222222\n",
+        )
+        .expect("lockfile should be changed");
+
+        let error =
+            validate_bundled_runtime(&bundle.path).expect_err("tampered lockfile must be rejected");
+        assert!(error.contains("lockfile SHA-256 mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_bundle_without_lockfile() {
+        let bundle = write_valid_test_bundle();
+        fs::remove_file(
+            bundle
+                .path
+                .join(EMBEDDED_RUNTIME_SCRIPT_DIR)
+                .join("requirements.lock"),
+        )
+        .expect("lockfile should be removed");
+
+        let error =
+            validate_bundled_runtime(&bundle.path).expect_err("missing lockfile must be rejected");
+        assert!(
+            error.contains("lockfile is missing or unreadable"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_bundle_when_an_archive_hash_no_longer_matches() {
+        let bundle = write_valid_test_bundle();
+        fs::write(
+            bundle
+                .path
+                .join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH),
+            b"evil-wheel-archive",
+        )
+        .expect("wheel archive should be changed without changing its size");
+
+        let error =
+            validate_bundled_runtime(&bundle.path).expect_err("tampered archive must be rejected");
+        assert!(error.contains("wheel archive SHA-256 mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_manifest_crewai_version_that_differs_from_exact_pin() {
+        let bundle = write_valid_test_bundle();
+        let manifest_path = bundle.path.join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest should be readable"))
+                .expect("manifest should parse");
+        manifest["smoke"]["crewaiVersion"] = json!("1.15.3");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should be changed");
+
+        let error =
+            validate_bundled_runtime(&bundle.path).expect_err("version mismatch must be rejected");
+        assert!(error.contains("CrewAI version mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_bundle_without_passing_runtime_test_suite() {
+        let bundle = write_valid_test_bundle();
+        let manifest_path = bundle.path.join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH);
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest should be readable"))
+                .expect("manifest should parse");
+        manifest["smoke"]["testsPassed"] = json!(false);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("manifest should serialize"),
+        )
+        .expect("manifest should be changed");
+
+        let error = validate_bundled_runtime(&bundle.path)
+            .expect_err("failed runtime test suite must be rejected");
+        assert!(error.contains("test-suite result"), "{error}");
+    }
+
+    #[test]
+    fn rejects_release_assets_without_manifest_instead_of_allowing_network_fallback() {
+        let bundle = write_valid_test_bundle();
+        fs::remove_file(bundle.path.join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH))
+            .expect("manifest should be removed");
+
+        let error = validate_bundled_runtime(&bundle.path)
+            .expect_err("incomplete release bundle must be rejected");
+        assert!(error.contains("Network fallback is disabled"), "{error}");
+    }
+
+    #[test]
+    fn accepts_absent_bundle_only_when_no_release_assets_are_present() {
+        let bundle = TestBundleDirectory::new();
+        assert!(validate_bundled_runtime(&bundle.path)
+            .expect("empty dev resource directory should be accepted")
+            .is_none());
+    }
 }

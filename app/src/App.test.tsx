@@ -134,7 +134,9 @@ describe('App', () => {
     expect(screen.getByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
 
     const menu = await openMainMenu()
-    fireEvent.click(within(menu).getByRole('button', { name: /^Interface/ }))
+    const settingsSections = within(menu).getByLabelText('Settings Sections')
+    expect(within(settingsSections).getAllByRole('button')).toHaveLength(9)
+    fireEvent.click(within(settingsSections).getByRole('button', { name: /^Interface/ }))
     await waitFor(() => expect(window.location.search).toBe('?section=ui'))
     expect(await screen.findByText('Interface', { selector: '.shell-title' })).toBeInTheDocument()
   })

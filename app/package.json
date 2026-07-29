@@ -1,7 +1,7 @@
 {
   "name": "localai-cowork",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Open-source, local-first AI coworker for Windows with Ollama, MCP, tasks, approvals, and tools.",
   "type": "module",
   "license": "Apache-2.0",
@@ -14,6 +14,8 @@
     "dev:tauri": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "preview:tauri": "npm run build && vite preview --host 127.0.0.1 --port 5173 --strictPort",
     "preview:e2e": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "prepare:crew-runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/prepare-crew-runtime.ps1",
+    "build:tauri": "npm run prepare:crew-runtime && npm run build",
     "doctor": "node ./scripts/doctor.mjs",
     "doctor:ci": "node ./scripts/doctor.mjs --ci",
     "typecheck": "tsc -b",

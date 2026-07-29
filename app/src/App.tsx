@@ -76,7 +76,7 @@ function ProductRouteReady({ routeId }: { routeId: ProductRouteId }) {
       content = <CoworkView />
       break
     case 'settings':
-      content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><SettingsView /></div>
+      content = <div className="code-mode settings-route-frame"><SettingsView /></div>
       break
     case 'tasks':
       content = <div className="code-mode" style={{ overflow: 'auto', height: '100%' }}><TasksView /></div>

@@ -1,13 +1,13 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Local AI Cowork",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
-    "beforeDevCommand": "npm run dev:tauri",
+    "beforeDevCommand": "npm run prepare:crew-runtime && npm run dev:tauri",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../dist",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build:tauri"
   },
   "app": {
     "trayIcon": {
@@ -38,6 +38,10 @@
       "python/crew_runtime/main.py": "python/crew_runtime/main.py",
       "python/crew_runtime/crew_tools.py": "python/crew_runtime/crew_tools.py",
       "python/crew_runtime/requirements.txt": "python/crew_runtime/requirements.txt",
+      "python/crew_runtime/requirements.lock": "python/crew_runtime/requirements.lock",
+      "python/crew_runtime/wheels.zip": "python/crew_runtime/wheels.zip",
+      "python/crew_runtime/runtime-bundle-manifest.json": "python/crew_runtime/runtime-bundle-manifest.json",
+      "resources/python/windows.zip": "python/windows.zip",
       "resources/WebView2Loader.dll": "WebView2Loader.dll"
     },
     "icon": [

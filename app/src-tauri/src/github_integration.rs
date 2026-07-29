@@ -311,7 +311,7 @@ fn github_token(store: &CredentialStore) -> Result<String, String> {
 fn github_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(30))
-        .user_agent("LocalAI-Cowork/0.1.8")
+        .user_agent("LocalAI-Cowork/0.1.9")
         .build()
         .map_err(|error| format!("Could not create the GitHub client: {error}"))
 }

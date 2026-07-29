@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-EXPECTED_CREWAI_VERSION = "1.15.2"
+EXPECTED_CREWAI_VERSION = "1.15.8"
 RUNTIME_SCHEMA_VERSION = 2
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
@@ -1286,6 +1286,7 @@ def build_llm(request: dict, agent: dict):
         timeout_seconds = resolve_agent_timeout_ms(request, agent) // 1000
         llm_kwargs = {
             "model": model,
+            "is_litellm": True,
             "base_url": normalize_openai_compatible_base_url(
                 config.get("baseUrl") or request_config.get("baseUrl")
             ),
@@ -1561,7 +1562,7 @@ def normalize_task_concurrency(
 def execute_parallel_crew(crew, ordered_task_bindings: list[tuple[dict, object]]) -> None:
     """Execute dependency-safe task batches concurrently.
 
-    CrewAI 1.15.2 waits for pending async tasks before it starts the next
+    CrewAI 1.15.8 waits for pending async tasks before it starts the next
     synchronous task, so using a sync task as a batch boundary accidentally
     serializes a two-task batch. The runtime prepares the Crew normally, then
     starts every task in one dependency batch before waiting for its futures.

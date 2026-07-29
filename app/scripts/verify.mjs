@@ -45,6 +45,13 @@ runStep('Release script tests', node, [
   join(root, 'scripts', 'process-utils.test.mjs'),
   join(root, 'scripts', 'supply-chain.test.mjs'),
 ])
+runStep('Bundled CrewAI runtime', 'powershell', [
+  '-NoProfile',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-File',
+  join(root, 'scripts', 'prepare-crew-runtime.ps1'),
+])
 runStep('Supply-chain policy', node, [join(root, 'scripts', 'supply-chain.mjs'), 'check'])
 runStep('TypeScript', node, [localBins.tsc, '-b'])
 runStep('ESLint', node, [localBins.eslint, '.', '--max-warnings', '0'])

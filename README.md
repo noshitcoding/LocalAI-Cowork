@@ -53,6 +53,7 @@ The current implementation is strongest on Windows. The Tauri stack can support 
 - Node.js 22+
 - npm 10+
 - Rust via rustup
+- Python 3.12.10 x64 when building from source; release installers already bundle it
 - Microsoft WebView2 Runtime
 - Ollama, if you want local model execution
 
@@ -70,6 +71,11 @@ npm run tauri dev
 cd app
 npm run installer
 ```
+
+Source builds create an offline CrewAI runtime from the reviewed, SHA-256-pinned
+`requirements.lock`. Update that lock only intentionally with
+`npm run prepare:crew-runtime -- -UpdateLock`, review the dependency diff, and
+then rebuild the installer.
 
 The packaged installer is written to:
 
@@ -175,11 +181,11 @@ npm run smoke:desktop
 The GitHub Actions workflow in `.github/workflows/windows-installer.yml` builds the Windows installer and attaches it to a GitHub Release when a version tag is pushed.
 
 ```powershell
-git tag v0.1.8
-git push origin v0.1.8
+git tag v0.1.9
+git push origin v0.1.9
 ```
 
-The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `LOCALAI_COWORK_CODESIGN_PFX_BASE64`, `LOCALAI_COWORK_CODESIGN_PASSWORD`, and `LOCALAI_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. During the rename transition, the workflow also accepts the legacy `OPEN_COWORK_*` secret names so existing protected values do not have to be exposed or copied. Manual release builds are available through the workflow dispatch input.
+The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, verifies the offline CrewAI bundle through a real silent install and automatic first-start bootstrap, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. Authenticode signing uses the `LOCALAI_COWORK_CODESIGN_*` secrets (with the legacy `OPEN_COWORK_*` names accepted during migration). Repositories that explicitly set `LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE=true` may publish an unsigned installer only with a prominent warning asset and release notice; incomplete or invalid signing configuration still blocks publication. Manual release builds are available through the workflow dispatch input.
 
 ## Contributing
 

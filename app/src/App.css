@@ -8555,6 +8555,7 @@ button.compact-send-btn {
 
 .settings-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0;
@@ -11978,8 +11979,27 @@ button.compact-send-btn {
   margin: 0 auto;
 }
 
-.settings-layout {
-  display: block;
+.settings-route-frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.settings-route-frame > .settings-layout {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.app-menu-context-section {
+  padding-top: 4px;
+}
+
+.app-menu-context-subroutes {
+  margin: 0;
+  padding: 0;
+  border-left: 0;
 }
 
 .settings-content .settings-view {

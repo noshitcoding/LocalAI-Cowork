@@ -66,6 +66,10 @@ $stableInstallerPath = Join-Path $installerDir "LocalAI-Cowork-Setup.exe"
 Push-Location $appRoot
 try {
     Import-MsvcEnvironment
+    npm run prepare:crew-runtime
+    if ($LASTEXITCODE -ne 0) {
+        throw "CrewAI runtime preparation failed with exit code $LASTEXITCODE"
+    }
     npm run tauri -- build --target $env:TAURI_BUILD_TARGET
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri build fehlgeschlagen mit Exitcode $LASTEXITCODE"
