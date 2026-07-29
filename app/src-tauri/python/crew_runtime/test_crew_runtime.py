@@ -652,7 +652,10 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
             expected = crew_runtime.expected_office_artifact_paths(request, task, agent)
 
-            self.assertEqual(expected, [root / "artifacts" / "verified-output.pptx"])
+            self.assertEqual(
+                expected,
+                [root.resolve(strict=False) / "artifacts" / "verified-output.pptx"],
+            )
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
 
             expected[0].parent.mkdir(parents=True)
@@ -671,7 +674,10 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
             expected = crew_runtime.expected_edit_artifact_paths(request, task, agent)
 
-            self.assertEqual(expected, [root / "artifacts" / "verified-script.py"])
+            self.assertEqual(
+                expected,
+                [root.resolve(strict=False) / "artifacts" / "verified-script.py"],
+            )
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
 
             expected[0].parent.mkdir(parents=True)
