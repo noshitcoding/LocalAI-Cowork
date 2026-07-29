@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-07-29T12:00:00Z",
-  "version": 3,
+  "timestamp": "2026-07-29T17:57:00Z",
+  "version": 4,
   "statements": [
     {
       "vulnerability": {
@@ -11,7 +11,7 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.1.9",
+          "@id": "pkg:cargo/app@0.2.0",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"

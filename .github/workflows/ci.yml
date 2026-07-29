@@ -65,7 +65,7 @@ jobs:
       - name: Tauri production build
         run: |
           cd app
-          npm run tauri build
+          npm run tauri build -- --no-bundle
 
   security:
     runs-on: ubuntu-latest
