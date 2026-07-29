@@ -10,6 +10,8 @@
     "core:window:allow-destroy",
     "dialog:default",
     "notification:default",
-    "opener:default"
+    "opener:default",
+    "process:allow-restart",
+    "updater:default"
   ]
 }

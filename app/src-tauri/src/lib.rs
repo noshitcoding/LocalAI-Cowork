@@ -12359,6 +12359,27 @@ mod tests {
         assert!(!context.contains("must-not-reach-model"));
         assert!(!context.contains("Configuration"));
     }
+
+    #[test]
+    fn update_backup_input_rejects_unsafe_versions_and_legacy_secret_storage() {
+        assert!(validate_update_version("v1.2.3").is_ok());
+        assert!(validate_update_version("../../escape").is_err());
+
+        let safe = HashMap::from([(
+            "open-cowork-config".to_string(),
+            r#"{"preferences":{"theme":"dark"}}"#.to_string(),
+        )]);
+        assert!(validate_update_storage(&safe).is_ok());
+
+        let legacy_secret = HashMap::from([(
+            "open-cowork-providers-local".to_string(),
+            r#"{"apiKey":"secret"}"#.to_string(),
+        )]);
+        assert!(validate_update_storage(&legacy_secret).is_err());
+
+        let unrelated = HashMap::from([("other-app".to_string(), "data".to_string())]);
+        assert!(validate_update_storage(&unrelated).is_err());
+    }
 }
 
 // -- Insights commands ------------------------------------------------------
@@ -12744,6 +12765,128 @@ fn secure_config_migrate(
     migrate_secure_config_rows(&state, &credential_state)
 }
 
+const MAX_UPDATE_BACKUP_ITEMS: usize = 128;
+const MAX_UPDATE_BACKUP_VALUE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UPDATE_BACKUP_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBackupRequest {
+    target_version: String,
+    local_storage: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBackupResponse {
+    path: String,
+    database_backup: String,
+    local_storage_backup: String,
+    item_count: usize,
+    created_at: String,
+}
+
+fn validate_update_version(version: &str) -> Result<&str, String> {
+    let value = version.trim().trim_start_matches('v');
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".+-".contains(character))
+    {
+        return Err("invalid update version".to_string());
+    }
+    Ok(value)
+}
+
+fn validate_update_storage(storage: &HashMap<String, String>) -> Result<(), String> {
+    if storage.len() > MAX_UPDATE_BACKUP_ITEMS {
+        return Err("too many local storage entries for update backup".to_string());
+    }
+    let mut total_bytes = 0usize;
+    for (key, value) in storage {
+        if !(key.starts_with("open-cowork") || key.starts_with("localai-cowork")) {
+            return Err(format!("unsupported local storage key: {key}"));
+        }
+        if matches!(
+            key.as_str(),
+            "open-cowork-providers-local" | "open-cowork-gateway"
+        ) {
+            return Err(
+                "legacy secret-bearing storage cannot be written to update backups".to_string(),
+            );
+        }
+        if value.len() > MAX_UPDATE_BACKUP_VALUE_BYTES {
+            return Err(format!("local storage value is too large: {key}"));
+        }
+        total_bytes = total_bytes
+            .checked_add(key.len() + value.len())
+            .ok_or_else(|| "local storage backup size overflow".to_string())?;
+        if total_bytes > MAX_UPDATE_BACKUP_TOTAL_BYTES {
+            return Err("local storage update backup is too large".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn update_backup_create(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: UpdateBackupRequest,
+) -> Result<UpdateBackupResponse, String> {
+    let target_version = validate_update_version(&request.target_version)?;
+    validate_update_storage(&request.local_storage)?;
+    let current_version_value = app.package_info().version.to_string();
+    let current_version = validate_update_version(&current_version_value)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let created_at = chrono::Utc::now();
+    let backup_name = format!(
+        "pre-update-v{current_version}-to-v{target_version}-{}-{}",
+        created_at.format("%Y%m%dT%H%M%SZ"),
+        uuid::Uuid::new_v4()
+    );
+    let backup_dir = app_data_dir.join("update-backups").join(backup_name);
+    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
+
+    let database_backup = backup_dir.join("open_cowork.db");
+    state
+        .create_update_backup(&database_backup)
+        .map_err(|error| format!("database update backup failed: {error}"))?;
+
+    let local_storage_backup = backup_dir.join("local-storage.json");
+    let storage_json =
+        serde_json::to_vec_pretty(&request.local_storage).map_err(|error| error.to_string())?;
+    fs::write(&local_storage_backup, storage_json).map_err(|error| error.to_string())?;
+
+    let manifest_path = backup_dir.join("manifest.json");
+    let manifest = serde_json::json!({
+        "schemaVersion": 1,
+        "createdAt": created_at.to_rfc3339(),
+        "currentVersion": current_version,
+        "targetVersion": target_version,
+        "database": "open_cowork.db",
+        "localStorage": "local-storage.json",
+        "localStorageItems": request.local_storage.len(),
+    });
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(UpdateBackupResponse {
+        path: backup_dir.to_string_lossy().into_owned(),
+        database_backup: database_backup.to_string_lossy().into_owned(),
+        local_storage_backup: local_storage_backup.to_string_lossy().into_owned(),
+        item_count: request.local_storage.len(),
+        created_at: created_at.to_rfc3339(),
+    })
+}
+
 // -- App entry --------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12752,6 +12895,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
@@ -13062,6 +13207,7 @@ pub fn run() {
             tool_gateway_list,
             tool_gateway_delete,
             secure_config_migrate,
+            update_backup_create,
             connector_test_reachability,
             gateway_status,
             gateway_health,

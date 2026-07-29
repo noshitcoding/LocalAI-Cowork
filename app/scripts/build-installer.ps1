@@ -70,7 +70,14 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "CrewAI runtime preparation failed with exit code $LASTEXITCODE"
     }
-    npm run tauri -- build --target $env:TAURI_BUILD_TARGET
+    if ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
+        npm run tauri -- build --target $env:TAURI_BUILD_TARGET
+    }
+    else {
+        Write-Host "Updater signing key not set; building a local installer without updater artifacts."
+        $localBuildConfig = '{"bundle":{"createUpdaterArtifacts":false}}'
+        npm run tauri -- build --target $env:TAURI_BUILD_TARGET --config $localBuildConfig
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri build fehlgeschlagen mit Exitcode $LASTEXITCODE"
     }

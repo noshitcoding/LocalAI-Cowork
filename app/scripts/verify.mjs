@@ -42,6 +42,7 @@ for (const [name, executable] of Object.entries(localBins)) {
 runStep('Toolchain doctor', node, [join(root, 'scripts', 'doctor.mjs'), '--ci'])
 runStep('Release script tests', node, [
   '--test',
+  join(root, 'scripts', 'create-updater-manifest.test.mjs'),
   join(root, 'scripts', 'process-utils.test.mjs'),
   join(root, 'scripts', 'supply-chain.test.mjs'),
 ])
@@ -56,7 +57,7 @@ runStep('Supply-chain policy', node, [join(root, 'scripts', 'supply-chain.mjs'),
 runStep('TypeScript', node, [localBins.tsc, '-b'])
 runStep('ESLint', node, [localBins.eslint, '.', '--max-warnings', '0'])
 runStep('i18n audit', node, [join(root, 'scripts', 'i18n-audit.mjs')])
-runStep('Vitest', node, [localBins.vitest, 'run'])
+runStep('Vitest', node, [localBins.vitest, 'run', '--maxWorkers=4'])
 runStep('Vite production build', node, [localBins.vite, 'build'])
 runStep('Frontend build budgets', node, [join(root, 'scripts', 'check-budgets.mjs')])
 runStep('UI accessibility and visual regressions', node, [localBins.playwright, 'test'])

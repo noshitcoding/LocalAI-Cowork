@@ -531,11 +531,15 @@ export function workflowHardeningErrors(text) {
 export function releaseWorkflowSigningErrors(text) {
   const errors = []
   const signingIndex = text.indexOf('sign-windows-installer.ps1')
+  const updaterSigningIndex = text.indexOf('tauri signer sign')
+  const updaterManifestIndex = text.indexOf('create-updater-manifest.mjs')
   const sbomIndex = text.indexOf('supply-chain:sbom')
   const provenanceIndex = text.indexOf('supply-chain:release')
   const attestationIndex = text.indexOf('attest-build-provenance')
   const publicationIndex = text.indexOf('action-gh-release')
   if (signingIndex < 0) errors.push('release workflow is missing Authenticode signing')
+  if (updaterSigningIndex < 0) errors.push('release workflow is missing Tauri updater signing')
+  if (updaterManifestIndex < 0) errors.push('release workflow is missing latest.json generation')
   for (const [name, index] of [
     ['SBOM generation', sbomIndex],
     ['release provenance', provenanceIndex],
@@ -543,6 +547,10 @@ export function releaseWorkflowSigningErrors(text) {
     ['release publication', publicationIndex],
   ]) {
     if (index >= 0 && signingIndex >= index) errors.push(`Authenticode signing must run before ${name}`)
+    if (index >= 0 && updaterSigningIndex >= index) errors.push(`updater signing must run before ${name}`)
+  }
+  if (updaterManifestIndex >= 0 && updaterSigningIndex >= updaterManifestIndex) {
+    errors.push('updater artifact signing must run before latest.json generation')
   }
   for (const variable of [
     'LOCALAI_COWORK_CODESIGN_PFX_BASE64',
@@ -559,6 +567,15 @@ export function releaseWorkflowSigningErrors(text) {
   }
   if (/LOCALAI_COWORK_AUTHENTICODE_TEST_MODE|TestAllowUntrustedCertificate|TestSkipTimestamp/i.test(text)) {
     errors.push('Authenticode test bypasses are forbidden in the release workflow')
+  }
+  if (!/TAURI_SIGNING_PRIVATE_KEY:\s*\$\{\{\s*secrets\.LOCALAI_COWORK_UPDATER_PRIVATE_KEY\s*}}/.test(text)) {
+    errors.push('release workflow is missing the secret-backed updater private key')
+  }
+  if (!/LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required/.test(text)) {
+    errors.push('release workflow must fail closed when the updater private key is missing')
+  }
+  if (/tauri signer sign[^\r\n]*(?:private-key|-k\s)/i.test(text)) {
+    errors.push('updater private key material must not be passed on the command line')
   }
   if (text.includes('LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE')) {
     const requiredUnsignedControls = [

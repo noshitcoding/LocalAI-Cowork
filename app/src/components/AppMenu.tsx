@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Blocks,
   Command,
+  Download,
   FolderKanban,
   Globe2,
   GitPullRequest,
@@ -25,6 +26,14 @@ import { useCommandRegistry } from '../stores/commandRegistryStore'
 import { useUiStore } from '../stores/uiStore'
 import { tr } from '../i18n'
 import LanguageSwitcher from './LanguageSwitcher'
+import {
+  appUpdateProgressPercent,
+  checkForAppUpdate,
+  getAppUpdateSnapshot,
+  installAvailableAppUpdate,
+  startAutomaticUpdateCheck,
+  subscribeAppUpdater,
+} from '../utils/appUpdater'
 
 const PRODUCT_ROUTE_ICONS = {
   cowork: MessagesSquare,
@@ -71,6 +80,12 @@ export default function AppMenu({
   const [query, setQuery] = useState('')
   const registeredCommands = useCommandRegistry((state) => state.commands)
   const executeCommand = useCommandRegistry((state) => state.executeCommand)
+  const updateState = useSyncExternalStore(
+    subscribeAppUpdater,
+    getAppUpdateSnapshot,
+    getAppUpdateSnapshot,
+  )
+  const updateProgress = appUpdateProgressPercent(updateState)
   const {
     theme,
     appMenuSearchFocused,
@@ -87,6 +102,10 @@ export default function AppMenu({
   const activeSubroutes = routeSubroutes(activeRoute)
   const activeParams = useMemo(() => new URLSearchParams(location.search), [location.search])
   const normalizedQuery = normalizeSearch(query)
+
+  useEffect(() => {
+    startAutomaticUpdateCheck()
+  }, [])
 
   const matchingRoutes = useMemo(() => {
     if (!normalizedQuery) return []
@@ -294,6 +313,56 @@ export default function AppMenu({
 
               <section className="app-menu-section" aria-labelledby="app-menu-workspace-tools">
                 <h2 id="app-menu-workspace-tools">{tr('Workspace tools')}</h2>
+                {updateState.phase !== 'unsupported' && (
+                  <button
+                    type="button"
+                    className={`app-menu-utility app-menu-update is-${updateState.phase}`}
+                    onClick={() => {
+                      if (updateState.phase === 'available') {
+                        void installAvailableAppUpdate()
+                      } else {
+                        void checkForAppUpdate()
+                      }
+                    }}
+                    disabled={['checking', 'backing-up', 'downloading', 'installing', 'restarting'].includes(updateState.phase)}
+                    aria-live="polite"
+                  >
+                    <Download size={16} aria-hidden="true" />
+                    <span>
+                      <strong>
+                        {updateState.phase === 'available'
+                          ? tr('Install update {{version}}', { version: updateState.availableVersion ?? '' })
+                          : updateState.phase === 'checking'
+                            ? tr('Checking for updates...')
+                            : updateState.phase === 'backing-up'
+                              ? tr('Backing up workspace...')
+                              : updateState.phase === 'downloading'
+                                ? tr('Downloading update... {{progress}}', { progress: updateProgress === null ? '' : `${updateProgress}%` })
+                                : updateState.phase === 'installing'
+                                  ? tr('Installing update...')
+                                  : updateState.phase === 'restarting'
+                                    ? tr('Restarting...')
+                                    : updateState.phase === 'up-to-date'
+                                      ? tr('Version {{version}} is current', { version: updateState.currentVersion ?? '' })
+                                      : updateState.phase === 'error'
+                                        ? tr('Update failed — try again')
+                                        : tr('Check for updates')}
+                      </strong>
+                      <small>
+                        {updateState.phase === 'available'
+                          ? tr('One click installs the signed update and restarts the app.')
+                          : updateState.phase === 'error'
+                            ? tr('No update was installed. Your workspace is unchanged.')
+                            : tr('Signed updates from GitHub Releases')}
+                      </small>
+                      {updateState.phase === 'downloading' && updateProgress !== null ? (
+                        <span className="app-menu-update-progress" aria-hidden="true">
+                          <span style={{ width: `${updateProgress}%` }} />
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                )}
                 <button
                   type="button"
                   className="app-menu-utility"

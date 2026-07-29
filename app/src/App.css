@@ -11641,6 +11641,38 @@ button.compact-send-btn {
   font-size: 11px;
 }
 
+.app-menu-update:disabled {
+  cursor: wait;
+  opacity: 1;
+}
+
+.app-menu-update.is-available {
+  border-color: color-mix(in srgb, var(--accent-text) 26%, var(--border-light));
+  background: color-mix(in srgb, var(--accent-text) 6%, transparent);
+  color: var(--accent-text);
+}
+
+.app-menu-update.is-error {
+  color: var(--danger);
+}
+
+.app-menu-update-progress {
+  display: block;
+  height: 2px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border-light);
+}
+
+.app-menu-update-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-fill);
+  transition: width 120ms linear;
+}
+
 .app-menu-details {
   border-radius: 8px;
   color: var(--text-secondary);

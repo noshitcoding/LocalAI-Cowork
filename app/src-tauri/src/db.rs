@@ -736,6 +736,21 @@ impl Database {
         ensure_database_integrity(&conn)
     }
 
+    pub fn create_update_backup(&self, backup_path: &Path) -> SqlResult<()> {
+        let parent = backup_path
+            .parent()
+            .ok_or_else(|| rusqlite::Error::InvalidPath(backup_path.to_path_buf()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|_| rusqlite::Error::InvalidPath(parent.to_path_buf()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.backup(MAIN_DB, backup_path, None)?;
+        let backup = Connection::open(backup_path)?;
+        ensure_database_integrity(&backup)
+    }
+
     fn migrate(&self) -> SqlResult<()> {
         let conn = self
             .conn
@@ -6454,6 +6469,40 @@ mod tests {
         let reopened = Database::open(root.clone()).unwrap();
         reopened.ensure_integrity().unwrap();
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_backup_is_consistent_and_contains_current_workspace_data() {
+        let root = database_test_dir("update-backup");
+        let backup_path = root.join("update-backups").join("workspace.db");
+        let db = Database::open(root.clone()).unwrap();
+        db.insert_thread(
+            "thread-before-update",
+            "Keep this chat",
+            "2026-07-29T10:00:00Z",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
+
+        db.create_update_backup(&backup_path).unwrap();
+
+        let backup = Connection::open(&backup_path).unwrap();
+        ensure_database_integrity(&backup).unwrap();
+        let title: String = backup
+            .query_row(
+                "SELECT title FROM chat_threads WHERE id = ?1",
+                ["thread-before-update"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Keep this chat");
+
+        drop(backup);
+        drop(db);
         let _ = std::fs::remove_dir_all(root);
     }
 

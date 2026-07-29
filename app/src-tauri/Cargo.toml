@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.9"
+version = "0.2.0"
 description = "Local-first desktop workspace for agentic work with Ollama, MCP, tasks, and tools."
 authors = ["noshitcoding"]
 license = "Apache-2.0"
@@ -44,6 +44,8 @@ pdf-extract = "0.12"
 pdfium-render = { version = "0.8.36", default-features = false, features = ["pdfium_latest", "thread_safe", "image"] }
 csv = "1.3"
 tauri-plugin-opener = "2.5.3"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.1"
 portable-pty = "0.9.0"
 
 [target.'cfg(unix)'.dependencies]

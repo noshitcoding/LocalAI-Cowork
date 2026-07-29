@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Local AI Cowork",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
     "beforeDevCommand": "npm run prepare:crew-runtime && npm run dev:tauri",
@@ -28,6 +28,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis"
     ],
@@ -51,5 +52,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFRTY2QTNENkM1Njg4ODEKUldTQmlGWnNQV3JtbnQzeStLUlZyM0dnLytXMGVpaTBDUFFoOG85Mnc0Nm1ldWFpSkhvd0hCMVAK",
+      "endpoints": [
+        "https://github.com/noshitcoding/LocalAI-Cowork/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

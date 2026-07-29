@@ -195,6 +195,10 @@ env:
   LOCALAI_COWORK_CODESIGN_PASSWORD: \${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD }}
   LOCALAI_COWORK_CODESIGN_THUMBPRINT: \${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT }}
 run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe
+TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+check: LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required
+run: tauri signer sign release-assets\\LocalAI-Cowork-Setup-x64.exe
+next: create-updater-manifest.mjs
 next: supply-chain:sbom
 then: supply-chain:release
 uses: actions/attest-build-provenance@commit
@@ -203,6 +207,7 @@ publish: action-gh-release
   assert.deepEqual(releaseWorkflowSigningErrors(valid), [])
   const invalid = valid
     .replace('run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe\n', '')
+    .replace('run: tauri signer sign release-assets\\LocalAI-Cowork-Setup-x64.exe\n', '')
     .replace('LOCALAI_COWORK_CODESIGN_PASSWORD: \${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD }}', 'LOCALAI_COWORK_CODESIGN_PASSWORD: plaintext')
   const errors = releaseWorkflowSigningErrors(invalid)
   assert.ok(errors.some((error) => error.includes('missing Authenticode')))
@@ -220,6 +225,10 @@ env:
 check: if ($env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE -ne 'true') { throw 'Signing required' }
 if: \${{ steps.signing_mode.outputs.sign == 'true' }}
 run: .\\app\\scripts\\sign-windows-installer.ps1 -InstallerPath release-assets\\LocalAI-Cowork-Setup-x64.exe
+TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+check: LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required
+run: tauri signer sign release-assets\\LocalAI-Cowork-Setup-x64.exe
+next: create-updater-manifest.mjs
 verify: Get-AuthenticodeSignature installer
 if ($signature.Status -ne 'NotSigned') { throw 'Unexpected signature' }
 warning: UNSIGNED-WINDOWS-INSTALLER.txt

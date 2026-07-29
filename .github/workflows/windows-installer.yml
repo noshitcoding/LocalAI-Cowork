@@ -117,7 +117,13 @@ jobs:
       - name: Build Windows installer
         working-directory: app
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required for signed in-app updates.'
+          }
           $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'localai-cowork-target'
           npm run installer
 
@@ -197,6 +203,24 @@ jobs:
           if ($signature.Status -ne 'NotSigned') {
             throw "Expected an unsigned installer, but Authenticode reported $($signature.Status)."
           }
+
+      - name: Sign in-app updater and create latest.json
+        working-directory: app
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $artifact = Resolve-Path ..\release-assets\LocalAI-Cowork-Setup-x64.exe
+          npm exec -- tauri signer sign "$artifact"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .\scripts\create-updater-manifest.mjs `
+            --tag "$env:RELEASE_TAG" `
+            --artifact "$artifact" `
+            --output ..\release-assets\latest.json `
+            --repository noshitcoding/LocalAI-Cowork
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Generate SBOM, notices, provenance, and checksums
         working-directory: app
