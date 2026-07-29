@@ -201,7 +201,8 @@ run: tauri signer sign release-assets\\LocalAI-Cowork-Setup-x64.exe
 next: create-updater-manifest.mjs
 next: supply-chain:sbom
 then: supply-chain:release
-uses: actions/attest-build-provenance@commit
+uses: actions/attest@commit
+with: sbom-path: release-assets/localai-cowork.cdx.json
 publish: action-gh-release
 `
   assert.deepEqual(releaseWorkflowSigningErrors(valid), [])
@@ -234,7 +235,8 @@ if ($signature.Status -ne 'NotSigned') { throw 'Unexpected signature' }
 warning: UNSIGNED-WINDOWS-INSTALLER.txt
 next: supply-chain:sbom
 then: supply-chain:release
-uses: actions/attest-build-provenance@commit
+uses: actions/attest@commit
+with: sbom-path: release-assets/localai-cowork.cdx.json
 body: \${{ steps.signing_mode.outputs.release_notice }}
 publish: action-gh-release
 `

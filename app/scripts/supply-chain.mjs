@@ -535,15 +535,19 @@ export function releaseWorkflowSigningErrors(text) {
   const updaterManifestIndex = text.indexOf('create-updater-manifest.mjs')
   const sbomIndex = text.indexOf('supply-chain:sbom')
   const provenanceIndex = text.indexOf('supply-chain:release')
-  const attestationIndex = text.indexOf('attest-build-provenance')
+  const attestationIndex = text.indexOf('uses: actions/attest@')
+  const sbomAttestationIndex = text.indexOf('sbom-path:')
   const publicationIndex = text.indexOf('action-gh-release')
   if (signingIndex < 0) errors.push('release workflow is missing Authenticode signing')
   if (updaterSigningIndex < 0) errors.push('release workflow is missing Tauri updater signing')
   if (updaterManifestIndex < 0) errors.push('release workflow is missing latest.json generation')
+  if (attestationIndex < 0) errors.push('release workflow is missing build attestation')
+  if (sbomAttestationIndex < 0) errors.push('release workflow is missing SBOM attestation')
   for (const [name, index] of [
     ['SBOM generation', sbomIndex],
     ['release provenance', provenanceIndex],
     ['build attestation', attestationIndex],
+    ['SBOM attestation', sbomAttestationIndex],
     ['release publication', publicationIndex],
   ]) {
     if (index >= 0 && signingIndex >= index) errors.push(`Authenticode signing must run before ${name}`)
@@ -630,7 +634,7 @@ function validateWorkflowHardening(appRoot, policy) {
     errors.push(`cargo-audit is not installed at policy version ${policy.cargoAuditVersion}`)
   }
   if (!combined.includes('npm audit --audit-level=high')) errors.push('blocking high-severity npm audit is missing')
-  for (const required of ['supply-chain:sbom', 'supply-chain:release', 'attest-build-provenance', 'attest-sbom']) {
+  for (const required of ['supply-chain:sbom', 'supply-chain:release', 'uses: actions/attest@', 'sbom-path:']) {
     if (!combined.includes(required)) errors.push(`release workflow is missing ${required}`)
   }
   if (errors.length > 0) throw new Error(`Workflow supply-chain policy failed:\n${errors.join('\n')}`)
