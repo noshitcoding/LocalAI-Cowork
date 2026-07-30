@@ -26,7 +26,7 @@ tauri-plugin-log = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["net", "time"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 thiserror = "2"
 sha2 = "0.11"
 hmac = "0.13"
