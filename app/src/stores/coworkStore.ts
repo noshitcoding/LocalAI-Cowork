@@ -207,9 +207,9 @@ const CUSTOM_TOOLSET_POLICY_ID = 'custom'
 
 const DEFAULT_TOOLSET_POLICIES: ToolsetPolicy[] = [
   {
-    id: 'host_full',
-    label: 'Host full',
-    description: 'Full local agent profile for trusted workspace automation.',
+    id: 'sandbox_full',
+    label: 'Sandbox full',
+    description: 'Full local agent profile inside the native Windows sandbox.',
     riskLevel: 'high',
     toolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
   },
@@ -376,7 +376,9 @@ function inferToolsetPolicyId(
   toolsetPolicies: ToolsetPolicy[]
 ): string {
   const normalizedEnabledToolIds = normalizeEnabledClaudeToolIds(enabledToolIds)
-  const requestedPolicyId = activeToolsetPolicyId?.trim()
+  const requestedPolicyId = activeToolsetPolicyId?.trim() === 'host_full'
+    ? 'sandbox_full'
+    : activeToolsetPolicyId?.trim()
 
   if (requestedPolicyId === CUSTOM_TOOLSET_POLICY_ID) {
     return CUSTOM_TOOLSET_POLICY_ID
@@ -557,7 +559,7 @@ export const useCoworkStore = create<CoworkState>()(
       enabledClaudeToolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
       toolDenyRules: [],
       policyFlags: DEFAULT_POLICY_FLAGS,
-      activeToolsetPolicyId: 'host_full',
+      activeToolsetPolicyId: 'sandbox_full',
       toolsetPolicies: DEFAULT_TOOLSET_POLICIES,
       setGlobalInstruction: (instruction) => set({ globalInstruction: instruction }),
       upsertFolderInstruction: (item) =>

@@ -552,17 +552,9 @@ export function buildAllCommands(): SlashCommand[] {
       },
     },
     {
-      id: 'sandbox', command: '/sandbox', label: 'Sandbox mode', description: 'Enable isolated execution environment',
+      id: 'sandbox', command: '/sandbox', label: 'Native sandbox', description: 'Check or configure native Windows AI isolation',
       category: 'tools', execute: () => {
-        useCoworkStore.getState().setPolicyFlag('strictPolicyEnforcement', true)
-        useConfigStore.getState().setPreference('readOnlyFsMode', true)
-        const cs = useChatStore.getState()
-        if (cs.activeThreadId) {
-          cs.addMessage(cs.activeThreadId, {
-            role: 'system', content: 'Sandbox mode enabled: read-only access, strict policy.',
-            timestamp: Date.now(),
-          })
-        }
+        window.dispatchEvent(new CustomEvent('lacowork-open-sandbox-settings'))
       },
     },
     {

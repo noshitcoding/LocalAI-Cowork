@@ -100,6 +100,8 @@ describe('CoworkView project context helpers', () => {
         path: 'https://example.com/spec',
         label: 'Spec',
         enabled: true,
+        access: 'read_only',
+        isPrimary: false,
         addedAt: 100,
       },
       {
@@ -108,6 +110,8 @@ describe('CoworkView project context helpers', () => {
         path: 'https://example.com/broken',
         label: 'Broken',
         enabled: true,
+        access: 'read_only',
+        isPrimary: false,
         addedAt: 100,
       },
     ]

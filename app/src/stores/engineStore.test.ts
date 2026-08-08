@@ -147,16 +147,10 @@ describe('engineStore history seeding', () => {
     expect(queryCalls[0]?.messages).toHaveLength(2)
     expect(queryCalls[0]?.userInput).toBe('alphabetisch')
     expect(loadFrozenMemorySnapshotMock).toHaveBeenCalledWith(expect.any(String))
-    expect(captureAutomaticMemoryDraftMock).toHaveBeenCalledWith(
-      'C:/workspace',
-      'alphabetisch',
-      expect.any(String),
-    )
-    expect(buildSystemPromptWithMemoryMock).toHaveBeenCalledWith(
-      'C:/workspace',
-      expect.any(String),
-      expect.objectContaining({ frozenSnapshot: null }),
-    )
+    // Browser/no-native-sandbox mode must not invoke unscoped filesystem memory helpers.
+    expect(captureAutomaticMemoryDraftMock).not.toHaveBeenCalled()
+    expect(buildSystemPromptWithMemoryMock).not.toHaveBeenCalled()
+    expect(useEngineStore.getState().sandboxContext.mode).toBe('host_read_only_broker')
 
     const firstSeededMessage = queryCalls[0]?.messages[0] as { type: string; content: Array<{ type: string; text: string }> }
     expect(firstSeededMessage.type).toBe('user')

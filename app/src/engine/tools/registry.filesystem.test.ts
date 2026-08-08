@@ -122,98 +122,45 @@ describe('filesystem tool extensions', () => {
     })
   })
 
-  it('updates the shell cwd when bash reports a new working directory', async () => {
+  it('keeps Bash scoped to the prepared sandbox cwd', async () => {
     const { registerAllBuiltinTools, getAllTools } = await import('./registry')
     registerAllBuiltinTools()
 
     invokeMock.mockResolvedValue({
-      stdout: '',
+      stdout: 'C:\\sandbox\\workspace',
       stderr: '',
       exitCode: 0,
-      currentCwd: 'C:\\workspace\\nested',
+      status: 'completed',
+      timedOut: false,
+      durationMs: 2,
+      sandboxId: 'native:run-bash',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
     })
 
     const tool = getAllTools().find((entry) => entry.name === 'Bash')
     expect(tool).toBeTruthy()
 
-    let appState = { cwd: 'C:\\workspace' }
-
     const result = await tool!.call(
-      { command: 'Set-Location nested' },
+      { command: 'Get-Location' },
       {
-        cwd: 'C:\\workspace',
+        cwd: 'C:\\sandbox\\workspace',
         runId: 'run-bash',
-        setAppState: (updater: (prev: typeof appState) => typeof appState) => {
-          appState = updater(appState)
-        },
+        threadId: 'thread-bash',
       } as never,
     )
 
-    expect(result.data).toContain('current cwd: C:\\workspace\\nested')
-    expect(appState.cwd).toBe('C:\\workspace\\nested')
-    expect(invokeMock).toHaveBeenCalledWith('exec_command', {
-      command: 'Set-Location nested',
-      cwd: 'C:\\workspace',
-      timeoutMs: 30000,
-      streamId: expect.any(String),
-      runId: 'run-bash',
+    expect(result.data).toContain('stdout:\nC:\\sandbox\\workspace')
+    expect(invokeMock).toHaveBeenCalledWith('sandbox_exec_command', {
+      request: expect.objectContaining({
+        command: 'Get-Location',
+        cwd: 'C:\\sandbox\\workspace',
+        runId: 'run-bash',
+      }),
     })
-  })
-
-  it('infers the shell cwd for simple cd commands when the backend reports no cwd', async () => {
-    const { registerAllBuiltinTools, getAllTools } = await import('./registry')
-    registerAllBuiltinTools()
-
-    invokeMock.mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      exitCode: 0,
-    })
-
-    const tool = getAllTools().find((entry) => entry.name === 'Bash')
-    expect(tool).toBeTruthy()
-
-    let appState = { cwd: 'C:\\workspace\\FolderA' }
-
-    const result = await tool!.call(
-      { command: 'cd ..; pwd' },
-      {
-        cwd: 'C:\\workspace\\FolderA',
-        runId: 'run-bash-fallback',
-        setAppState: (updater: (prev: typeof appState) => typeof appState) => {
-          appState = updater(appState)
-        },
-      } as never,
-    )
-
-    expect(result.data).toContain('current cwd: C:\\workspace')
-    expect(appState.cwd).toBe('C:\\workspace')
-  })
-
-  it('mirrors inferred cwd into stdout for pwd-style commands without stdout', async () => {
-    const { registerAllBuiltinTools, getAllTools } = await import('./registry')
-    registerAllBuiltinTools()
-
-    invokeMock.mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      exitCode: 0,
-    })
-
-    const tool = getAllTools().find((entry) => entry.name === 'Bash')
-    expect(tool).toBeTruthy()
-
-    const result = await tool!.call(
-      { command: 'cd ..; pwd' },
-      {
-        cwd: 'C:\\workspace\\FolderA',
-        runId: 'run-bash-pwd',
-        setAppState: () => undefined,
-      } as never,
-    )
-
-    expect(result.data).toContain('stdout:\nC:\\workspace')
-    expect(result.data).toContain('current cwd: C:\\workspace')
+    expect(invokeMock).not.toHaveBeenCalledWith('exec_command', expect.anything())
   })
 
   it('captures desktop screenshots and injects them as image attachments', async () => {

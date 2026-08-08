@@ -46,6 +46,8 @@ const project: Project = {
       kind: 'file',
       label: 'Smoke Test',
       enabled: true,
+      access: 'read_write',
+      isPrimary: true,
       addedAt: 2,
     },
   ],

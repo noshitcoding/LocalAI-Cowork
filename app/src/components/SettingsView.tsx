@@ -117,6 +117,98 @@ type StartupRecoveryReport = {
   terminalBackends: number
 }
 
+type SandboxSetupStatus = {
+  supported: boolean
+  ready: boolean
+  version: number
+  account: string
+  group: string
+  reason?: string | null
+}
+
+function SandboxSetupCard() {
+  const [status, setStatus] = useState<SandboxSetupStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [settingUp, setSettingUp] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setStatus(await safeInvoke<SandboxSetupStatus>('sandbox_setup_status'))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void refresh()
+  }, [])
+
+  const startSetup = async () => {
+    const confirmed = window.confirm(tr('The setup creates a low-privilege local Windows account and group. Windows will ask for administrator approval. Continue?'))
+    if (!confirmed) return
+    setSettingUp(true)
+    setError(null)
+    try {
+      const next = await safeInvoke<SandboxSetupStatus>('sandbox_setup_start')
+      setStatus(next)
+      window.dispatchEvent(new CustomEvent('lacowork-sandbox-status-changed', { detail: next }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      await refresh()
+    } finally {
+      setSettingUp(false)
+    }
+  }
+
+  const stateLabel = settingUp
+    ? tr('Setting up')
+    : loading
+      ? tr('Checking')
+      : status?.ready
+        ? tr('Ready')
+        : error
+          ? tr('Error')
+          : tr('Not configured')
+
+  return (
+    <div id="ai-sandbox">
+      <Section title={tr('AI Sandbox')} icon={ShieldCheck}>
+        <div className="card">
+          <div className="about-cowork-intro">
+            <strong>{stateLabel}</strong>
+            <span>
+              {status?.ready
+                ? tr('Every normal AI chat automatically uses the native Windows sandbox. Original files are changed only after diff confirmation.')
+                : tr('Chat, web, MCP, and explicitly shared files remain available. Without setup, local file access is read-only and AI shell commands are disabled.')}
+            </span>
+          </div>
+          <dl className="about-cowork-details">
+            <div><dt>{tr('Account')}</dt><dd>{status?.account ?? 'LACoworkOnline'}</dd></div>
+            <div><dt>{tr('Group')}</dt><dd>{status?.group ?? 'LACoworkSandbox'}</dd></div>
+            <div><dt>{tr('Setup version')}</dt><dd>{status?.version ?? '—'}</dd></div>
+          </dl>
+          {(error || status?.reason) && (
+            <p className="hint-text" role="alert">{error ?? status?.reason}</p>
+          )}
+          <div className="settings-grid-spaced">
+            <button type="button" className="btn-send" onClick={() => void startSetup()} disabled={loading || settingUp || status?.supported === false}>
+              {status?.ready ? tr('Set up again') : tr('Set up sandbox')}
+            </button>
+            <button type="button" className="btn-sm" onClick={() => void refresh()} disabled={loading || settingUp}>
+              {tr('Check readiness')}
+            </button>
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
 const EMPTY_GATEWAY_HEALTH: GatewayHealth = {
   status: 'unknown',
   checkedAt: '',
@@ -488,6 +580,8 @@ export default function SettingsView() {
         {/* Security and data */}
         {activeCategory === 'security' && (
           <div className="settings-view" aria-label={tr('Security & data')}>
+
+            <SandboxSetupCard />
 
             <Section title={tr("File security")} icon={LockKeyhole}>
               <Toggle label={tr("Read-only mode")} hint={tr("No file writes or deletes")} {...pref('readOnlyFsMode')} />

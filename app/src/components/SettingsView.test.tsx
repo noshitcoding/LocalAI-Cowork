@@ -206,6 +206,43 @@ describe('SettingsView', () => {
     expect(screen.queryByRole('searchbox', { name: 'Search settings' })).not.toBeInTheDocument()
   })
 
+  it('shows sandbox readiness without starting UAC until the setup button is confirmed', async () => {
+    ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {}
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'sandbox_setup_status') {
+        return Promise.resolve({
+          supported: true,
+          ready: false,
+          version: 1,
+          account: 'LACoworkOnline',
+          group: 'LACoworkSandbox',
+          reason: 'not configured',
+        })
+      }
+      if (command === 'sandbox_setup_start') {
+        return Promise.resolve({
+          supported: true,
+          ready: true,
+          version: 1,
+          account: 'LACoworkOnline',
+          group: 'LACoworkSandbox',
+          reason: null,
+        })
+      }
+      return defaultInvoke(command)
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderSettingsView(['/settings?section=security#ai-sandbox'])
+
+    await screen.findByText('not configured')
+    expect(invokeMock).not.toHaveBeenCalledWith('sandbox_setup_start', expect.anything())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set up sandbox' }))
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith('sandbox_setup_start', undefined))
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    confirmSpy.mockRestore()
+  })
+
   it('localizes the directly selected category', async () => {
     await i18n.changeLanguage('de')
     renderSettingsView(['/settings?section=ui'])
@@ -230,7 +267,7 @@ describe('SettingsView', () => {
     expect(within(overview).getAllByRole('button')).toHaveLength(3)
     expect(within(overview).getByText('Free model')).toBeInTheDocument()
     const openRouter = within(overview).getByRole('button', { name: 'Open OpenRouter settings' })
-    expect(within(openRouter).getByText('API key needed')).toBeInTheDocument()
+    expect(within(openRouter).getByText('Access key needed')).toBeInTheDocument()
     expect(openRouter).toHaveAttribute('aria-expanded', 'true')
   })
 
@@ -245,7 +282,7 @@ describe('SettingsView', () => {
 
     const openRouter = screen.getByRole('button', { name: 'Open OpenRouter settings' })
     expect(openRouter).toHaveAttribute('aria-expanded', 'true')
-    await waitFor(() => expect(screen.getByLabelText('OpenRouter API Key')).toHaveFocus())
+    await waitFor(() => expect(screen.getByLabelText('OpenRouter Access key for the application programming interface')).toHaveFocus())
   })
 
   it('opens Agent & Skills through its direct URL', () => {

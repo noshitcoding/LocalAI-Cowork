@@ -379,7 +379,18 @@ fn detect_base_python_command<R: Runtime>(app: &AppHandle<R>) -> Option<String> 
         return Some(path);
     }
 
-    Some("python".to_string())
+    #[cfg(target_os = "windows")]
+    {
+        Some("python".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        ["python3", "python"]
+            .into_iter()
+            .find(|command| command_available(command))
+            .map(ToString::to_string)
+    }
 }
 
 fn python_version_matches(version: &str, expected_exact_version: Option<&str>) -> bool {
@@ -460,10 +471,16 @@ fn ensure_compatible_base_python<R: Runtime>(
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err(
-            "No compatible Python interpreter available. Python 3.10 through 3.13 is supported."
-                .to_string(),
-        )
+        for command in ["python3", "python"] {
+            if command_available(command)
+                && read_python_version(command)
+                    .as_deref()
+                    .is_some_and(python_version_supported)
+            {
+                return Ok(command.to_string());
+            }
+        }
+        Err("No compatible Python interpreter available. Install Python 3.10 through 3.13 or set LOCALAI_COWORK_CREW_PYTHON.".to_string())
     }
 }
 
@@ -824,6 +841,16 @@ fn bundled_runtime_indicated(resource_dir: &Path) -> bool {
 fn validate_bundled_runtime(
     resource_dir: &Path,
 ) -> Result<Option<ValidatedCrewRuntimeBundle>, String> {
+    #[cfg(not(target_os = "windows"))]
+    if !resource_dir
+        .join(EMBEDDED_RUNTIME_MANIFEST_RELATIVE_PATH)
+        .exists()
+    {
+        // Linux packages use the distribution's Python instead of shipping the
+        // Windows-only portable runtime and wheelhouse.
+        return Ok(None);
+    }
+
     let python_archive = resource_dir.join(EMBEDDED_WINDOWS_PYTHON_ARCHIVE_RELATIVE_PATH);
     let wheels_archive = resource_dir.join(EMBEDDED_RUNTIME_WHEELS_ARCHIVE_RELATIVE_PATH);
     validate_bundled_runtime_with_archives(resource_dir, &python_archive, &wheels_archive)
@@ -1588,7 +1615,7 @@ fn crew_runtime_status_internal<R: Runtime>(
         Some(venv_python.display().to_string())
     } else {
         detect_base_python_command(app)
-            .filter(|command| command != "python")
+            .filter(|command| cfg!(not(target_os = "windows")) || command != "python")
             .filter(|command| command_available(command))
     };
     let detected_python_path = base_python.clone();

@@ -1,13 +1,15 @@
+#[cfg(target_os = "windows")]
 use std::{
     env, fs,
     path::{Path, PathBuf},
 };
-
 fn main() {
+    #[cfg(target_os = "windows")]
     prepare_webview2_loader();
     tauri_build::build()
 }
 
+#[cfg(target_os = "windows")]
 fn prepare_webview2_loader() {
     println!("cargo:rerun-if-env-changed=CARGO_HOME");
 
@@ -36,6 +38,7 @@ fn prepare_webview2_loader() {
     panic!("WebView2Loader.dll not found in Cargo registry or build output");
 }
 
+#[cfg(target_os = "windows")]
 fn webview2_loader_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -53,12 +56,14 @@ fn webview2_loader_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+#[cfg(target_os = "windows")]
 fn cargo_home() -> Option<PathBuf> {
     env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo")))
 }
 
+#[cfg(target_os = "windows")]
 fn push_registry_candidates(registry_src: &Path, candidates: &mut Vec<PathBuf>) {
     let Ok(registries) = fs::read_dir(registry_src) else {
         return;
@@ -80,6 +85,7 @@ fn push_registry_candidates(registry_src: &Path, candidates: &mut Vec<PathBuf>) 
     }
 }
 
+#[cfg(target_os = "windows")]
 fn push_build_candidates(build_dir: &Path, candidates: &mut Vec<PathBuf>) {
     let Ok(build_entries) = fs::read_dir(build_dir) else {
         return;
@@ -101,6 +107,7 @@ fn push_build_candidates(build_dir: &Path, candidates: &mut Vec<PathBuf>) {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn is_dir(path: PathBuf) -> bool {
     path.is_dir()
 }

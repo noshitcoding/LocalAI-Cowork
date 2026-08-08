@@ -14,6 +14,8 @@ import type {
 
 export type ToolResult<T = unknown> = {
   data: T
+  /** True when the tool ran but returned a policy, setup, spawn, timeout, or command failure. */
+  isError?: boolean
   /** Signal that engine should stop current loop and wait for next user message. */
   awaitUserInput?: boolean
   /** Additional messages to inject after this tool result */

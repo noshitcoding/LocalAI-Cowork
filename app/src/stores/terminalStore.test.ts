@@ -1,21 +1,23 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { invoke } from '@tauri-apps/api/core'
-import { hasTauriRuntime } from '../utils/safeInvoke'
-import { useTerminalStore } from './terminalStore'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+import { hasTauriRuntime } from "../utils/safeInvoke";
+import { useTerminalStore } from "./terminalStore";
 
-vi.mock('@tauri-apps/api/core', () => ({
+vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
-}))
+}));
 
-vi.mock('@tauri-apps/api/event', () => ({
+vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
-}))
+}));
 
-vi.mock('../utils/safeInvoke', () => ({
+vi.mock("../utils/safeInvoke", () => ({
   hasTauriRuntime: vi.fn(() => false),
-  safeInvoke: vi.fn(async (_cmd: string, _args: unknown, fallback: unknown) => fallback),
+  safeInvoke: vi.fn(
+    async (_cmd: string, _args: unknown, fallback: unknown) => fallback,
+  ),
   safeInvokeVoid: vi.fn(),
-}))
+}));
 
 function resetTerminalState() {
   useTerminalStore.setState({
@@ -28,91 +30,112 @@ function resetTerminalState() {
     dockHeightByThread: {},
     hiddenActivityByThread: {},
     activeAiThreadId: null,
-  })
+  });
 }
 
-describe('terminalStore dock state', () => {
+describe("terminalStore dock state", () => {
   beforeEach(() => {
-    vi.useRealTimers()
-    vi.mocked(invoke).mockReset()
-    vi.mocked(hasTauriRuntime).mockReturnValue(false)
-    resetTerminalState()
-  })
+    vi.useRealTimers();
+    vi.mocked(invoke).mockReset();
+    vi.mocked(hasTauriRuntime).mockReturnValue(false);
+    resetTerminalState();
+  });
 
-  it('marks hidden activity for hidden sessions and clears it when the dock opens', async () => {
+  it("marks hidden activity for hidden sessions and clears it when the dock opens", async () => {
     await useTerminalStore.getState().createSession({
-      threadId: 'thread-1',
-      cwd: 'C:/repo',
-      kind: 'ai',
+      threadId: "thread-1",
+      cwd: "C:/repo",
+      kind: "ai",
       hidden: true,
-    })
+    });
 
-    expect(useTerminalStore.getState().hiddenActivityByThread['thread-1']).toBe(true)
+    expect(useTerminalStore.getState().hiddenActivityByThread["thread-1"]).toBe(
+      true,
+    );
 
-    useTerminalStore.getState().setDockOpen('thread-1', true)
+    useTerminalStore.getState().setDockOpen("thread-1", true);
 
-    expect(useTerminalStore.getState().hiddenActivityByThread['thread-1']).toBe(false)
-  })
+    expect(useTerminalStore.getState().hiddenActivityByThread["thread-1"]).toBe(
+      false,
+    );
+  });
 
-  it('creates a hidden AI tab for commands while the dock is closed', async () => {
-    const result = await useTerminalStore.getState().runAiCommand({
-      threadId: 'thread-1',
-      cwd: 'C:/repo',
-      command: 'Get-Location',
-      timeoutMs: 1000,
-    })
+  it("mirrors native sandbox chunks into a dedicated output-only session", () => {
+    const session = useTerminalStore.getState().startSandboxCommand({
+      threadId: "thread-sandbox",
+      streamId: "stream-1",
+      cwd: "C:/sandbox/workspace",
+      command: "Write-Output Hallo",
+    });
+    useTerminalStore
+      .getState()
+      .appendSandboxChunk("stream-1", "stdout", "Hallo\r\n");
+    useTerminalStore
+      .getState()
+      .appendSandboxChunk("stream-1", "stderr", "Warnung\r\n");
+    useTerminalStore
+      .getState()
+      .finishSandboxCommand("stream-1", 0, "completed");
 
-    const sessions = useTerminalStore.getState().sessionsByThread['thread-1'] ?? []
+    const mirrored =
+      useTerminalStore.getState().sessionsByThread["thread-sandbox"][0];
+    expect(session).toMatchObject({ kind: "sandbox", title: "AI Sandbox" });
+    expect(mirrored.output).toContain("Hallo");
+    expect(mirrored.output).toContain("[stderr] Warnung");
+    expect(mirrored).toMatchObject({ status: "idle" });
+  });
 
-    expect(result.exitCode).toBe(1)
-    expect(sessions).toHaveLength(1)
-    expect(sessions[0]).toMatchObject({ kind: 'ai', hidden: true })
-    expect(useTerminalStore.getState().hiddenActivityByThread['thread-1']).toBe(true)
-  })
+  it("fails closed instead of creating a host PTY for an AI command", async () => {
+    await expect(
+      useTerminalStore.getState().runAiCommand({
+        threadId: "thread-1",
+        cwd: "C:/repo",
+        command: "Get-Location",
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow("AI host-PTY routing is disabled");
 
-  it('does not reuse the visible manual tab for AI commands while the dock is closed', async () => {
+    const sessions =
+      useTerminalStore.getState().sessionsByThread["thread-1"] ?? [];
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("does not reuse the visible manual tab for AI commands while the dock is closed", async () => {
     await useTerminalStore.getState().createSession({
-      threadId: 'thread-1',
-      cwd: 'C:/repo',
-      kind: 'manual',
+      threadId: "thread-1",
+      cwd: "C:/repo",
+      kind: "manual",
       hidden: false,
-    })
+    });
 
-    await useTerminalStore.getState().runAiCommand({
-      threadId: 'thread-1',
-      cwd: 'C:/repo',
-      command: 'Get-Location',
-      timeoutMs: 1000,
-    })
+    await expect(
+      useTerminalStore.getState().runAiCommand({
+        threadId: "thread-1",
+        cwd: "C:/repo",
+        command: "Get-Location",
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow("AI host-PTY routing is disabled");
 
-    const sessions = useTerminalStore.getState().sessionsByThread['thread-1'] ?? []
+    const sessions =
+      useTerminalStore.getState().sessionsByThread["thread-1"] ?? [];
 
-    expect(sessions).toHaveLength(2)
-    expect(sessions[0]).toMatchObject({ kind: 'manual', hidden: false })
-    expect(sessions[1]).toMatchObject({ kind: 'ai', hidden: true })
-  })
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ kind: "manual", hidden: false });
+  });
 
-  it('terminates the PTY session when an AI command times out', async () => {
-    vi.useFakeTimers()
-    vi.mocked(hasTauriRuntime).mockReturnValue(true)
-    vi.mocked(invoke).mockResolvedValue(undefined)
+  it("never invokes terminal_create, terminal_write, or terminal_kill for AI commands", async () => {
+    vi.mocked(hasTauriRuntime).mockReturnValue(true);
+    vi.mocked(invoke).mockResolvedValue(undefined);
 
-    const resultPromise = useTerminalStore.getState().runAiCommand({
-      threadId: 'thread-timeout',
-      cwd: 'C:/repo',
-      command: 'Start-Sleep -Seconds 30',
-      timeoutMs: 1000,
-    })
-    const rejection = expect(resultPromise).rejects.toThrow('Terminal command timed out after 1000ms')
-
-    await vi.advanceTimersByTimeAsync(1001)
-    await rejection
-
-    const sessions = useTerminalStore.getState().sessionsByThread['thread-timeout'] ?? []
-    expect(invoke).toHaveBeenCalledWith('terminal_kill', {
-      request: { sessionId: sessions[0].id },
-    })
-    expect(sessions[0]).toMatchObject({ status: 'exited', currentAiCommand: undefined })
-    expect(sessions[0].output).toContain('session terminated')
-  })
-})
+    await expect(
+      useTerminalStore.getState().runAiCommand({
+        threadId: "thread-timeout",
+        cwd: "C:/repo",
+        command: "Start-Sleep -Seconds 30",
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow("AI host-PTY routing is disabled");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});

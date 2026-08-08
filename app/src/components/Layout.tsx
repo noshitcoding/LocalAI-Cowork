@@ -102,6 +102,15 @@ export default function Layout() {
     navigate(route.path)
   }, [navigate, setActiveMode])
 
+  useEffect(() => {
+    const openSandboxSettings = () => {
+      setActiveMode('settings')
+      navigate('/settings?section=security#ai-sandbox')
+    }
+    window.addEventListener('lacowork-open-sandbox-settings', openSandboxSettings)
+    return () => window.removeEventListener('lacowork-open-sandbox-settings', openSandboxSettings)
+  }, [navigate, setActiveMode])
+
   const handleToggleLeftSidebar = useCallback(() => {
     if (compactSidebar) {
       closeShellOverlays()

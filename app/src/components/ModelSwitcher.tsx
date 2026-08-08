@@ -97,7 +97,7 @@ export default function ModelSwitcher() {
                   onClick={() => setActive(p.id)}
                   title={p.model_override ? `${tr("Model:")} ${p.model_override}` : undefined}
                 >
-                  {p.icon || 'AG'} {p.name}
+                  {p.name}
                 </button>
               ))}
             </div>

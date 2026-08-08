@@ -6,6 +6,7 @@ const LEGACY_STORAGE_KEY = 'open-cowork-projects'
 const SQLITE_MIGRATION_FLAG = 'open-cowork-projects-sqlite-migrated'
 
 export type ProjectResourceKind = ChatAttachmentKind | 'link'
+export type ProjectResourceAccess = 'read_only' | 'read_write'
 
 export type ProjectResource = {
   id: string
@@ -13,6 +14,8 @@ export type ProjectResource = {
   kind: ProjectResourceKind
   label?: string
   enabled: boolean
+  access: ProjectResourceAccess
+  isPrimary: boolean
   addedAt: number
 }
 
@@ -31,6 +34,8 @@ type AddProjectResourceInput = {
   kind: ProjectResourceKind
   label?: string
   enabled?: boolean
+  access?: ProjectResourceAccess
+  isPrimary?: boolean
 }
 
 type DeleteProjectOptions = {
@@ -45,6 +50,9 @@ type DbProjectResource = {
   path: string
   label?: string | null
   enabled?: boolean
+  access?: string
+  isPrimary?: boolean
+  is_primary?: boolean
   addedAt?: string
   added_at?: string
 }
@@ -70,6 +78,9 @@ type RawProjectResource = {
   path?: unknown
   label?: unknown
   enabled?: unknown
+  access?: unknown
+  isPrimary?: unknown
+  is_primary?: unknown
   addedAt?: string | number
   added_at?: string | number
 }
@@ -99,6 +110,8 @@ type ProjectState = {
   addResources: (projectId: string, resources: AddProjectResourceInput[]) => void
   removeResource: (projectId: string, resourceId: string) => void
   setResourceEnabled: (projectId: string, resourceId: string, enabled: boolean) => void
+  setResourceAccess: (projectId: string, resourceId: string, access: ProjectResourceAccess) => boolean
+  setPrimaryResource: (projectId: string, resourceId: string) => void
   attachThread: (projectId: string, threadId: string) => void
   detachThread: (projectId: string, threadId: string) => void
   detachThreadFromAll: (threadId: string) => void
@@ -132,6 +145,35 @@ function normalizeResourceKind(kind: unknown): ProjectResourceKind {
   return 'file'
 }
 
+function normalizeResourceAccess(access: unknown, kind: ProjectResourceKind): ProjectResourceAccess {
+  if (kind === 'link') return 'read_only'
+  return access === 'read_only' ? 'read_only' : 'read_write'
+}
+
+function normalizeComparablePath(path: string): string {
+  return path.trim().replace(/[\\/]+/g, '/').replace(/\/$/, '').toLowerCase()
+}
+
+function writableResourcesOverlap(left: ProjectResource, right: ProjectResource): boolean {
+  if (left.kind === 'link' || right.kind === 'link') return false
+  const leftPath = normalizeComparablePath(left.path)
+  const rightPath = normalizeComparablePath(right.path)
+  if (leftPath === rightPath) return true
+  if (left.kind === 'file' || right.kind === 'file') return false
+  return leftPath.startsWith(`${rightPath}/`) || rightPath.startsWith(`${leftPath}/`)
+}
+
+function ensurePrimaryResource(resources: ProjectResource[]): ProjectResource[] {
+  const eligible = resources.filter((resource) => (
+    resource.enabled && resource.kind !== 'link' && resource.access === 'read_write'
+  ))
+  const selectedId = eligible.find((resource) => resource.isPrimary)?.id ?? eligible[0]?.id ?? null
+  return resources.map((resource) => ({
+    ...resource,
+    isPrimary: selectedId !== null && resource.id === selectedId,
+  }))
+}
+
 function resourceKey(resource: Pick<ProjectResource, 'kind' | 'path'>): string {
   return `${resource.kind}::${resource.path.trim().toLowerCase()}`
 }
@@ -140,12 +182,15 @@ function normalizeResource(raw: RawProjectResource): ProjectResource | null {
   if (typeof raw.path !== 'string' || !raw.path.trim()) return null
   const addedAt = parseDate(raw.addedAt ?? raw.added_at, Date.now())
   const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined
+  const kind = normalizeResourceKind(raw.kind)
   return {
     id: typeof raw.id === 'string' && raw.id.trim() ? raw.id : generateId('resource'),
     path: raw.path.trim(),
-    kind: normalizeResourceKind(raw.kind),
+    kind,
     label,
     enabled: raw.enabled !== false,
+    access: normalizeResourceAccess(raw.access, kind),
+    isPrimary: raw.isPrimary === true || raw.is_primary === true,
     addedAt,
   }
 }
@@ -153,11 +198,11 @@ function normalizeResource(raw: RawProjectResource): ProjectResource | null {
 function normalizeProject(raw: RawProject): Project | null {
   if (typeof raw.id !== 'string' || !raw.id.trim()) return null
   const createdAt = parseDate(raw.createdAt ?? raw.created_at, Date.now())
-  const resources = Array.isArray(raw.resources)
+  const resources = ensurePrimaryResource(Array.isArray(raw.resources)
     ? raw.resources
         .map((resource) => normalizeResource(resource as RawProjectResource))
         .filter((resource): resource is ProjectResource => Boolean(resource))
-    : []
+    : [])
   const rawThreadIds = Array.isArray(raw.threadIds)
     ? raw.threadIds
     : Array.isArray(raw.thread_ids)
@@ -181,6 +226,7 @@ function normalizeProject(raw: RawProject): Project | null {
 function addUniqueResources(existing: ProjectResource[], incoming: AddProjectResourceInput[]): ProjectResource[] {
   const seen = new Set(existing.map(resourceKey))
   const now = Date.now()
+  const accepted = [...existing]
   const additions = incoming
     .map((item): ProjectResource | null => {
       const normalized = normalizeResource({
@@ -189,17 +235,23 @@ function addUniqueResources(existing: ProjectResource[], incoming: AddProjectRes
         kind: item.kind,
         label: item.label,
         enabled: item.enabled,
+        access: item.access,
+        isPrimary: item.isPrimary,
         addedAt: now,
       })
       if (!normalized) return null
       const key = resourceKey(normalized)
       if (seen.has(key)) return null
+      if (normalized.access === 'read_write' && accepted.some((resource) => (
+        resource.access === 'read_write' && writableResourcesOverlap(resource, normalized)
+      ))) return null
       seen.add(key)
+      accepted.push(normalized)
       return normalized
     })
     .filter((item): item is ProjectResource => Boolean(item))
 
-  return additions.length > 0 ? [...existing, ...additions] : existing
+  return additions.length > 0 ? ensurePrimaryResource([...existing, ...additions]) : existing
 }
 
 function persistProject(project: Project): void {
@@ -223,6 +275,8 @@ function persistResource(projectId: string, resource: ProjectResource): void {
       path: resource.path,
       label: resource.label ?? null,
       enabled: resource.enabled,
+      access: resource.access,
+      isPrimary: resource.isPrimary,
       addedAt: toIso(resource.addedAt),
     },
   })
@@ -284,6 +338,8 @@ async function migrateLegacyStorageToSqlite(): Promise<void> {
           path: resource.path,
           label: resource.label ?? null,
           enabled: resource.enabled,
+          access: resource.access,
+          isPrimary: resource.isPrimary,
           addedAt: toIso(resource.addedAt),
         },
       })
@@ -406,13 +462,13 @@ export const useProjectStore = create<ProjectState>()((set) => ({
     })),
 
   addResources: (projectId, resources) => {
-    let addedResources: ProjectResource[] = []
+    let persistedResources: ProjectResource[] = []
     set((state) => ({
       projects: state.projects.map((project) => {
         if (project.id !== projectId) return project
         const nextResources = addUniqueResources(project.resources, resources)
         if (nextResources === project.resources) return project
-        addedResources = nextResources.slice(project.resources.length)
+        persistedResources = nextResources
         return {
           ...project,
           resources: nextResources,
@@ -420,42 +476,96 @@ export const useProjectStore = create<ProjectState>()((set) => ({
         }
       }),
     }))
-    addedResources.forEach((resource) => persistResource(projectId, resource))
+    persistedResources.forEach((resource) => persistResource(projectId, resource))
   },
 
-  removeResource: (projectId, resourceId) =>
+  removeResource: (projectId, resourceId) => {
+    let remainingResources: ProjectResource[] = []
     set((state) => {
       let removed = false
       const projects = state.projects.map((project) => {
         if (project.id !== projectId) return project
-        const nextResources = project.resources.filter((resource) => resource.id !== resourceId)
+        const nextResources = ensurePrimaryResource(project.resources.filter((resource) => resource.id !== resourceId))
         removed = nextResources.length !== project.resources.length
+        if (removed) remainingResources = nextResources
         return removed
           ? { ...project, resources: nextResources, updatedAt: Date.now() }
           : project
       })
       if (removed) void safeInvokeVoid('project_resource_delete', { resourceId })
       return { projects }
-    }),
+    })
+    remainingResources.forEach((resource) => persistResource(projectId, resource))
+  },
 
-  setResourceEnabled: (projectId, resourceId, enabled) =>
+  setResourceEnabled: (projectId, resourceId, enabled) => {
+    let persistedResources: ProjectResource[] = []
     set((state) => {
       let changed = false
       const projects = state.projects.map((project) => {
         if (project.id !== projectId) return project
+        const resources = ensurePrimaryResource(project.resources.map((resource) => {
+          if (resource.id !== resourceId || resource.enabled === enabled) return resource
+          changed = true
+          return { ...resource, enabled }
+        }))
+        if (changed) persistedResources = resources
         return {
           ...project,
-          resources: project.resources.map((resource) => {
-            if (resource.id !== resourceId || resource.enabled === enabled) return resource
-            changed = true
-            return { ...resource, enabled }
-          }),
+          resources,
           updatedAt: Date.now(),
         }
       })
-      if (changed) void safeInvokeVoid('project_resource_set_enabled', { resourceId, enabled })
       return { projects }
-    }),
+    })
+    persistedResources.forEach((resource) => persistResource(projectId, resource))
+  },
+
+  setResourceAccess: (projectId, resourceId, access) => {
+    let accepted = true
+    let persistedResources: ProjectResource[] = []
+    set((state) => ({
+      projects: state.projects.map((project) => {
+        if (project.id !== projectId) return project
+        const target = project.resources.find((resource) => resource.id === resourceId)
+        if (!target || target.kind === 'link') return project
+        const candidate = { ...target, access }
+        if (access === 'read_write' && project.resources.some((resource) => (
+          resource.id !== resourceId
+          && resource.access === 'read_write'
+          && writableResourcesOverlap(resource, candidate)
+        ))) {
+          accepted = false
+          return project
+        }
+        const resources = ensurePrimaryResource(project.resources.map((resource) => (
+          resource.id === resourceId ? candidate : resource
+        )))
+        persistedResources = resources
+        return { ...project, resources, updatedAt: Date.now() }
+      }),
+    }))
+    persistedResources.forEach((resource) => persistResource(projectId, resource))
+    return accepted
+  },
+
+  setPrimaryResource: (projectId, resourceId) => {
+    let persistedResources: ProjectResource[] = []
+    set((state) => ({
+      projects: state.projects.map((project) => {
+        if (project.id !== projectId) return project
+        const target = project.resources.find((resource) => resource.id === resourceId)
+        if (!target || !target.enabled || target.kind === 'link' || target.access !== 'read_write') return project
+        const resources = project.resources.map((resource) => ({
+          ...resource,
+          isPrimary: resource.id === resourceId,
+        }))
+        persistedResources = resources
+        return { ...project, resources, updatedAt: Date.now() }
+      }),
+    }))
+    persistedResources.forEach((resource) => persistResource(projectId, resource))
+  },
 
   attachThread: (projectId, threadId) => {
     const normalizedThreadId = threadId.trim()
@@ -524,6 +634,8 @@ export function projectResourceToAttachment(resource: ProjectResource): ChatAtta
     path: resource.path,
     kind: resource.kind,
     label: resource.label,
+    access: resource.access,
+    isPrimary: resource.isPrimary,
   }
 }
 

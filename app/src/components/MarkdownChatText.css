@@ -1,0 +1,131 @@
+.chat-markdown {
+  min-width: 0;
+  white-space: normal;
+}
+
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
+
+.chat-markdown p {
+  margin: 0 0 0.75em;
+  white-space: pre-wrap;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  margin: 1.15em 0 0.45em;
+  color: var(--text-primary);
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.chat-markdown h1 { font-size: 1.45em; }
+.chat-markdown h2 { font-size: 1.28em; }
+.chat-markdown h3 { font-size: 1.14em; }
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 { font-size: 1em; }
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.45em 0 0.8em;
+  padding-left: 1.55em;
+}
+
+.chat-markdown li {
+  margin: 0.2em 0;
+  white-space: pre-wrap;
+}
+
+.chat-markdown li > p { margin: 0; }
+
+.chat-markdown blockquote {
+  margin: 0.75em 0;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 3px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.chat-markdown blockquote > :last-child { margin-bottom: 0; }
+
+.chat-markdown code {
+  padding: 0.12em 0.34em;
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.chat-markdown pre {
+  max-width: 100%;
+  margin: 0.75em 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  white-space: pre;
+}
+
+.chat-markdown pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0.9em;
+}
+
+.chat-markdown a {
+  color: var(--accent-text);
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.chat-markdown a:hover { text-decoration-thickness: 2px; }
+
+.chat-markdown table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0.75em 0;
+  overflow-x: auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  padding: 6px 9px;
+  border: 1px solid var(--border-color);
+  text-align: left;
+  white-space: pre-wrap;
+}
+
+.chat-markdown th {
+  background: var(--bg-secondary);
+  font-weight: 750;
+}
+
+.chat-markdown hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.chat-markdown input[type='checkbox'] {
+  margin-right: 0.45em;
+  accent-color: var(--accent-fill);
+}
+
+.chat-markdown del { color: var(--text-muted); }
+
+.chat-markdown-image-placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}

@@ -171,7 +171,11 @@ function verifyCrewRuntimeArchive(appRoot, archive, field) {
   }
 }
 
-function readCrewRuntimeBundle(appRoot, tauriConfig = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json'))) {
+function readCrewRuntimeBundle(
+  appRoot,
+  tauriConfig = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json')),
+  { verifyArchives = true } = {},
+) {
   if (!tauriBundlesCrewRuntimeManifest(tauriConfig)) return null
   const manifestPath = join(appRoot, ...crewRuntimeManifestRelativePath.split('/'))
   const requirementsPath = join(appRoot, ...crewRuntimeRequirementsRelativePath.split('/'))
@@ -194,8 +198,10 @@ function readCrewRuntimeBundle(appRoot, tauriConfig = readJson(join(appRoot, 'sr
     crewManifestError(`JSON parsing failed: ${error instanceof Error ? error.message : String(error)}`)
   }
   const manifest = validateCrewRuntimeManifest(manifestValue)
-  verifyCrewRuntimeArchive(appRoot, manifest.python.archive, 'python.archive')
-  verifyCrewRuntimeArchive(appRoot, manifest.wheelhouse.archive, 'wheelhouse.archive')
+  if (verifyArchives) {
+    verifyCrewRuntimeArchive(appRoot, manifest.python.archive, 'python.archive')
+    verifyCrewRuntimeArchive(appRoot, manifest.wheelhouse.archive, 'wheelhouse.archive')
+  }
   const requirementsBytes = readFileSync(requirementsPath)
   const lockBytes = readFileSync(lockPath)
   const requirementsSha256 = sha256(requirementsBytes)
@@ -347,7 +353,7 @@ export function assertVersionConsistency({ packageVersion, packageLockVersion, c
   return expected
 }
 
-function releaseVersion(appRoot, releaseTag = '') {
+export function releaseVersion(appRoot, releaseTag = '') {
   const packageJson = readJson(join(appRoot, 'package.json'))
   const packageLock = readJson(join(appRoot, 'package-lock.json'))
   const tauri = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json'))
@@ -604,7 +610,7 @@ export function releaseWorkflowSigningErrors(text) {
         'unsigned releases must publish a warning asset',
       ],
       [
-        /body:\s*\$\{\{\s*steps\.signing_mode\.outputs\.release_notice\s*}}/,
+        /body:\s*\$\{\{\s*(?:steps\.signing_mode|needs\.windows)\.outputs\.release_notice\s*}}/,
         'unsigned releases must display a warning in the GitHub release body',
       ],
     ]
@@ -626,7 +632,7 @@ function validateWorkflowHardening(appRoot, policy) {
     const text = readFileSync(join(workflowRoot, name), 'utf8')
     combined += `\n${text}`
     errors.push(...workflowHardeningErrors(text).map((error) => `${name}: ${error}`))
-    if (name === 'windows-installer.yml' || name === 'windows-installer.yaml') {
+    if (['release.yml', 'release.yaml', 'windows-installer.yml', 'windows-installer.yaml'].includes(name)) {
       errors.push(...releaseWorkflowSigningErrors(text).map((error) => `${name}: ${error}`))
     }
   }
@@ -861,7 +867,7 @@ export function writeReleaseProvenance(appRoot, assetsDir, options = {}) {
     assertRegularAsset(path, assetsDir)
     return { name, ...fileHash(path) }
   })
-  const crewRuntimeBundle = readCrewRuntimeBundle(appRoot)
+  const crewRuntimeBundle = readCrewRuntimeBundle(appRoot, undefined, { verifyArchives: false })
   const materialNames = [
     'package.json',
     'package-lock.json',

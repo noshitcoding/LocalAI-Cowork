@@ -5,6 +5,7 @@ import { checkOllamaConnection, listOllamaModels } from '../engine/api/ollamaCli
 import { useConfigStore, type LlmProfile, type LlmProviderKind } from '../stores/configStore'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { resolveProviderModelFromCatalog } from '../utils/providerModels'
+import { getModelGuidance } from '../utils/modelGuidance'
 import { tr } from '../i18n'
 import SecureCredentialInput from './SecureCredentialInput'
 
@@ -146,7 +147,7 @@ export default function LlmProfilesPanel() {
     if (health?.reachable === true) return { label: tr('Connected'), tone: 'success' }
     if (health?.reachable === false) return { label: tr('Action needed'), tone: 'warning' }
     if (!profile.baseUrl.trim() || !profile.model.trim()) return { label: tr('Setup needed'), tone: 'warning' }
-    if (supportsApiKey(profile.provider) && !profile.apiKey.trim()) return { label: tr('API key needed'), tone: 'warning' }
+    if (supportsApiKey(profile.provider) && !profile.apiKey.trim()) return { label: tr('Access key needed'), tone: 'warning' }
     return { label: tr('Configured'), tone: 'neutral' }
   }
 
@@ -382,14 +383,14 @@ export default function LlmProfilesPanel() {
   return (
     <div className="panel llm-profiles-panel">
       <div className="panel-heading-row">
-        <h2>{tr("LLM profiles")}</h2>
+        <h2>{tr("Language model profiles")}</h2>
         <div className="actions llm-profile-add-actions">
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('ollama')}>{tr("+ Ollama")}</button>
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('openai-compatible')}>{tr("+ OpenAI-compatible")}</button>
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('openrouter')}>{tr("+ OpenRouter")}</button>
         </div>
       </div>
-      <p className="hint-text">{tr("Maintain multiple endpoints in parallel and set one global default profile per provider for dropdowns and fallbacks.")}</p>
+      <p className="hint-text">{tr("A language model reads instructions and generates responses. Maintain multiple connections in parallel and set one global default profile per provider for selection lists and fallbacks.")}</p>
 
       <div className="llm-provider-overview" role="group" aria-label={tr('Provider overview')}>
         {profilesByProvider.map(({ provider, profiles }) => {
@@ -471,6 +472,7 @@ export default function LlmProfilesPanel() {
                   const models = llmProfileModels[profile.id] ?? []
                   const modelState = modelStates[profile.id]
                   const canDelete = !isDefault && profiles.length > 1
+                  const guidance = getModelGuidance(profile.model)
 
                   return (
                     <div
@@ -506,8 +508,14 @@ export default function LlmProfilesPanel() {
                         </label>
                         <label>{tr("Model")}{models.length > 0 ? (
                             <select value={profile.model} onChange={(event) => updateLlmProfile(profile.id, { model: event.target.value })}>
-                              {models.map((model) => <option key={model} value={model}>{model}</option>)}
-                              {!models.includes(profile.model) && profile.model && <option value={profile.model}>{profile.model}</option>}
+                              {models.map((model) => (
+                                <option key={model} value={model}>
+                                  {model} — {tr(getModelGuidance(model).title)}
+                                </option>
+                              ))}
+                              {!models.includes(profile.model) && profile.model && (
+                                <option value={profile.model}>{profile.model} — {tr(guidance.title)}</option>
+                              )}
                             </select>
                           ) : (
                             <input
@@ -519,18 +527,18 @@ export default function LlmProfilesPanel() {
                           )}
                         </label>
                         {supportsApiKey(profile.provider) && (
-                          <label className="llm-profile-api-key-field">{tr("API Key")}<SecureCredentialInput
+                          <label className="llm-profile-api-key-field">{tr("Access key for the application programming interface")}<SecureCredentialInput
                               value={profile.apiKey}
                               onCommit={(value) => setLlmProfileApiKey(profile.id, value)}
                               placeholder={tr("sk?...")}
                               style={{ fontFamily: 'monospace' }}
-                              ariaLabel={`${PROVIDER_LABELS[profile.provider]} ${tr('API Key')}`}
+                              ariaLabel={`${PROVIDER_LABELS[profile.provider]} ${tr('Access key for the application programming interface')}`}
                             />
                           </label>
                         )}
                         {supportsApiKey(profile.provider) && (
                           <label className="toggle-row" style={{ alignSelf: 'end' }}>
-                            <span>{tr("Check SSL verification / TLS certificates")}<span className="hint-text">{tr("Turn off for HTTPS with self-signed certificates.")}</span>
+                            <span>{tr("Check Secure Sockets Layer and Transport Layer Security certificates")}<span className="hint-text">{tr("Turn off for secure web connections with self-signed certificates.")}</span>
                             </span>
                             <button
                               type="button"
@@ -543,7 +551,7 @@ export default function LlmProfilesPanel() {
                             </button>
                           </label>
                         )}
-                        <label>{tr("Timeout (ms)")}<input
+                        <label>{tr("Timeout in milliseconds")}<input
                             type="number"
                             min={1000}
                             max={86400000}
@@ -552,7 +560,7 @@ export default function LlmProfilesPanel() {
                             onChange={(event) => updateLlmProfile(profile.id, { timeoutMs: parseNumericInput(event.target.value, profile.timeoutMs) })}
                           />
                         </label>
-                        <label>{tr("Context Window")}<input
+                        <label>{tr("Context window in tokens")}<input
                               type="number"
                               min={512}
                               max={2000000}
@@ -573,6 +581,36 @@ export default function LlmProfilesPanel() {
                           </label>
                         )}
                       </div>
+
+                      <section className="model-guidance" aria-label={tr('Model task guidance')}>
+                        <div className="model-guidance-heading">
+                          <div>
+                            <span>{tr('Best model type for this task')}</span>
+                            <strong>{tr(guidance.title)}</strong>
+                          </div>
+                          <p>{tr(guidance.summary)}</p>
+                        </div>
+                        <dl>
+                          <div>
+                            <dt>{tr('Recommended for')}</dt>
+                            <dd>{tr(guidance.recommendedFor)}</dd>
+                          </div>
+                          <div>
+                            <dt>{tr('Important tradeoff')}</dt>
+                            <dd>{tr(guidance.tradeoff)}</dd>
+                          </div>
+                        </dl>
+                        <details>
+                          <summary>{tr('Explain the technical model name')}</summary>
+                          <ul>
+                            {guidance.nameExplanations.map((explanation) => (
+                              <li key={`${explanation.text}-${JSON.stringify(explanation.values)}`}>
+                                {tr(explanation.text, explanation.values)}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </section>
 
                       <div className="actions llm-profile-actions">
                         <button

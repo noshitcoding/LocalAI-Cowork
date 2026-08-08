@@ -4,9 +4,12 @@ import { useWorkTasksStore } from '../stores/workTasksStore'
 import { hasTauriRuntime, safeInvoke } from './safeInvoke'
 
 export type AuthorizedTaskPath = {
+  id?: string
   path: string
   kind: 'file' | 'folder'
-  access: 'read_write'
+  access: 'read_only' | 'read_write'
+  label?: string
+  isPrimary?: boolean
 }
 
 export type TaskProjectRunContext = {
@@ -32,7 +35,7 @@ function emptyContext(workDir?: string): TaskProjectRunContext {
     projectTitle: null,
     promptContext: '',
     authorizedPaths: normalizedWorkDir
-      ? [{ path: normalizedWorkDir, kind: 'folder', access: 'read_write' }]
+      ? [{ path: normalizedWorkDir, kind: 'folder', access: 'read_write', isPrimary: true }]
       : [],
     preferredCwd: normalizedWorkDir || null,
     warnings: [],
@@ -58,11 +61,16 @@ function buildBrowserFallback(input: ResolveTaskProjectRunContextInput): TaskPro
       resource.kind === 'file' || resource.kind === 'folder'
     ))
     .map((resource) => ({
+      id: resource.id,
       path: resource.path,
       kind: resource.kind,
-      access: 'read_write' as const,
+      access: resource.access,
+      label: resource.label,
+      isPrimary: resource.isPrimary,
     }))
-  const preferredProjectFolder = authorizedPaths.find((entry) => entry.kind === 'folder')?.path ?? null
+  const preferredProjectFolder = authorizedPaths.find((entry) => entry.kind === 'folder' && entry.isPrimary)?.path
+    ?? authorizedPaths.find((entry) => entry.kind === 'folder')?.path
+    ?? null
   const sourceLines = enabledResources.map((resource) => (
     `- ${resource.kind}: ${resource.label?.trim() || resource.path} (${resource.path})`
   ))

@@ -23,7 +23,7 @@ export type BackendExecResponse = {
 }
 
 export type TerminalSessionStatus = 'idle' | 'running' | 'exited' | 'error'
-export type TerminalSessionKind = 'manual' | 'ai'
+export type TerminalSessionKind = 'manual' | 'ai' | 'sandbox'
 export type TerminalPersistenceMode = 'runtime' | 'scrollback' | 'restore-tabs'
 
 export type TerminalSession = {
@@ -83,6 +83,13 @@ type RunAiCommandInput = {
   timeoutMs?: number
 }
 
+type StartSandboxCommandInput = {
+  threadId: string
+  streamId: string
+  command: string
+  cwd: string
+}
+
 type PendingAiCommand = {
   sessionId: string
   threadId: string
@@ -132,6 +139,9 @@ type TerminalState = {
   killSession: (sessionId: string) => Promise<void>
   closeSession: (sessionId: string) => Promise<void>
   markAiIntervention: (sessionId: string) => void
+  startSandboxCommand: (input: StartSandboxCommandInput) => TerminalSession
+  appendSandboxChunk: (streamId: string, channel: 'stdout' | 'stderr', text: string) => void
+  finishSandboxCommand: (streamId: string, exitCode: number | null, status: string) => void
   runAiCommand: (input: RunAiCommandInput) => Promise<AiTerminalCommandResult>
 }
 
@@ -152,9 +162,14 @@ const AI_CWD_PREFIX = '__LOCALAI_COWORK_CURRENT_CWD__'
 
 let listenersReady = false
 const pendingAiCommands = new Map<string, PendingAiCommand>()
+const sandboxSessionsByStream = new Map<string, string>()
 
 function createSessionId(kind: TerminalSessionKind) {
   return `term-${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function rejectAiHostPtyRouting(): void {
+  throw new Error('AI host-PTY routing is disabled; use the native sandbox command path.')
 }
 
 function appendOutput(previous: string, next: string): string {
@@ -552,6 +567,7 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
   },
 
   writeToSession: async (sessionId, data) => {
+    if (findSession(get(), sessionId)?.kind === 'sandbox') return
     if (!hasTauriRuntime()) {
       handleTerminalOutput({ sessionId, stream: 'stdout', data })
       return
@@ -560,16 +576,20 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
   },
 
   resizeSession: async (sessionId, cols, rows) => {
+    if (findSession(get(), sessionId)?.kind === 'sandbox') return
     if (!hasTauriRuntime()) return
     await invoke('terminal_resize', { request: { sessionId, cols, rows } })
   },
 
   interruptSession: async (sessionId) => {
+    if (findSession(get(), sessionId)?.kind === 'sandbox') return
     if (!hasTauriRuntime()) return
     await invoke('terminal_interrupt', { request: { sessionId } })
   },
 
   killSession: async (sessionId) => {
+    const session = findSession(get(), sessionId)
+    if (session?.kind === 'sandbox') return
     if (hasTauriRuntime()) {
       await invoke('terminal_kill', { request: { sessionId } })
     }
@@ -584,7 +604,8 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
   },
 
   closeSession: async (sessionId) => {
-    if (hasTauriRuntime()) {
+    const session = findSession(get(), sessionId)
+    if (hasTauriRuntime() && session?.kind !== 'sandbox') {
       await invoke('terminal_close', { request: { sessionId } })
     }
     set((state) => removeSessionById(state, sessionId))
@@ -606,7 +627,81 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
     )
   },
 
+  startSandboxCommand: ({ threadId, streamId, command, cwd }) => {
+    const state = get()
+    const existing = (state.sessionsByThread[threadId] ?? []).find((session) => session.kind === 'sandbox')
+    const now = Date.now()
+    const session: TerminalSession = existing
+      ? {
+          ...existing,
+          cwd,
+          status: 'running',
+          hidden: false,
+          output: appendOutput(existing.output, `\r\n> ${command}\r\n`),
+          updatedAt: now,
+        }
+      : {
+          id: createSessionId('sandbox'),
+          threadId,
+          title: 'AI Sandbox',
+          shell: 'Native Windows Sandbox',
+          cwd,
+          output: `> ${command}\r\n`,
+          status: 'running',
+          kind: 'sandbox',
+          hidden: false,
+          createdAt: now,
+          updatedAt: now,
+        }
+    sandboxSessionsByStream.set(streamId, session.id)
+    set((current) => ({
+      sessionsByThread: {
+        ...current.sessionsByThread,
+        [threadId]: existing
+          ? (current.sessionsByThread[threadId] ?? []).map((item) => item.id === session.id ? session : item)
+          : [...(current.sessionsByThread[threadId] ?? []), session],
+      },
+      activeSessionIds: {
+        ...current.activeSessionIds,
+        [threadId]: current.activeSessionIds[threadId] ?? session.id,
+      },
+      hiddenActivityByThread: current.dockOpenByThread[threadId]
+        ? current.hiddenActivityByThread
+        : { ...current.hiddenActivityByThread, [threadId]: true },
+    }))
+    return session
+  },
+
+  appendSandboxChunk: (streamId, channel, text) => {
+    const sessionId = sandboxSessionsByStream.get(streamId)
+    if (!sessionId || !text) return
+    const rendered = channel === 'stderr' ? `[stderr] ${text}` : text
+    set((state) => updateSessionById(state, sessionId, (session) => ({
+      ...session,
+      output: appendOutput(session.output, rendered),
+      status: 'running',
+      updatedAt: Date.now(),
+    })))
+  },
+
+  finishSandboxCommand: (streamId, exitCode, status) => {
+    const sessionId = sandboxSessionsByStream.get(streamId)
+    if (!sessionId) return
+    sandboxSessionsByStream.delete(streamId)
+    set((state) => updateSessionById(state, sessionId, (session) => ({
+      ...session,
+      output: appendOutput(session.output, `\r\n[sandbox ${status}; exit code ${exitCode ?? 'unknown'}]\r\n`),
+      status: status === 'completed' ? 'idle' : 'error',
+      updatedAt: Date.now(),
+    })))
+  },
+
   runAiCommand: async ({ threadId, command, cwd, timeoutMs = 30_000 }) => {
+    // Kept only for persisted store/API compatibility. AI-owned commands must never
+    // enter an interactive host PTY; Bash uses sandbox_exec_command exclusively.
+    rejectAiHostPtyRouting()
+
+    /* c8 ignore start -- unreachable legacy parser retained for persisted state compatibility */
     const state = get()
     if (!hasTauriRuntime()) {
       const dockOpen = Boolean(state.dockOpenByThread[threadId])
@@ -733,5 +828,6 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
     })
 
     return pending
+    /* c8 ignore stop */
   },
 }))

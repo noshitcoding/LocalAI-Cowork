@@ -13,17 +13,25 @@ import type { AttachmentMessage, Tool, Tools, ToolInputSchema } from '../types'
 
 const toolRegistry: Tool[] = []
 
-type ExecCommandChunkPayload = {
+type SandboxCommandChunkPayload = {
   streamId: string
-  channel: 'stdout' | 'stderr' | 'done'
-  content: string
+  sequence: number
+  channel: 'stdout' | 'stderr'
+  bytesBase64: string
 }
 
-type ExecCommandResult = {
+type SandboxExecCommandResult = {
   stdout: string
   stderr: string
-  exitCode: number
-  currentCwd?: string
+  exitCode: number | null
+  status: 'completed' | 'failed' | 'timeout' | 'cancelled'
+  timedOut: boolean
+  durationMs: number
+  sandboxId: string
+  stdoutTruncated: boolean
+  stderrTruncated: boolean
+  stdoutInvalidUtf8: boolean
+  stderrInvalidUtf8: boolean
 }
 
 type DesktopDisplayInfo = {
@@ -66,68 +74,6 @@ type DesktopLaunchResponse = {
   pid: number
   path: string
   args: string[]
-}
-
-function normalizeShellPath(pathValue: string): string {
-  const hasDrivePrefix = /^[a-zA-Z]:[\\/]/.test(pathValue)
-  const hasLeadingSlash = !hasDrivePrefix && pathValue.startsWith('/')
-  const normalizedSeparators = pathValue.replace(/\\/g, '/')
-  const prefix = hasDrivePrefix
-    ? normalizedSeparators.slice(0, 2)
-    : hasLeadingSlash
-      ? '/'
-      : ''
-  const remainder = normalizedSeparators.slice(prefix.length)
-  const parts: string[] = []
-
-  for (const rawPart of remainder.split('/')) {
-    const part = rawPart.trim()
-    if (!part || part === '.') continue
-    if (part === '..') {
-      if (parts.length > 0 && parts[parts.length - 1] !== '..') {
-        parts.pop()
-      } else if (!prefix) {
-        parts.push('..')
-      }
-      continue
-    }
-    parts.push(part)
-  }
-
-  if (hasDrivePrefix) {
-    const suffix = parts.join('\\')
-    return suffix ? `${prefix}\\${suffix}` : `${prefix}\\`
-  }
-
-  if (hasLeadingSlash) {
-    return `/${parts.join('/')}`.replace(/\/$/, '') || '/'
-  }
-
-  return parts.join('/')
-}
-
-function resolveShellNavigationTarget(target: string, cwd: string): string {
-  const trimmedTarget = target.trim()
-  if (!trimmedTarget) return cwd
-  if (/^[a-zA-Z]:[\\/]/.test(trimmedTarget) || trimmedTarget.startsWith('/')) {
-    return normalizeShellPath(trimmedTarget)
-  }
-  return normalizeShellPath(`${cwd.replace(/[\\/]+$/, '')}/${trimmedTarget}`)
-}
-
-function inferShellCwdFromCommand(command: string, cwd: string): string | undefined {
-  const navigationPattern = /(?:^|[;\n]\s*)(?:cd|chdir|Set-Location)\s+(?:"([^"]+)"|'([^']+)'|([^;\n]+))/gi
-  let inferredCwd: string | undefined
-  let match: RegExpExecArray | null
-
-  while ((match = navigationPattern.exec(command)) !== null) {
-    const rawTarget = match[1] ?? match[2] ?? match[3] ?? ''
-    const target = rawTarget.trim()
-    if (!target || target === '-' || target.startsWith('$')) continue
-    inferredCwd = resolveShellNavigationTarget(target, inferredCwd ?? cwd)
-  }
-
-  return inferredCwd
 }
 
 type FsAttachmentMetadataResponse = {
@@ -775,19 +721,37 @@ const grepTool: Tool<{ pattern: string; path?: string; include?: string }> = {
   isReadOnly: () => true,
   isConcurrencySafe: () => true,
   async call(input, context) {
-    // Use bash to run grep/findstr (PowerShell on Windows)
     const searchPath = input.path ? resolvePath(input.path, context.cwd) : context.cwd
-    const includeFlag = input.include ? `-Include "${input.include}"` : ''
-    const cmd = `Get-ChildItem -Path "${searchPath}" -Recurse -File ${includeFlag} | Select-String -Pattern "${input.pattern}" | Select-Object -First 50 | Format-Table -AutoSize Path, LineNumber, Line`
     try {
-      const result = await invoke<{ stdout: string; stderr: string; exitCode: number }>('exec_command', {
-        command: cmd,
-        cwd: context.cwd,
+      const expression = new RegExp(input.pattern, 'i')
+      const metadata = await invoke<FsAttachmentMetadataResponse>('fs_collect_attachment_metadata', {
+        path: searchPath,
+        maxEntries: 200,
         runId: context.runId,
       })
-      return { data: result.stdout || 'No results.' }
-    } catch {
-      return { data: `Grep search for "${input.pattern}" — Tauri exec_command is not available. Use fallback.` }
+      const include = input.include ? globToRegex(input.include) : null
+      const candidates = metadata.files.filter((file) => !include || include.test(file.fileName))
+      const matches: string[] = []
+      for (const file of candidates) {
+        if (matches.length >= 50) break
+        try {
+          const extracted = await invoke<{ text: string; truncated: boolean }>('fs_extract_text_limited', {
+            path: file.path,
+            maxChars: 120_000,
+            runId: context.runId,
+          })
+          for (const [index, line] of extracted.text.split(/\r?\n/).entries()) {
+            expression.lastIndex = 0
+            if (expression.test(line)) matches.push(`${file.path}:${index + 1}: ${line}`)
+            if (matches.length >= 50) break
+          }
+        } catch {
+          // Binary and unsupported artifacts are skipped without invoking a host shell.
+        }
+      }
+      return { data: matches.length > 0 ? matches.join('\n') : 'No results.' }
+    } catch (error) {
+      return { data: `Error: Grep search failed: ${error instanceof Error ? error.message : String(error)}`, isError: true }
     }
   },
 }
@@ -795,10 +759,10 @@ const grepTool: Tool<{ pattern: string; path?: string; include?: string }> = {
 // ── BashTool ───────────────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/tools/BashTool/
 
-const bashTool: Tool<{ command: string; timeout?: number }> = {
+const bashTool: Tool<{ command: string; timeout?: number; shell?: 'powershell' | 'cmd' }> = {
   name: 'Bash',
   aliases: ['bash', 'shell', 'BashTool', 'execute'],
-  description: 'Runs a shell command (PowerShell on Windows). Use for builds, tests, Git, etc.',
+  description: 'Runs a command only inside the native Windows AI sandbox (PowerShell by default, optional cmd). Use for builds, tests, Git, etc.',
   category: 'shell',
   riskLevel: 'high',
   inputSchema: {
@@ -806,6 +770,7 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
     properties: {
       command: { type: 'string', description: 'Shell command to execute' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+      shell: { type: 'string', description: 'Native Windows shell (default: powershell)', enum: ['powershell', 'cmd'] },
     },
     required: ['command'],
   },
@@ -816,117 +781,75 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
   },
   isConcurrencySafe: () => false,
   async call(input, context, onProgress) {
-    const terminalThreadId = useTerminalStore.getState().activeAiThreadId
-    if (terminalThreadId) {
-      try {
-        await invoke('shell_command_validate', {
-          command: input.command,
-          cwd: context.cwd,
-          runId: context.runId,
-        })
-        if (onProgress) {
-          onProgress({
-            toolUseID: '',
-            data: {
-              type: 'bash_progress',
-              output: 'terminal: starting command',
-            },
-          })
-        }
-        const result = await useTerminalStore.getState().runAiCommand({
-          threadId: terminalThreadId,
-          command: input.command,
-          cwd: context.cwd,
-          timeoutMs: input.timeout ?? 30000,
-        })
-        const resolvedCurrentCwd = result.currentCwd ?? inferShellCwdFromCommand(input.command, context.cwd)
-        if (resolvedCurrentCwd && resolvedCurrentCwd !== context.cwd) {
-          context.setAppState((prev) => ({ ...prev, cwd: resolvedCurrentCwd }))
-          if (onProgress) {
-            onProgress({
-              toolUseID: '',
-              data: {
-                type: 'bash_progress',
-                output: `cwd: ${resolvedCurrentCwd}`,
-              },
-            })
-          }
-        }
-        if (onProgress) {
-          onProgress({
-            toolUseID: '',
-            data: {
-              type: 'bash_progress',
-              output: `exit code: ${result.exitCode}`,
-              exitCode: result.exitCode ?? undefined,
-            },
-          })
-        }
-        const shouldMirrorCwdToStdout = /\b(?:pwd|Get-Location)\b/i.test(input.command)
-        const effectiveStdout = result.stdout || (shouldMirrorCwdToStdout && resolvedCurrentCwd ? resolvedCurrentCwd : '')
-        const output = [
-          effectiveStdout ? `stdout:\n${effectiveStdout}` : '',
-          result.stderr ? `stderr:\n${result.stderr}` : '',
-          result.interruptedByUser ? 'note: user manually intervened in the terminal while this command was running.' : '',
-          resolvedCurrentCwd ? `current cwd: ${resolvedCurrentCwd}` : '',
-          `exit code: ${result.exitCode}`,
-        ].filter(Boolean).join('\n\n')
-        return { data: output }
-      } catch (err) {
-        return { data: `Error while running in terminal: ${err instanceof Error ? err.message : String(err)}` }
-      }
-    }
-
     const streamId = createToolStreamId()
+    const runId = context.runId
+    const terminalThreadId = context.threadId ?? useTerminalStore.getState().activeAiThreadId ?? runId
+    if (!runId) {
+      return { data: 'Error: native sandbox execution requires an active engine run.', isError: true }
+    }
     let unlisten: (() => void) | null = null
+    const cancelOnAbort = () => {
+      void invoke('sandbox_exec_cancel', { streamId }).catch(() => undefined)
+    }
+    const abortSignal = context.abortController?.signal
+    abortSignal?.addEventListener('abort', cancelOnAbort, { once: true })
+    const decoders = {
+      stdout: new TextDecoder('utf-8', { fatal: false }),
+      stderr: new TextDecoder('utf-8', { fatal: false }),
+    }
+    if (terminalThreadId) {
+      useTerminalStore.getState().startSandboxCommand({
+        threadId: terminalThreadId,
+        streamId,
+        command: input.command,
+        cwd: context.cwd,
+      })
+    }
 
     try {
       try {
-        unlisten = await listen<ExecCommandChunkPayload>('exec-command-chunk', (event) => {
-          if (event.payload.streamId !== streamId || !onProgress) return
-
-          if (event.payload.channel === 'done') {
+        unlisten = await listen<SandboxCommandChunkPayload>('sandbox-command-chunk', (event) => {
+          if (event.payload.streamId !== streamId) return
+          const binary = atob(event.payload.bytesBase64)
+          const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+          const text = decoders[event.payload.channel].decode(bytes, { stream: true })
+          if (terminalThreadId) {
+            useTerminalStore.getState().appendSandboxChunk(streamId, event.payload.channel, text)
+          }
+          if (onProgress && text) {
             onProgress({
               toolUseID: '',
               data: {
                 type: 'bash_progress',
-                output: `status: ${event.payload.content}`,
+                output: `${event.payload.channel}: ${text}`,
               },
             })
-            return
           }
-
-          onProgress({
-            toolUseID: '',
-            data: {
-              type: 'bash_progress',
-              output: `${event.payload.channel}: ${event.payload.content}`,
-            },
-          })
         })
       } catch {
         unlisten = null
       }
 
-      const result = await invoke<ExecCommandResult>('exec_command', {
-        command: input.command,
-        cwd: context.cwd,
-        timeoutMs: input.timeout ?? 30000,
-        streamId,
-        runId: context.runId,
+      const result = await invoke<SandboxExecCommandResult>('sandbox_exec_command', {
+        request: {
+          runId,
+          command: input.command,
+          shell: input.shell ?? 'powershell',
+          cwd: context.cwd,
+          timeoutMs: input.timeout ?? 30000,
+          streamId,
+        },
       })
-      const resolvedCurrentCwd = result.currentCwd ?? inferShellCwdFromCommand(input.command, context.cwd)
-      if (resolvedCurrentCwd && resolvedCurrentCwd !== context.cwd) {
-        context.setAppState((prev) => ({ ...prev, cwd: resolvedCurrentCwd }))
-        if (onProgress) {
-          onProgress({
-            toolUseID: '',
-            data: {
-              type: 'bash_progress',
-              output: `cwd: ${resolvedCurrentCwd}`,
-            },
-          })
-        }
+      const stdoutTail = decoders.stdout.decode()
+      const stderrTail = decoders.stderr.decode()
+      if (terminalThreadId && (stdoutTail || stderrTail)) {
+        if (stdoutTail) useTerminalStore.getState().appendSandboxChunk(streamId, 'stdout', stdoutTail)
+        if (stderrTail) useTerminalStore.getState().appendSandboxChunk(streamId, 'stderr', stderrTail)
+      }
+      if (terminalThreadId) {
+        if (result.stdoutTruncated) useTerminalStore.getState().appendSandboxChunk(streamId, 'stdout', '\n[stdout truncated at 4 MiB]\n')
+        if (result.stderrTruncated) useTerminalStore.getState().appendSandboxChunk(streamId, 'stderr', '\n[stderr truncated at 4 MiB]\n')
+        useTerminalStore.getState().finishSandboxCommand(streamId, result.exitCode, result.status)
       }
       if (onProgress) {
         onProgress({
@@ -934,23 +857,29 @@ const bashTool: Tool<{ command: string; timeout?: number }> = {
           data: {
             type: 'bash_progress',
             output: `exit code: ${result.exitCode}`,
-            exitCode: result.exitCode,
+            exitCode: result.exitCode ?? undefined,
           },
         })
       }
-      const shouldMirrorCwdToStdout = /\b(?:pwd|Get-Location)\b/i.test(input.command)
-      const effectiveStdout = result.stdout || (shouldMirrorCwdToStdout && resolvedCurrentCwd ? resolvedCurrentCwd : '')
-
       const output = [
-        effectiveStdout ? `stdout:\n${effectiveStdout}` : '',
+        result.stdout ? `stdout:\n${result.stdout}` : '',
         result.stderr ? `stderr:\n${result.stderr}` : '',
-        resolvedCurrentCwd ? `current cwd: ${resolvedCurrentCwd}` : '',
+        result.stdoutInvalidUtf8 ? 'note: stdout contained invalid UTF-8 bytes and includes replacement markers.' : '',
+        result.stderrInvalidUtf8 ? 'note: stderr contained invalid UTF-8 bytes and includes replacement markers.' : '',
+        result.stdoutTruncated ? 'note: stdout was truncated at the sandbox output limit.' : '',
+        result.stderrTruncated ? 'note: stderr was truncated at the sandbox output limit.' : '',
+        `sandbox: ${result.sandboxId}`,
+        `status: ${result.status}`,
         `exit code: ${result.exitCode}`,
       ].filter(Boolean).join('\n\n')
-      return { data: output }
+      return { data: output, isError: result.status !== 'completed' || result.exitCode !== 0 }
     } catch (err) {
-      return { data: `Error while running: ${err instanceof Error ? err.message : String(err)}` }
+      if (terminalThreadId) {
+        useTerminalStore.getState().finishSandboxCommand(streamId, null, 'failed')
+      }
+      return { data: `Error: native sandbox command failed: ${err instanceof Error ? err.message : String(err)}`, isError: true }
     } finally {
+      abortSignal?.removeEventListener('abort', cancelOnAbort)
       if (unlisten) {
         unlisten()
       }

@@ -11,6 +11,7 @@
   --text-muted: #6b6b66;
   --border-color: #cbcbc4;
   --border-light: #ddddd6;
+  --accent: #ffd84d;
   --accent-text: #6f5500;
   --accent-fill: #ffd84d;
   --accent-fill-hover: #ffe26a;
@@ -100,8 +101,8 @@
 }
 
 .developer-browser-session > span.is-active {
-  color: var(--success, #22a06b);
-  border-color: color-mix(in srgb, var(--success, #22a06b) 35%, var(--border-color));
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border-color));
 }
 
 .developer-browser-toolbar {
@@ -192,10 +193,10 @@
 .developer-browser-error {
   margin: 8px 14px 0;
   padding: 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--danger, #d14343) 40%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border-color));
   border-radius: 8px;
-  color: var(--danger, #d14343);
-  background: color-mix(in srgb, var(--danger, #d14343) 8%, var(--bg-primary));
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-primary));
   font-size: 11px;
 }
 
@@ -531,8 +532,8 @@
 }
 
 .developer-browser-annotations article > button:hover {
-  color: var(--danger, #d14343);
-  background: color-mix(in srgb, var(--danger, #d14343) 8%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .developer-browser-copy-prompt {
@@ -585,11 +586,11 @@
   font: 10px/1.45 var(--font-mono, ui-monospace, monospace);
 }
 
-.developer-browser-console .level-error { background: color-mix(in srgb, var(--danger, #d14343) 7%, transparent); }
+.developer-browser-console .level-error { background: color-mix(in srgb, var(--danger) 7%, transparent); }
 .developer-browser-console .level-error span,
-.developer-browser-console .level-error code { color: var(--danger, #d14343); }
-.developer-browser-console .level-warn { background: color-mix(in srgb, #e6a700 7%, transparent); }
-.developer-browser-console .level-warn span { color: #c58b00; }
+.developer-browser-console .level-error code { color: var(--danger); }
+.developer-browser-console .level-warn { background: color-mix(in srgb, var(--warning) 7%, transparent); }
+.developer-browser-console .level-warn span { color: var(--warning); }
 
 .developer-browser-network-head,
 .developer-browser-network > div:not(.developer-browser-panel-empty) {
@@ -623,7 +624,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-.developer-browser-network .is-error { color: var(--danger, #d14343); }
+.developer-browser-network .is-error { color: var(--danger); }
 
 .developer-browser-dom > div:first-child {
   min-height: 34px;
@@ -2012,6 +2013,7 @@
   --text-muted: #90908b;
   --border-color: #303034;
   --border-light: #242427;
+  --accent: #ffd84d;
   --accent-text: #ffe26a;
   --accent-fill: #ffd84d;
   --accent-fill-hover: #ffe26a;
@@ -3160,65 +3162,6 @@ body.sidebar-resize-active * {
   white-space: nowrap;
 }
 
-.model-switcher-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.model-switcher-active-card {
-  background: var(--bg-tertiary);
-}
-
-.model-switcher-label {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.model-switcher-active-card .model-switcher-label,
-.model-switcher-help,
-.model-switcher-note {
-  font-size: 11px;
-}
-
-.model-switcher-active-model {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.model-switcher-note {
-  margin-top: 2px;
-  color: var(--info);
-}
-
-.model-switcher-control {
-  width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.model-switcher-range {
-  width: 100%;
-}
-
-.model-switcher-help {
-  margin-bottom: 6px;
-  color: var(--text-muted);
-}
-
-.model-switcher-personality-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 /* === Cowork / Chat View === */
 .cowork-view, .chat-view {
   display: flex;
@@ -3284,21 +3227,6 @@ body.sidebar-resize-active * {
 .cowork-msg.user .msg-body { max-width: min(680px, 82%); margin-left: auto; }
 .cowork-msg.assistant .msg-body,
 .cowork-msg.system .msg-body { width: 100%; }
-
-.msg-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
-  background: var(--bg-secondary);
-}
-
-.cowork-msg.assistant .msg-avatar { background: var(--accent-soft); color: var(--accent-text); }
-.cowork-msg.user .msg-avatar { background: var(--info); color: var(--status-ink); font-size: 14px; }
 
 .msg-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 
@@ -4735,7 +4663,7 @@ body.sidebar-resize-active * {
 }
 
 .chat-runner-label {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: .08em;
@@ -4773,41 +4701,146 @@ body.sidebar-resize-active * {
   opacity: .5;
 }
 
+.chat-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
 .chat-crew-select {
   min-width: 130px;
   max-width: 200px;
   min-height: 26px;
-  padding: 3px 24px 3px 7px;
   border: 0;
   border-left: 1px solid color-mix(in srgb, var(--accent-border) 45%, var(--border-color));
   background: transparent;
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  cursor: pointer;
-  outline: none;
 }
 
-.chat-runner-mode-button:focus-visible,
-.chat-crew-select:focus-visible {
+.chat-runner-mode-button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
 .chat-compact-select {
-  padding: 5px 8px;
   border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
   background: var(--bg-white);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: 12px;
   font-weight: 500;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  outline: none;
   max-width: 148px;
   min-height: var(--control-height-md);
 }
-.chat-compact-select:focus { border-color: var(--accent-text); }
+
+.chat-compact-select:focus-within { border-color: var(--accent-text); }
+.chat-model-select { max-width: 270px; }
+
+.chat-dropdown-toggle {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: inherit;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: inherit;
+  background: var(--bg-white);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-crew-select .chat-dropdown-toggle {
+  padding: 3px 7px;
+  background: transparent;
+}
+
+.chat-dropdown-toggle > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-dropdown-toggle svg,
+.chat-dropdown-option svg {
+  flex: 0 0 auto;
+}
+
+.chat-dropdown-toggle:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.chat-dropdown-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.chat-dropdown-menu {
+  position: absolute;
+  z-index: 160;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(380px, calc(100vw - 24px));
+  max-height: min(320px, calc(100vh - 96px));
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-white);
+  box-shadow: var(--shadow-lg);
+}
+
+.chat-model-select .chat-dropdown-menu {
+  max-width: min(440px, calc(100vw - 24px));
+}
+
+.chat-dropdown-option {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bg-white);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.chat-dropdown-option:hover,
+.chat-dropdown-option.active {
+  background: var(--bg-hover);
+}
+
+.chat-dropdown-option.selected {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.chat-dropdown-option.selected svg {
+  color: var(--accent-text);
+}
 
 .chat-compact-actions {
   display: flex;
@@ -8628,6 +8661,23 @@ button.compact-send-btn {
 .llm-profile-card-header { margin-bottom: 10px; }
 .llm-profile-default-badge { margin-left: 8px; }
 .llm-profile-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.model-guidance {
+  margin-top: 12px;
+  padding: 12px;
+  border-left: 3px solid var(--accent-fill);
+  background: var(--accent-soft);
+}
+.model-guidance-heading { display: grid; grid-template-columns: minmax(180px, .65fr) minmax(0, 1.35fr); gap: 14px; }
+.model-guidance-heading span,
+.model-guidance dt { color: var(--text-secondary); font-size: 10px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.model-guidance-heading strong { display: block; margin-top: 3px; color: var(--text-primary); }
+.model-guidance p,
+.model-guidance dd { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.model-guidance dl { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0 0; }
+.model-guidance dd { margin-top: 3px; }
+.model-guidance details { margin-top: 10px; color: var(--text-secondary); font-size: 11px; }
+.model-guidance summary { color: var(--accent-text); cursor: pointer; font-weight: 700; }
+.model-guidance ul { margin: 8px 0 0; padding-left: 18px; }
 .llm-profile-actions { margin-top: 12px; }
 
 @media (max-width: 1180px) {
@@ -8767,6 +8817,8 @@ button.compact-send-btn {
 
   .llm-provider-overview,
   .llm-profile-fields { grid-template-columns: 1fr; }
+  .model-guidance-heading,
+  .model-guidance dl { grid-template-columns: 1fr; }
   .llm-provider-default-row { justify-content: stretch; }
   .llm-provider-default-row label { width: 100%; align-items: stretch; flex-direction: column; }
   .llm-provider-default-row select { width: 100%; min-width: 0; }
@@ -9074,14 +9126,14 @@ button.compact-send-btn {
 }
 
 .crew-status-pill.ready {
-  background: rgba(34, 160, 107, 0.12);
-  border-color: rgba(34, 160, 107, 0.18);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--success) 18%, transparent);
   color: var(--success);
 }
 
 .crew-status-pill.warning {
-  background: rgba(226, 161, 0, 0.12);
-  border-color: rgba(226, 161, 0, 0.18);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 18%, transparent);
   color: var(--warning);
 }
 
@@ -9096,8 +9148,8 @@ button.compact-send-btn {
 }
 
 .crew-inline-feedback.error {
-  border-color: rgba(202, 53, 33, 0.18);
-  background: rgba(202, 53, 33, 0.08);
+  border-color: color-mix(in srgb, var(--danger) 18%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
   color: var(--danger);
 }
 
@@ -9549,7 +9601,7 @@ button.compact-send-btn {
 
 .crew-card-delete:hover {
   color: var(--danger);
-  background: rgba(202, 53, 33, 0.1);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
 .crew-card-delete:focus-visible {
@@ -9824,20 +9876,20 @@ button.compact-send-btn {
 }
 
 .crew-alert.success {
-  background: rgba(34, 160, 107, 0.08);
-  border: 1px solid rgba(34, 160, 107, 0.25);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
   color: var(--success);
 }
 
 .crew-alert.error {
-  background: rgba(202, 53, 33, 0.08);
-  border: 1px solid rgba(202, 53, 33, 0.25);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
   color: var(--danger);
 }
 
 .crew-alert.warning {
-  background: rgba(226, 161, 0, 0.08);
-  border: 1px solid rgba(226, 161, 0, 0.25);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
   color: var(--warning);
 }
 
@@ -10037,7 +10089,7 @@ button.compact-send-btn {
 }
 
 .crew-badge.active {
-  background: rgba(34, 160, 107, 0.12);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
   color: var(--success);
 }
 
@@ -10693,15 +10745,15 @@ button.compact-send-btn {
 }
 
 .github-message.is-error {
-  border: 1px solid color-mix(in srgb, #dc2626 32%, transparent);
-  background: color-mix(in srgb, #dc2626 8%, var(--bg-white));
-  color: #dc2626;
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-white));
+  color: var(--danger);
 }
 
 .github-message.is-success {
-  border: 1px solid color-mix(in srgb, #16a34a 30%, transparent);
-  background: color-mix(in srgb, #16a34a 7%, var(--bg-white));
-  color: #15803d;
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  background: color-mix(in srgb, var(--success) 7%, var(--bg-white));
+  color: var(--success);
 }
 
 .github-repository-summary {
@@ -11035,8 +11087,8 @@ button.compact-send-btn {
   align-items: center;
   gap: 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, #16a34a 12%, var(--bg-white));
-  color: #15803d;
+  background: color-mix(in srgb, var(--success) 12%, var(--bg-white));
+  color: var(--success);
   padding: 4px 8px;
   font-size: 10px;
   font-weight: 700;
@@ -11115,11 +11167,11 @@ button.compact-send-btn {
 }
 
 .github-pr-files .additions {
-  color: #16a34a;
+  color: var(--success);
 }
 
 .github-pr-files .deletions {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .github-pr-files pre {
@@ -11179,9 +11231,9 @@ button.compact-send-btn {
 }
 
 .github-merge-box button {
-  border-color: #16a34a;
-  background: #16a34a;
-  color: white;
+  border-color: var(--success);
+  background: var(--success);
+  color: var(--status-ink);
 }
 
 .github-repository-empty,
@@ -11938,7 +11990,7 @@ button.compact-send-btn {
   gap: 8px;
   margin: auto;
   padding: 8px 10px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 10px;
   text-align: center;
 }
@@ -11974,13 +12026,19 @@ button.compact-send-btn {
   gap: 4px;
 }
 
-.chat-compact-select,
 .btn-compact-action,
 .chat-runner-control {
   min-height: 30px;
   border-color: var(--border-light);
   border-radius: 7px;
   font-size: 10px;
+}
+
+.chat-compact-select {
+  min-height: var(--control-height-md);
+  border-color: var(--border-light);
+  border-radius: 7px;
+  font-size: 12px;
 }
 
 .cowork-workspace.context-open {

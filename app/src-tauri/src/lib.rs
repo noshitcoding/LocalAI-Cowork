@@ -19,6 +19,7 @@ mod github_integration;
 mod insights;
 mod mcp;
 mod memory_engine;
+mod native_windows_sandbox;
 mod network_safety;
 mod office_integration;
 mod ollama;
@@ -546,6 +547,60 @@ struct WorkerSandboxUpdateRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SandboxRunPrepareRequest {
+    run_id: String,
+    source_cwd: Option<String>,
+    parent_run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxRunPrepareResponse {
+    sandbox_id: String,
+    workspace_root: String,
+    copied_files: u64,
+    skipped_files: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineRunPrepareContextRequest {
+    run_id: String,
+    #[serde(default)]
+    authorized_paths: Vec<AuthorizedTaskPath>,
+    preferred_cwd: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineRunPrepareContextResponse {
+    mode: String,
+    sandbox_id: Option<String>,
+    workspace_root: String,
+    allowed_directories: Vec<String>,
+    roots: Vec<worker_sandbox::WorkspaceRootMapping>,
+    copied_files: u64,
+    skipped_files: u64,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxRunRequest {
+    run_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SandboxCommandChunk {
+    stream_id: String,
+    sequence: u64,
+    channel: String,
+    bytes_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PolicyEvaluateRequest {
     tool: String,
     target: String,
@@ -805,6 +860,8 @@ struct ProjectResourceRecord {
     path: String,
     label: Option<String>,
     enabled: bool,
+    access: String,
+    is_primary: bool,
     added_at: String,
 }
 
@@ -839,6 +896,8 @@ struct ProjectResourceUpsertRequest {
     path: String,
     label: Option<String>,
     enabled: Option<bool>,
+    access: Option<String>,
+    is_primary: Option<bool>,
     added_at: Option<String>,
 }
 
@@ -1189,9 +1248,15 @@ struct CrewExecuteRequest {
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct AuthorizedTaskPath {
+    #[serde(default)]
+    id: Option<String>,
     path: String,
     kind: String,
     access: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4288,6 +4353,35 @@ async fn desktop_launch_app(
     request: DesktopLaunchRequest,
 ) -> Result<DesktopLaunchResponse, String> {
     ensure_windows_desktop_support()?;
+    let executable_name = Path::new(&request.path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if [
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "wt",
+        "wt.exe",
+        "windowsterminal",
+        "windowsterminal.exe",
+        "wsl",
+        "wsl.exe",
+        "bash",
+        "bash.exe",
+        "sh",
+        "sh.exe",
+        "conhost",
+        "conhost.exe",
+    ]
+    .contains(&executable_name.as_str())
+    {
+        return Err("desktop policy blocks shell and terminal applications; use Bash in the native AI sandbox".to_string());
+    }
     let args = request.args.unwrap_or_default();
     let mut command = Command::new(&request.path);
     if !args.is_empty() {
@@ -4402,6 +4496,18 @@ async fn desktop_keypress(
     request: DesktopKeypressRequest,
 ) -> Result<DesktopActionResponse, String> {
     ensure_windows_desktop_support()?;
+    let normalized = request
+        .keys
+        .iter()
+        .map(|key| key.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    if normalized
+        .iter()
+        .any(|key| matches!(key.as_str(), "WIN" | "WINDOWS" | "META"))
+        && normalized.iter().any(|key| key == "R")
+    {
+        return Err("desktop policy blocks Windows+R for AI-controlled runs".to_string());
+    }
     let keys_json = serde_json::to_string(&request.keys).map_err(|err| err.to_string())?;
     let keys_json = escape_powershell_single_quoted(&keys_json);
     let script = format!(
@@ -5051,6 +5157,10 @@ fn add_authorized_task_path(
     seen_paths: &mut HashSet<String>,
     path: &Path,
     kind: &str,
+    id: Option<&str>,
+    label: Option<&str>,
+    access: &str,
+    is_primary: bool,
 ) {
     let rendered = path.display().to_string();
     let key = rendered.to_lowercase();
@@ -5058,9 +5168,16 @@ fn add_authorized_task_path(
         return;
     }
     authorized_paths.push(AuthorizedTaskPath {
+        id: id.map(str::to_string),
         path: rendered,
         kind: kind.to_string(),
-        access: "read_write".to_string(),
+        access: if access == "read_only" {
+            "read_only".to_string()
+        } else {
+            "read_write".to_string()
+        },
+        label: label.map(str::to_string),
+        is_primary,
     });
 }
 
@@ -5164,6 +5281,10 @@ async fn resolve_task_project_run_context(
                         &mut seen_paths,
                         &canonical,
                         "folder",
+                        None,
+                        Some("Task working folder"),
+                        "read_write",
+                        true,
                     );
                 }
                 Err(error) => warnings.push(format!(
@@ -5306,6 +5427,10 @@ async fn resolve_task_project_run_context(
                     &mut seen_paths,
                     &canonical,
                     "folder",
+                    Some(&resource.id),
+                    resource.label.as_deref(),
+                    &resource.access,
+                    resource.is_primary,
                 );
                 let remaining_files = TASK_PROJECT_MAX_FILES.saturating_sub(extracted_file_count);
                 for file in collect_project_folder_files(&canonical, remaining_files) {
@@ -5374,6 +5499,10 @@ async fn resolve_task_project_run_context(
                     &mut seen_paths,
                     &canonical,
                     "file",
+                    Some(&resource.id),
+                    resource.label.as_deref(),
+                    &resource.access,
+                    resource.is_primary,
                 );
                 if extracted_file_count < TASK_PROJECT_MAX_FILES {
                     if let Ok((text, truncated)) = artifact_pipeline::extract_text_for_llm_limited(
@@ -5501,6 +5630,8 @@ fn project_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ProjectRec
                 path: resource.path,
                 label: resource.label,
                 enabled: resource.enabled,
+                access: resource.access,
+                is_primary: resource.is_primary,
                 added_at: resource.added_at,
             });
     }
@@ -5586,6 +5717,8 @@ fn project_resource_upsert(
                 .map(str::trim)
                 .filter(|label| !label.is_empty()),
             request.enabled.unwrap_or(true),
+            request.access.as_deref().unwrap_or("read_write"),
+            request.is_primary.unwrap_or(false),
             request.added_at.as_deref().unwrap_or(&now),
         )
         .map_err(|e| e.to_string())
@@ -9161,18 +9294,19 @@ fn register_run_authorized_paths(
     cwd: Option<&str>,
     authorized_paths: &[AuthorizedTaskPath],
 ) -> Result<(), String> {
-    if database
+    if let Some(existing) = database
         .get_worker_sandbox_by_run(run_id)
         .map_err(|error| error.to_string())?
-        .is_some()
     {
-        return Ok(());
+        database
+            .delete_worker_sandbox(&existing.id)
+            .map_err(|error| error.to_string())?;
     }
 
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
     for entry in authorized_paths {
-        if entry.access != "read_write" || !matches!(entry.kind.as_str(), "file" | "folder") {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
             continue;
         }
         let source = PathBuf::from(entry.path.trim());
@@ -9191,16 +9325,17 @@ fn register_run_authorized_paths(
         }
     }
 
-    let source_cwd = cwd
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    let source_cwd = authorized_paths
+        .iter()
+        .find(|entry| entry.is_primary && entry.kind == "folder")
+        .map(|entry| entry.path.clone())
         .or_else(|| {
             authorized_paths
                 .iter()
                 .find(|entry| entry.kind == "folder")
                 .map(|entry| entry.path.clone())
         })
+        .or_else(|| cwd.map(str::to_string))
         .unwrap_or_else(|| {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))
@@ -9208,7 +9343,8 @@ fn register_run_authorized_paths(
                 .to_string()
         });
     let policy = load_policy_state(database)?;
-    let sandbox_id = format!("task-run-{}", run_id);
+    let sandbox_id = format!("readonly-run-{}", run_id);
+    let roots_json = serde_json::to_string(&roots).map_err(|error| error.to_string())?;
     database
         .insert_worker_sandbox(
             &sandbox_id,
@@ -9216,19 +9352,19 @@ fn register_run_authorized_paths(
             None,
             None,
             "active",
-            "native_capabilities",
+            "host_read_only_broker",
             &source_cwd,
             &source_cwd,
-            &serde_json::to_string(&roots).map_err(|error| error.to_string())?,
-            None,
+            &roots_json,
+            Some(&roots_json),
             policy.flags.allow_file_read_extraction,
-            true,
-            policy.flags.allow_shell_execution,
+            false,
+            false,
             policy.flags.allow_web_fetch,
             policy.flags.allow_web_search,
             policy.flags.allow_mcp_tool_calls,
             None,
-            Some(r#"{"source":"task_project_context","lifetime":"run"}"#),
+            Some(r#"{"source":"explicit_run_context","lifetime":"run","hostAccess":"read_only"}"#),
         )
         .map_err(|error| error.to_string())
 }
@@ -9286,14 +9422,12 @@ fn engine_run_create(
         )
         .map_err(|err| err.to_string())?;
 
-    if let Some(authorized_paths) = request.authorized_paths.as_deref() {
-        register_run_authorized_paths(
-            state.inner(),
-            &request.id,
-            request.cwd.as_deref(),
-            authorized_paths,
-        )?;
-    }
+    register_run_authorized_paths(
+        state.inner(),
+        &request.id,
+        request.cwd.as_deref(),
+        request.authorized_paths.as_deref().unwrap_or(&[]),
+    )?;
 
     Ok(())
 }
@@ -9702,6 +9836,933 @@ fn authorize_worker_sandbox_source(
     Ok(canonical_source)
 }
 
+pub fn dispatch_native_sandbox_helper() -> Option<i32> {
+    native_windows_sandbox::dispatch_helper_from_args()
+}
+
+fn sandbox_readiness_original_paths(root: &Path) -> Vec<PathBuf> {
+    let mut result = vec![root.to_path_buf()];
+    let mut pending = VecDeque::from([root.to_path_buf()]);
+    while let Some(directory) = pending.pop_front() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if result.len() >= 9 {
+                return result;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                pending.push_back(entry.path());
+            }
+            if kind.is_file() {
+                result.push(entry.path());
+            }
+        }
+    }
+    result
+}
+
+#[tauri::command]
+fn sandbox_setup_status(
+    app: tauri::AppHandle,
+) -> Result<native_windows_sandbox::SetupStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(native_windows_sandbox::setup_status(&app_data_dir))
+}
+
+#[tauri::command]
+async fn sandbox_setup_start(
+    app: tauri::AppHandle,
+) -> Result<native_windows_sandbox::SetupStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let setup_data_dir = app_data_dir.clone();
+    let setup = tauri::async_runtime::spawn_blocking(move || {
+        native_windows_sandbox::setup_start(&setup_data_dir)
+    })
+    .await
+    .map_err(|error| format!("sandbox setup worker failed: {error}"));
+    let result = match setup {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) | Err(error) => {
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "native_setup_failed",
+                Some(serde_json::json!({ "redacted": true })),
+            );
+            return Err(error);
+        }
+    };
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "native_setup_completed",
+        Some(serde_json::json!({ "version": result.version, "ready": result.ready })),
+    );
+    Ok(result)
+}
+
+fn normalize_native_snapshot_roots(
+    authorized_paths: &[AuthorizedTaskPath],
+) -> Result<(Vec<worker_sandbox::SnapshotRootInput>, Vec<String>), String> {
+    let mut roots = Vec::<worker_sandbox::SnapshotRootInput>::new();
+    let mut warnings = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, entry) in authorized_paths.iter().enumerate() {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let candidate = PathBuf::from(entry.path.trim());
+        if !candidate.is_absolute() || !candidate.exists() {
+            warnings.push(format!(
+                "Shared path is unavailable and was skipped: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if (entry.kind == "folder" && !canonical.is_dir())
+            || (entry.kind == "file" && !canonical.is_file())
+        {
+            warnings.push(format!(
+                "Shared path kind does not match and was skipped: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let key = canonical.display().to_string().to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        let access = if entry.access == "read_write" {
+            "read_write"
+        } else {
+            "read_only"
+        };
+        let overlaps_writable = roots.iter().any(|existing| {
+            if access != "read_write" || existing.access != "read_write" {
+                return false;
+            }
+            let existing_path = &existing.source_path;
+            canonical.starts_with(existing_path) || existing_path.starts_with(&canonical)
+        });
+        if overlaps_writable {
+            warnings.push(format!(
+                "Overlapping writable root was rejected for this run: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let contained_by_writable = roots.iter().any(|existing| {
+            access == "read_only"
+                && existing.access == "read_write"
+                && existing.kind == "folder"
+                && canonical.starts_with(&existing.source_path)
+        });
+        if contained_by_writable {
+            continue;
+        }
+        roots.push(worker_sandbox::SnapshotRootInput {
+            root_id: format!("root-{index:03}"),
+            root_label: entry
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    canonical
+                        .file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| format!("Root {}", index + 1)),
+            source_path: canonical,
+            kind: entry.kind.clone(),
+            access: access.to_string(),
+            is_primary: entry.is_primary,
+        });
+    }
+    if !roots
+        .iter()
+        .any(|root| root.is_primary && root.access == "read_write")
+    {
+        if let Some(root) = roots.iter_mut().find(|root| root.access == "read_write") {
+            root.is_primary = true;
+        }
+    }
+    Ok((roots, warnings))
+}
+
+fn read_only_context_response(
+    database: &Arc<Database>,
+    request: &EngineRunPrepareContextRequest,
+    warning: Option<String>,
+) -> Result<EngineRunPrepareContextResponse, String> {
+    register_run_authorized_paths(
+        database,
+        &request.run_id,
+        request.preferred_cwd.as_deref(),
+        &request.authorized_paths,
+    )?;
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, entry) in request.authorized_paths.iter().enumerate() {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let candidate = PathBuf::from(entry.path.trim());
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        let rendered = canonical.display().to_string();
+        if !seen.insert(rendered.to_lowercase()) {
+            continue;
+        }
+        roots.push(worker_sandbox::WorkspaceRootMapping {
+            root_id: format!("root-{index:03}"),
+            root_label: entry.label.clone().unwrap_or_else(|| {
+                canonical
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Shared path".to_string())
+            }),
+            source_path: rendered.clone(),
+            workspace_path: rendered,
+            kind: entry.kind.clone(),
+            access: "read_only".to_string(),
+            is_primary: entry.is_primary,
+        });
+    }
+    Ok(EngineRunPrepareContextResponse {
+        mode: "host_read_only_broker".to_string(),
+        sandbox_id: None,
+        workspace_root: roots
+            .iter()
+            .find(|root| root.kind == "folder" && root.is_primary)
+            .or_else(|| roots.iter().find(|root| root.kind == "folder"))
+            .map(|root| root.workspace_path.clone())
+            .unwrap_or_default(),
+        allowed_directories: roots
+            .iter()
+            .map(|root| root.workspace_path.clone())
+            .collect(),
+        roots,
+        copied_files: 0,
+        skipped_files: 0,
+        warning,
+    })
+}
+
+#[tauri::command]
+fn engine_run_prepare_context(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: EngineRunPrepareContextRequest,
+) -> Result<EngineRunPrepareContextResponse, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("runId must not be empty".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let readiness = native_windows_sandbox::setup_status(&app_data_dir);
+    if !readiness.ready {
+        let reason = readiness
+            .reason
+            .unwrap_or_else(|| "sandbox setup is not ready".to_string());
+        let response = read_only_context_response(
+            state.inner(),
+            &request,
+            Some(format!(
+                "Native sandbox unavailable; local access is read-only: {reason}"
+            )),
+        )?;
+        let _ = state.insert_engine_run_event(
+            &uuid::Uuid::new_v4().to_string(),
+            &request.run_id,
+            "run_context_read_only",
+            Some(r#"{"mode":"host_read_only_broker","reason":"setup_not_ready"}"#),
+        );
+        return Ok(response);
+    }
+
+    let prepare_native = (|| -> Result<EngineRunPrepareContextResponse, String> {
+        let bundled_python =
+            native_windows_sandbox::prepare_bundled_python(&resource_dir, &app_data_dir)?;
+        let (inputs, warnings) = normalize_native_snapshot_roots(&request.authorized_paths)?;
+        let sandbox_id = format!("native-run-{}", request.run_id);
+        worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+        let prepared =
+            worker_sandbox::prepare_workspace_snapshot_multi(&app_data_dir, &sandbox_id, &inputs)?;
+        let workspace_root = PathBuf::from(&prepared.workspace_root);
+        let scratch = workspace_root.join("scratch");
+        fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
+        let mut writable_roots = prepared
+            .roots
+            .iter()
+            .filter(|root| root.access == "read_write")
+            .map(|root| PathBuf::from(&root.workspace_path))
+            .collect::<Vec<_>>();
+        writable_roots.push(scratch.clone());
+        let capability_sid = native_windows_sandbox::grant_workspace_access_for_roots(
+            &app_data_dir,
+            &request.run_id,
+            &workspace_root,
+            &writable_roots,
+        )?;
+        native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+
+        let primary_cwd = prepared
+            .roots
+            .iter()
+            .find(|root| root.is_primary && root.access == "read_write")
+            .or_else(|| {
+                prepared
+                    .roots
+                    .iter()
+                    .find(|root| root.access == "read_write")
+            })
+            .map(|root| root.workspace_path.clone())
+            .unwrap_or_else(|| scratch.display().to_string());
+        let original_probe = inputs
+            .iter()
+            .map(|root| {
+                format!(
+                    "(Test-Path -LiteralPath '{}')",
+                    root.source_path.display().to_string().replace('\'', "''")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" -or ");
+        let original_probe = if original_probe.is_empty() {
+            "$false".to_string()
+        } else {
+            original_probe
+        };
+        let read_only_probe = prepared
+            .roots
+            .iter()
+            .find(|root| root.access == "read_only")
+            .map(|root| {
+                let path = PathBuf::from(&root.workspace_path).join(".lacowork-readonly-probe");
+                format!("$ro='{}'; Set-Content -LiteralPath $ro -Value 'blocked' -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $ro) {{ Remove-Item -LiteralPath $ro -Force; exit 43 }};", path.display().to_string().replace('\'', "''"))
+            })
+            .unwrap_or_default();
+        let readiness_command = format!(
+            "$ErrorActionPreference='SilentlyContinue'; $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name; if (-not $identity.EndsWith('\\LACoworkOnline',[StringComparison]::OrdinalIgnoreCase)) {{ exit 40 }}; if ({original_probe}) {{ exit 41 }}; {read_only_probe} $p=Join-Path '{}' '.lacowork-readiness'; Set-Content -LiteralPath $p -Value 'ready'; if (!(Test-Path -LiteralPath $p)) {{ exit 42 }}; Remove-Item -LiteralPath $p -Force; exit 0",
+            scratch.display().to_string().replace('\'', "''")
+        );
+        let probe = native_windows_sandbox::execute(
+            &app_data_dir,
+            &native_windows_sandbox::ExecRequest {
+                run_id: request.run_id.clone(),
+                command: readiness_command,
+                shell: Some("powershell".to_string()),
+                cwd: scratch.display().to_string(),
+                timeout_ms: Some(20_000),
+                stream_id: format!("readiness-{}", request.run_id),
+            },
+            |_, _, _| {},
+        )?;
+        if probe.exit_code != Some(0) {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(match probe.exit_code {
+                Some(40) => {
+                    "sandbox readiness failed: process identity is not LACoworkOnline".to_string()
+                }
+                Some(41) => {
+                    "sandbox readiness failed: original shared paths are visible".to_string()
+                }
+                Some(42) => {
+                    "sandbox readiness failed: scratch workspace is not writable".to_string()
+                }
+                Some(43) => "sandbox readiness failed: a read-only root was writable".to_string(),
+                _ => format!("sandbox readiness probe failed ({})", probe.status),
+            });
+        }
+
+        if let Some(existing) = state
+            .get_worker_sandbox_by_run(&request.run_id)
+            .map_err(|error| error.to_string())?
+        {
+            state
+                .delete_worker_sandbox(&existing.id)
+                .map_err(|error| error.to_string())?;
+        }
+        let mut allowed_roots = prepared
+            .roots
+            .iter()
+            .map(|root| root.workspace_path.clone())
+            .collect::<Vec<_>>();
+        allowed_roots.push(scratch.display().to_string());
+        let read_only_roots = prepared
+            .roots
+            .iter()
+            .filter(|root| root.access == "read_only")
+            .map(|root| root.workspace_path.clone())
+            .collect::<Vec<_>>();
+        let policy = load_policy_state(&state)?;
+        let metadata = serde_json::json!({
+            "setupVersion": readiness.version,
+            "manifestVersion": 2,
+            "workspaceStrategy": "multi_root_snapshot_copy",
+            "rootCount": prepared.roots.len(),
+            "copiedFiles": prepared.copied_files,
+            "skippedFiles": prepared.skipped_files,
+            "network": "enabled",
+        })
+        .to_string();
+        state
+            .insert_worker_sandbox(
+                &sandbox_id,
+                &request.run_id,
+                None,
+                None,
+                "active",
+                "windows_native_elevated",
+                request.preferred_cwd.as_deref().unwrap_or(""),
+                &primary_cwd,
+                &serde_json::to_string(&allowed_roots).map_err(|error| error.to_string())?,
+                if read_only_roots.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::to_string(&read_only_roots)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
+                .as_deref(),
+                true,
+                true,
+                policy.flags.allow_shell_execution,
+                policy.flags.allow_web_fetch,
+                policy.flags.allow_web_search,
+                policy.flags.allow_mcp_tool_calls,
+                None,
+                Some(&metadata),
+            )
+            .map_err(|error| error.to_string())?;
+        let event = serde_json::json!({
+            "sandboxId": sandbox_id,
+            "mode": "windows_native_elevated",
+            "manifestVersion": 2,
+            "rootCount": prepared.roots.len(),
+            "copiedFiles": prepared.copied_files,
+            "skippedFiles": prepared.skipped_files,
+        })
+        .to_string();
+        let _ = state.insert_engine_run_event(
+            &uuid::Uuid::new_v4().to_string(),
+            &request.run_id,
+            "sandbox_run_prepared",
+            Some(&event),
+        );
+        Ok(EngineRunPrepareContextResponse {
+            mode: "windows_native_elevated".to_string(),
+            sandbox_id: Some(sandbox_id),
+            workspace_root: primary_cwd,
+            allowed_directories: allowed_roots,
+            roots: prepared.roots,
+            copied_files: prepared.copied_files,
+            skipped_files: prepared.skipped_files,
+            warning: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings.join(" "))
+            },
+        })
+    })();
+
+    match prepare_native {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(
+                &app_data_dir,
+                &format!("native-run-{}", request.run_id),
+            );
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "native_prepare_downgraded",
+                Some(serde_json::json!({ "runId": request.run_id, "redacted": true })),
+            );
+            read_only_context_response(
+                state.inner(),
+                &request,
+                Some(format!(
+                    "Native sandbox preparation failed; local access is read-only: {error}"
+                )),
+            )
+        }
+    }
+}
+
+#[tauri::command]
+fn sandbox_run_prepare(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunPrepareRequest,
+) -> Result<SandboxRunPrepareResponse, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("runId must not be empty".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let readiness = native_windows_sandbox::setup_status(&app_data_dir);
+    if !readiness.ready {
+        return Err(format!(
+            "native sandbox setup is required: {}",
+            readiness.reason.unwrap_or_else(|| "not ready".to_string())
+        ));
+    }
+    let bundled_python =
+        native_windows_sandbox::prepare_bundled_python(&resource_dir, &app_data_dir)?;
+
+    let existing = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(existing) = existing
+        .as_ref()
+        .filter(|row| row.mode == "windows_native_elevated")
+    {
+        let capability_sid = native_windows_sandbox::grant_workspace_access(
+            &app_data_dir,
+            &request.run_id,
+            Path::new(&existing.workspace_root),
+        )?;
+        native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+        return Ok(SandboxRunPrepareResponse {
+            sandbox_id: existing.id.clone(),
+            workspace_root: existing.workspace_root.clone(),
+            copied_files: 0,
+            skipped_files: 0,
+        });
+    }
+    if let Some(parent_run_id) = request.parent_run_id.as_deref() {
+        if let Some(parent) = state
+            .get_worker_sandbox_by_run(parent_run_id)
+            .map_err(|error| error.to_string())?
+        {
+            if parent.mode != "windows_native_elevated" || parent.status != "active" {
+                return Err("child run requires an active native parent sandbox".to_string());
+            }
+            if let Some(existing) = existing.as_ref() {
+                state
+                    .delete_worker_sandbox(&existing.id)
+                    .map_err(|error| error.to_string())?;
+            }
+            let sandbox_id = format!("native-child-run-{}", request.run_id);
+            worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+            let capability_sid = native_windows_sandbox::grant_workspace_access(
+                &app_data_dir,
+                &request.run_id,
+                Path::new(&parent.workspace_root),
+            )?;
+            native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+            state
+                .insert_worker_sandbox(
+                    &sandbox_id,
+                    &request.run_id,
+                    Some(parent_run_id),
+                    None,
+                    "active",
+                    "windows_native_elevated",
+                    &parent.source_cwd,
+                    &parent.workspace_root,
+                    &parent.allowed_roots_json,
+                    parent.read_only_roots_json.as_deref(),
+                    parent.allow_file_read,
+                    parent.allow_file_write,
+                    parent.allow_shell_execution,
+                    parent.allow_web_fetch,
+                    parent.allow_web_search,
+                    parent.allow_mcp,
+                    None,
+                    Some(r#"{"workspaceStrategy":"shared_parent_native_copy"}"#),
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(SandboxRunPrepareResponse {
+                sandbox_id,
+                workspace_root: parent.workspace_root,
+                copied_files: 0,
+                skipped_files: 0,
+            });
+        }
+    }
+    let requested_source = request
+        .source_cwd
+        .as_deref()
+        .or_else(|| existing.as_ref().map(|row| row.source_cwd.as_str()))
+        .ok_or_else(|| "sandbox run has no authorized source workspace".to_string())?;
+    let source = if let Some(existing) = existing.as_ref() {
+        let roots = parse_json_string_array(&existing.allowed_roots_json)?;
+        let canonical = file_safety::ensure_path_allowed(Path::new(requested_source), &roots)?;
+        if !canonical.is_dir() {
+            return Err("sandbox source must be a directory".to_string());
+        }
+        canonical
+    } else {
+        authorize_worker_sandbox_source(&state, request.parent_run_id.as_deref(), requested_source)?
+    };
+    let sandbox_id = format!("native-run-{}", request.run_id);
+    worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+    let workspace =
+        worker_sandbox::prepare_workspace_snapshot(&app_data_dir, &sandbox_id, &source)?;
+    worker_sandbox::write_run_manifest(&app_data_dir, &sandbox_id, &source)?;
+    let capability_sid = native_windows_sandbox::grant_workspace_access(
+        &app_data_dir,
+        &request.run_id,
+        Path::new(&workspace.workspace_root),
+    )?;
+    native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+
+    let workspace_literal = workspace.workspace_root.replace('\'', "''");
+    let original_probe = sandbox_readiness_original_paths(&source)
+        .into_iter()
+        .map(|path| {
+            format!(
+                "(Test-Path -LiteralPath '{}')",
+                path.display().to_string().replace('\'', "''")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" -or ");
+    let readiness_command = format!(
+        "$ErrorActionPreference='SilentlyContinue'; $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name; if (-not $identity.EndsWith('\\LACoworkOnline',[StringComparison]::OrdinalIgnoreCase)) {{ exit 40 }}; if ({original_probe}) {{ exit 41 }}; $p=Join-Path '{workspace_literal}' '.lacowork-readiness'; Set-Content -LiteralPath $p -Value 'ready'; if (!(Test-Path -LiteralPath $p)) {{ exit 42 }}; Remove-Item -LiteralPath $p -Force; exit 0"
+    );
+    let readiness_exec = native_windows_sandbox::ExecRequest {
+        run_id: request.run_id.clone(),
+        command: readiness_command,
+        shell: Some("powershell".to_string()),
+        cwd: workspace.workspace_root.clone(),
+        timeout_ms: Some(20_000),
+        stream_id: format!("readiness-{}", request.run_id),
+    };
+    let probe = native_windows_sandbox::execute(&app_data_dir, &readiness_exec, |_, _, _| {});
+    match probe {
+        Ok(response) if response.exit_code == Some(0) => {}
+        Ok(response) if response.exit_code == Some(41) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err("sandbox readiness failed closed: the low-privilege account can read the original project".to_string());
+        }
+        Ok(response) if response.exit_code == Some(40) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(
+                "sandbox readiness failed closed: the command did not run as LACoworkOnline"
+                    .to_string(),
+            );
+        }
+        Ok(response) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(format!(
+                "sandbox readiness probe failed ({})",
+                response.status
+            ));
+        }
+        Err(error) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(format!("sandbox readiness probe failed: {error}"));
+        }
+    }
+
+    if let Some(existing) = existing.as_ref() {
+        state
+            .delete_worker_sandbox(&existing.id)
+            .map_err(|error| error.to_string())?;
+    }
+    let policy = load_policy_state(&state)?;
+    let allowed_roots = serde_json::to_string(&vec![workspace.workspace_root.clone()])
+        .map_err(|error| error.to_string())?;
+    let metadata = serde_json::json!({
+        "setupVersion": readiness.version,
+        "workspaceStrategy": "snapshot_copy",
+        "copiedFiles": workspace.copied_files,
+        "skippedFiles": workspace.skipped_files,
+        "network": "enabled",
+    })
+    .to_string();
+    state
+        .insert_worker_sandbox(
+            &sandbox_id,
+            &request.run_id,
+            None,
+            None,
+            "active",
+            "windows_native_elevated",
+            &source.display().to_string(),
+            &workspace.workspace_root,
+            &allowed_roots,
+            None,
+            true,
+            true,
+            policy.flags.allow_shell_execution,
+            policy.flags.allow_web_fetch,
+            policy.flags.allow_web_search,
+            policy.flags.allow_mcp_tool_calls,
+            None,
+            Some(&metadata),
+        )
+        .map_err(|error| error.to_string())?;
+    let event = serde_json::json!({
+        "sandboxId": sandbox_id,
+        "mode": "windows_native_elevated",
+        "copiedFiles": workspace.copied_files,
+        "skippedFiles": workspace.skipped_files,
+    })
+    .to_string();
+    let _ = state.insert_engine_run_event(
+        &uuid::Uuid::new_v4().to_string(),
+        &request.run_id,
+        "sandbox_run_prepared",
+        Some(&event),
+    );
+    Ok(SandboxRunPrepareResponse {
+        sandbox_id,
+        workspace_root: workspace.workspace_root,
+        copied_files: workspace.copied_files,
+        skipped_files: workspace.skipped_files,
+    })
+}
+
+#[tauri::command]
+async fn sandbox_exec_command(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: native_windows_sandbox::ExecRequest,
+) -> Result<native_windows_sandbox::ExecResponse, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "native sandbox run was not prepared".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("AI shell execution requires windows_native_elevated mode".to_string());
+    }
+    enforce_worker_sandbox_flag(&sandbox, sandbox.allow_shell_execution, "shell-ausfuehrung")?;
+    validate_shell_execution_request(
+        &state,
+        &request.command,
+        Some(&request.cwd),
+        Some(&request.run_id),
+    )?;
+    let effective_cwd = ensure_run_cwd(&state, Some(&request.run_id), Some(&request.cwd))?
+        .ok_or_else(|| "sandbox cwd is missing".to_string())?;
+    let mut effective_request = request.clone();
+    effective_request.cwd = effective_cwd;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let stream_id = effective_request.stream_id.clone();
+    let emitter = app.clone();
+    let execution_data_dir = app_data_dir.clone();
+    let execution_request = effective_request.clone();
+    let execution = tauri::async_runtime::spawn_blocking(move || {
+        native_windows_sandbox::execute(
+            &execution_data_dir,
+            &execution_request,
+            move |channel, sequence, bytes| {
+                let _ = emitter.emit(
+                    "sandbox-command-chunk",
+                    SandboxCommandChunk {
+                        stream_id: stream_id.clone(),
+                        sequence,
+                        channel: channel.to_string(),
+                        bytes_base64: base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            bytes,
+                        ),
+                    },
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("sandbox execution worker failed: {error}"));
+    let response = match execution {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) | Err(error) => {
+            let redacted_event = serde_json::json!({
+                "shell": effective_request.shell,
+                "status": "failed",
+                "redacted": true,
+            })
+            .to_string();
+            let _ = state.insert_engine_run_event(
+                &uuid::Uuid::new_v4().to_string(),
+                &effective_request.run_id,
+                "sandbox_exec_failed",
+                Some(&redacted_event),
+            );
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "exec_failed",
+                Some(serde_json::json!({
+                    "runId": effective_request.run_id,
+                    "redacted": true,
+                })),
+            );
+            return Err(error);
+        }
+    };
+    let event = serde_json::json!({
+        "shell": effective_request.shell,
+        "status": response.status,
+        "exitCode": response.exit_code,
+        "timedOut": response.timed_out,
+        "durationMs": response.duration_ms,
+        "stdoutBytes": response.stdout.len(),
+        "stderrBytes": response.stderr.len(),
+        "stdoutTruncated": response.stdout_truncated,
+        "stderrTruncated": response.stderr_truncated,
+    })
+    .to_string();
+    let _ = state.insert_engine_run_event(
+        &uuid::Uuid::new_v4().to_string(),
+        &effective_request.run_id,
+        "sandbox_exec_command",
+        Some(&event),
+    );
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "exec_command",
+        Some(serde_json::json!({
+            "runId": effective_request.run_id, "status": response.status, "durationMs": response.duration_ms,
+        })),
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn sandbox_exec_cancel(stream_id: String) -> Result<bool, String> {
+    if stream_id.trim().is_empty() {
+        return Err("streamId must not be empty".to_string());
+    }
+    native_windows_sandbox::cancel(&stream_id)
+}
+
+#[tauri::command]
+fn sandbox_run_diff(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<worker_sandbox::RunDiff, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("run is not a native Windows sandbox".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let diff = worker_sandbox::run_diff(&app_data_dir, &sandbox.id)?;
+    if diff.changes.is_empty() {
+        worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+        state
+            .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(diff)
+}
+
+#[tauri::command]
+fn sandbox_run_apply(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<worker_sandbox::ApplyResult, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("run is not a native Windows sandbox".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let result = worker_sandbox::apply_run_diff(&app_data_dir, &sandbox.id)?;
+    let _ = audit::append_audit_event(
+        app_data_dir.clone(),
+        "sandbox",
+        "apply_changes",
+        Some(serde_json::json!({
+            "runId": request.run_id,
+            "applied": result.applied.len(),
+            "conflicts": result.conflicts.len(),
+            "rejected": result.rejected.len(),
+        })),
+    );
+    if result.conflicts.is_empty() && result.rejected.is_empty() {
+        worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+        state
+            .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+            .map_err(|error| error.to_string())?;
+    } else {
+        state
+            .update_worker_sandbox(&sandbox.id, Some("apply_conflicts"), None)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn sandbox_run_discard(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<(), String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+    state
+        .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+        .map_err(|error| error.to_string())?;
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "discard_run_copy",
+        Some(serde_json::json!({ "runId": request.run_id })),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 fn worker_sandbox_create(
     app: tauri::AppHandle,
@@ -10101,9 +11162,9 @@ fn build_toolset_policy(
 fn toolset_policy_definitions() -> Vec<ToolsetPolicyPayload> {
     vec![
         build_toolset_policy(
-            "host_full",
-            "Host full",
-            "Full local agent profile for trusted workspace automation.",
+            "sandbox_full",
+            "Sandbox full",
+            "Full local agent profile inside the native Windows sandbox.",
             "high",
             DEFAULT_POLICY_ENABLED_TOOL_IDS,
         ),
@@ -10174,6 +11235,11 @@ fn find_toolset_policy(policy_id: &str) -> Option<ToolsetPolicyPayload> {
 
 fn normalize_active_toolset_policy_id(input: Option<&str>) -> Result<String, String> {
     let candidate = input.unwrap_or(CUSTOM_TOOLSET_POLICY_ID).trim();
+    let candidate = if candidate == "host_full" {
+        "sandbox_full"
+    } else {
+        candidate
+    };
     if candidate.is_empty() || candidate == CUSTOM_TOOLSET_POLICY_ID {
         return Ok(CUSTOM_TOOLSET_POLICY_ID.to_string());
     }
@@ -10187,6 +11253,11 @@ fn normalize_active_toolset_policy_id(input: Option<&str>) -> Result<String, Str
 
 fn infer_active_toolset_policy_id(stored_id: Option<&str>, enabled_tool_ids: &[String]) -> String {
     if let Some(stored_id) = stored_id.map(str::trim) {
+        let stored_id = if stored_id == "host_full" {
+            "sandbox_full"
+        } else {
+            stored_id
+        };
         if stored_id == CUSTOM_TOOLSET_POLICY_ID {
             return CUSTOM_TOOLSET_POLICY_ID.to_string();
         }
@@ -11750,6 +12821,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_authorization_without_native_setup_is_explicitly_read_only_and_empty_by_default() {
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        database
+            .insert_engine_run(
+                "read-only-run",
+                None,
+                None,
+                "Read-only test",
+                None,
+                "running",
+                "llm_turn",
+                None,
+                None,
+                None,
+                0,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        register_run_authorized_paths(&database, "read-only-run", None, &[]).unwrap();
+
+        let sandbox = database
+            .get_worker_sandbox_by_run("read-only-run")
+            .unwrap()
+            .expect("run security context should exist");
+        assert_eq!(sandbox.mode, "host_read_only_broker");
+        assert!(!sandbox.allow_file_write);
+        assert!(!sandbox.allow_shell_execution);
+        assert_eq!(
+            parse_json_string_array(&sandbox.allowed_roots_json).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_json_string_array(sandbox.read_only_roots_json.as_deref().unwrap()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn crew_provider_config_uses_python_runtime_key() {
         let configs = CrewProviderConfigsRequest {
             open_ai_compatible: Some(CrewExternalProviderConfigRequest {
@@ -11940,6 +13051,8 @@ mod tests {
                 &root.display().to_string(),
                 Some("Workspace"),
                 true,
+                "read_write",
+                true,
                 &now,
             )
             .unwrap();
@@ -11950,6 +13063,8 @@ mod tests {
                 "file",
                 &disabled_file.display().to_string(),
                 Some("Disabled"),
+                false,
+                "read_only",
                 false,
                 &now,
             )
@@ -13028,6 +14143,15 @@ pub fn run() {
             web_search,
             shell_command_validate,
             exec_command,
+            sandbox_setup_start,
+            sandbox_setup_status,
+            engine_run_prepare_context,
+            sandbox_run_prepare,
+            sandbox_exec_command,
+            sandbox_exec_cancel,
+            sandbox_run_diff,
+            sandbox_run_apply,
+            sandbox_run_discard,
             project_list,
             task_project_context_resolve,
             project_upsert,

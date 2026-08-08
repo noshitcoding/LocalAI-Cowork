@@ -42,6 +42,8 @@ describe('task project run context', () => {
             path: 'C:\\project-root',
             kind: 'folder',
             enabled: true,
+            access: 'read_write',
+            isPrimary: true,
             addedAt: now,
           },
           {
@@ -49,6 +51,8 @@ describe('task project run context', () => {
             path: 'C:\\project-root\\single.txt',
             kind: 'file',
             enabled: true,
+            access: 'read_write',
+            isPrimary: false,
             addedAt: now,
           },
           {
@@ -56,6 +60,8 @@ describe('task project run context', () => {
             path: 'C:\\private\\disabled.txt',
             kind: 'file',
             enabled: false,
+            access: 'read_write',
+            isPrimary: false,
             addedAt: now,
           },
         ],
@@ -78,9 +84,9 @@ describe('task project run context', () => {
     expect(context.promptContext).toContain('Use current instructions.')
     expect(context.preferredCwd).toBe('C:\\task-workspace')
     expect(context.authorizedPaths).toEqual([
-      { path: 'C:\\task-workspace', kind: 'folder', access: 'read_write' },
-      { path: 'C:\\project-root', kind: 'folder', access: 'read_write' },
-      { path: 'C:\\project-root\\single.txt', kind: 'file', access: 'read_write' },
+      { path: 'C:\\task-workspace', kind: 'folder', access: 'read_write', isPrimary: true },
+      { path: 'C:\\project-root', kind: 'folder', access: 'read_write', id: 'folder-1', label: undefined, isPrimary: true },
+      { path: 'C:\\project-root\\single.txt', kind: 'file', access: 'read_write', id: 'file-1', label: undefined, isPrimary: false },
     ])
     expect(context.authorizedPaths.some((entry) => entry.path.includes('disabled'))).toBe(false)
   })

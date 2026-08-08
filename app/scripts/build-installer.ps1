@@ -62,6 +62,7 @@ $effectiveTargetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else
 $targetSegment = if ($env:TAURI_BUILD_TARGET) { "$($env:TAURI_BUILD_TARGET)\" } else { "" }
 $bundleDir = Join-Path $effectiveTargetRoot "$($targetSegment)release\bundle\nsis"
 $stableInstallerPath = Join-Path $installerDir "LocalAI-Cowork-Setup.exe"
+$localBuildConfigPath = $null
 
 Push-Location $appRoot
 try {
@@ -75,8 +76,16 @@ try {
     }
     else {
         Write-Host "Updater signing key not set; building a local installer without updater artifacts."
-        $localBuildConfig = '{"bundle":{"createUpdaterArtifacts":false}}'
-        npm run tauri -- build --target $env:TAURI_BUILD_TARGET --config $localBuildConfig
+        # npm.cmd strips the quotes from inline JSON arguments on Windows. A
+        # temporary config file avoids shell-specific escaping and is accepted
+        # by the Tauri CLI as an equivalent config override.
+        $localBuildConfigPath = [System.IO.Path]::GetTempFileName()
+        [System.IO.File]::WriteAllText(
+            $localBuildConfigPath,
+            '{"bundle":{"createUpdaterArtifacts":false}}',
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        npm run tauri -- build --target $env:TAURI_BUILD_TARGET --config $localBuildConfigPath
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Tauri build fehlgeschlagen mit Exitcode $LASTEXITCODE"
@@ -84,6 +93,9 @@ try {
 }
 finally {
     Pop-Location
+    if ($localBuildConfigPath -and (Test-Path -LiteralPath $localBuildConfigPath)) {
+        Remove-Item -LiteralPath $localBuildConfigPath -Force
+    }
 }
 
 $latestInstaller = Get-ChildItem -LiteralPath $bundleDir -Filter "*.exe" |

@@ -123,6 +123,74 @@ for (const theme of THEMES) {
   }
 }
 
+test('chat dropdowns open upward and stay inside fullscreen dimensions', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 })
+
+  for (const theme of THEMES) {
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' })
+    await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: withTheme('/', theme) })
+
+    const controls = page.locator('.chat-input-toolbar-compact .chat-dropdown-toggle')
+    await expect(controls).toHaveCount(3)
+
+    const readability = await controls.evaluateAll((toggles) => {
+      const rgb = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
+      const luminance = (value: string) => {
+        const channels = rgb(value).map((channel) => {
+          const normalized = channel / 255
+          return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+        })
+        return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2])
+      }
+      const contrast = (foreground: string, background: string) => {
+        const lighter = Math.max(luminance(foreground), luminance(background))
+        const darker = Math.min(luminance(foreground), luminance(background))
+        return (lighter + 0.05) / (darker + 0.05)
+      }
+
+      return toggles.map((toggle) => {
+        const style = getComputedStyle(toggle)
+        return {
+          height: toggle.getBoundingClientRect().height,
+          fontSize: Number.parseFloat(style.fontSize),
+          contrast: contrast(style.color, style.backgroundColor),
+        }
+      })
+    })
+
+    for (const control of readability) {
+      expect(control.height).toBeGreaterThanOrEqual(36)
+      expect(control.fontSize).toBeGreaterThanOrEqual(12)
+      expect(control.contrast).toBeGreaterThanOrEqual(4.5)
+    }
+
+    const modelToggle = page.getByRole('combobox', { name: 'Model' })
+    await modelToggle.click()
+    const modelList = page.getByRole('listbox', { name: 'Model' })
+    await expect(modelList).toBeVisible()
+    await expect(modelList.getByRole('option').first()).toBeVisible()
+
+    const dropdownAccessibility = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze()
+    expect(formatViolations(dropdownAccessibility.violations)).toEqual([])
+
+    const geometry = await modelList.evaluate((listbox) => {
+      const toggle = listbox.parentElement!.querySelector<HTMLElement>('.chat-dropdown-toggle')!
+      const listboxBox = listbox.getBoundingClientRect()
+      const toggleBox = toggle.getBoundingClientRect()
+      return {
+        listboxTop: listboxBox.top,
+        listboxBottom: listboxBox.bottom,
+        toggleTop: toggleBox.top,
+      }
+    })
+
+    expect(geometry.listboxTop).toBeGreaterThanOrEqual(0)
+    expect(geometry.listboxBottom).toBeLessThan(geometry.toggleTop)
+  }
+})
+
 test('minimal shell keeps onboarding and context inside the two drawers', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 650 })
   await openStableSurface(page, PRODUCT_SURFACES[0])

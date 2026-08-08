@@ -98,6 +98,10 @@ export type EngineConfig = {
   toolsetPolicyId?: string
   /** Current worker sandbox ID */
   sandboxId?: string
+  /** Desktop mutation tools require an explicit, separate run profile. */
+  desktopControlEnabled?: boolean
+  /** Effective capability ceiling after sandbox mode and policy intersection. */
+  availableToolNames?: string[]
 }
 
 // ── Stream Events (yielded from queryEngine) ───────────────────────────────
@@ -108,7 +112,7 @@ export type EngineEvent =
   | { type: 'request_debug'; provider: 'ollama' | 'openai-compatible' | 'openrouter'; payload: string }
   | { type: 'tool_call_delta'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_use_start'; toolUseId: string; toolName: string; input: Record<string, unknown> }
-  | { type: 'tool_use_complete'; toolUseId: string; toolName: string; result: string }
+  | { type: 'tool_use_complete'; toolUseId: string; toolName: string; result: string; isError?: boolean }
   | { type: 'tool_progress'; toolUseId: string; data: ToolProgressData }
   | { type: 'assistant_message'; message: AssistantMessage }
   | { type: 'usage_update'; usage: TokenUsage; costUsd: number; totalCostUsd: number }
@@ -158,11 +162,27 @@ export class QueryEngine {
       this.initialized = true
     }
 
-    const builtins = getAllTools()
-    this.tools = config.customTools
-      ? [...builtins, ...config.customTools]
-      : builtins
+    this.tools = []
+    this.refreshTools()
     this.coordinator = new AgentCoordinator(this.config)
+  }
+
+  private refreshTools(): void {
+    const desktopTools = new Set([
+      'Desktopscreenshot', 'DesktopPrimaryDisplay', 'DesktopListWindows',
+      'DesktopFocusWindow', 'DesktopLaunchApp', 'DesktopClick', 'DesktopMoveMouse',
+      'DesktopTypeText', 'DesktopKeypress', 'DesktopScroll',
+    ])
+    const capabilityCeiling = this.config.availableToolNames === undefined
+      ? null
+      : new Set(this.config.availableToolNames)
+    const availableTools = this.config.customTools
+      ? [...getAllTools(), ...this.config.customTools]
+      : getAllTools()
+    this.tools = availableTools.filter((tool) => (
+      (this.config.desktopControlEnabled || !desktopTools.has(tool.name))
+      && (capabilityCeiling === null || capabilityCeiling.has(tool.name))
+    ))
   }
 
   /** Set callback for tool UI (approval dialogs, progress etc.) */
@@ -192,6 +212,12 @@ export class QueryEngine {
   /** Update configuration */
   updateConfig(partial: Partial<EngineConfig>): void {
     this.config = { ...this.config, ...partial }
+    if ('availableToolNames' in partial || 'desktopControlEnabled' in partial || 'customTools' in partial) {
+      this.refreshTools()
+    }
+    if (partial.cwd) {
+      this.appState = { ...this.appState, cwd: partial.cwd }
+    }
     this.coordinator = new AgentCoordinator(this.config)
     // Update context manager if context window changed
     if (partial.ollama?.contextWindow) {
@@ -236,7 +262,12 @@ export class QueryEngine {
 
     // Build system prompt
     const fullSystemPrompt = this.buildSystemPrompt()
-    const toolDefs = getToolDefinitions()
+    const toolDefs = this.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+      aliases: tool.aliases,
+    }))
     const fixedOverheadTokens = estimateTokens(fullSystemPrompt)
       + estimateTokens(JSON.stringify(toolDefs))
     const totalPrevious = messages.length
@@ -540,7 +571,7 @@ export class QueryEngine {
               content: `Tool "${tool.name}" denied: ${approved.reason}`,
               is_error: true,
             })
-            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Denied: ${approved.reason}` }
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Denied: ${approved.reason}`, isError: true }
             continue
           }
         }
@@ -571,6 +602,7 @@ export class QueryEngine {
               type: 'tool_result',
               tool_use_id: block.id,
               content: resultStr,
+              is_error: result.isError,
             })
             if (result.newMessages) {
               injectedMessages.push(...result.newMessages)
@@ -578,15 +610,17 @@ export class QueryEngine {
             if (result.awaitUserInput) {
               shouldAwaitUserInput = true
             }
-            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: resultStr }
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: resultStr, isError: result.isError }
           } else {
             const block = concurrentTools[results.indexOf(r)].block
+            const message = `Error: ${r.reason}`
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
-              content: `Error: ${r.reason}`,
+              content: message,
               is_error: true,
             })
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: message, isError: true }
           }
         }
       }
@@ -606,6 +640,7 @@ export class QueryEngine {
             type: 'tool_result',
             tool_use_id: block.id,
             content: resultStr,
+            is_error: result.isError,
           })
           if (result.newMessages) {
             injectedMessages.push(...result.newMessages)
@@ -613,7 +648,7 @@ export class QueryEngine {
           if (result.awaitUserInput) {
             shouldAwaitUserInput = true
           }
-          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: resultStr }
+          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: resultStr, isError: result.isError }
 
           // Apply context modifier if present
           if (result.contextModifier) {
@@ -627,7 +662,7 @@ export class QueryEngine {
             content: `Error: ${msg}`,
             is_error: true,
           })
-          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Error: ${msg}` }
+          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Error: ${msg}`, isError: true }
         }
       }
 
@@ -670,6 +705,7 @@ export class QueryEngine {
 
     // Base system prompt
     parts.push(this.config.systemPrompt)
+    parts.push('\n\nShell security invariant: Bash is the only AI shell route and runs exclusively inside the prepared native sandbox. If it fails or is unavailable on this operating system, return the tool error. Never use desktop automation, text input, app launchers, or a terminal application as a shell fallback.')
 
     // Memory content
     if (this.config.memoryContent) {
@@ -799,7 +835,7 @@ export class QueryEngine {
       return null
     }
 
-    return 'Execute the last described next step now using the available tools. Use shell, file, or desktop tools immediately instead of continuing to describe the plan. If a step fails, try the next plausible tool call and verify the result instead of only stating intent.'
+    return 'Execute the last described next step now using the available workspace tools. Bash is the only AI shell path and runs in the native sandbox. If Bash fails or is unavailable on this operating system, report the tool error; never launch or type into a terminal application as a fallback.'
   }
 
   private toAPIConversation(messages: Message[]): Array<{ role: 'user' | 'assistant'; content: string | ContentBlock[] }> {

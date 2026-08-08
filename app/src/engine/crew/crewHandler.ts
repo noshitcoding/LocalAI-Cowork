@@ -43,6 +43,17 @@ export interface CrewTaskMessageParams {
   crewId: string | null
   threadId: string
   runId: string
+  securityMode: 'windows_native_elevated' | 'host_read_only_broker'
+}
+
+const READ_ONLY_BLOCKED_CREW_TOOL = /(bash|shell|terminal|powershell|cmd|write|edit|delete|remove|rename|move|copy|create.?directory|office|python|save.?skill|desktop)/i
+
+function secureCrewTools(
+  tools: string[],
+  mode: CrewTaskMessageParams['securityMode'],
+): string[] {
+  if (mode === 'windows_native_elevated') return tools
+  return tools.filter((tool) => !READ_ONLY_BLOCKED_CREW_TOOL.test(tool))
 }
 
 function createCrewStreamId(): string {
@@ -279,7 +290,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
           personalityId: agent.personalityId,
           modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
           providerKind: crewDefaultProvider,
-          tools: augmentCrewToolsForTask(agent.tools, task),
+          tools: secureCrewTools(augmentCrewToolsForTask(agent.tools, task), params.securityMode),
           mcpServerNames: agent.mcpServerNames,
           enabled: agent.enabled,
           allowDelegation: agent.allowDelegation,

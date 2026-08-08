@@ -2,7 +2,7 @@
   "name": "localai-cowork",
   "private": true,
   "version": "0.2.0",
-  "description": "Open-source, local-first AI coworker for Windows with Ollama, MCP, tasks, approvals, and tools.",
+  "description": "Open-source, local-first AI coworker for Windows and Linux with Ollama, MCP, tasks, approvals, and tools.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -60,6 +60,7 @@
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.10",
     "react-router-dom": "6.30.4",
+    "snarkdown": "^2.0.0",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"

@@ -196,6 +196,17 @@ describe('slash command registry integrity', () => {
     }
   })
 
+  it('/sandbox only requests navigation to settings and never starts UAC setup', async () => {
+    const onOpen = vi.fn()
+    window.addEventListener('lacowork-open-sandbox-settings', onOpen)
+    const sandbox = buildAllCommands().find((command) => command.command === '/sandbox')
+
+    await sandbox?.execute()
+
+    expect(onOpen).toHaveBeenCalledTimes(1)
+    window.removeEventListener('lacowork-open-sandbox-settings', onOpen)
+  })
+
   it('awaits async execution and does not record failed commands as successful', async () => {
     const original = useCommandRegistry.getState().commands
     let release = () => {}

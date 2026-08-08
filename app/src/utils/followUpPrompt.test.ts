@@ -4,6 +4,7 @@ import {
   inferClarificationContext,
   isLikelyClarifyingQuestion,
   isLikelyShortFollowUpAnswer,
+  resolveUserFacingPromptContent,
 } from './followUpPrompt'
 
 describe('followUpPrompt', () => {
@@ -44,5 +45,27 @@ describe('followUpPrompt', () => {
     expect(prompt).toContain('User answer:')
     expect(prompt).toContain('alphabetisch')
     expect(prompt).toContain('do not only answer with a list of available tools')
+  })
+
+  it('shows only the user answer for persisted internal continuation prompts', () => {
+    const prompt = buildClarificationContinuationPrompt(
+      'Sort all folders into 2 new folders.',
+      'Please specify which criterion should be used to sort the folders.',
+      'alphabetisch',
+    )
+
+    expect(resolveUserFacingPromptContent(prompt)).toBe('alphabetisch')
+  })
+
+  it('shows only the user answer for persisted ask-user prompts', () => {
+    const prompt = 'Answer to question:\nQuestion: Which folder should I use?\nAnswer: C:\\workspace'
+
+    expect(resolveUserFacingPromptContent(prompt)).toBe('C:\\workspace')
+  })
+
+  it('leaves ordinary user messages unchanged', () => {
+    const prompt = 'Can you test this by reading the file?'
+
+    expect(resolveUserFacingPromptContent(prompt)).toBe(prompt)
   })
 })

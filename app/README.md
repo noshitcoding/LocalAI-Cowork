@@ -45,7 +45,9 @@ cargo test
 cargo clippy -- -D warnings
 ```
 
-## Installer
+## Packages
+
+Windows installer:
 
 ```powershell
 npm run installer
@@ -57,12 +59,21 @@ The repository-level installer copy is written to:
 ../dist-installers/LocalAI-Cowork-Setup.exe
 ```
 
+Linux packages (run on Linux with the Tauri prerequisites installed):
+
+```bash
+npm run tauri build -- --bundles appimage,deb,rpm
+```
+
+The Linux platform configuration excludes Windows-only runtime files and emits AppImage, DEB, and RPM packages. See `../docs/LINUX_INSTALLATION.md` for runtime requirements and limitations.
+
 ## Important Paths
 
 ```text
 src/                      React UI, stores, engine, utilities
 src-tauri/src/            Rust commands and backend modules
 src-tauri/tauri.conf.json Tauri product and bundle config
+src-tauri/tauri.linux.conf.json Linux bundle overrides
 scripts/                  Build, smoke-test, doctor, and MCP scripts
 smoke-screenshots/        Captured desktop smoke-test images
 ```

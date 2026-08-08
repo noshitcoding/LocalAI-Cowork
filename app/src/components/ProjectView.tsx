@@ -78,12 +78,15 @@ export default function ProjectView() {
     addResources,
     removeResource,
     setResourceEnabled,
+    setResourceAccess,
+    setPrimaryResource,
     attachThread,
     detachThread,
   } = useProjectStore()
   const [titleDraft, setTitleDraft] = useState('')
   const [instructionsDraft, setInstructionsDraft] = useState('')
   const [linkDraft, setLinkDraft] = useState('')
+  const [newResourceAccess, setNewResourceAccess] = useState<'read_only' | 'read_write'>('read_only')
   const [dropActive, setDropActive] = useState(false)
   const [deletePromptOpen, setDeletePromptOpen] = useState(false)
   const deleteTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -217,7 +220,7 @@ export default function ProjectView() {
       ],
     })
     const paths = normalizeDialogSelection(selected)
-    addResources(activeProject.id, paths.map((path) => ({ path, kind: 'file' })))
+    addResources(activeProject.id, paths.map((path) => ({ path, kind: 'file', access: newResourceAccess })))
   }
 
   const handleAddFolders = async () => {
@@ -227,7 +230,7 @@ export default function ProjectView() {
       multiple: true,
     })
     const paths = normalizeDialogSelection(selected)
-    addResources(activeProject.id, paths.map((path) => ({ path, kind: 'folder' })))
+    addResources(activeProject.id, paths.map((path) => ({ path, kind: 'folder', access: newResourceAccess })))
   }
 
   const handleAddLink = () => {
@@ -299,6 +302,7 @@ export default function ProjectView() {
         path: resource.path,
         kind: resource.kind,
         label: resource.label,
+        access: resource.kind === 'link' ? 'read_only' : newResourceAccess,
       })))
     }
   }
@@ -336,6 +340,15 @@ export default function ProjectView() {
                   <FilePlus size={14} aria-hidden="true" />{tr("Files")}</button>
                 <button type="button" className="btn-sm project-icon-button" onClick={handleAddFolders}>
                   <FolderPlus size={14} aria-hidden="true" />{tr("Folder")}</button>
+                <select
+                  value={newResourceAccess}
+                  onChange={(event) => setNewResourceAccess(event.currentTarget.value as 'read_only' | 'read_write')}
+                  aria-label={tr('Access for new project sources')}
+                  title={tr('Access for new project sources')}
+                >
+                  <option value="read_only">{tr('New: read only')}</option>
+                  <option value="read_write">{tr('New: read and edit')}</option>
+                </select>
               </div>
             </header>
 
@@ -432,6 +445,37 @@ export default function ProjectView() {
                         </span>
                       </label>
                       <span className="project-resource-path" title={resource.path}>{resource.path}</span>
+                      {resource.kind !== 'link' && (
+                        <select
+                          value={resource.access}
+                          aria-label={`${tr('Access')}: ${resource.label ?? getPathName(resource.path)}`}
+                          onChange={(event) => {
+                            const accepted = setResourceAccess(
+                              activeProject.id,
+                              resource.id,
+                              event.currentTarget.value as 'read_only' | 'read_write',
+                            )
+                            if (!accepted) {
+                              window.alert(tr('Overlapping writable folders are not allowed.'))
+                            }
+                          }}
+                        >
+                          <option value="read_only">{tr('Read only')}</option>
+                          <option value="read_write">{tr('Read and edit')}</option>
+                        </select>
+                      )}
+                      {resource.kind !== 'link' && resource.access === 'read_write' && resource.enabled && (
+                        <button
+                          type="button"
+                          className="project-row-action"
+                          onClick={() => setPrimaryResource(activeProject.id, resource.id)}
+                          title={tr('Use as working folder')}
+                          aria-label={tr('Use as working folder')}
+                          aria-pressed={resource.isPrimary}
+                        >
+                          {resource.isPrimary ? <CheckCircle2 size={14} aria-hidden="true" /> : <span aria-hidden="true">◎</span>}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="project-row-action"

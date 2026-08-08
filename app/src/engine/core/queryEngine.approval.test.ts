@@ -345,6 +345,7 @@ describe('QueryEngine approval event flow', () => {
       cwd: 'C:/workspace',
       systemPrompt: 'test',
       permissionMode: 'default',
+      desktopControlEnabled: true,
       maxTurns: 6,
       customTools: [desktopClickTool],
     })
@@ -362,6 +363,48 @@ describe('QueryEngine approval event flow', () => {
     expect(events).toContain('approval_required')
     expect(events).toContain('tool_use_complete')
     expect(seenLastUserTexts[1]).toContain('Execute the next desktop step now')
+  })
+
+  it('removes mutating desktop tools from the normal workspace run profile', async () => {
+    const { QueryEngine } = await import('./queryEngine')
+    streamOllamaMessagesMock.mockReset()
+    streamOllamaMessagesMock
+      .mockImplementationOnce(() => oneDesktopToolUseTurn())
+      .mockImplementationOnce(() => oneTextTurn())
+    const desktopCall = vi.fn(async (): Promise<ToolResult<string>> => ({ data: 'clicked' }))
+    const desktopClickTool: Tool = {
+      name: 'DesktopClick',
+      description: 'desktop click',
+      category: 'desktop',
+      riskLevel: 'high',
+      inputSchema: { type: 'object', properties: {} },
+      call: desktopCall,
+      isConcurrencySafe: () => false,
+      isReadOnly: () => false,
+    }
+    const engine = new QueryEngine({
+      backend: 'ollama',
+      ollama: {
+        baseUrl: 'http://localhost:11434',
+        model: 'test-model',
+        timeoutMs: 10_000,
+        contextWindow: 16_000,
+        temperature: 0,
+      },
+      cwd: 'C:/workspace',
+      systemPrompt: 'test',
+      permissionMode: 'default',
+      maxTurns: 3,
+      customTools: [desktopClickTool],
+    })
+
+    const events: string[] = []
+    for await (const event of engine.query([], 'click the host desktop')) {
+      events.push(event.type)
+    }
+
+    expect(desktopCall).not.toHaveBeenCalled()
+    expect(events).not.toContain('approval_required')
   })
 
   it('nudges narrated shell fallback plans back into actual tool execution', async () => {

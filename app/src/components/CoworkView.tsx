@@ -54,7 +54,9 @@ import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFro
 // Ollama streaming is now handled by the engine
 import { MessageThinking, MessageVerbose } from './MessageThinking'
 import { HighlightedChatText } from './HighlightedChatText'
+import { MarkdownChatText } from './MarkdownChatText'
 import CoworkContextRail from './CoworkContextRail'
+import ChatDropdown from './ChatDropdown'
 import { writeAuditEvent } from '../utils/audit'
 import { persistInvoke } from '../stores/chatStore'
 import {
@@ -65,6 +67,7 @@ import {
 import {
   buildClarificationContinuationPrompt,
   inferClarificationContext,
+  resolveUserFacingPromptContent,
 } from '../utils/followUpPrompt'
 import { useCommandRegistry } from '../stores/commandRegistryStore'
 import { hasTauriRuntime, safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
@@ -78,6 +81,7 @@ import {
   getChatProviderState,
   normalizeChatProvider,
 } from '../utils/chatProvider'
+import { getModelGuidance } from '../utils/modelGuidance'
 import { tr } from '../i18n'
 
 const TerminalDock = lazy(() => import('./TerminalDock'))
@@ -799,6 +803,7 @@ export default function CoworkView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedSlashDraft = searchParams.get('slash')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [attachmentAccess, setAttachmentAccess] = useState<'read_only' | 'read_write'>('read_only')
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null)
   const [includeProjectLinks, setIncludeProjectLinks] = useState(false)
   const [dragOverInput, setDragOverInput] = useState(false)
@@ -828,6 +833,7 @@ export default function CoworkView() {
   const currentToolUI = useEngineStore((s) => s.currentToolUI)
   const clearCurrentToolUI = useEngineStore((s) => s.clearCurrentToolUI)
   const currentRunId = useEngineStore((s) => s.currentRunId)
+  const sandboxContext = useEngineStore((s) => s.sandboxContext)
   const engineStatus = useEngineStore((s) => s.status)
   const contextWarning = useEngineStore((s) => s.contextWarning)
   const contextCoverage = useEngineStore((s) => s.contextCoverage)
@@ -893,6 +899,29 @@ export default function CoworkView() {
   const setTerminalDockOpen = useTerminalStore((s) => s.setDockOpen)
   const setActiveAiThread = useTerminalStore((s) => s.setActiveAiThread)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [sandboxSetupReady, setSandboxSetupReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const status = await safeInvoke<{ ready: boolean }>('sandbox_setup_status')
+        if (!cancelled) setSandboxSetupReady(status.ready)
+      } catch {
+        if (!cancelled) setSandboxSetupReady(false)
+      }
+    }
+    const onStatusChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ ready?: boolean }>).detail
+      setSandboxSetupReady(detail?.ready === true)
+    }
+    void refresh()
+    window.addEventListener('lacowork-sandbox-status-changed', onStatusChanged)
+    return () => {
+      cancelled = true
+      window.removeEventListener('lacowork-sandbox-status-changed', onStatusChanged)
+    }
+  }, [])
 
   useEffect(() => {
     if (!requestedSlashDraft?.startsWith('/')) return
@@ -1247,7 +1276,10 @@ export default function CoworkView() {
   const addNewAttachments = (newItems: ChatAttachment[]) => {
     if (newItems.length === 0) return
     setAttachments((prev) => {
-      const merged = mergeAttachments(prev, newItems)
+      const merged = mergeAttachments(prev, newItems.map((item) => ({
+        ...item,
+        access: item.access ?? attachmentAccess,
+      })))
       if (merged.rejectedCount > 0) {
         setAttachmentNotice(tr("Maximal 25 verbundene Elemente pro Message erreicht."))
       } else {
@@ -1974,9 +2006,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'sandbox') {
-        useCoworkStore.getState().setPolicyFlag('strictPolicyEnforcement', true)
-        useConfigStore.getState().setPreference('readOnlyFsMode', true)
-        appendAssistantMessage(tr("Sandbox mode enabled:\n- Read-only filesystem access\n- Strict policy enforcement\n- All destructive operations blocked"))
+        navigate('/settings?section=security#ai-sandbox')
         return
       }
 
@@ -2648,6 +2678,40 @@ export default function CoworkView() {
       : null
     const hasApprovalBypassMarker = /\[approval-beduerftig\]/i.test(rawPrompt)
     const mergedForSend = mergeAttachments([], [...projectContextAttachments, ...draftAttachments])
+    const runAuthorizedPaths = [
+      ...(taskProjectRunContext?.authorizedPaths ?? []),
+      ...mergedForSend.next
+        .filter(hasLocalAttachmentPath)
+        .map((item, index) => ({
+          id: `attachment-${index}`,
+          path: item.path,
+          kind: item.kind,
+          access: item.access ?? 'read_only' as const,
+          label: item.label,
+          isPrimary: item.isPrimary === true,
+        })),
+      ...(!taskProjectRunContext && workingFolder?.trim()
+        ? [{
+            id: 'working-folder',
+            path: workingFolder.trim(),
+            kind: (workingPathKind === 'file' ? 'file' : 'folder') as 'file' | 'folder',
+            access: 'read_only' as const,
+            label: getPathName(workingFolder.trim()),
+            isPrimary: false,
+          }]
+        : []),
+    ].filter((entry, index, entries) => (
+      entries.findIndex((candidate) => (
+        candidate.kind === entry.kind && candidate.path.toLowerCase() === entry.path.toLowerCase()
+      )) === index
+    ))
+    const runtimePermissionConfig = {
+      mode: enginePermissionMode,
+      allowedDirectories: runAuthorizedPaths
+        .filter((entry) => entry.kind === 'folder')
+        .map((entry) => entry.path),
+      authorizedPaths: runAuthorizedPaths,
+    }
     const attachmentLimitNotice = mergedForSend.rejectedCount > 0
       ? 'Maximum of 25 project and message attachments per request reached.'
       : null
@@ -2681,7 +2745,8 @@ export default function CoworkView() {
     const engineUserInput = await buildEngineUserInput(promptWithAttachments, mergedForSend.next)
     const userMessage = {
       role: 'user' as const,
-      content: rawPrompt,
+      // Keep internal continuation/context wrappers out of the visible chat.
+      content: baseUserPrompt,
       timestamp: Date.now(),
       attachments: mergedForSend.next,
       debugContent: promptWithAttachments,
@@ -2755,15 +2820,7 @@ export default function CoworkView() {
             })),
           },
           createChatProviderSelection(providerState),
-          taskProjectRunContext
-            ? {
-                mode: enginePermissionMode,
-                allowedDirectories: taskProjectRunContext.authorizedPaths
-                  .filter((entry) => entry.kind === 'folder')
-                  .map((entry) => entry.path),
-                authorizedPaths: taskProjectRunContext.authorizedPaths,
-              }
-            : undefined,
+          runtimePermissionConfig,
         )
       } catch (crewError) {
         const message = crewError instanceof Error ? crewError.message : String(crewError)
@@ -3059,7 +3116,7 @@ export default function CoworkView() {
             case 'tool_use_complete':
               usedToolNames.add(event.toolName)
               {
-                const toolFailed = event.result.trim().toLowerCase().startsWith('fehler:')
+                const toolFailed = event.isError === true || event.result.trim().toLowerCase().startsWith('fehler:')
                 const completedToolInput = liveToolCalls.find((call) => call.id === event.toolUseId)?.input ?? {}
                 if (event.toolName === 'AskUser' && typeof completedToolInput.question === 'string') {
                   awaitingUserQuestion = completedToolInput.question
@@ -3142,15 +3199,7 @@ export default function CoworkView() {
             content: typeof message.content === 'string' ? message.content : '',
             debugContent: message.debugContent,
           })),
-        }, createChatProviderSelection(providerState), taskProjectRunContext
-          ? {
-              mode: enginePermissionMode,
-              allowedDirectories: taskProjectRunContext.authorizedPaths
-                .filter((entry) => entry.kind === 'folder')
-                .map((entry) => entry.path),
-              authorizedPaths: taskProjectRunContext.authorizedPaths,
-            }
-          : undefined)
+        }, createChatProviderSelection(providerState), runtimePermissionConfig)
 
         const fallbackText = engineErrorMessage
           ? `LLM request failed: ${engineErrorMessage}\n\n${getChatProviderFailureHint(providerState.provider)}`
@@ -3441,7 +3490,10 @@ export default function CoworkView() {
             </div>
           )}
           {renderedMessages.map((msg, index) => {
-              const content = typeof msg.content === 'string' ? msg.content : ''
+              const storedContent = typeof msg.content === 'string' ? msg.content : ''
+              const content = msg.role === 'user'
+                ? resolveUserFacingPromptContent(storedContent)
+                : storedContent
               const { promptDebug, ollamaRequestPreview } = splitPromptDebugContent(msg.debugContent)
               const attachmentsForMessage = Array.isArray(msg.attachments) ? msg.attachments : []
               const imageAttachments = attachmentsForMessage.filter((item) => item.kind === 'file' && isImageAttachment(item))
@@ -3478,9 +3530,6 @@ export default function CoworkView() {
 
               return (
                 <div key={msg.id} className={`cowork-msg ${msg.role}${msg.crewLive ? ' crew-live-message' : ''}`}>
-                <div className="msg-avatar">
-                  {msg.role === 'user' ? tr("You") : 'AI'}
-                </div>
                 <div className="msg-body">
                   <div className="msg-role">
                     {msg.role === 'user' ? tr("You") : 'LocalAI Cowork'}
@@ -3541,7 +3590,11 @@ export default function CoworkView() {
                           </span>
                         </div>
                       ) : null}
-                      {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
+                      {displayedContent ? (
+                        msg.role === 'assistant' && !assistantFailure
+                          ? <MarkdownChatText content={displayedContent} />
+                          : <HighlightedChatText content={displayedContent} />
+                      ) : null}
                     </div>
                   )}
                   {!isCollapsed && (
@@ -3629,7 +3682,6 @@ export default function CoworkView() {
             })}
           {busy && !activeMessages.some((msg) => msg.streaming) && (
             <div className="cowork-msg assistant">
-              <div className="msg-avatar">AI</div>
               <div className="msg-body">
                 <div className="msg-role">{tr("LocalAI Cowork")}</div>
                 <div className="msg-content typing">
@@ -3794,6 +3846,21 @@ export default function CoworkView() {
                     <span className="attachment-chip-label">
                       {item.kind === 'folder' ? tr('Folder') : isImageAttachment(item) ? tr('Image') : tr('File')}: {getAttachmentDisplayName(item)}
                     </span>
+                    {hasLocalAttachmentPath(item) && (
+                      <select
+                        aria-label={`${tr('Access')}: ${getAttachmentDisplayName(item)}`}
+                        value={item.access ?? 'read_only'}
+                        disabled={uiLocked}
+                        onChange={(event) => setAttachments((current) => current.map((entry) => (
+                          entry.path === item.path && entry.kind === item.kind
+                            ? { ...entry, access: event.currentTarget.value as 'read_only' | 'read_write' }
+                            : entry
+                        )))}
+                      >
+                        <option value="read_only">{tr('Read only')}</option>
+                        <option value="read_write">{tr('Read and edit')}</option>
+                      </select>
+                    )}
                     <button
                       type="button"
                       className="attachment-remove"
@@ -3903,6 +3970,25 @@ export default function CoworkView() {
             )}
           </div>
           <div className="chat-input-bottom-bar">
+            <button
+              type="button"
+              className="btn-compact-action"
+              onClick={() => navigate('/settings?section=security#ai-sandbox')}
+              title={sandboxContext.warning ?? tr('Open AI Sandbox settings')}
+              aria-label={tr('Open AI Sandbox settings')}
+            >
+              {currentRunId && sandboxContext.mode !== 'checking'
+                ? sandboxContext.mode === 'windows_native_elevated'
+                  ? tr('Sandbox active')
+                  : sandboxContext.warning
+                    ? tr('Read-only – sandbox error')
+                    : tr('Read-only – sandbox not configured')
+                : sandboxSetupReady === null
+                  ? tr('Checking sandbox')
+                  : sandboxSetupReady
+                    ? tr('Sandbox active')
+                    : tr('Read-only – sandbox not configured')}
+            </button>
             <div className="chat-input-toolbar-compact">
               <div className={`chat-runner-control${chatUsesCrew ? ' crew-active' : ''}`}>
                 <span className="chat-runner-label">{tr('Runner')}</span>
@@ -3935,80 +4021,94 @@ export default function CoworkView() {
                   </button>
                 </div>
                 {chatUsesCrew && (
-                  <select
+                  <ChatDropdown
                     className="chat-crew-select"
                     value={chatRunnerSelection}
-                    onChange={(e) => handleRunnerChange(e.target.value)}
+                    onChange={handleRunnerChange}
                     disabled={uiLocked}
-                    aria-label={tr('Crew choose')}
+                    ariaLabel={tr('Crew choose')}
                     title={tr('Crew choose')}
-                  >
-                    {activeThread?.crewId && !selectedChatCrew && (
-                      <option value={`crew:${activeThread.crewId}`}>{tr('Crew')} ({tr('not available')})</option>
-                    )}
-                    {crews.map((crew) => (
-                      <option key={crew.id} value={`crew:${crew.id}`}>{crew.name}</option>
-                    ))}
-                  </select>
+                    options={[
+                      ...(activeThread?.crewId && !selectedChatCrew ? [{
+                        value: `crew:${activeThread.crewId}`,
+                        label: `${tr('Crew')} (${tr('not available')})`,
+                      }] : []),
+                      ...crews.map((crew) => ({ value: `crew:${crew.id}`, label: crew.name })),
+                    ]}
+                  />
                 )}
               </div>
               {!chatUsesCrew && (
                 <>
-              <select
+              <ChatDropdown
                 className="chat-compact-select"
                 value={providerState.provider}
-                onChange={(e) => handleProviderChange(e.target.value)}
+                onChange={handleProviderChange}
                 disabled={uiLocked}
-                aria-label={tr("Provider")}
+                ariaLabel={tr("Provider")}
                 title={tr("Provider")}
-              >
-                {CHAT_PROVIDER_OPTIONS.map((provider) => (
-                  <option key={provider} value={provider}>
-                    {CHAT_PROVIDER_LABELS[provider]}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="chat-compact-select"
+                options={CHAT_PROVIDER_OPTIONS.map((provider) => ({
+                  value: provider,
+                  label: CHAT_PROVIDER_LABELS[provider],
+                }))}
+              />
+              <ChatDropdown
+                className="chat-compact-select chat-model-select"
                 value={providerState.model}
-                onChange={(e) => handleModelChange(e.target.value)}
+                onChange={handleModelChange}
                 disabled={uiLocked}
-                aria-label={tr("Model")}
-                title={tr("Model")}
-              >
-                {selectableModels.length > 0 ? (
-                  selectableModels.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))
-                ) : (
-                  <option value={providerState.model}>{providerState.model || tr('no model set')}</option>
-                )}
-                {selectableModels.length > 0 && providerState.model && !selectableModels.includes(providerState.model) && (
-                  <option value={providerState.model}>{providerState.model}</option>
-                )}
-              </select>
+                ariaLabel={tr("Model")}
+                title={`${tr(getModelGuidance(providerState.model).title)}: ${tr(getModelGuidance(providerState.model).recommendedFor)}`}
+                options={selectableModels.length > 0
+                  ? [
+                      ...selectableModels.map((model) => ({
+                        value: model,
+                        label: `${model} — ${tr(getModelGuidance(model).title)}`,
+                      })),
+                      ...(providerState.model && !selectableModels.includes(providerState.model) ? [{
+                        value: providerState.model,
+                        label: `${providerState.model} — ${tr(getModelGuidance(providerState.model).title)}`,
+                      }] : []),
+                    ]
+                  : [{
+                      value: providerState.model,
+                      label: providerState.model
+                        ? `${providerState.model} — ${tr(getModelGuidance(providerState.model).title)}`
+                        : tr('no model set'),
+                    }]}
+              />
                 </>
               )}
-              <select
+              <ChatDropdown
                 className="chat-compact-select"
                 value={enginePermissionMode}
-                onChange={(e) => {
-                  const mode = e.target.value as 'default' | 'plan' | 'bypass' | 'strict'
+                onChange={(value) => {
+                  const mode = value as 'default' | 'plan' | 'bypass' | 'strict'
                   setEngineConfig({ permissionMode: mode })
                   setClaudePermissionMode(ENGINE_TO_CLAUDE_PERMISSION_MODE[mode])
                 }}
                 disabled={uiLocked}
-                aria-label={tr("Permission mode")}
+                ariaLabel={tr("Permission mode")}
                 title={tr("Permission mode")}
-              >
-                <option value="default">{tr("Standard")}</option>
-                <option value="plan">{tr("Plan-Mode")}</option>
-                <option value="bypass">{tr("Bypass")}</option>
-                <option value="strict">{tr("Strikt")}</option>
-              </select>
+                options={[
+                  { value: 'default', label: tr("Standard") },
+                  { value: 'plan', label: tr("Plan-Mode") },
+                  { value: 'bypass', label: tr("Bypass") },
+                  { value: 'strict', label: tr("Strikt") },
+                ]}
+              />
               <div className="chat-compact-actions">
+                <select
+                  className="chat-compact-select"
+                  value={attachmentAccess}
+                  onChange={(event) => setAttachmentAccess(event.currentTarget.value as 'read_only' | 'read_write')}
+                  disabled={uiLocked}
+                  aria-label={tr('Access for new files and folders')}
+                  title={tr('Access for new files and folders')}
+                >
+                  <option value="read_only">{tr('New: read only')}</option>
+                  <option value="read_write">{tr('New: read and edit')}</option>
+                </select>
                 <button type="button" className="btn-compact-action" onClick={handleAttachFiles} disabled={uiLocked}>{tr("Files")}</button>
                 <button type="button" className="btn-compact-action" onClick={handleAttachFolders} disabled={uiLocked}>{tr("Folder")}</button>
               </div>

@@ -14,7 +14,7 @@ use crate::sensitive_data::{
     MAX_LOG_SUMMARY_BYTES, MAX_LOG_TEXT_BYTES,
 };
 
-const LATEST_SCHEMA_VERSION: i64 = 25;
+const LATEST_SCHEMA_VERSION: i64 = 26;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PRE_MIGRATION_BACKUPS: usize = 3;
 const MAX_ENGINE_EVENTS_PER_RUN: i64 = 2_000;
@@ -234,6 +234,8 @@ pub struct ProjectResourceRow {
     pub path: String,
     pub label: Option<String>,
     pub enabled: bool,
+    pub access: String,
+    pub is_primary: bool,
     pub added_at: String,
 }
 
@@ -1869,6 +1871,32 @@ impl Database {
             )?;
         }
 
+        if version < 26 {
+            add_column_if_missing(
+                &conn,
+                "project_resources",
+                "access",
+                "access TEXT NOT NULL DEFAULT 'read_write' CHECK(access IN ('read_only', 'read_write'))",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "project_resources",
+                "is_primary",
+                "is_primary INTEGER NOT NULL DEFAULT 0",
+            )?;
+            conn.execute(
+                "UPDATE project_resources
+                 SET is_primary = 1
+                 WHERE id IN (
+                   SELECT MIN(id) FROM project_resources
+                   WHERE enabled = 1 AND kind = 'folder' AND access = 'read_write'
+                   GROUP BY project_id
+                 )",
+                [],
+            )?;
+            conn.execute("UPDATE schema_version SET version = 26", [])?;
+        }
+
         transaction.commit()?;
         conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
         Ok(())
@@ -1959,9 +1987,14 @@ impl Database {
         path: &str,
         label: Option<&str>,
         enabled: bool,
+        access: &str,
+        is_primary: bool,
         added_at: &str,
     ) -> SqlResult<()> {
         if !matches!(kind, "file" | "folder" | "link") {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if !matches!(access, "read_only" | "read_write") {
             return Err(rusqlite::Error::InvalidQuery);
         }
 
@@ -1970,11 +2003,13 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO project_resources (id, project_id, kind, path, label, enabled, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO project_resources (id, project_id, kind, path, label, enabled, access, is_primary, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(project_id, kind, path) DO UPDATE SET
                label = excluded.label,
-               enabled = excluded.enabled",
+               enabled = excluded.enabled,
+               access = excluded.access,
+               is_primary = excluded.is_primary",
             params![
                 id,
                 project_id,
@@ -1982,6 +2017,8 @@ impl Database {
                 path,
                 label,
                 if enabled { 1 } else { 0 },
+                access,
+                if is_primary { 1 } else { 0 },
                 added_at
             ],
         )?;
@@ -1998,7 +2035,7 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, kind, path, label, enabled, added_at
+            "SELECT id, project_id, kind, path, label, enabled, access, is_primary, added_at
              FROM project_resources ORDER BY added_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -2009,7 +2046,9 @@ impl Database {
                 path: row.get(3)?,
                 label: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
-                added_at: row.get(6)?,
+                access: row.get(6)?,
+                is_primary: row.get::<_, i64>(7)? != 0,
+                added_at: row.get(8)?,
             })
         })?;
         rows.collect()
@@ -7139,6 +7178,8 @@ mod tests {
             "C:/docs/spec.md",
             None,
             true,
+            "read_write",
+            true,
             "2026-05-11T09:01:00Z",
         )
         .unwrap();
@@ -7148,6 +7189,8 @@ mod tests {
             "link",
             "https://example.com",
             Some("Example"),
+            false,
+            "read_only",
             false,
             "2026-05-11T09:02:00Z",
         )

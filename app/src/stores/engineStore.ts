@@ -38,6 +38,117 @@ import type { AuthorizedTaskPath } from '../utils/taskProjectContext'
 import { useCoworkStore } from './coworkStore'
 import { setCredential } from '../security/credentialVault'
 import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
+import { hasTauriRuntime } from '../utils/safeInvoke'
+
+export type RunSecurityMode = 'checking' | 'windows_native_elevated' | 'host_read_only_broker'
+
+type RunContextPrepareResult = {
+  mode: Exclude<RunSecurityMode, 'checking'>
+  sandboxId?: string | null
+  workspaceRoot: string
+  allowedDirectories: string[]
+  roots: Array<{
+    rootId: string
+    rootLabel: string
+    sourcePath: string
+    workspacePath: string
+    kind: 'file' | 'folder'
+    access: 'read_only' | 'read_write'
+    isPrimary: boolean
+  }>
+  copiedFiles: number
+  skippedFiles: number
+  warning?: string | null
+}
+
+type SandboxFileChange = {
+  rootId?: string
+  rootLabel?: string
+  path: string
+  kind: 'created' | 'modified' | 'deleted'
+  size: number
+  binary: boolean
+  preview?: string | null
+  applicable?: boolean
+  policyError?: string | null
+}
+
+type SandboxRunDiff = {
+  workspaceRoot: string
+  changes: SandboxFileChange[]
+}
+
+async function offerSandboxChanges(runId: string): Promise<void> {
+  const diff = await invoke<SandboxRunDiff>('sandbox_run_diff', { request: { runId } })
+  if (diff.changes.length === 0 || typeof window === 'undefined') return
+  const rendered = diff.changes.map((change) => {
+    const detail = change.binary
+      ? `[binary, ${change.size} bytes]`
+      : change.preview
+        ? `\n${change.preview}`
+        : ''
+    const root = change.rootLabel ? `[${change.rootLabel}] ` : ''
+    const policy = change.policyError ? `\n[not applicable: ${change.policyError}]` : ''
+    return `${change.kind.toUpperCase()} ${root}${change.path}${detail}${policy}`
+  }).join('\n\n')
+  const confirmed = window.confirm(
+    `AI Sandbox changes (${diff.changes.length})\n\n${rendered}\n\nApply this complete change set to the original project?`,
+  )
+  if (!confirmed) return
+  const applied = await invoke<{ applied: string[]; conflicts: string[]; rejected?: string[] }>('sandbox_run_apply', {
+    request: { runId },
+  })
+  if (applied.conflicts.length > 0) {
+    window.alert(`Some files changed outside the sandbox and were not overwritten:\n${applied.conflicts.join('\n')}`)
+  }
+  if ((applied.rejected?.length ?? 0) > 0) {
+    window.alert(`Read-only or out-of-scope sandbox changes were not applied:\n${applied.rejected!.join('\n')}`)
+  }
+}
+
+const CAPABILITY_TOOL_NAMES: Record<string, string[]> = {
+  bash: ['Bash'],
+  read_file: ['Read', 'ListDir', 'FileInfo'],
+  edit_file: ['Write', 'Edit', 'MultiEdit', 'Append', 'DeleteFile', 'RenameFile', 'SaveSkill'],
+  create_directory: ['CreateDirectory'],
+  move_path: ['MovePath'],
+  copy_path: ['CopyPath'],
+  glob: ['Glob'],
+  grep: ['Grep'],
+  web_fetch: ['WebFetch'],
+  web_search: ['WebSearch'],
+  office_workflow: ['OfficeWorkflowTool'],
+  todo: ['TaskCreate', 'TaskList', 'TaskUpdate', 'EnterPlanMode', 'ExitPlanMode'],
+  delegate_task: ['Agent', 'Skill'],
+  ask_user: ['AskUser'],
+  mcp: ['MCPTool'],
+}
+
+const SAFE_INTERNAL_TOOL_NAMES = ['MemoryRead', 'MemoryWrite', 'ChatSearch', 'Think']
+const LOCAL_MUTATION_CAPABILITIES = new Set([
+  'bash', 'edit_file', 'create_directory', 'move_path', 'copy_path',
+  'office_workflow', 'delegate_task',
+])
+
+function resolveEffectiveToolNames(
+  mode: Exclude<RunSecurityMode, 'checking'>,
+  hasReadableRoots: boolean,
+): string[] {
+  const policy = useCoworkStore.getState()
+  const enabled = new Set(policy.enabledClaudeToolIds)
+  const result = new Set(SAFE_INTERNAL_TOOL_NAMES)
+  for (const capability of enabled) {
+    if (mode === 'host_read_only_broker' && LOCAL_MUTATION_CAPABILITIES.has(capability)) continue
+    if (mode === 'host_read_only_broker' && ['read_file', 'glob', 'grep'].includes(capability) && !hasReadableRoots) continue
+    if (capability === 'bash' && !policy.policyFlags.allowShellExecution) continue
+    if (['read_file', 'glob', 'grep'].includes(capability) && !policy.policyFlags.allowFileReadExtraction) continue
+    if (capability === 'web_fetch' && !policy.policyFlags.allowWebFetch) continue
+    if (capability === 'web_search' && !policy.policyFlags.allowWebSearch) continue
+    if (capability === 'mcp' && !policy.policyFlags.allowMcpToolCalls) continue
+    for (const toolName of CAPABILITY_TOOL_NAMES[capability] ?? []) result.add(toolName)
+  }
+  return [...result]
+}
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the LocalAI Cowork desktop app. You have access to tools for reading, writing, and searching files, running shell commands, and more.
 
@@ -52,8 +163,9 @@ Important rules:
 7. Proactively preserve only durable, high-signal facts. Use MemoryWrite for stable user preferences, environment facts, corrections, conventions, and completed-work lessons. Never store secrets, raw logs, or temporary details.
 8. Curated memory is frozen when a chat starts. A write is persisted for future chats; use ChatSearch when exact details from older conversations are needed.
 9. Reusable app skills belong in the central LocalAI Cowork skill store. When the user asks you to create, save, or register a skill, use SaveSkill. Do not create a skill JSON, Markdown file, or script in the current workspace unless the user explicitly asks for a standalone file.
+10. AI-owned shell commands run only through the Bash tool in the prepared native sandbox. Never use desktop automation or a terminal window as a fallback for a failed Bash call.
 
-You work in a Windows environment with PowerShell.`
+Use the path and shell conventions of the operating system hosting LocalAI Cowork.`
 
 export type EngineProvider = ChatProviderKind
 export type EngineStatus = 'idle' | 'streaming' | 'tool_running' | 'waiting_approval' | 'error'
@@ -203,6 +315,7 @@ export type EngineStoreState = {
   // ── Run State ──────────────────────────────────────────────────────────
   currentRunId: string | null
   conversationThreadId: string | null
+  sandboxContext: { mode: RunSecurityMode; warning: string | null }
 
   // ── Configuration ──────────────────────────────────────────────────────
   config: EngineStoreConfig
@@ -235,6 +348,7 @@ export type EngineStoreState = {
       crewId: string | null
       threadId: string
       runId: string
+      securityMode: Exclude<RunSecurityMode, 'checking'>
     },
   ) => Promise<void>) | null
   setCrewTaskMessageHandler: (handler: ((
@@ -248,6 +362,7 @@ export type EngineStoreState = {
       crewId: string | null
       threadId: string
       runId: string
+      securityMode: Exclude<RunSecurityMode, 'checking'>
     },
   ) => Promise<void>) | null) => void
   // ── New Actions (CC features) ──────────────────────────────────────────
@@ -396,6 +511,10 @@ function buildChatEngineConfig(
     runId,
     threadId,
     toolsetPolicyId,
+    availableToolNames: resolveEffectiveToolNames(
+      'host_read_only_broker',
+      (permissionConfig?.authorizedPaths?.length ?? 0) > 0,
+    ),
   }
 }
 
@@ -423,6 +542,7 @@ export const useEngineStore = create<EngineStoreState>()(
       // Run
       currentRunId: null,
       conversationThreadId: null,
+      sandboxContext: { mode: 'checking', warning: null },
 
       config: {
         apiKey: '',
@@ -508,20 +628,94 @@ export const useEngineStore = create<EngineStoreState>()(
                 activeTools: [],
                 currentToolUI: null,
                 currentRunId: runId,
+                sandboxContext: { mode: 'checking', warning: null },
               })
-              
+
               try {
+                const authorizedPaths = permissionConfig?.authorizedPaths ?? []
+                let persistedRun = false
+                try {
+                  await invoke('engine_run_create', {
+                    request: {
+                      id: runId,
+                      threadId: activeThread!.id,
+                      title: extractUserInputText(userInput).slice(0, 120) || 'Crew Run',
+                      inputSummary: extractUserInputText(userInput).slice(0, 1000),
+                      source: 'crew_chat',
+                      status: 'running',
+                      phase: 'crew_runtime',
+                      cwd,
+                      authorizedPaths,
+                      metadataJson: JSON.stringify({ runner: 'crew' }),
+                    },
+                  })
+                  persistedRun = true
+                } catch (error) {
+                  if (hasTauriRuntime()) throw error
+                }
+                const prepared: RunContextPrepareResult = persistedRun && hasTauriRuntime()
+                  ? await invoke<RunContextPrepareResult>('engine_run_prepare_context', {
+                      request: { runId, authorizedPaths, preferredCwd: cwd || null },
+                    })
+                  : {
+                      mode: 'host_read_only_broker',
+                      sandboxId: null,
+                      workspaceRoot: '',
+                      allowedDirectories: authorizedPaths.map((entry) => entry.path),
+                      roots: authorizedPaths.map((entry, index) => ({
+                        rootId: `root-${index.toString().padStart(3, '0')}`,
+                        rootLabel: entry.label ?? entry.path,
+                        sourcePath: entry.path,
+                        workspacePath: entry.path,
+                        kind: entry.kind,
+                        access: 'read_only',
+                        isPrimary: entry.isPrimary === true,
+                      })),
+                      copiedFiles: 0,
+                      skippedFiles: 0,
+                      warning: 'Native sandbox is unavailable; crew local access is read-only.',
+                    }
+                const mappedPermissionConfig: RuntimePermissionConfig = {
+                  mode: permissionConfig?.mode ?? get().config.permissionMode,
+                  allowedDirectories: prepared.roots
+                    .filter((root) => root.kind === 'folder')
+                    .map((root) => root.workspacePath),
+                  authorizedPaths: prepared.roots.map((root) => ({
+                    id: root.rootId,
+                    path: root.workspacePath,
+                    kind: root.kind,
+                    access: root.access,
+                    label: root.rootLabel,
+                    isPrimary: root.isPrimary,
+                  })),
+                }
+                set({ sandboxContext: { mode: prepared.mode, warning: prepared.warning ?? null } })
                 await get().crewTaskMessageHandler!({
                   userInput,
-                  cwd,
+                  cwd: prepared.workspaceRoot || cwd,
                   onEvent,
                   historySeed,
                   providerSelection,
-                  permissionConfig,
+                  permissionConfig: mappedPermissionConfig,
                   crewId: activeThread!.crewId!,
                   threadId: activeThread!.id,
                   runId,
+                  securityMode: prepared.mode,
                 })
+                if (prepared.mode === 'windows_native_elevated') {
+                  try {
+                    await offerSandboxChanges(runId)
+                  } catch (error) {
+                    void appendRunEvent(runId, 'sandbox_diff_error', 'Crew sandbox change review failed', {
+                      error: error instanceof Error ? error.message : String(error),
+                    }).catch(() => {})
+                  }
+                }
+                if (persistedRun) {
+                  void invoke('engine_run_update', {
+                    request: { id: runId, status: 'completed', phase: 'completed' },
+                  }).catch(() => {})
+                }
               } finally {
                 set({
                   status: 'idle',
@@ -542,6 +736,7 @@ export const useEngineStore = create<EngineStoreState>()(
               activeTools: [],
               currentToolUI: null,
               currentRunId: runId,
+              sandboxContext: { mode: 'checking', warning: null },
             })
 
             // Get or create engine
@@ -580,28 +775,7 @@ export const useEngineStore = create<EngineStoreState>()(
             const threadId = historySeed?.threadId ?? get().conversationThreadId ?? undefined
             const frozenSnapshot = await loadFrozenMemorySnapshot(threadId)
 
-            // Load project memory and build enhanced system prompt
-            try {
-              const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
-                cwd,
-                latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-                { userInput: userInputText, frozenSnapshot },
-              )
-              engine.updateConfig({
-                systemPrompt,
-                memoryContent,
-                threadId,
-              })
-            } catch {
-              // Memory loading is optional — fall back to default prompt
-            }
-
-            try {
-              await captureAutomaticMemoryDraft(cwd, userInputText, runId)
-            } catch {
-              // Automatic draft capture must never block the user turn.
-            }
-
+            let persistedRun = false
             try {
               await invoke('engine_run_create', {
                 request: {
@@ -615,18 +789,97 @@ export const useEngineStore = create<EngineStoreState>()(
                   model: providerState.model,
                   provider,
                   toolsetPolicyId,
-                  authorizedPaths: permissionConfig?.authorizedPaths,
+                  authorizedPaths: permissionConfig?.authorizedPaths ?? [],
                   metadataJson: JSON.stringify({
                     permissionMode: latestStore.config.permissionMode,
                     maxTurns: latestStore.config.maxTurns,
                   }),
                 },
               })
+              persistedRun = true
             } catch (error) {
-              if (permissionConfig?.authorizedPaths) {
+              if (hasTauriRuntime() || permissionConfig?.authorizedPaths) {
                 throw error
               }
               // Browser/dev fallback has no persisted engine run.
+            }
+
+            const authorizedPaths = permissionConfig?.authorizedPaths ?? []
+            const prepared: RunContextPrepareResult = persistedRun && hasTauriRuntime()
+              ? await invoke<RunContextPrepareResult>('engine_run_prepare_context', {
+                  request: {
+                    runId,
+                    authorizedPaths,
+                    preferredCwd: cwd || null,
+                  },
+                })
+              : {
+                  mode: 'host_read_only_broker',
+                  sandboxId: null,
+                  workspaceRoot: '',
+                  allowedDirectories: authorizedPaths.map((entry) => entry.path),
+                  roots: authorizedPaths.map((entry, index) => ({
+                    rootId: `root-${index.toString().padStart(3, '0')}`,
+                    rootLabel: entry.label ?? entry.path,
+                    sourcePath: entry.path,
+                    workspacePath: entry.path,
+                    kind: entry.kind,
+                    access: 'read_only',
+                    isPrimary: entry.isPrimary === true,
+                  })),
+                  copiedFiles: 0,
+                  skippedFiles: 0,
+                  warning: 'Native sandbox is unavailable in this runtime; local access is read-only.',
+                }
+            const sandboxPrepared = prepared.mode === 'windows_native_elevated'
+            const effectiveToolNames = resolveEffectiveToolNames(
+              prepared.mode,
+              prepared.allowedDirectories.length > 0,
+            )
+            const securityPrompt = sandboxPrepared
+              ? 'This run is inside the native Windows sandbox. Work only in mapped sandbox roots. Changes are reviewed before they are applied to original shared paths.'
+              : 'This run has no native process sandbox. Local shared paths are read-only. Shell, local mutation, Office artifact, skill-writing, delegation, and desktop-control tools are unavailable. Never use a host terminal fallback.'
+            engine.updateConfig({
+              cwd: prepared.workspaceRoot || cwd,
+              runId,
+              sandboxId: prepared.sandboxId ?? undefined,
+              allowedDirectories: prepared.allowedDirectories,
+              availableToolNames: effectiveToolNames,
+              appendSystemPrompt: [latestStore.config.appendSystemPrompt, securityPrompt]
+                .filter(Boolean)
+                .join('\n\n'),
+            })
+            set({
+              sandboxContext: {
+                mode: prepared.mode,
+                warning: prepared.warning ?? null,
+              },
+            })
+            void appendRunEvent(runId, 'run_security_context', `Run security mode: ${prepared.mode}`, {
+              mode: prepared.mode,
+              sandboxId: prepared.sandboxId ?? null,
+              rootCount: prepared.roots.length,
+              effectiveTools: effectiveToolNames,
+              warning: prepared.warning ?? null,
+            }).catch(() => {})
+
+            // Unscoped filesystem helpers are used only against the isolated copy.
+            if (sandboxPrepared) {
+              try {
+                const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
+                  prepared.workspaceRoot,
+                  latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+                  { userInput: userInputText, frozenSnapshot },
+                )
+                engine.updateConfig({ systemPrompt, memoryContent, threadId })
+              } catch {
+                // Workspace memory is optional.
+              }
+              try {
+                await captureAutomaticMemoryDraft(prepared.workspaceRoot, userInputText, runId)
+              } catch {
+                // Automatic draft capture must never block the user turn.
+              }
             }
 
             void invoke('memory_upsert', {
@@ -696,12 +949,13 @@ export const useEngineStore = create<EngineStoreState>()(
                         toolUseId: event.toolUseId,
                         toolName: event.toolName,
                         result: event.result,
+                        isError: event.isError,
                       },
                     ).catch(() => {})
                     set((s) => ({
                       activeTools: s.activeTools.map(t =>
                         t.id === event.toolUseId
-                          ? { ...t, status: 'completed' as const, result: event.result }
+                          ? { ...t, status: event.isError ? 'failed' as const : 'completed' as const, result: event.result }
                           : t,
                       ),
                     }))
@@ -827,6 +1081,15 @@ export const useEngineStore = create<EngineStoreState>()(
                       const snap = engine!.getContextSnapshot(event.messages)
                       set({ contextSnapshot: snap })
                     } catch { /* optional */ }
+                    if (sandboxPrepared) {
+                      try {
+                        await offerSandboxChanges(runId)
+                      } catch (error) {
+                        void appendRunEvent(runId, 'sandbox_diff_error', 'Sandbox change review failed', {
+                          error: error instanceof Error ? error.message : String(error),
+                        }).catch(() => {})
+                      }
+                    }
                     break
 
                   case 'context_coverage':
