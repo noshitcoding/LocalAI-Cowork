@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-07-29T17:57:00Z",
-  "version": 4,
+  "timestamp": "2026-08-09T21:12:00Z",
+  "version": 5,
   "statements": [
     {
       "vulnerability": {
@@ -11,7 +11,7 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.2.0",
+          "@id": "pkg:cargo/app@0.3.0",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -21,7 +21,7 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "LocalAI Cowork maintains and publishes Windows 10 and Windows 11 builds. glib 0.18.5 is pulled only through Tauri's Linux GTK dependency graph and is not compiled into or executed by the supported Windows application. Reassess this statement before adding Linux as a maintained release target."
+      "impact_statement": "glib 0.18.5 enters Linux builds only through Tauri's GTK/WebKit dependency graph. A source audit of the application and its complete resolved Cargo graph found no reference to glib::VariantStrIter or Variant::array_iter_str outside glib's own type and method definitions, so the unsound iterator cannot be instantiated on an executable Open Cowork path. Windows builds do not compile this dependency. Reassess this statement whenever the Tauri/GTK graph or application glib usage changes, and remove it once the upstream stack supports glib 0.20 or newer."
     },
     {
       "vulnerability": {
