@@ -96,7 +96,7 @@ andere_ai_agenten_beispiele/
 .cowork/
 .codex/
 graphify-out/
-tasks/
+/tasks/
 AGENTS.md
 skills.md
 .graphifyignore
