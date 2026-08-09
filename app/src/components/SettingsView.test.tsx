@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import SettingsView from './SettingsView'
 import { useConfigStore } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
@@ -69,10 +69,13 @@ function resetConfigStore() {
       {
         id: 'default-ollama',
         name: 'Lokales Ollama',
-        provider: 'ollama',
-        baseUrl: 'http://localhost:11434',
+        provider: 'openai-compatible',
+        preset: 'ollama',
+        authMode: 'none',
+        baseUrl: 'http://localhost:11434/v1',
         model: 'llama3.1:8b',
         apiKey: '',
+        hasApiKey: false,
         timeoutMs: 200000,
         verifyTlsCertificates: true,
         contextWindow: 128000,
@@ -80,11 +83,14 @@ function resetConfigStore() {
       },
       {
         id: 'default-openai-compatible',
-        name: 'OpenAI-compatible',
+        name: 'OpenAI',
         provider: 'openai-compatible',
+        preset: 'openai',
+        authMode: 'bearer',
         baseUrl: 'https://api.openai.com/v1',
         model: 'gpt-4.1-mini',
         apiKey: '',
+        hasApiKey: false,
         timeoutMs: 600000,
         verifyTlsCertificates: true,
         contextWindow: null,
@@ -93,10 +99,13 @@ function resetConfigStore() {
       {
         id: 'default-openrouter',
         name: 'OpenRouter',
-        provider: 'openrouter',
+        provider: 'openai-compatible',
+        preset: 'openrouter',
+        authMode: 'bearer',
         baseUrl: 'https://openrouter.ai/api/v1',
         model: '',
         apiKey: '',
+        hasApiKey: false,
         timeoutMs: 600000,
         verifyTlsCertificates: true,
         contextWindow: null,
@@ -104,6 +113,7 @@ function resetConfigStore() {
       },
     ],
     defaultLlmProfileIds: {
+      api: 'default-ollama',
       ollama: 'default-ollama',
       'openai-compatible': 'default-openai-compatible',
       openrouter: 'default-openrouter',
@@ -181,8 +191,14 @@ function renderSettingsView(initialEntries = ['/settings']) {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
       <SettingsView />
+      <SettingsLocation />
     </MemoryRouter>
   )
+}
+
+function SettingsLocation() {
+  const location = useLocation()
+  return <div data-testid="settings-location" hidden>{`${location.pathname}${location.search}${location.hash}`}</div>
 }
 
 describe('SettingsView', () => {
@@ -232,7 +248,7 @@ describe('SettingsView', () => {
       return defaultInvoke(command)
     })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    renderSettingsView(['/settings?section=security#ai-sandbox'])
+    renderSettingsView(['/settings?section=sandbox'])
 
     await screen.findByText('not configured')
     expect(invokeMock).not.toHaveBeenCalledWith('sandbox_setup_start', expect.anything())
@@ -277,6 +293,37 @@ describe('SettingsView', () => {
     expect(screen.queryByRole('tab')).not.toBeInTheDocument()
   })
 
+  it('opens AI Sandbox in its own settings category', async () => {
+    ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {}
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'sandbox_setup_status') {
+        return Promise.resolve({
+          supported: true,
+          ready: false,
+          version: 1,
+          account: 'LACoworkOnline',
+          group: 'LACoworkSandbox',
+          reason: 'not configured',
+        })
+      }
+      return defaultInvoke(command)
+    })
+    renderSettingsView(['/settings?section=sandbox'])
+
+    expect(screen.getByLabelText('AI Sandbox')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set up sandbox' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Security & data')).not.toBeInTheDocument()
+    await screen.findByText('Not configured')
+  })
+
+  it('redirects the legacy sandbox deep link to the Sandbox category', async () => {
+    renderSettingsView(['/settings?section=security#ai-sandbox'])
+
+    await waitFor(() => expect(screen.getByLabelText('AI Sandbox')).toBeInTheDocument())
+    expect(screen.getByTestId('settings-location')).toHaveTextContent('/settings?section=sandbox')
+    expect(screen.queryByLabelText('Security & data')).not.toBeInTheDocument()
+  })
+
   it('opens and focuses a provider requested by the recovery link', async () => {
     renderSettingsView(['/settings?provider=openrouter'])
 
@@ -303,6 +350,7 @@ describe('SettingsView', () => {
     renderSettingsView(['/settings?section=security'])
     expect(screen.getByLabelText('Security & data')).toBeInTheDocument()
     expect(screen.getByText('Read-only mode')).toBeInTheDocument()
+    expect(screen.queryByLabelText('AI Sandbox')).not.toBeInTheDocument()
   })
 
   /* 6. System & Info shows runtime info */
@@ -367,7 +415,7 @@ describe('SettingsView', () => {
     const endpointInput = within(profileCard).getByLabelText('Endpoint')
     fireEvent.change(endpointInput, { target: { value: 'http://localhost:11434' } })
     expect(useConfigStore.getState().ollama.baseUrl).toBe('http://localhost:11434')
-    expect(useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-ollama')?.baseUrl).toBe('http://localhost:11434')
+    expect(useConfigStore.getState().llmProfiles.find((profile) => profile.id === 'default-ollama')?.baseUrl).toBe('http://localhost:11434/v1')
   })
 
   /* 13. Default Ollama profile model updates store */
@@ -422,8 +470,8 @@ describe('SettingsView', () => {
     })
 
     renderSettingsView()
-    fireEvent.click(screen.getByRole('button', { name: 'Open OpenAI-compatible settings' }))
-    const profileName = screen.getAllByText('OpenAI-compatible', { selector: 'strong' })
+    fireEvent.click(screen.getByRole('button', { name: 'Open OpenAI settings' }))
+    const profileName = screen.getAllByText('OpenAI', { selector: 'strong' })
       .find((element) => element.closest('.llm-profile-card'))
     const profileCard = profileName?.closest('.llm-profile-card') as HTMLElement
     fireEvent.click(within(profileCard).getByRole('button', { name: 'Load models' }))

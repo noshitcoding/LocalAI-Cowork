@@ -41,6 +41,7 @@ export const SETTINGS_SUBROUTES = [
   { id: 'terminal', labelKey: 'Terminal & Processes', queryKey: 'section', queryValue: 'terminal' },
   { id: 'mcp', labelKey: 'MCP Server', queryKey: 'section', queryValue: 'mcp' },
   { id: 'ui', labelKey: 'Interface', queryKey: 'section', queryValue: 'ui' },
+  { id: 'sandbox', labelKey: 'AI Sandbox', queryKey: 'section', queryValue: 'sandbox' },
   { id: 'security', labelKey: 'Security & data', queryKey: 'section', queryValue: 'security' },
   { id: 'system', labelKey: 'System & Info', queryKey: 'section', queryValue: 'system' },
 ] as const satisfies readonly ProductSubroute[]

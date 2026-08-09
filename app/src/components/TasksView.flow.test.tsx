@@ -198,7 +198,7 @@ describe('TasksView crew mission flow', () => {
     expect(task.prompt).toBe(crew.description)
     expect(task.threadId).toBe(thread.id)
     expect(thread.providerSettings).toEqual({
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: freeModel,
       profileId: 'openrouter-free',
     })

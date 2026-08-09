@@ -17,6 +17,9 @@ type CredentialReadResponse = {
   value: string | null
 }
 
+type CredentialExistsResponse = { exists: boolean }
+type CredentialCopyResponse = { copied: boolean }
+
 const volatileCredentials = new Map<string, string>()
 const writeQueues = new Map<string, Promise<unknown>>()
 
@@ -67,11 +70,17 @@ export async function getCredential(locator: CredentialLocator): Promise<string 
   if (!hasTauriRuntime()) {
     return volatileCredentials.get(locatorKey(locator)) ?? null
   }
-
   const response = await safeInvoke<CredentialReadResponse>('credential_get', {
     request: locator,
   })
   return response.value
+}
+
+export async function hasCredential(locator: CredentialLocator): Promise<boolean> {
+  await waitForPendingWrite(locator)
+  if (!hasTauriRuntime()) return volatileCredentials.has(locatorKey(locator))
+  const response = await safeInvoke<CredentialExistsResponse>('credential_exists', { request: locator })
+  return response.exists
 }
 
 export async function deleteCredential(locator: CredentialLocator): Promise<void> {
@@ -82,6 +91,25 @@ export async function deleteCredential(locator: CredentialLocator): Promise<void
     }
     await safeInvoke<void>('credential_delete', { request: locator })
   })
+}
+
+export async function copyCredentialIfMissing(
+  source: CredentialLocator,
+  destination: CredentialLocator,
+): Promise<boolean> {
+  await Promise.all([waitForPendingWrite(source), waitForPendingWrite(destination)])
+  if (!hasTauriRuntime()) {
+    const destinationKey = locatorKey(destination)
+    if (volatileCredentials.has(destinationKey)) return false
+    const value = volatileCredentials.get(locatorKey(source))
+    if (value === undefined) return false
+    volatileCredentials.set(destinationKey, value)
+    return true
+  }
+  const response = await safeInvoke<CredentialCopyResponse>('credential_copy', {
+    request: { source, destination },
+  })
+  return response.copied
 }
 
 export async function replaceCredentialMap(

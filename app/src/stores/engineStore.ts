@@ -39,8 +39,10 @@ import { useCoworkStore } from './coworkStore'
 import { setCredential } from '../security/credentialVault'
 import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
 import { hasTauriRuntime } from '../utils/safeInvoke'
+import { CodexAppServerEngine } from '../engine/codex/codexAppServerEngine'
 
 export type RunSecurityMode = 'checking' | 'windows_native_elevated' | 'host_read_only_broker'
+type ChatEngine = QueryEngine | CodexAppServerEngine
 
 type RunContextPrepareResult = {
   mode: Exclude<RunSecurityMode, 'checking'>
@@ -215,6 +217,9 @@ export type ChatHistorySeedMessage = {
 export type ConversationHistorySeed = {
   threadId: string | null
   messages: ChatHistorySeedMessage[]
+  ownerKind?: 'chat' | 'task' | 'schedule' | 'crew'
+  ownerId?: string
+  memberId?: string
 }
 
 export type EngineUserInput = string | ContentBlock[]
@@ -371,8 +376,13 @@ export type EngineStoreState = {
   checkOllamaStatus: () => Promise<boolean>
 
   // ── Internal ───────────────────────────────────────────────────────────
-  _engine: QueryEngine | null
-  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: RuntimePermissionConfig) => Promise<QueryEngine>
+  _engine: ChatEngine | null
+  _initEngine: (
+    cwd: string,
+    providerSelection?: ChatProviderSelection,
+    permissionConfig?: RuntimePermissionConfig,
+    owner?: Pick<ConversationHistorySeed, 'ownerKind' | 'ownerId' | 'memberId'>,
+  ) => Promise<ChatEngine>
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -452,8 +462,9 @@ function mapChatHistorySeedToEngineMessages(
   }, [])
 }
 
-function getResolvedProvider(provider: unknown): EngineBackend {
-  return normalizeChatProvider(provider)
+function getResolvedProvider(providerState: ReturnType<typeof getChatProviderState>): EngineBackend {
+  if (providerState.provider === 'codex') return 'codex'
+  return providerState.compatibilityProvider ?? 'openai-compatible'
 }
 
 function buildChatEngineConfig(
@@ -464,6 +475,7 @@ function buildChatEngineConfig(
   threadId?: string,
   providerSelection?: ChatProviderSelection,
   permissionConfig?: RuntimePermissionConfig,
+  owner?: Pick<ConversationHistorySeed, 'ownerKind' | 'ownerId' | 'memberId'>,
 ): EngineConfig {
   const configState = useConfigStore.getState()
   const providerState = getChatProviderState(configState, provider, providerSelection)
@@ -482,8 +494,8 @@ function buildChatEngineConfig(
         : { type: 'disabled' },
     },
     ollama: {
-      baseUrl: providerState.provider === 'ollama' ? providerState.endpoint : ollamaConfig.baseUrl,
-      model: providerState.provider === 'ollama' ? providerState.model : ollamaConfig.model,
+      baseUrl: ollamaConfig.baseUrl,
+      model: ollamaConfig.model,
       temperature: ollamaConfig.temperature,
       contextWindow: providerState.contextWindow,
       timeoutMs: effectiveOllamaTimeoutMs,
@@ -492,11 +504,24 @@ function buildChatEngineConfig(
     openAiCompatible: provider === 'openai-compatible' || provider === 'openrouter'
       ? {
           provider,
+          profileId: providerState.profileId,
+          preset: providerState.preset,
+          authMode: providerState.preset === 'ollama' ? 'none' : 'bearer',
           apiKey: providerState.apiKey,
           baseUrl: providerState.endpoint,
           model: providerState.model,
           timeoutMs: providerState.timeoutMs,
           verifyTlsCertificates: providerState.verifyTlsCertificates,
+        }
+      : undefined,
+    codex: provider === 'codex'
+      ? {
+          authProfileId: providerState.authProfileId,
+          model: providerState.model || undefined,
+          reasoningEffort: providerState.reasoningEffort,
+          ownerKind: owner?.ownerKind ?? 'chat',
+          ownerId: owner?.ownerId ?? threadId,
+          memberId: owner?.memberId,
         }
       : undefined,
     cwd,
@@ -532,7 +557,7 @@ export const useEngineStore = create<EngineStoreState>()(
       currentToolUI: null,
       activeTools: [],
       error: null,
-      activeProvider: 'ollama',
+      activeProvider: 'openai-compatible',
 
       // Context
       contextWarning: { level: 'none', estimatedTokens: 0 },
@@ -567,26 +592,29 @@ export const useEngineStore = create<EngineStoreState>()(
       setConfig: (patch) => set((s) => ({ config: { ...s.config, ...patch } })),
       setApiKey: async (apiKey) => {
         await setCredential({ scope: 'engine', ownerId: 'legacy-engine', field: 'api_key' }, apiKey)
-        set((state) => ({ config: { ...state.config, apiKey } }))
+        set((state) => ({ config: { ...state.config, apiKey: '' } }))
       },
 
       // ── Init Engine ──────────────────────────────────────────────────────
-      _initEngine: async (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: RuntimePermissionConfig): Promise<QueryEngine> => {
+      _initEngine: async (cwd, providerSelection, permissionConfig, owner): Promise<ChatEngine> => {
         ensureCommandsRegistered()
 
         const { config, activeProvider, currentRunId, conversationThreadId } = get()
         const providerState = getChatProviderState(useConfigStore.getState(), activeProvider, providerSelection)
         const engineConfig = buildChatEngineConfig(
-          getResolvedProvider(providerState.provider),
+          getResolvedProvider(providerState),
           config,
           cwd,
           currentRunId ?? undefined,
           conversationThreadId ?? undefined,
           providerSelection,
           permissionConfig,
+          owner,
         )
 
-        const engine = new QueryEngine(engineConfig)
+        const engine: ChatEngine = engineConfig.backend === 'codex'
+          ? new CodexAppServerEngine(engineConfig)
+          : new QueryEngine(engineConfig)
 
         // Wire tool UI callback
         engine.setToolUICallback((ui) => {
@@ -612,10 +640,12 @@ export const useEngineStore = create<EngineStoreState>()(
               }
             }
 
-            // Check if active thread is a crew task
+            // Resolve the addressed thread from the history seed. Background task
+            // runs must never inherit the currently visible chat's runner/backend.
             const chatState = useChatStore.getState()
-            const activeThread = chatState.threads.find(t => t.id === chatState.activeThreadId)
-            const isCrewTask = activeThread?.runner === 'crew' && activeThread?.crewId
+            const targetThread = chatState.threads.find((thread) => thread.id === historySeed?.threadId)
+              ?? chatState.threads.find((thread) => thread.id === chatState.activeThreadId)
+            const isCrewTask = targetThread?.runner === 'crew' && targetThread?.crewId
 
             // If this is a crew task, delegate to crew handler
             if (isCrewTask && get().crewTaskMessageHandler) {
@@ -638,7 +668,7 @@ export const useEngineStore = create<EngineStoreState>()(
                   await invoke('engine_run_create', {
                     request: {
                       id: runId,
-                      threadId: activeThread!.id,
+                      threadId: targetThread!.id,
                       title: extractUserInputText(userInput).slice(0, 120) || 'Crew Run',
                       inputSummary: extractUserInputText(userInput).slice(0, 1000),
                       source: 'crew_chat',
@@ -697,8 +727,8 @@ export const useEngineStore = create<EngineStoreState>()(
                   historySeed,
                   providerSelection,
                   permissionConfig: mappedPermissionConfig,
-                  crewId: activeThread!.crewId!,
-                  threadId: activeThread!.id,
+                  crewId: targetThread!.crewId!,
+                  threadId: targetThread!.id,
                   runId,
                   securityMode: prepared.mode,
                 })
@@ -739,15 +769,24 @@ export const useEngineStore = create<EngineStoreState>()(
               sandboxContext: { mode: 'checking', warning: null },
             })
 
+            if (historySeed?.threadId) {
+              set({ conversationThreadId: historySeed.threadId })
+            }
+
             // Get or create engine
             const latestStore = get()
             const userInputText = extractUserInputText(userInput)
             const providerState = getChatProviderState(useConfigStore.getState(), latestStore.activeProvider, providerSelection)
-            const provider = getResolvedProvider(providerState.provider)
+            const provider = getResolvedProvider(providerState)
             const toolsetPolicyId = useCoworkStore.getState().activeToolsetPolicyId
             let engine = state._engine
-            if (!engine) {
-              engine = await state._initEngine(cwd, providerSelection, permissionConfig)
+            if (
+              !engine
+              || (provider === 'codex' && !(engine instanceof CodexAppServerEngine))
+              || (provider !== 'codex' && engine instanceof CodexAppServerEngine)
+            ) {
+              engine?.abort()
+              engine = await state._initEngine(cwd, providerSelection, permissionConfig, historySeed)
             } else {
               engine.updateConfig(buildChatEngineConfig(
                 provider,
@@ -757,6 +796,7 @@ export const useEngineStore = create<EngineStoreState>()(
                 historySeed?.threadId ?? latestStore.conversationThreadId ?? undefined,
                 providerSelection,
                 permissionConfig,
+                historySeed,
               ))
             }
 
@@ -1241,4 +1281,4 @@ export const selectNeedsApproval = (s: EngineStoreState) => s.status === 'waitin
 export const selectIsEngineReady = () => true
 export const selectAvailableModels = (): string[] => []
 export const selectContextWarning = (s: EngineStoreState) => s.contextWarning
-export const selectIsOllamaProvider = (s: EngineStoreState) => s.activeProvider === 'ollama'
+export const selectIsOllamaProvider = () => false

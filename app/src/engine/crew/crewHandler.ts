@@ -27,6 +27,7 @@ import {
   type CrewExecutionLog,
   type CrewExecutionLogEvent,
   type CrewExecutionResponse,
+  type CrewResolvedProviderConfigs,
 } from './workTaskCrewRuntime'
 
 export interface CrewTaskMessageParams {
@@ -205,7 +206,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
       ?? configState.llmProfiles.find((profile) => profile.provider === 'openai-compatible')
     const defaultOpenRouterProfile = configState.llmProfiles.find((profile) => profile.id === configState.defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
       ?? configState.llmProfiles.find((profile) => profile.provider === 'openrouter')
-    let providerConfigs = {
+    let providerConfigs: CrewResolvedProviderConfigs = {
       openAICompatible: resolveExternalProviderConfig(
         crew.providerProfiles.openAICompatible,
         defaultOpenAICompatibleProfile,

@@ -12,6 +12,9 @@ import {
 
 export type OpenAiCompatibleConfig = {
   provider: 'openai-compatible' | 'openrouter'
+  profileId?: string
+  preset?: 'ollama' | 'openrouter' | 'openai' | 'custom'
+  authMode?: 'none' | 'bearer'
   apiKey: string
   model: string
   baseUrl: string
@@ -564,12 +567,13 @@ async function fetchProviderModels(
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<string[]> {
-  if (config.verifyTlsCertificates === false && hasTauriRuntime()) {
+  if (hasTauriRuntime()) {
     const result = await safeInvoke<OpenAiCompatibleModelsResult>('crew_provider_models_list', {
       request: {
         providerKind: config.provider,
+        profileId: config.profileId,
         baseUrl: config.baseUrl,
-        apiKey: config.apiKey,
+        apiKey: '',
         model: config.model,
         verifyTlsCertificates: config.verifyTlsCertificates,
       },
@@ -626,7 +630,7 @@ export async function* streamOpenAiCompatibleMessages(
 ): AsyncGenerator<StreamEvent, SampleResult> {
   const providerLabel = getProviderLabel(config.provider)
 
-  if (!config.apiKey.trim()) {
+  if (config.authMode !== 'none' && !config.apiKey.trim() && !hasTauriRuntime()) {
     throw new Error(`${providerLabel} API-Key fehlt.`)
   }
   if (!config.model.trim()) {
@@ -638,10 +642,9 @@ export async function* streamOpenAiCompatibleMessages(
   const timeoutSignal = createAbortSignal(config.timeoutMs, signal)
 
   try {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey.trim()}`,
-    }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+
+    if (!hasTauriRuntime() && config.apiKey.trim()) headers.Authorization = `Bearer ${config.apiKey.trim()}`
 
     if (config.provider === 'openrouter') {
       headers['HTTP-Referer'] = 'https://localai-cowork.local'
@@ -682,13 +685,15 @@ export async function* streamOpenAiCompatibleMessages(
       }
 
       const bodyJson = JSON.stringify(body)
-      const shouldUseNativeRequest = config.verifyTlsCertificates === false && hasTauriRuntime()
+      const shouldUseNativeRequest = hasTauriRuntime()
 
       if (shouldUseNativeRequest) {
         const result = await safeInvoke<OpenAiCompatibleChatCompletionResult>('openai_compatible_chat_completion', {
           request: {
             endpoint,
             headers,
+            profileId: config.profileId,
+            preset: config.preset,
             body: bodyJson,
             timeoutMs: config.timeoutMs,
             verifyTlsCertificates: config.verifyTlsCertificates,

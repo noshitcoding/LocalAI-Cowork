@@ -8,6 +8,7 @@ import { deriveTaskName, formatWorkTaskStatus, isAbsolutePath } from '../../engi
 import type { CrewScheduleSnapshotMetadata } from '../../engine/tasks/workTaskScheduleService'
 import TaskRunToolbar from './TaskRunToolbar'
 import TaskSchedulerPanel from './TaskSchedulerPanel'
+import TaskBackendFields from './TaskBackendFields'
 
 type TaskProjectContext = {
   id?: string
@@ -162,15 +163,16 @@ export default function TaskDetailPane({
             ) : null}
           </label>
         ) : (
-          <label>
-            {tr('Model (optional)')}
-            <input
-              className="ui-field"
-              value={task.model}
-              onChange={(e) => onUpdateTask(task.id, { model: e.target.value })}
-              placeholder={`${tr('Default')}: ${defaultModel || '-'}`}
-            />
-          </label>
+          <TaskBackendFields
+            selection={task.backendSelection}
+            model={task.model}
+            defaultModel={defaultModel}
+            disabled={isBusy}
+            onChange={(backendSelection) => onUpdateTask(task.id, {
+              backendSelection,
+              model: backendSelection.model ?? '',
+            })}
+          />
         )}
         <label>
           {tr('Expected output')}

@@ -13,6 +13,7 @@ import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 import { tr } from '../i18n'
 import { SHELL_CONTEXT_ACTION_EVENT, type ShellContextAction } from '../product/shellContextActions'
 import { ArrowRight, ChevronDown, ListCollapse, ListTree, MousePointerClick, Settings2, UsersRound, Workflow } from 'lucide-react'
+import { useCodexStore } from '../stores/codexStore'
 
 const ROLE_OPTIONS: AgentRole[] = ['researcher', 'writer', 'reviewer', 'planner', 'executor', 'analyst', 'custom']
 const PROCESS_OPTIONS: Array<{ value: CrewProcess; label: string }> = [
@@ -21,9 +22,8 @@ const PROCESS_OPTIONS: Array<{ value: CrewProcess; label: string }> = [
   { value: 'hierarchical', label: 'Hierarchisch' },
 ]
 const PROVIDER_OPTIONS: Array<{ value: CrewProviderKind; label: string }> = [
-  { value: 'ollama', label: 'Ollama' },
-  { value: 'openai-compatible', label: 'OpenAI-compatible' },
-  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'codex', label: 'Codex verwenden' },
+  { value: 'openai-compatible', label: 'OpenAI-kompatible API' },
 ]
 
 const CREW_STARTER_PRESETS = [
@@ -350,6 +350,9 @@ export default function CrewPanel() {
   const personalities = usePersonalityStore((state) => state.personalities)
   const loadPersonalities = usePersonalityStore((state) => state.loadPersonalities)
   const upsertPersonality = usePersonalityStore((state) => state.upsertPersonality)
+  const codexProfiles = useCodexStore((state) => state.profiles)
+  const codexModelsByProfile = useCodexStore((state) => state.modelsByProfile)
+  const loadCodex = useCodexStore((state) => state.load)
 
   const [crewName, setCrewName] = useState('')
   const [providerModelOptions, setProviderModelOptions] = useState<Record<string, ProviderModelState>>({})
@@ -385,7 +388,8 @@ export default function CrewPanel() {
 
   useEffect(() => {
     void loadPersonalities()
-  }, [loadPersonalities])
+    void loadCodex()
+  }, [loadCodex, loadPersonalities])
 
   const personalityProfiles = useMemo<CrewPersonalityProfile[]>(() => (
     personalities.map((personality) => ({
@@ -441,15 +445,20 @@ export default function CrewPanel() {
     [activeCrewId, crews],
   )
   const defaultOpenAICompatibleProfile = useMemo(
-    () => llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
-      ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible'),
+    () => llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.preset === 'openai')
+      ?? llmProfiles.find((profile) => profile.preset === 'openai'),
     [defaultLlmProfileIds, llmProfiles],
   )
   const defaultOpenRouterProfile = useMemo(
-    () => llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
-      ?? llmProfiles.find((profile) => profile.provider === 'openrouter'),
+    () => llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.preset === 'openrouter')
+      ?? llmProfiles.find((profile) => profile.preset === 'openrouter'),
     [defaultLlmProfileIds.openrouter, llmProfiles],
   )
+  const activeCrewApiProfile = useMemo(() => {
+    const selection = activeCrew?.defaultBackendSelection
+    if (selection?.backend !== 'openai-compatible') return undefined
+    return llmProfiles.find((profile) => profile.id === selection.profileId)
+  }, [activeCrew?.defaultBackendSelection, llmProfiles])
   const activeCrewDiagnostics = useMemo(
     () => (activeCrew ? getCrewDiagnostics(activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, ollama) : { errors: [], warnings: [] }),
     [activeCrew, defaultOpenAICompatibleProfile, defaultOpenRouterProfile, ollama],
@@ -490,9 +499,30 @@ export default function CrewPanel() {
   }
 
   const getProviderModelCatalog = (providerKind: CrewProviderKind) => {
-    if (providerKind === 'ollama') {
+    if (providerKind === 'codex') {
+      const pinned = activeCrew?.defaultBackendSelection?.backend === 'codex'
+        ? activeCrew.defaultBackendSelection.authProfileId
+        : undefined
+      const models = pinned
+        ? codexModelsByProfile[pinned] ?? []
+        : Object.values(codexModelsByProfile).flat()
       return {
-        models: availableModels,
+        models: Array.from(new Set(models.map((entry) => entry.model || entry.id).filter(Boolean))),
+        authoritative: models.length > 0,
+      }
+    }
+    if (providerKind === 'ollama') {
+      const selectedModels = activeCrewApiProfile?.preset === 'ollama'
+        ? llmProfileModels[activeCrewApiProfile.id] ?? []
+        : []
+      return {
+        models: Array.from(new Set([
+          ...selectedModels,
+          ...(activeCrewApiProfile?.preset === 'ollama' && activeCrewApiProfile.model.trim()
+            ? [activeCrewApiProfile.model.trim()]
+            : []),
+          ...availableModels,
+        ])),
         authoritative: true,
       }
     }
@@ -500,9 +530,15 @@ export default function CrewPanel() {
     const providerState = providerKind === 'openai-compatible'
       ? providerModelOptions.openAICompatible
       : providerModelOptions.openRouter
-    const settingsProfile = providerKind === 'openai-compatible'
-      ? defaultOpenAICompatibleProfile
-      : defaultOpenRouterProfile
+    const selectedPresetMatches = activeCrewApiProfile && (
+      (providerKind === 'openrouter' && activeCrewApiProfile.preset === 'openrouter')
+      || (providerKind === 'openai-compatible' && activeCrewApiProfile.preset !== 'openrouter' && activeCrewApiProfile.preset !== 'ollama')
+    )
+    const settingsProfile = selectedPresetMatches
+      ? activeCrewApiProfile
+      : providerKind === 'openai-compatible'
+        ? defaultOpenAICompatibleProfile
+        : defaultOpenRouterProfile
     const settingsModels = settingsProfile ? llmProfileModels[settingsProfile.id] ?? [] : []
     const configuredSettingsModel = settingsProfile?.model.trim() ?? ''
     const models = Array.from(new Set([
@@ -524,14 +560,25 @@ export default function CrewPanel() {
     }
 
     if (providerKind === 'ollama') {
-      return resolvedActiveCrewConfig.model || ollama.model || 'not set'
+      return activeCrewApiProfile?.preset === 'ollama' && activeCrewApiProfile.model.trim()
+        ? activeCrewApiProfile.model.trim()
+        : resolvedActiveCrewConfig.model || ollama.model || 'not set'
     }
 
     if (providerKind === 'openai-compatible') {
-      return resolvedActiveProviderConfigs.openAICompatible?.model || defaultOpenAICompatibleProfile?.model || 'not set'
+      return activeCrewApiProfile?.model.trim()
+        || resolvedActiveProviderConfigs.openAICompatible?.model
+        || defaultOpenAICompatibleProfile?.model
+        || 'not set'
     }
 
-    return resolvedActiveProviderConfigs.openRouter?.model || defaultOpenRouterProfile?.model || 'not set'
+    if (providerKind === 'codex') {
+      return activeCrew?.defaultModel?.trim() || 'automatic'
+    }
+
+    return activeCrewApiProfile?.preset === 'openrouter' && activeCrewApiProfile.model.trim()
+      ? activeCrewApiProfile.model.trim()
+      : resolvedActiveProviderConfigs.openRouter?.model || defaultOpenRouterProfile?.model || 'not set'
   }
 
   const getCrewDefaultModelOptions = () => {
@@ -546,6 +593,7 @@ export default function CrewPanel() {
   }
 
   const isProviderEnabledForCrew = (providerKind: CrewProviderKind) => {
+    if (providerKind === 'codex') return codexProfiles.some((profile) => profile.status === 'ready')
     if (providerKind === 'ollama') {
       return true
     }
@@ -573,19 +621,34 @@ export default function CrewPanel() {
   }
 
   const handleCrewDefaultProviderChange = (providerKind: CrewProviderKind) => {
-    if (providerKind !== 'ollama' && !isProviderEnabledForCrew(providerKind)) return
+    if (!isProviderEnabledForCrew(providerKind)) return
+
+    if (providerKind === 'codex') {
+      updateActiveCrew({
+        defaultProvider: 'codex',
+        defaultBackendSelection: { backend: 'codex' },
+        defaultModel: '',
+      })
+      setCrewModelApplyNotice(null)
+      return
+    }
+
+    const profileId = defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama
+    const profile = llmProfiles.find((entry) => entry.id === profileId) ?? llmProfiles[0]
+    const legacyProvider: CrewProviderKind = profile?.preset === 'openrouter'
+      ? 'openrouter'
+      : profile?.preset === 'ollama'
+        ? 'ollama'
+        : 'openai-compatible'
 
     updateActiveCrew({
-      defaultProvider: providerKind,
+      defaultProvider: legacyProvider,
+      defaultBackendSelection: { backend: 'openai-compatible', profileId: profile?.id ?? '' },
       defaultModel: '',
-      agents: activeCrew?.agents.map((agent) => ({
-        ...agent,
-        providerKind,
-      })),
     })
     setCrewModelApplyNotice(null)
 
-    const providerKey = getProviderKey(providerKind)
+    const providerKey = getProviderKey(legacyProvider)
     if (providerKey) {
       const providerState = providerModelOptions[providerKey]
       if (!providerState?.loading && !providerState?.models.length) {
@@ -1178,13 +1241,61 @@ export default function CrewPanel() {
                       <div className="crew-form-row">
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Provider")}</span>
-                          <select aria-label={tr("Crew-Provider")} className="crew-select" value={activeCrew.defaultProvider || 'ollama'} onChange={(e) => handleCrewDefaultProviderChange(e.target.value as CrewProviderKind)}>
+                          <select
+                            aria-label={tr("Crew-Provider")}
+                            className="crew-select"
+                            value={activeCrew.defaultBackendSelection?.backend ?? (activeCrew.defaultProvider === 'codex' ? 'codex' : 'openai-compatible')}
+                            onChange={(e) => handleCrewDefaultProviderChange(e.target.value as CrewProviderKind)}
+                          >
                             {PROVIDER_OPTIONS.map((o) => {
                               const ok = o.value === activeCrew.defaultProvider || isProviderEnabledForCrew(o.value)
                               return <option key={o.value} value={o.value} disabled={!ok}>{ok ? tr(o.label) : `${tr(o.label)} (${tr("Enable profile")})`}</option>
                             })}
                           </select>
-                          <span className="crew-hint">{tr("The crew provider applies to all members. Only the model can still be overridden per member.")}</span>
+                          {activeCrew.defaultBackendSelection?.backend === 'codex' ? (
+                            <select
+                              aria-label={tr('Codex account')}
+                              className="crew-select"
+                              value={activeCrew.defaultBackendSelection.authProfileId ?? ''}
+                              onChange={(event) => {
+                                const backendSelection = {
+                                  ...activeCrew.defaultBackendSelection!,
+                                  backend: 'codex' as const,
+                                  authProfileId: event.target.value || undefined,
+                                }
+                                updateActiveCrew({ defaultBackendSelection: backendSelection })
+                              }}
+                            >
+                              <option value="">{tr('Automatic (account order)')}</option>
+                              {codexProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                            </select>
+                          ) : (
+                            <select
+                              aria-label={tr('API profile')}
+                              className="crew-select"
+                              value={activeCrew.defaultBackendSelection?.backend === 'openai-compatible'
+                                ? activeCrew.defaultBackendSelection.profileId
+                                : defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama}
+                              onChange={(event) => {
+                                const profile = llmProfiles.find((entry) => entry.id === event.target.value)
+                                const defaultProvider: CrewProviderKind = profile?.preset === 'openrouter'
+                                  ? 'openrouter'
+                                  : profile?.preset === 'ollama'
+                                    ? 'ollama'
+                                    : 'openai-compatible'
+                                updateActiveCrew({
+                                  defaultProvider,
+                                  defaultBackendSelection: {
+                                    backend: 'openai-compatible',
+                                    profileId: event.target.value,
+                                  },
+                                })
+                              }}
+                            >
+                              {llmProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                            </select>
+                          )}
+                          <span className="crew-hint">{tr("Crew members inherit this backend unless they are pinned individually.")}</span>
                         </div>
                         <div className="crew-form-group">
                           <span className="crew-label">{tr("Crew-Model")}</span>
@@ -1350,7 +1461,18 @@ export default function CrewPanel() {
                       {activeCrew.agents.map((agent) => {
                         const profile = agent.personalityId ? personalityProfiles.find((entry) => entry.id === agent.personalityId) ?? null : null
                         const profileAgent = profile ? resolveCrewAgentWithProfile(agent, [profile]) : agent
-                        const effectiveProviderKind = activeCrew.defaultProvider || 'ollama'
+                        const inheritsCrewBackend = !agent.backendSelection
+                        const agentBackendSelection = agent.backendSelection ?? activeCrew.defaultBackendSelection
+                        const selectedApiProfile = agentBackendSelection?.backend === 'openai-compatible'
+                          ? llmProfiles.find((profile) => profile.id === agentBackendSelection.profileId)
+                          : undefined
+                        const effectiveProviderKind: CrewProviderKind = agentBackendSelection?.backend === 'codex'
+                          ? 'codex'
+                          : selectedApiProfile?.preset === 'openrouter'
+                            ? 'openrouter'
+                            : selectedApiProfile?.preset === 'ollama'
+                              ? 'ollama'
+                              : 'openai-compatible'
                         const pmc = getProviderModelCatalog(effectiveProviderKind)
                         const amo = getAgentModelOptions(profileAgent)
                         const selModel = profileAgent.modelOverride?.trim() && amo.includes(profileAgent.modelOverride.trim()) ? profileAgent.modelOverride.trim() : ''
@@ -1441,8 +1563,66 @@ export default function CrewPanel() {
                                     <div className="crew-form-row">
                                       <div className="crew-form-group">
                                         <span className="crew-label">{tr("Provider")}</span>
-                                        <input aria-label={tr("Provider")} className="crew-input" value={getProviderLabel(effectiveProviderKind)} readOnly />
-                                        <span className="crew-hint">{tr("Controlled by the crew provider.")}</span>
+                                        <select
+                                          aria-label={tr("Provider")}
+                                          className="crew-select"
+                                          value={inheritsCrewBackend ? 'inherit' : agentBackendSelection?.backend ?? 'inherit'}
+                                          onChange={(event) => {
+                                            if (event.target.value === 'inherit') {
+                                              updateActiveCrewAgent(agent.id, { backendSelection: undefined })
+                                              return
+                                            }
+                                            updateActiveCrewAgent(agent.id, {
+                                              providerKind: event.target.value === 'codex' ? 'codex' : activeCrew.defaultProvider ?? 'openai-compatible',
+                                              backendSelection: event.target.value === 'codex'
+                                                ? { backend: 'codex' }
+                                                : activeCrew.defaultBackendSelection?.backend === 'openai-compatible'
+                                                  ? activeCrew.defaultBackendSelection
+                                                  : {
+                                                      backend: 'openai-compatible',
+                                                      profileId: defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama,
+                                                    },
+                                            })
+                                          }}
+                                        >
+                                          <option value="inherit">{tr('Inherit crew backend')}</option>
+                                          <option value="codex">{tr('Use Codex')}</option>
+                                          <option value="openai-compatible">{tr('OpenAI-compatible API')}</option>
+                                        </select>
+                                        {agentBackendSelection?.backend === 'codex' ? (
+                                          <select
+                                            aria-label={tr('Codex account')}
+                                            className="crew-select"
+                                            value={agentBackendSelection.authProfileId ?? ''}
+                                            onChange={(event) => updateActiveCrewAgent(agent.id, {
+                                              backendSelection: {
+                                                ...agentBackendSelection,
+                                                authProfileId: event.target.value || undefined,
+                                              },
+                                            })}
+                                          >
+                                            <option value="">{tr('Automatic (account order)')}</option>
+                                            {codexProfiles.map((codexProfile) => (
+                                              <option key={codexProfile.id} value={codexProfile.id}>{codexProfile.name}</option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          <select
+                                            aria-label={tr('API profile')}
+                                            className="crew-select"
+                                            value={agentBackendSelection?.backend === 'openai-compatible'
+                                              ? agentBackendSelection.profileId
+                                              : defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama}
+                                            onChange={(event) => updateActiveCrewAgent(agent.id, {
+                                              backendSelection: { backend: 'openai-compatible', profileId: event.target.value },
+                                            })}
+                                          >
+                                            {llmProfiles.map((llmProfile) => (
+                                              <option key={llmProfile.id} value={llmProfile.id}>{llmProfile.name}</option>
+                                            ))}
+                                          </select>
+                                        )}
+                                        <span className="crew-hint">{tr("Leave the Codex account on Automatic to use the crew account order.")}</span>
                                       </div>
                                       <div className="crew-form-group">
                                         <span className="crew-label">{tr("Max Iterationen")}</span>

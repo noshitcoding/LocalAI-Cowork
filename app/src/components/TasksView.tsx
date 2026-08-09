@@ -28,6 +28,7 @@ import {
   type CrewExecutionLog,
   type CrewExecutionLogEvent,
   type CrewExecutionResponse,
+  type CrewResolvedProviderConfigs,
 } from '../engine/crew/workTaskCrewRuntime'
 import {
   buildCrewRunOutput,
@@ -694,7 +695,7 @@ export default function TasksView() {
       const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
         ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
 
-      let providerConfigs = {
+      let providerConfigs: CrewResolvedProviderConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
@@ -907,7 +908,7 @@ export default function TasksView() {
       const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
         ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
 
-      let providerConfigs = {
+      let providerConfigs: CrewResolvedProviderConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,

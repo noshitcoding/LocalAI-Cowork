@@ -146,17 +146,18 @@ describe('chatStore', () => {
 
   it('keeps provider settings isolated per thread', () => {
     const firstThreadId = useChatStore.getState().addThread('Erster Chat', {
-      provider: 'ollama',
+      backend: 'openai-compatible',
+      profileId: 'default-ollama',
       model: 'llama3',
     })
     const secondThreadId = useChatStore.getState().addThread('Zweiter Chat', {
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: 'anthropic/claude-sonnet-4',
       profileId: 'default-openrouter',
     })
 
     useChatStore.getState().setThreadProviderSettings(firstThreadId, {
-      provider: 'openai-compatible',
+      backend: 'openai-compatible',
       model: 'gpt-4.1-mini',
       profileId: 'default-openai-compatible',
     })
@@ -165,12 +166,12 @@ describe('chatStore', () => {
     const secondThread = useChatStore.getState().threads.find((thread) => thread.id === secondThreadId)
 
     expect(firstThread?.providerSettings).toEqual({
-      provider: 'openai-compatible',
+      backend: 'openai-compatible',
       model: 'gpt-4.1-mini',
       profileId: 'default-openai-compatible',
     })
     expect(secondThread?.providerSettings).toEqual({
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: 'anthropic/claude-sonnet-4',
       profileId: 'default-openrouter',
     })

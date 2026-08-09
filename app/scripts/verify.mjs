@@ -53,6 +53,7 @@ runStep('Bundled CrewAI runtime', 'powershell', [
   '-File',
   join(root, 'scripts', 'prepare-crew-runtime.ps1'),
 ])
+runStep('Bundled Codex runtime', node, [join(root, 'scripts', 'prepare-codex-runtime.mjs')])
 runStep('Supply-chain policy', node, [join(root, 'scripts', 'supply-chain.mjs'), 'check'])
 runStep('TypeScript', node, [localBins.tsc, '-b'])
 runStep('ESLint', node, [localBins.eslint, '.', '--max-warnings', '0'])

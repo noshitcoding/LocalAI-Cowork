@@ -66,6 +66,9 @@ try {
 
     $requiredFiles = @(
         $appExecutable,
+        (Join-Path $installRoot "codex\runtime-bundle-manifest.json"),
+        (Join-Path $installRoot "codex\LICENSE"),
+        (Join-Path $installRoot "codex\vendor\x86_64-pc-windows-msvc\bin\codex.exe"),
         (Join-Path $installRoot "python\windows.zip"),
         (Join-Path $installRoot "python\crew_runtime\wheels.zip"),
         (Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"),
@@ -78,7 +81,48 @@ try {
         -not (Test-Path -LiteralPath $_ -PathType Leaf)
     })
     if ($missingFiles.Count -gt 0) {
-        throw "Installed Crew runtime payload is incomplete: $($missingFiles -join ', ')"
+        throw "Installed runtime payload is incomplete: $($missingFiles -join ', ')"
+    }
+
+    $codexRoot = Join-Path $installRoot "codex"
+    $codexManifestPath = Join-Path $codexRoot "runtime-bundle-manifest.json"
+    $codexManifest = Get-Content -LiteralPath $codexManifestPath -Raw | ConvertFrom-Json
+    if (
+        $codexManifest.version -ne "0.147.0" -or
+        $codexManifest.protocolSchema -ne "app-server-0.147.0" -or
+        $codexManifest.target -ne "windows-x64"
+    ) {
+        throw "Installed Codex runtime manifest is incompatible."
+    }
+    foreach ($entry in @(
+        @{ Label = "Codex executable"; RelativePath = [string]$codexManifest.binary; Sha256 = [string]$codexManifest.sha256 },
+        @{ Label = "Codex license"; RelativePath = [string]$codexManifest.license; Sha256 = [string]$codexManifest.licenseSha256 }
+    )) {
+        if ([System.IO.Path]::IsPathRooted($entry.RelativePath)) {
+            throw "$($entry.Label) path must be relative."
+        }
+        $candidate = [System.IO.Path]::GetFullPath((Join-Path $codexRoot $entry.RelativePath))
+        $expectedPrefix = [System.IO.Path]::GetFullPath($codexRoot).TrimEnd('\') + '\'
+        if (-not $candidate.StartsWith($expectedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "$($entry.Label) escapes the installed Codex resource directory."
+        }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "$($entry.Label) is missing from the installed application."
+        }
+        if ((Get-Sha256 -Path $candidate) -ne $entry.Sha256) {
+            throw "$($entry.Label) SHA-256 does not match the Codex runtime manifest."
+        }
+    }
+    $codexLicense = Get-Content -LiteralPath (Join-Path $codexRoot $codexManifest.license) -Raw
+    if ($codexLicense -notmatch '(?m)^\s*Apache License\b') {
+        throw "Installed Codex license is not Apache-2.0."
+    }
+    if (Test-Path -LiteralPath (Join-Path $codexRoot "auth.json")) {
+        throw "Installed Codex payload contains a forbidden auth.json file."
+    }
+    $codexVersion = & (Join-Path $codexRoot $codexManifest.binary) --version
+    if ($LASTEXITCODE -ne 0 -or ($codexVersion | Out-String) -notmatch '0\.147\.0') {
+        throw "Installed Codex executable failed its version probe."
     }
 
     $manifestPath = Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"
@@ -178,12 +222,13 @@ try {
     }
 
     $successMessage = (
-        "Installer Crew runtime smoke passed for Local AI Cowork {0} " +
-        "(Python {1}, CrewAI {2}, automatic bootstrap verified: {3})."
+        "Installer runtime smoke passed for Local AI Cowork {0} " +
+        "(Codex {1}, Python {2}, CrewAI {3}, automatic bootstrap verified: {4})."
     )
     Write-Host (
         $successMessage -f
         $ExpectedVersion,
+        $codexManifest.version,
         $manifest.python.version,
         $manifest.smoke.crewaiVersion,
         (-not $SkipRuntimeBootstrap)

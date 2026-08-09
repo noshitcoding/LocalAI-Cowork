@@ -27,6 +27,7 @@ The project is early. Windows is the most mature target, while Linux x86_64 is r
 - Local desktop app built with Tauri, React, TypeScript, and Rust
 - Chat workspace with persistent sessions, message history, and streaming output
 - Local Ollama support with health checks, model selection, and configurable timeouts
+- Local Codex app-server accounts plus reusable OpenAI-compatible provider profiles
 - OpenAI-compatible and OpenRouter profile support
 - MCP server management with probing and tool execution
 - File and folder context for chat tasks
@@ -195,8 +196,8 @@ npm run smoke:desktop
 The GitHub Actions workflow in `.github/workflows/release.yml` builds Windows x64 and Linux x64 packages, then publishes one GitHub Release only after every required job succeeds.
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 Release conditions are fail-closed: the tag must be valid `v`-prefixed SemVer, already exist, match the shared npm/Cargo/Tauri version, and point to a commit contained in `main`. Windows verification, Linux compilation and package smoke tests, vulnerability audits, updater signatures, and the `release` environment (including any configured protection rules) must all pass before publication. Stable tags cannot be manually marked as prereleases; prerelease tags use a SemVer suffix such as `v0.3.0-beta.1`.

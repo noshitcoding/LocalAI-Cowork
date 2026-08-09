@@ -1,6 +1,10 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { hasTauriRuntime, safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
+import {
+  normalizeChatProviderSelection,
+  type ChatProviderSelection,
+} from '../utils/chatProvider'
 
 const LEGACY_STORAGE_KEY = 'open-cowork-work-tasks'
 const SQLITE_MIGRATION_FLAG = 'open-cowork-work-tasks-sqlite-migrated'
@@ -19,6 +23,8 @@ export type WorkTask = {
   crewId: string | null
   /** Model override for runner==='model'. Empty means "use current default". */
   model: string
+  /** Stable backend/profile choice used by model tasks and scheduled snapshots. */
+  backendSelection?: ChatProviderSelection
   /** Cron-like expression used by the backend scheduler (e.g. "daily 09:00"). */
   scheduleExpr: string
   /** When true, a scheduler entry should exist and be active. */
@@ -41,6 +47,7 @@ type WorkTaskInput = {
   runner: WorkTaskRunner
   crewId?: string | null
   model?: string
+  backendSelection?: ChatProviderSelection
   scheduleExpr?: string
   scheduleEnabled?: boolean
 }
@@ -59,6 +66,10 @@ type BackendWorkTask = {
   crewId?: string | null
   crew_id?: string | null
   model?: string
+  backendSelection?: ChatProviderSelection
+  backend_selection?: ChatProviderSelection | string | null
+  backendSelectionJson?: string | null
+  backend_selection_json?: string | null
   scheduleExpr?: string
   schedule_expr?: string
   scheduleEnabled?: boolean
@@ -85,6 +96,9 @@ type RawWorkTask = Partial<WorkTask> & {
   last_run_at?: unknown
   created_at?: unknown
   updated_at?: unknown
+  backend_selection?: unknown
+  backendSelectionJson?: unknown
+  backend_selection_json?: unknown
 }
 
 type WorkTasksState = {
@@ -147,6 +161,22 @@ function normalizeStatus(value: unknown): WorkTaskStatus {
     : 'idle'
 }
 
+function parseBackendSelection(...values: unknown[]): ChatProviderSelection | undefined {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        const normalized = normalizeChatProviderSelection(JSON.parse(value))
+        if (normalized) return normalized
+      } catch {
+        // Ignore corrupt legacy metadata and continue with the next representation.
+      }
+    }
+    const normalized = normalizeChatProviderSelection(value)
+    if (normalized) return normalized
+  }
+  return undefined
+}
+
 export function normalizeTask(raw: RawWorkTask, recoverInterrupted = true): WorkTask | null {
   if (typeof raw.id !== 'string' || !raw.id.trim()) return null
 
@@ -168,6 +198,14 @@ export function normalizeTask(raw: RawWorkTask, recoverInterrupted = true): Work
   const threadId = pickNullableString(raw.threadId, raw.thread_id)
   const crewId = runner === 'crew' ? pickNullableString(raw.crewId, raw.crew_id) : null
   const model = runner === 'model' ? pickString(raw.model).trim() : ''
+  const backendSelection = runner === 'model'
+    ? parseBackendSelection(
+        raw.backendSelection,
+        raw.backend_selection,
+        raw.backendSelectionJson,
+        raw.backend_selection_json,
+      )
+    : undefined
 
   return {
     id: raw.id.trim(),
@@ -179,6 +217,7 @@ export function normalizeTask(raw: RawWorkTask, recoverInterrupted = true): Work
     runner,
     crewId: crewId?.trim() ? crewId : null,
     model,
+    backendSelection,
     scheduleExpr,
     scheduleEnabled: Boolean(raw.scheduleEnabled ?? raw.schedule_enabled) && Boolean(scheduleExpr),
     status,
@@ -205,6 +244,10 @@ function toBackendRequest(task: WorkTask): BackendWorkTask {
     runner: task.runner,
     crewId: task.runner === 'crew' ? task.crewId : null,
     model: task.runner === 'model' ? task.model : '',
+    backendSelection: task.runner === 'model' ? task.backendSelection : undefined,
+    backendSelectionJson: task.runner === 'model' && task.backendSelection
+      ? JSON.stringify(task.backendSelection)
+      : null,
     scheduleExpr: task.scheduleExpr,
     scheduleEnabled: task.scheduleEnabled,
     status: task.status,
@@ -329,6 +372,9 @@ export const useWorkTasksStore = create<WorkTasksState>()(
           runner: input.runner,
           crewId: input.runner === 'crew' ? (input.crewId ?? null) : null,
           model: input.runner === 'model' ? (input.model ?? '').trim() : '',
+          backendSelection: input.runner === 'model'
+            ? normalizeChatProviderSelection(input.backendSelection)
+            : undefined,
           scheduleExpr: (input.scheduleExpr ?? '').trim(),
           scheduleEnabled: Boolean(input.scheduleEnabled) && Boolean((input.scheduleExpr ?? '').trim()),
           status: 'idle',

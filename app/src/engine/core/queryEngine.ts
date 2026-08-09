@@ -59,16 +59,18 @@ import {
 import { getAllTools, getToolDefinitions, registerAllBuiltinTools } from '../tools/registry'
 import { ContextManager } from '../services/contextManager'
 import { estimateTokens } from '../services/compact'
+import type { CodexEngineConfig } from '../codex/codexAppServerEngine'
 
 // ── Engine Configuration ───────────────────────────────────────────────────
 
-export type EngineBackend = 'ollama' | 'anthropic' | 'openai-compatible' | 'openrouter'
+export type EngineBackend = 'codex' | 'ollama' | 'anthropic' | 'openai-compatible' | 'openrouter'
 
 export type EngineConfig = {
   backend: EngineBackend
   anthropic?: AnthropicConfig
   ollama?: OllamaEngineConfig
   openAiCompatible?: OpenAiCompatibleConfig
+  codex?: CodexEngineConfig
   cwd: string
   systemPrompt: string
   maxTurns?: number

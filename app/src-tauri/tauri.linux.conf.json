@@ -1,7 +1,7 @@
 {
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev:tauri"
+    "beforeBuildCommand": "npm run prepare:codex-runtime && npm run build",
+    "beforeDevCommand": "npm run prepare:codex-runtime && npm run dev:tauri"
   },
   "bundle": {
     "targets": [

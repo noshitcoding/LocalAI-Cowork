@@ -14,7 +14,7 @@ use crate::sensitive_data::{
     MAX_LOG_SUMMARY_BYTES, MAX_LOG_TEXT_BYTES,
 };
 
-const LATEST_SCHEMA_VERSION: i64 = 26;
+const LATEST_SCHEMA_VERSION: i64 = 27;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PRE_MIGRATION_BACKUPS: usize = 3;
 const MAX_ENGINE_EVENTS_PER_RUN: i64 = 2_000;
@@ -25,6 +25,75 @@ const MAX_AUDIT_EVENTS: i64 = 10_000;
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProfileRow {
+    pub id: String,
+    pub name: String,
+    pub preset: String,
+    pub auth_mode: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout_ms: i64,
+    pub verify_tls_certificates: bool,
+    pub context_window: Option<i64>,
+    pub temperature: Option<f64>,
+    pub is_example: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppBackendDefaultsRow {
+    pub backend: Option<String>,
+    pub api_profile_id: Option<String>,
+    pub setup_completed: bool,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAuthProfileRow {
+    pub id: String,
+    pub name: String,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+    pub plan_type: Option<String>,
+    pub priority: i64,
+    pub status: String,
+    pub cooldown_until: Option<String>,
+    pub quota_json: Option<String>,
+    pub quota_reset_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadBindingRow {
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub member_id: String,
+    pub auth_profile_id: String,
+    pub codex_thread_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFallbackApprovalRow {
+    pub id: String,
+    pub run_id: String,
+    pub api_profile_id: Option<String>,
+    pub status: String,
+    pub reason: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub consumed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -217,6 +286,81 @@ fn prune_pre_migration_backups(backup_dir: &Path, keep: usize) {
     }
 }
 
+fn is_snapshot_secret_key(key: &str) -> bool {
+    let compact = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        compact.as_str(),
+        "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "chatgptauthtokens"
+            | "authorization"
+            | "clientsecret"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "headers"
+            | "env"
+    ) || compact.ends_with("accesstoken")
+        || compact.ends_with("refreshtoken")
+        || compact.ends_with("clientsecret")
+}
+
+fn strip_snapshot_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.retain(|key, _| !is_snapshot_secret_key(key));
+            for value in object.values_mut() {
+                strip_snapshot_secrets(value);
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            for value in entries {
+                strip_snapshot_secrets(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_runtime_snapshot_json(input: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(input) else {
+        return redact_and_bound_json_text(input, MAX_LOG_JSON_BYTES);
+    };
+    strip_snapshot_secrets(&mut value);
+    redact_and_bound_json_text(&value.to_string(), MAX_LOG_JSON_BYTES)
+}
+
+fn sanitize_optional_runtime_snapshot_json(input: Option<&str>) -> Option<String> {
+    input.map(sanitize_runtime_snapshot_json)
+}
+
+fn sanitize_snapshot_column(conn: &Connection, table: &str, column: &str) -> SqlResult<()> {
+    let rows = {
+        let mut statement = conn.prepare(&format!(
+            "SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"
+        ))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+        rows
+    };
+    for (id, snapshot) in rows {
+        let sanitized = sanitize_runtime_snapshot_json(&snapshot);
+        conn.execute(
+            &format!("UPDATE {table} SET {column} = ?2 WHERE id = ?1"),
+            params![id, sanitized],
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRow {
     pub id: String,
@@ -258,6 +402,7 @@ pub struct WorkTaskRow {
     pub last_run_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1897,9 +2042,514 @@ impl Database {
             conn.execute("UPDATE schema_version SET version = 26", [])?;
         }
 
+        if version < 27 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS api_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    preset TEXT NOT NULL CHECK(preset IN ('ollama', 'openrouter', 'openai', 'custom')),
+                    auth_mode TEXT NOT NULL CHECK(auth_mode IN ('none', 'bearer')),
+                    base_url TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    timeout_ms INTEGER NOT NULL DEFAULT 600000,
+                    verify_tls_certificates INTEGER NOT NULL DEFAULT 1,
+                    context_window INTEGER,
+                    temperature REAL,
+                    is_example INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS app_backend_defaults (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    backend TEXT CHECK(backend IN ('codex', 'openai-compatible')),
+                    api_profile_id TEXT REFERENCES api_profiles(id) ON DELETE SET NULL,
+                    setup_completed INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS codex_auth_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    account_id TEXT,
+                    plan_type TEXT,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'signed_out'
+                      CHECK(status IN ('signed_out', 'login_pending', 'ready', 'limited', 'requires_reauth', 'unavailable')),
+                    cooldown_until TEXT,
+                    quota_json TEXT,
+                    quota_reset_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS codex_thread_bindings (
+                    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('chat', 'task', 'schedule', 'crew')),
+                    owner_id TEXT NOT NULL,
+                    member_id TEXT NOT NULL DEFAULT '',
+                    auth_profile_id TEXT NOT NULL,
+                    codex_thread_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(owner_kind, owner_id, member_id, auth_profile_id),
+                    FOREIGN KEY(auth_profile_id) REFERENCES codex_auth_profiles(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_fallback_approvals (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL UNIQUE,
+                    api_profile_id TEXT REFERENCES api_profiles(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                      CHECK(status IN ('pending', 'approved', 'denied', 'consumed')),
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    consumed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_codex_profiles_priority
+                  ON codex_auth_profiles(priority ASC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_codex_bindings_owner
+                  ON codex_thread_bindings(owner_kind, owner_id, member_id);
+                CREATE INDEX IF NOT EXISTS idx_provider_fallback_status
+                  ON provider_fallback_approvals(status, created_at DESC);
+
+                INSERT OR IGNORE INTO api_profiles (
+                    id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+                ) VALUES
+                  ('default-ollama', 'Ollama', 'ollama', 'none', 'http://localhost:11434/v1', 'llama3.1:8b', 600000, 1, 128000, 0.1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                  ('default-openrouter', 'OpenRouter', 'openrouter', 'bearer', 'https://openrouter.ai/api/v1', '', 600000, 1, 128000, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                  ('default-openai-compatible', 'OpenAI', 'openai', 'bearer', 'https://api.openai.com/v1', 'gpt-4.1-mini', 600000, 1, 128000, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+                INSERT OR IGNORE INTO app_backend_defaults (
+                    singleton, backend, api_profile_id, setup_completed, updated_at
+                ) VALUES (1, NULL, 'default-ollama', 0, CURRENT_TIMESTAMP);
+
+                UPDATE schema_version SET version = 27;",
+            )?;
+            sanitize_snapshot_column(&conn, "scheduled_tasks", "crew_snapshot_json")?;
+            sanitize_snapshot_column(&conn, "scheduled_tasks", "model_config_json")?;
+            sanitize_snapshot_column(&conn, "crew_runs", "crew_snapshot_json")?;
+        }
+
+        // Kept idempotent for pre-release v27 databases created before task backend pinning.
+        add_column_if_missing(
+            &conn,
+            "work_tasks",
+            "backend_selection_json",
+            "backend_selection_json TEXT",
+        )?;
+
         transaction.commit()?;
         conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
         Ok(())
+    }
+
+    // -- Backend profiles (schema v27) --
+
+    pub fn list_api_profiles(&self) -> SqlResult<Vec<ApiProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+             FROM api_profiles ORDER BY is_example DESC, name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ApiProfileRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                preset: row.get(2)?,
+                auth_mode: row.get(3)?,
+                base_url: row.get(4)?,
+                model: row.get(5)?,
+                timeout_ms: row.get(6)?,
+                verify_tls_certificates: row.get(7)?,
+                context_window: row.get(8)?,
+                temperature: row.get(9)?,
+                is_example: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_api_profile(&self, id: &str) -> SqlResult<Option<ApiProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+             FROM api_profiles WHERE id = ?1 LIMIT 1",
+            params![id],
+            |row| {
+                Ok(ApiProfileRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    preset: row.get(2)?,
+                    auth_mode: row.get(3)?,
+                    base_url: row.get(4)?,
+                    model: row.get(5)?,
+                    timeout_ms: row.get(6)?,
+                    verify_tls_certificates: row.get(7)?,
+                    context_window: row.get(8)?,
+                    temperature: row.get(9)?,
+                    is_example: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn upsert_api_profile(&self, profile: &ApiProfileRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO api_profiles (
+                id, name, preset, auth_mode, base_url, model, timeout_ms,
+                verify_tls_certificates, context_window, temperature, is_example,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, preset=excluded.preset, auth_mode=excluded.auth_mode,
+               base_url=excluded.base_url, model=excluded.model, timeout_ms=excluded.timeout_ms,
+               verify_tls_certificates=excluded.verify_tls_certificates,
+               context_window=excluded.context_window, temperature=excluded.temperature,
+               updated_at=excluded.updated_at",
+            params![
+                profile.id,
+                profile.name,
+                profile.preset,
+                profile.auth_mode,
+                profile.base_url,
+                profile.model,
+                profile.timeout_ms,
+                profile.verify_tls_certificates,
+                profile.context_window,
+                profile.temperature,
+                profile.is_example,
+                profile.created_at,
+                profile.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_api_profile(&self, id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "DELETE FROM api_profiles
+             WHERE id = ?1
+               AND id != COALESCE((SELECT api_profile_id FROM app_backend_defaults WHERE singleton = 1), '')",
+            params![id],
+        )
+    }
+
+    pub fn get_app_backend_defaults(&self) -> SqlResult<AppBackendDefaultsRow> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT backend, api_profile_id, setup_completed, updated_at
+             FROM app_backend_defaults WHERE singleton = 1",
+            [],
+            |row| {
+                Ok(AppBackendDefaultsRow {
+                    backend: row.get(0)?,
+                    api_profile_id: row.get(1)?,
+                    setup_completed: row.get::<_, i64>(2)? != 0,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+    }
+
+    pub fn upsert_app_backend_defaults(&self, defaults: &AppBackendDefaultsRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO app_backend_defaults (
+               singleton, backend, api_profile_id, setup_completed, updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(singleton) DO UPDATE SET
+               backend=excluded.backend,
+               api_profile_id=excluded.api_profile_id,
+               setup_completed=excluded.setup_completed,
+               updated_at=excluded.updated_at",
+            params![
+                defaults.backend,
+                defaults.api_profile_id,
+                defaults.setup_completed as i32,
+                defaults.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_default_api_profile(&self, profile_id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE app_backend_defaults
+             SET api_profile_id = ?1, updated_at = CURRENT_TIMESTAMP
+             WHERE singleton = 1 AND EXISTS (SELECT 1 FROM api_profiles WHERE id = ?1)",
+            params![profile_id],
+        )
+    }
+
+    pub fn list_codex_auth_profiles(&self) -> SqlResult<Vec<CodexAuthProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, email, account_id, plan_type, priority, status,
+                    cooldown_until, quota_json, quota_reset_at, created_at, updated_at
+             FROM codex_auth_profiles ORDER BY priority ASC, created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CodexAuthProfileRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                email: row.get(2)?,
+                account_id: row.get(3)?,
+                plan_type: row.get(4)?,
+                priority: row.get(5)?,
+                status: row.get(6)?,
+                cooldown_until: row.get(7)?,
+                quota_json: row.get(8)?,
+                quota_reset_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_codex_auth_profile(&self, profile: &CodexAuthProfileRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO codex_auth_profiles (
+                id, name, email, account_id, plan_type, priority, status,
+                cooldown_until, quota_json, quota_reset_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, email=excluded.email, account_id=excluded.account_id,
+               plan_type=excluded.plan_type, priority=excluded.priority, status=excluded.status,
+               cooldown_until=excluded.cooldown_until, quota_json=excluded.quota_json,
+               quota_reset_at=excluded.quota_reset_at, updated_at=excluded.updated_at",
+            params![
+                profile.id,
+                profile.name,
+                profile.email,
+                profile.account_id,
+                profile.plan_type,
+                profile.priority,
+                profile.status,
+                profile.cooldown_until,
+                profile.quota_json,
+                profile.quota_reset_at,
+                profile.created_at,
+                profile.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_codex_auth_profile(&self, id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute("DELETE FROM codex_auth_profiles WHERE id = ?1", params![id])
+    }
+
+    pub fn get_codex_thread_binding(
+        &self,
+        owner_kind: &str,
+        owner_id: &str,
+        member_id: &str,
+        auth_profile_id: &str,
+    ) -> SqlResult<Option<CodexThreadBindingRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT owner_kind, owner_id, member_id, auth_profile_id, codex_thread_id,
+                    created_at, updated_at
+             FROM codex_thread_bindings
+             WHERE owner_kind=?1 AND owner_id=?2 AND member_id=?3 AND auth_profile_id=?4",
+            params![owner_kind, owner_id, member_id, auth_profile_id],
+            |row| {
+                Ok(CodexThreadBindingRow {
+                    owner_kind: row.get(0)?,
+                    owner_id: row.get(1)?,
+                    member_id: row.get(2)?,
+                    auth_profile_id: row.get(3)?,
+                    codex_thread_id: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn upsert_codex_thread_binding(&self, binding: &CodexThreadBindingRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO codex_thread_bindings (
+                owner_kind, owner_id, member_id, auth_profile_id, codex_thread_id,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner_kind, owner_id, member_id, auth_profile_id) DO UPDATE SET
+               codex_thread_id=excluded.codex_thread_id, updated_at=excluded.updated_at",
+            params![
+                binding.owner_kind,
+                binding.owner_id,
+                binding.member_id,
+                binding.auth_profile_id,
+                binding.codex_thread_id,
+                binding.created_at,
+                binding.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_provider_fallback_approval(
+        &self,
+        approval: &ProviderFallbackApprovalRow,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO provider_fallback_approvals (
+               id, run_id, api_profile_id, status, reason, created_at, resolved_at, consumed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                approval.id,
+                approval.run_id,
+                approval.api_profile_id,
+                approval.status,
+                approval.reason,
+                approval.created_at,
+                approval.resolved_at,
+                approval.consumed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_provider_fallback_approvals(
+        &self,
+        status: Option<&str>,
+    ) -> SqlResult<Vec<ProviderFallbackApprovalRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, api_profile_id, status, reason, created_at, resolved_at, consumed_at
+             FROM provider_fallback_approvals
+             WHERE (?1 IS NULL OR status = ?1)
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![status], |row| {
+            Ok(ProviderFallbackApprovalRow {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                api_profile_id: row.get(2)?,
+                status: row.get(3)?,
+                reason: row.get(4)?,
+                created_at: row.get(5)?,
+                resolved_at: row.get(6)?,
+                consumed_at: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn resolve_provider_fallback_approval(
+        &self,
+        id: &str,
+        status: &str,
+        api_profile_id: Option<&str>,
+        resolved_at: &str,
+    ) -> SqlResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE provider_fallback_approvals
+             SET status=?2, api_profile_id=?3, resolved_at=?4
+             WHERE id=?1 AND status='pending'",
+            params![id, status, api_profile_id, resolved_at],
+        )
+        .map(|changed| changed == 1)
+    }
+
+    pub fn consume_provider_fallback_approval(
+        &self,
+        id: &str,
+        consumed_at: &str,
+    ) -> SqlResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE provider_fallback_approvals
+             SET status='consumed', consumed_at=?2
+             WHERE id=?1 AND status='approved'",
+            params![id, consumed_at],
+        )
+        .map(|changed| changed == 1)
+    }
+
+    pub fn scheduled_task_id_for_run(&self, run_id: &str) -> SqlResult<Option<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT task_id FROM scheduled_runs WHERE id=?1 LIMIT 1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
     }
 
     // -- Projects --
@@ -2203,6 +2853,18 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_thread_title(&self, id: &str, title: &str) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE chat_threads SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, title],
+        )?;
+        Ok(())
+    }
+
     pub fn update_thread_permission_config(
         &self,
         id: &str,
@@ -2308,7 +2970,7 @@ impl Database {
         finished_at: Option<&str>,
     ) -> SqlResult<()> {
         let error = redact_and_bound_optional_text(error, MAX_LOG_TEXT_BYTES);
-        let crew_snapshot_json = redact_and_bound_json_text(crew_snapshot_json, MAX_LOG_JSON_BYTES);
+        let crew_snapshot_json = sanitize_runtime_snapshot_json(crew_snapshot_json);
         let conn = self
             .conn
             .lock()
@@ -3131,8 +3793,9 @@ impl Database {
         conn.execute(
             "INSERT INTO work_tasks (
                 id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                backend_selection_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 prompt = excluded.prompt,
@@ -3148,6 +3811,7 @@ impl Database {
                 output = excluded.output,
                 error = excluded.error,
                 last_run_at = excluded.last_run_at,
+                backend_selection_json = excluded.backend_selection_json,
                 updated_at = excluded.updated_at",
             params![
                 &task.id,
@@ -3167,6 +3831,7 @@ impl Database {
                 &task.last_run_at,
                 &task.created_at,
                 &task.updated_at,
+                &task.backend_selection_json,
             ],
         )?;
         Ok(())
@@ -3179,7 +3844,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.query_row(
             "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                    backend_selection_json
              FROM work_tasks
              WHERE id = ?1
              LIMIT 1",
@@ -3204,6 +3870,7 @@ impl Database {
                     last_run_at: row.get(14)?,
                     created_at: row.get(15)?,
                     updated_at: row.get(16)?,
+                    backend_selection_json: row.get(17)?,
                 })
             },
         )
@@ -3217,7 +3884,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
             "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                    backend_selection_json
              FROM work_tasks
              ORDER BY created_at DESC",
         )?;
@@ -3241,6 +3909,7 @@ impl Database {
                 last_run_at: row.get(14)?,
                 created_at: row.get(15)?,
                 updated_at: row.get(16)?,
+                backend_selection_json: row.get(17)?,
             })
         })?;
         rows.collect()
@@ -3747,6 +4416,8 @@ impl Database {
         next_run_at: Option<&str>,
         now: &str,
     ) -> SqlResult<()> {
+        let crew_snapshot_json = sanitize_optional_runtime_snapshot_json(crew_snapshot_json);
+        let model_config_json = sanitize_optional_runtime_snapshot_json(model_config_json);
         let conn = self
             .conn
             .lock()
@@ -3776,8 +4447,8 @@ impl Database {
                 schedule_expr,
                 task_kind,
                 crew_id,
-                crew_snapshot_json,
-                model_config_json,
+                crew_snapshot_json.as_deref(),
+                model_config_json.as_deref(),
                 priority,
                 depends_on_task_ids_json,
                 active as i32,
@@ -6459,6 +7130,10 @@ mod tests {
         assert_eq!(threads[0].6, "model");
         assert_eq!(threads[0].7, None);
 
+        db.update_thread_title("t1", "Renamed thread").unwrap();
+        let threads = db.list_threads().unwrap();
+        assert_eq!(threads[0].1, "Renamed thread");
+
         db.update_thread_runner("t1", "crew", Some("crew-research"))
             .unwrap();
         let threads = db.list_threads().unwrap();
@@ -7047,6 +7722,9 @@ mod tests {
             last_run_at: None,
             created_at: "2026-07-02T08:00:00Z".to_string(),
             updated_at: "2026-07-02T08:00:00Z".to_string(),
+            backend_selection_json: Some(
+                r#"{"backend":"openai-compatible","profileId":"default-ollama"}"#.to_string(),
+            ),
         };
 
         db.upsert_work_task(&row).unwrap();
@@ -7054,6 +7732,10 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "work-1");
         assert!(listed[0].schedule_enabled);
+        assert!(listed[0]
+            .backend_selection_json
+            .as_deref()
+            .is_some_and(|value| value.contains("default-ollama")));
 
         db.update_work_task_status(
             "work-1",
@@ -7104,6 +7786,7 @@ mod tests {
             last_run_at: None,
             created_at: "2026-07-02T08:00:00Z".to_string(),
             updated_at: "2026-07-02T08:00:00Z".to_string(),
+            backend_selection_json: None,
         })
         .unwrap();
         db.upsert_scheduled_task(
@@ -7914,5 +8597,143 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "shared-match");
+    }
+
+    #[test]
+    fn schema_v27_seeds_generic_api_profiles_without_secret_columns() {
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let profiles = db.list_api_profiles().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "ollama"
+                && profile.auth_mode == "none"
+                && profile.base_url == "http://localhost:11434/v1"
+                && profile.model == "llama3.1:8b"
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "openrouter" && profile.base_url == "https://openrouter.ai/api/v1"
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "openai"
+                && profile.base_url == "https://api.openai.com/v1"
+                && profile.model == "gpt-4.1-mini"
+        }));
+
+        let conn = db.conn.lock().unwrap();
+        let columns = conn
+            .prepare("PRAGMA table_info(api_profiles)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<SqlResult<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| {
+            column.contains("key") || column.contains("token") || column.contains("secret")
+        }));
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 27);
+    }
+
+    #[test]
+    fn schema_v27_strips_secrets_from_existing_snapshots_idempotently() {
+        let root = database_test_dir("version-27-snapshot-redaction");
+        let sentinel = "snapshot-provider-secret";
+        {
+            let db = Database::open(root.clone()).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(&format!(
+                "INSERT INTO scheduled_tasks (
+                   id, name, prompt, schedule_expr, task_kind, crew_snapshot_json,
+                   model_config_json, active, created_at, updated_at
+                 ) VALUES (
+                   'legacy-schedule', 'Legacy', 'prompt', 'hourly', 'crew',
+                   '{{\"providerConfigs\":{{\"openRouter\":{{\"apiKey\":\"{sentinel}\",\"model\":\"openai/test\"}}}},\"env\":{{\"TOKEN\":\"{sentinel}\"}}}}',
+                   '{{\"backendSelection\":{{\"backend\":\"openai-compatible\",\"profileId\":\"default-openrouter\"}},\"accessToken\":\"{sentinel}\"}}',
+                   1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );
+                 INSERT INTO crew_runs (
+                   id, crew_id, crew_name, process, status, crew_snapshot_json,
+                   started_at, created_at
+                 ) VALUES (
+                   'legacy-run', 'legacy-crew', 'Legacy crew', 'sequential', 'completed',
+                   '{{\"api_key\":\"{sentinel}\",\"agents\":[]}}',
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );
+                 UPDATE schema_version SET version = 26;"
+            ))
+            .unwrap();
+        }
+
+        for _ in 0..2 {
+            let migrated = Database::open(root.clone()).unwrap();
+            let snapshots = {
+                let conn = migrated.conn.lock().unwrap();
+                let mut statement = conn
+                    .prepare(
+                    "SELECT crew_snapshot_json FROM scheduled_tasks WHERE id='legacy-schedule'
+                     UNION ALL SELECT model_config_json FROM scheduled_tasks WHERE id='legacy-schedule'
+                     UNION ALL SELECT crew_snapshot_json FROM crew_runs WHERE id='legacy-run'",
+                )
+                    .unwrap();
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<SqlResult<Vec<_>>>()
+                    .unwrap();
+                rows
+            };
+            assert!(snapshots
+                .iter()
+                .all(|snapshot| !snapshot.contains(sentinel)));
+            assert!(snapshots.iter().all(|snapshot| {
+                let lower = snapshot.to_ascii_lowercase();
+                !lower.contains("apikey")
+                    && !lower.contains("api_key")
+                    && !lower.contains("accesstoken")
+                    && !lower.contains("\"env\"")
+            }));
+            assert_eq!(migrated.list_api_profiles().unwrap().len(), 3);
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_snapshot_writes_strip_provider_secrets() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_scheduled_task(
+            "schedule-safe",
+            "Safe schedule",
+            "prompt",
+            "hourly",
+            "prompt",
+            None,
+            None,
+            Some(r#"{"backendSelection":{"backend":"openai-compatible","profileId":"default-openai-compatible"},"apiKey":"never-store-me"}"#),
+            100,
+            "[]",
+            true,
+            None,
+            None,
+            "2026-08-08T12:00:00Z",
+        )
+        .unwrap();
+
+        let snapshot: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT model_config_json FROM scheduled_tasks WHERE id='schedule-safe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!snapshot.contains("never-store-me"));
+        assert!(!snapshot.to_ascii_lowercase().contains("apikey"));
+        assert!(snapshot.contains("default-openai-compatible"));
     }
 }

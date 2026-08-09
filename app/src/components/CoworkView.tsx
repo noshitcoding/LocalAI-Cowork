@@ -22,6 +22,7 @@ import { useTerminalStore } from '../stores/terminalStore'
 import { useSkillStore } from '../stores/skillStore'
 import { useCrewStore } from '../stores/crewStore'
 import { useEngineStore } from '../stores/engineStore'
+import { useCodexStore } from '../stores/codexStore'
 import { useUiStore } from '../stores/uiStore'
 import {
   getEnabledProjectAttachments,
@@ -823,6 +824,10 @@ export default function CoworkView() {
   const llmProfiles = useConfigStore((s) => s.llmProfiles)
   const defaultLlmProfileIds = useConfigStore((s) => s.defaultLlmProfileIds)
   const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
+  const codexProfiles = useCodexStore((s) => s.profiles)
+  const codexModelsByProfile = useCodexStore((s) => s.modelsByProfile)
+  const loadCodex = useCodexStore((s) => s.load)
+  const loadCodexModels = useCodexStore((s) => s.loadModels)
   const mcpServer = useConfigStore((s) => s.mcpServer)
   const activeProvider = useEngineStore((s) => s.activeProvider)
   const engineSendMessage = useEngineStore((s) => s.sendMessage)
@@ -1010,7 +1015,25 @@ export default function CoworkView() {
     () => getChatProviderState(providerContext, activeProvider, activeThread?.providerSettings),
     [activeProvider, activeThread?.providerSettings, providerContext],
   )
-  const selectableModels = providerState.selectableModels
+  const selectedCodexProfile = providerState.provider === 'codex'
+    ? codexProfiles.find((profile) => profile.id === providerState.authProfileId)
+      ?? codexProfiles.find((profile) => profile.status === 'ready')
+    : undefined
+  const codexModels = selectedCodexProfile ? (codexModelsByProfile[selectedCodexProfile.id] ?? []) : []
+  const selectableModels = providerState.provider === 'codex'
+    ? codexModels.map((model) => model.model)
+    : providerState.selectableModels
+
+  useEffect(() => {
+    if (providerState.provider !== 'codex') return
+    void loadCodex().then(() => {
+      const profile = useCodexStore.getState().profiles.find((item) => item.id === providerState.authProfileId)
+        ?? useCodexStore.getState().profiles.find((item) => item.status === 'ready')
+      if (profile && !(useCodexStore.getState().modelsByProfile[profile.id]?.length)) {
+        void loadCodexModels(profile.id)
+      }
+    })
+  }, [loadCodex, loadCodexModels, providerState.authProfileId, providerState.provider])
 
   useEffect(() => {
     // If an active valid thread already exists, do nothing
@@ -1110,13 +1133,11 @@ export default function CoworkView() {
     if (!content.trim()) return
 
     const newTitle = content.length > 50 ? content.slice(0, 50) + '...' : content
-    // Update title through store and DB
     const updatedThreads = useChatStore.getState().threads.map(t =>
       t.id === activeThreadId ? { ...t, title: newTitle, updatedAt: Date.now() } : t
     )
     useChatStore.setState({ threads: updatedThreads })
 
-    // Update title in the database
     void persistInvoke('db_save_thread', {
       id: activeThreadId,
       title: newTitle,
@@ -2006,7 +2027,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'sandbox') {
-        navigate('/settings?section=security#ai-sandbox')
+        navigate('/settings?section=sandbox')
         return
       }
 
@@ -3202,7 +3223,7 @@ export default function CoworkView() {
         }, createChatProviderSelection(providerState), runtimePermissionConfig)
 
         const fallbackText = engineErrorMessage
-          ? `LLM request failed: ${engineErrorMessage}\n\n${getChatProviderFailureHint(providerState.provider)}`
+          ? `LLM request failed: ${engineErrorMessage}\n\n${tr(getChatProviderFailureHint(providerState.provider))}`
           : awaitingUserQuestion
             ? `question: ${awaitingUserQuestion}`
           : approvalSummary
@@ -3268,7 +3289,7 @@ export default function CoworkView() {
           model: providerState.model,
         })
       }
-      const failureContent = `LLM request failed: ${message}\n\n${getChatProviderFailureHint(providerState.provider)}`
+      const failureContent = `LLM request failed: ${message}\n\n${tr(getChatProviderFailureHint(providerState.provider))}`
       if (assistantMessageId) {
         updateMessage(threadId, assistantMessageId, { content: failureContent, streaming: false }, { persist: true })
       } else {
@@ -3387,7 +3408,7 @@ export default function CoworkView() {
   const handleProviderChange = (provider: string) => {
     if (!activeThreadId) return
     const nextProvider = normalizeChatProvider(provider)
-    const nextProviderState = getChatProviderState(providerContext, activeProvider, { provider: nextProvider })
+    const nextProviderState = getChatProviderState(providerContext, activeProvider, { backend: nextProvider })
     setThreadProviderSettings(activeThreadId, createChatProviderSelection(nextProviderState))
     addLog({
       level: 'info',
@@ -3418,6 +3439,38 @@ export default function CoworkView() {
         nextModel: model,
         endpoint: providerState.endpoint,
       },
+    })
+  }
+
+  const handleBackendProfileChange = (id: string) => {
+    if (!activeThreadId) return
+    if (providerState.provider === 'codex') {
+      const profile = codexProfiles.find((item) => item.id === id)
+      setThreadProviderSettings(activeThreadId, {
+        backend: 'codex',
+        ...(profile ? { authProfileId: profile.id } : {}),
+        ...(providerState.model ? { model: providerState.model } : {}),
+        ...(providerState.reasoningEffort ? { reasoningEffort: providerState.reasoningEffort } : {}),
+      })
+      if (profile) void loadCodexModels(profile.id)
+      return
+    }
+    const profile = llmProfiles.find((item) => item.id === id)
+    if (!profile) return
+    setThreadProviderSettings(activeThreadId, {
+      backend: 'openai-compatible',
+      profileId: profile.id,
+      ...(profile.model.trim() ? { model: profile.model.trim() } : {}),
+    })
+  }
+
+  const handleReasoningEffortChange = (reasoningEffort: string) => {
+    if (!activeThreadId || providerState.provider !== 'codex') return
+    setThreadProviderSettings(activeThreadId, {
+      backend: 'codex',
+      ...(providerState.authProfileId ? { authProfileId: providerState.authProfileId } : {}),
+      ...(providerState.model ? { model: providerState.model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
     })
   }
 
@@ -3972,12 +4025,14 @@ export default function CoworkView() {
           <div className="chat-input-bottom-bar">
             <button
               type="button"
-              className="btn-compact-action"
-              onClick={() => navigate('/settings?section=security#ai-sandbox')}
-              title={sandboxContext.warning ?? tr('Open AI Sandbox settings')}
-              aria-label={tr('Open AI Sandbox settings')}
+              className={`btn-compact-action${sandboxSetupReady === false ? ' sandbox-setup-action' : ''}`}
+              onClick={() => navigate('/settings?section=sandbox')}
+              title={sandboxSetupReady === false ? tr('Set up sandbox') : sandboxContext.warning ?? tr('Open AI Sandbox settings')}
+              aria-label={sandboxSetupReady === false ? tr('Set up sandbox') : tr('Open AI Sandbox settings')}
             >
-              {currentRunId && sandboxContext.mode !== 'checking'
+              {sandboxSetupReady === false
+                ? tr('Set up sandbox')
+                : currentRunId && sandboxContext.mode !== 'checking'
                 ? sandboxContext.mode === 'windows_native_elevated'
                   ? tr('Sandbox active')
                   : sandboxContext.warning
@@ -4053,6 +4108,23 @@ export default function CoworkView() {
                 }))}
               />
               <ChatDropdown
+                className="chat-compact-select"
+                value={providerState.provider === 'codex' ? (providerState.authProfileId ?? '') : (providerState.profileId ?? '')}
+                onChange={handleBackendProfileChange}
+                disabled={uiLocked}
+                ariaLabel={providerState.provider === 'codex' ? tr('Codex account') : tr('API profile')}
+                title={providerState.provider === 'codex' ? tr('Codex account') : tr('API profile')}
+                options={providerState.provider === 'codex'
+                  ? [
+                      { value: '', label: tr('Automatic') },
+                      ...codexProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profile.status}` })),
+                    ]
+                  : llmProfiles.map((profile) => ({
+                      value: profile.id,
+                      label: `${profile.name} · ${profile.preset ?? 'custom'}`,
+                    }))}
+              />
+              <ChatDropdown
                 className="chat-compact-select chat-model-select"
                 value={providerState.model}
                 onChange={handleModelChange}
@@ -4061,6 +4133,7 @@ export default function CoworkView() {
                 title={`${tr(getModelGuidance(providerState.model).title)}: ${tr(getModelGuidance(providerState.model).recommendedFor)}`}
                 options={selectableModels.length > 0
                   ? [
+                      ...(providerState.provider === 'codex' ? [{ value: '', label: tr('Automatic model') }] : []),
                       ...selectableModels.map((model) => ({
                         value: model,
                         label: `${model} — ${tr(getModelGuidance(model).title)}`,
@@ -4077,6 +4150,23 @@ export default function CoworkView() {
                         : tr('no model set'),
                     }]}
               />
+              {providerState.provider === 'codex' ? (
+                <ChatDropdown
+                  className="chat-compact-select"
+                  value={providerState.reasoningEffort ?? ''}
+                  onChange={handleReasoningEffortChange}
+                  disabled={uiLocked}
+                  ariaLabel={tr('Reasoning effort')}
+                  title={tr('Reasoning effort')}
+                  options={[
+                    { value: '', label: tr('Automatic effort') },
+                    { value: 'low', label: tr('Low') },
+                    { value: 'medium', label: tr('Medium') },
+                    { value: 'high', label: tr('High') },
+                    { value: 'xhigh', label: tr('Very high') },
+                  ]}
+                />
+              ) : null}
                 </>
               )}
               <ChatDropdown

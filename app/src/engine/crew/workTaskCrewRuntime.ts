@@ -40,8 +40,8 @@ export type CrewExecutionResponse = {
 }
 
 export type CrewResolvedProviderConfigs = {
-  openAICompatible: { baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
-  openRouter: { baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
+  openAICompatible: { profileId?: string; baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
+  openRouter: { profileId?: string; baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
 }
 
 type CrewRuntimeModelConfig = { model?: string } | undefined
@@ -203,7 +203,7 @@ export function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig: { baseUrl: 
 
 export function resolveExternalProviderConfig(
   config: { enabled: boolean; baseUrl: string; model: string; apiKey: string; timeoutMs: number; verifyTlsCertificates?: boolean } | undefined,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; timeoutMs?: number; verifyTlsCertificates?: boolean } | undefined,
+  fallbackConfig: { id?: string; baseUrl?: string; model?: string; apiKey?: string; timeoutMs?: number; verifyTlsCertificates?: boolean } | undefined,
   fallbackBaseUrl: string,
   availableModels: string[] = [],
 ) {
@@ -219,6 +219,7 @@ export function resolveExternalProviderConfig(
   const models = normalizeProviderModels(availableModels)
   const configuredModel = fallbackConfig?.model?.trim() || legacyCrewConfig?.model.trim() || ''
   return {
+    profileId: fallbackConfig?.id,
     baseUrl: fallbackConfig?.baseUrl?.trim() || legacyCrewConfig?.baseUrl.trim() || fallbackBaseUrl,
     model: resolveProviderModelFromCatalog(configuredModel, models),
     models,

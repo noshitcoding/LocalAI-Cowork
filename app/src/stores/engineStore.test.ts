@@ -120,6 +120,15 @@ describe('engineStore history seeding', () => {
     useEngineStore.getState().clearMessages()
   })
 
+  it('keeps legacy API keys out of frontend state', async () => {
+    const { useEngineStore } = await import('./engineStore')
+
+    await useEngineStore.getState().setApiKey('sk-must-remain-in-vault')
+
+    expect(useEngineStore.getState().config.apiKey).toBe('')
+    expect(localStorage.getItem('engine-store')).not.toContain('sk-must-remain-in-vault')
+  })
+
   it('hydrates prior chat messages before the first Cowork engine turn', async () => {
     const { useEngineStore } = await import('./engineStore')
 
@@ -277,14 +286,14 @@ describe('engineStore history seeding', () => {
       'C:/workspace',
       undefined,
       historySeed,
-      { provider: 'ollama', model: 'llama3.1:8b' },
+      { backend: 'openai-compatible', profileId: 'default-ollama', model: 'llama3.1:8b' },
     )
     await useEngineStore.getState().sendMessage(
       'continue externally',
       'C:/workspace',
       undefined,
       historySeed,
-      { provider: 'openrouter', model: 'openai/gpt-test' },
+      { backend: 'openai-compatible', profileId: 'default-openrouter', model: 'openai/gpt-test' },
     )
 
     expect(queryCalls).toHaveLength(2)
