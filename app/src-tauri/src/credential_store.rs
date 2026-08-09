@@ -20,13 +20,7 @@ const ALLOWED_SCOPES: &[&str] = &[
     "tool_gateway",
     "worker_sandbox",
 ];
-const FRONTEND_SCOPES: &[&str] = &[
-    "connector",
-    "crew",
-    "engine",
-    "llm_profile",
-    "mcp_env",
-];
+const FRONTEND_SCOPES: &[&str] = &["connector", "crew", "engine", "llm_profile", "mcp_env"];
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
