@@ -350,6 +350,10 @@ jobs:
         working-directory: app
         run: npm ci
 
+      - name: Prepare and verify bundled Codex runtime
+        working-directory: app
+        run: npm run prepare:codex-runtime
+
       - name: Verify Linux source and Rust backend
         working-directory: app
         run: |
