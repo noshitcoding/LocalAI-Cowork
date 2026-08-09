@@ -1,4 +1,4 @@
-name: desktop-release
+name: open-cowork-release
 
 on:
   push:
@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout tagged source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
           fetch-depth: 0
@@ -98,6 +98,7 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           npm run test:scripts
+          npm run contracts:check
           node --input-type=module -e "import { releaseVersion } from './scripts/supply-chain.mjs'; console.log('Validated release version', releaseVersion(process.cwd(), process.env.RELEASE_TAG))"
 
   windows:
@@ -114,7 +115,7 @@ jobs:
 
     steps:
       - name: Checkout validated source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
@@ -308,7 +309,7 @@ jobs:
 
     steps:
       - name: Checkout validated source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
@@ -325,6 +326,7 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
+            cpio \
             patchelf \
             rpm
 
@@ -397,6 +399,30 @@ jobs:
           dpkg-deb --info release-assets/LocalAI-Cowork-x86_64.deb >/dev/null
           rpm --query --package --info release-assets/LocalAI-Cowork-x86_64.rpm >/dev/null
 
+          verify_codex_payload() {
+            local package_root="$1"
+            local manifest
+            manifest="$(find "${package_root}" -type f -path '*/codex/runtime-bundle-manifest.json' -print -quit)"
+            if [[ -z "${manifest}" ]]; then
+              echo "Packaged Codex runtime manifest is missing from ${package_root}." >&2
+              exit 1
+            fi
+            node app/scripts/verify-codex-bundle.mjs \
+              --root "$(dirname "${manifest}")" \
+              --target linux-x64
+          }
+
+          verify_codex_payload "${extraction_root}/squashfs-root"
+          deb_root="$(mktemp -d)"
+          dpkg-deb --extract release-assets/LocalAI-Cowork-x86_64.deb "${deb_root}"
+          verify_codex_payload "${deb_root}"
+          rpm_root="$(mktemp -d)"
+          (
+            cd "${rpm_root}"
+            rpm2cpio "${GITHUB_WORKSPACE}/release-assets/LocalAI-Cowork-x86_64.rpm" | cpio -idm --quiet
+          )
+          verify_codex_payload "${rpm_root}"
+
       - name: Upload Linux release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -404,9 +430,97 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  server-images:
+    name: Publish ${{ matrix.name }} image
+    needs: gate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            image: open-cowork-server
+            dockerfile: server/Dockerfile
+          - name: runner
+            image: open-cowork-runner
+            dockerfile: server/cowork-runner/Dockerfile
+          - name: web
+            image: open-cowork-web
+            dockerfile: app/Dockerfile.web
+          - name: egress-proxy
+            image: open-cowork-egress-proxy
+            dockerfile: deploy/egress-proxy/Dockerfile
+          - name: sandbox-core
+            image: open-cowork-sandbox-core
+            dockerfile: deploy/sandboxes/core/Dockerfile
+          - name: sandbox-gui
+            image: open-cowork-sandbox-gui
+            dockerfile: deploy/sandboxes/gui/Dockerfile
+
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Resolve container version
+        id: image
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: echo "version=${RELEASE_TAG#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, attest, and publish
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ghcr.io/noshitcoding/${{ matrix.image }}:${{ steps.image.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=release-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.name }}
+
+      - name: Record immutable digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir image-digest
+          printf '%s\n' "${DIGEST}" > "image-digest/${{ matrix.image }}.txt"
+
+      - name: Upload image digest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest-${{ matrix.name }}
+          path: image-digest/*.txt
+          if-no-files-found: error
+
   publish:
     name: Attest and publish release
-    needs: [gate, windows, linux]
+    needs: [gate, windows, linux, server-images]
     runs-on: ubuntu-22.04
     environment: release
     permissions:
@@ -417,7 +531,7 @@ jobs:
 
     steps:
       - name: Checkout validated source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0
@@ -429,6 +543,34 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Download server-image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-digest-*
+          path: image-digests
+          merge-multiple: true
+
+      - name: Record immutable server images
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          : > release-assets/SERVER-IMAGES.txt
+          for digest_file in image-digests/*.txt; do
+            image="$(basename "${digest_file}" .txt)"
+            printf 'ghcr.io/noshitcoding/%s:%s@%s\n' \
+              "${image}" "${version}" "$(cat "${digest_file}")" \
+              >> release-assets/SERVER-IMAGES.txt
+          done
+
+      - name: Add versioned API contract artifacts
+        shell: bash
+        run: |
+          cp contracts/generated/v2/openapi.json release-assets/openapi-v2.json
+          cp contracts/generated/v2/contracts.schema.json release-assets/contracts-v2.schema.json
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -455,12 +597,12 @@ jobs:
         run: npm run supply-chain:release -- --output ../release-assets --tag "${RELEASE_TAG}"
 
       - name: Attest release assets
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: release-assets/*
 
       - name: Attest Windows installer SBOM
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: release-assets/LocalAI-Cowork-Setup-x64.exe
           sbom-path: release-assets/localai-cowork.cdx.json

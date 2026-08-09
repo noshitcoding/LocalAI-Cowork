@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
   Bell,
@@ -379,7 +379,7 @@ function SupportBundlePanel() {
 
 /* Category definitions */
 
-const CATEGORY_KEYS = ['ai', 'agent', 'memory', 'runs', 'terminal', 'mcp', 'ui', 'security', 'system'] as const
+const CATEGORY_KEYS = ['ai', 'agent', 'memory', 'runs', 'terminal', 'mcp', 'ui', 'sandbox', 'security', 'system'] as const
 
 type CategoryKey = (typeof CATEGORY_KEYS)[number]
 
@@ -409,6 +409,7 @@ export default function SettingsView() {
   const toolsetPolicies = useCoworkStore((s) => s.toolsetPolicies)
   const setActiveToolsetPolicy = useCoworkStore((s) => s.setActiveToolsetPolicy)
   const [searchParams] = useSearchParams()
+  const location = useLocation()
   const categoryParam = searchParams.get('section')
   const activeCategory: CategoryKey = isCategoryKey(categoryParam) ? categoryParam : 'ai'
   const activeToolsetPolicy = toolsetPolicies.find((policy) => policy.id === activeToolsetPolicyId)
@@ -417,6 +418,10 @@ export default function SettingsView() {
     checked: preferences[key] as boolean,
     onChange: (v: boolean) => setPreference(key, v as AppPreferences[K]),
   })
+
+  if (categoryParam === 'security' && location.hash === '#ai-sandbox') {
+    return <Navigate to="/settings?section=sandbox" replace />
+  }
 
   return (
     <div className="settings-layout">
@@ -577,12 +582,16 @@ export default function SettingsView() {
           </div>
         )}
 
+        {/* AI Sandbox */}
+        {activeCategory === 'sandbox' && (
+          <div className="settings-view" aria-label={tr('AI Sandbox')}>
+            <SandboxSetupCard />
+          </div>
+        )}
+
         {/* Security and data */}
         {activeCategory === 'security' && (
           <div className="settings-view" aria-label={tr('Security & data')}>
-
-            <SandboxSetupCard />
-
             <Section title={tr("File security")} icon={LockKeyhole}>
               <Toggle label={tr("Read-only mode")} hint={tr("No file writes or deletes")} {...pref('readOnlyFsMode')} />
               <div className="grid settings-command-grid">

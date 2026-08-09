@@ -85,7 +85,7 @@ export function markModelVisionUnsupported(provider: string, model: string): voi
 }
 
 export function detectProviderModelCapabilities(providerState: ChatProviderState): ModelCapabilities {
-  if (providerState.provider === 'ollama') {
+  if (providerState.preset === 'ollama') {
     const capabilities = detectModelCapabilities(providerState.model)
     return {
       ...capabilities,
@@ -94,10 +94,11 @@ export function detectProviderModelCapabilities(providerState: ChatProviderState
     }
   }
 
-  if (hasPersistedVisionBlock(providerState.provider, providerState.model)) {
+  const capabilityProvider = providerState.preset ?? providerState.provider
+  if (hasPersistedVisionBlock(capabilityProvider, providerState.model)) {
     return {
       supportsTools: true,
-      supportsThinking: providerState.provider === 'openrouter',
+      supportsThinking: providerState.provider === 'codex' || providerState.preset === 'openrouter',
       supportsVision: false,
       contextLength: 0,
       family: inferFamily(providerState.model),
@@ -106,7 +107,7 @@ export function detectProviderModelCapabilities(providerState: ChatProviderState
   }
 
   const supportsVision = VISION_MODEL_PATTERNS.some((pattern) => pattern.test(providerState.model))
-  const supportsThinking = providerState.provider === 'openrouter'
+  const supportsThinking = providerState.provider === 'codex' || providerState.preset === 'openrouter'
     || REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(providerState.model))
 
   return {

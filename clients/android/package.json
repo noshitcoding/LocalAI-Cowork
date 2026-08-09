@@ -1,0 +1,13 @@
+{
+  "name": "open-cowork-android",
+  "private": true,
+  "version": "0.3.0",
+  "scripts": {
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

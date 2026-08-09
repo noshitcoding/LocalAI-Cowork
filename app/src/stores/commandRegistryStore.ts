@@ -272,7 +272,7 @@ export function buildAllCommands(): SlashCommand[] {
         if (threadId) {
           const thread = store.threads.find(t => t.id === threadId)
           if (thread) {
-            void safeInvokeVoid('db_save_thread', { id: threadId, title: args.trim(), createdAt: new Date(thread.createdAt).toISOString() })
+            store.renameThread(threadId, args.trim())
           }
         }
       },

@@ -75,12 +75,30 @@ describe('CrewPanel', () => {
       },
       llmProfiles: [
         {
+          id: 'ollama-default',
+          name: 'Ollama',
+          provider: 'openai-compatible',
+          preset: 'ollama',
+          authMode: 'none',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'llama3.2:latest',
+          apiKey: '',
+          hasApiKey: false,
+          timeoutMs: 600000,
+          verifyTlsCertificates: true,
+          contextWindow: 128000,
+          temperature: 0.1,
+        },
+        {
           id: 'openai-default',
           name: 'OpenAI kompatibel',
           provider: 'openai-compatible',
+          preset: 'openai',
+          authMode: 'bearer',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4.1-mini',
-          apiKey: 'sk-test',
+          apiKey: '',
+          hasApiKey: true,
           timeoutMs: 600000,
           verifyTlsCertificates: true,
           contextWindow: null,
@@ -89,10 +107,13 @@ describe('CrewPanel', () => {
         {
           id: 'openrouter-default',
           name: 'OpenRouter',
-          provider: 'openrouter',
+          provider: 'openai-compatible',
+          preset: 'openrouter',
+          authMode: 'bearer',
           baseUrl: 'https://openrouter.ai/api/v1',
           model: '',
-          apiKey: 'or-test',
+          apiKey: '',
+          hasApiKey: true,
           timeoutMs: 600000,
           verifyTlsCertificates: true,
           contextWindow: null,
@@ -100,11 +121,13 @@ describe('CrewPanel', () => {
         },
       ],
       defaultLlmProfileIds: {
-        ollama: '',
+        api: 'ollama-default',
+        ollama: 'ollama-default',
         'openai-compatible': 'openai-default',
         openrouter: 'openrouter-default',
       },
       llmProfileModels: {
+        'ollama-default': ['llama3.2:latest', 'llama3.1:70b', 'qwen3:14b'],
         'openai-default': ['gpt-4.1-mini'],
         'openrouter-default': [],
       },
@@ -131,6 +154,7 @@ describe('CrewPanel', () => {
           sharedOutputCharLimit: 0,
           defaultProvider: 'ollama',
           defaultModel: 'llama3.2:latest',
+          defaultBackendSelection: { backend: 'openai-compatible', profileId: 'ollama-default' },
           providerProfiles: {
             openAICompatible: {
               enabled: true,
@@ -269,7 +293,7 @@ describe('CrewPanel', () => {
 
   it('explains provider blockers next to the disabled run action and links to their fixes', async () => {
     useConfigStore.setState((state) => ({
-      llmProfiles: state.llmProfiles.map((profile) => profile.provider === 'openrouter'
+      llmProfiles: state.llmProfiles.map((profile) => profile.preset === 'openrouter'
         ? { ...profile, apiKey: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' }
         : profile),
     }))
@@ -310,7 +334,7 @@ describe('CrewPanel', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
   })
 
-  it('syncs member providers to the crew provider when changing the crew provider', async () => {
+  it('offers only the two public backends and keeps unpinned members on the crew default', async () => {
     await act(async () => {
       renderCrewPanel()
     })
@@ -319,19 +343,20 @@ describe('CrewPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
     })
 
-    await act(async () => {
-      fireEvent.change(screen.getByRole('combobox', { name: 'Crew-Provider' }), { target: { value: 'openai-compatible' } })
-    })
+    const backendSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    expect(within(backendSelect).getAllByRole('option')).toHaveLength(2)
+    expect(within(backendSelect).getByRole('option', { name: 'OpenAI-kompatible API' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'API profile' }), { target: { value: 'openai-default' } })
 
     const crew = useCrewStore.getState().crews[0]
     const defaultAgent = crew.agents.find((agent) => agent.id === 'agent-default')
     const customAgent = crew.agents.find((agent) => agent.id === 'agent-custom')
 
     expect(crew.defaultProvider).toBe('openai-compatible')
-    expect(crew.defaultModel).toBe('')
-    expect(defaultAgent?.providerKind).toBe('openai-compatible')
-    expect(customAgent?.providerKind).toBe('openai-compatible')
-    expect(screen.getByText('The crew provider applies to all members. Only the model can still be overridden per member.')).toBeInTheDocument()
+    expect(crew.defaultBackendSelection).toEqual({ backend: 'openai-compatible', profileId: 'openai-default' })
+    expect(defaultAgent?.backendSelection).toBeUndefined()
+    expect(customAgent?.backendSelection).toBeUndefined()
+    expect(screen.getByText('Crew members inherit this backend unless they are pinned individually.')).toBeInTheDocument()
   })
 
   it('syncs the crew model catalog and effective model from Settings', async () => {
@@ -349,6 +374,7 @@ describe('CrewPanel', () => {
         ...crew,
         defaultProvider: 'openai-compatible',
         defaultModel: 'legacy/removed-model',
+        defaultBackendSelection: { backend: 'openai-compatible', profileId: 'openai-default' },
         agents: crew.agents.map((agent) => ({
           ...agent,
           providerKind: 'openai-compatible',
@@ -373,26 +399,38 @@ describe('CrewPanel', () => {
     })).toBeInTheDocument()
   })
 
-  it('allows selecting OpenRouter before a model has been chosen', async () => {
+  it('allows selecting the OpenRouter API profile before a model has been chosen', async () => {
     await act(async () => {
       renderCrewPanel()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
-    const providerSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    const providerSelect = screen.getByRole('combobox', { name: 'API profile' })
     const openRouterOption = within(providerSelect).getByRole('option', { name: 'OpenRouter' })
     expect(openRouterOption).not.toBeDisabled()
 
-    fireEvent.change(providerSelect, { target: { value: 'openrouter' } })
+    fireEvent.change(providerSelect, { target: { value: 'openrouter-default' } })
 
     expect(useCrewStore.getState().crews[0].defaultProvider).toBe('openrouter')
+    expect(useCrewStore.getState().crews[0].defaultBackendSelection).toEqual({
+      backend: 'openai-compatible',
+      profileId: 'openrouter-default',
+    })
   })
 
-  it('enables OpenRouter from a configured global profile when the crew override is disabled', async () => {
+  it('uses the global API profile when switching a Codex crew back to API', async () => {
     useConfigStore.setState((state) => ({
-      llmProfiles: state.llmProfiles.map((profile) => profile.provider === 'openrouter'
+      defaultLlmProfileIds: { ...state.defaultLlmProfileIds, api: 'openrouter-default' },
+      llmProfiles: state.llmProfiles.map((profile) => profile.preset === 'openrouter'
         ? { ...profile, model: 'openai/gpt-4o-mini' }
         : profile),
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        defaultProvider: 'codex',
+        defaultBackendSelection: { backend: 'codex' },
+      })),
     }))
 
     await act(async () => {
@@ -401,14 +439,12 @@ describe('CrewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
 
     const providerSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
-    const openRouterOption = within(providerSelect).getByRole('option', { name: 'OpenRouter' })
-    expect(openRouterOption).not.toBeDisabled()
-
-    fireEvent.change(providerSelect, { target: { value: 'openrouter' } })
+    fireEvent.change(providerSelect, { target: { value: 'openai-compatible' } })
 
     const crew = useCrewStore.getState().crews[0]
     expect(crew.defaultProvider).toBe('openrouter')
-    expect(crew.agents.every((agent) => agent.providerKind === 'openrouter')).toBe(true)
+    expect(crew.defaultBackendSelection).toEqual({ backend: 'openai-compatible', profileId: 'openrouter-default' })
+    expect(crew.agents.every((agent) => agent.backendSelection === undefined)).toBe(true)
   })
 
   it('applies the selected crew model to every member with one click', async () => {

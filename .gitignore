@@ -5,19 +5,25 @@ app/dist/
 app/coverage/
 app/.vite/
 app/playwright-report/
+app/playwright-report-web/
 app/test-results/
 *.tsbuildinfo
 dist-installers/
 
 # Rust
+/target/
 app/src-tauri/target/
 app/src-tauri/gen/schemas/
+clients/android/src-tauri/target/
+clients/android/src-tauri/gen/schemas/
 
 # Generated Python runtime artifacts
 app/src-tauri/python/crew_runtime/wheels/
 app/src-tauri/python/crew_runtime/wheels.zip
 app/src-tauri/python/crew_runtime/runtime-bundle-manifest.json
 app/src-tauri/resources/python/
+app/src-tauri/resources/codex/
+app/.tmp-codex-inspect/
 app/src-tauri/resources/WebView2Loader.dll
 .tmp-bundled-python312-venv/
 .tmp-crewai-check/
@@ -40,6 +46,7 @@ __pycache__/
 *.der
 secrets.*
 credentials.*
+/deploy/secrets/*.txt
 
 # Local databases, dumps, and app state
 *.db
@@ -101,6 +108,8 @@ PERMISSION_FIX_SUMMARY.md
 app/ui-audit-current/
 app/smoke-screenshots/
 app/open-cowork-*-smoke.png
+app/src-tauri/resources/daemon/*
+!app/src-tauri/resources/daemon/.gitkeep
 .github/copilot-instructions.md
 .github/instructions/
 .github/skills/

@@ -135,10 +135,10 @@ describe('App', () => {
 
     const menu = await openMainMenu()
     const settingsSections = within(menu).getByLabelText('Settings Sections')
-    expect(within(settingsSections).getAllByRole('button')).toHaveLength(9)
-    fireEvent.click(within(settingsSections).getByRole('button', { name: /^Interface/ }))
-    await waitFor(() => expect(window.location.search).toBe('?section=ui'))
-    expect(await screen.findByText('Interface', { selector: '.shell-title' })).toBeInTheDocument()
+    expect(within(settingsSections).getAllByRole('button')).toHaveLength(10)
+    fireEvent.click(within(settingsSections).getByRole('button', { name: /^AI Sandbox/ }))
+    await waitFor(() => expect(window.location.search).toBe('?section=sandbox'))
+    expect(await screen.findByText('AI Sandbox', { selector: '.shell-title' })).toBeInTheDocument()
   })
 
   it('keeps number shortcuts mapped to the registered route order', async () => {

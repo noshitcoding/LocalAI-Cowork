@@ -11,13 +11,15 @@ const indexHtmlPath = join(distDir, 'index.html')
 // Current-app baseline after route lazy-loading, the optional terminal bundle,
 // the CDP developer browser, the GitHub workbench, the settings provider dashboard,
 // the validated command registry, safe Markdown chat rendering, model guidance,
-// and the native sandbox review surface.
+// the native sandbox review surface, the security-required React Router 7 upgrade,
+// the Codex account/setup plus unified API-profile controls, the distributed
+// runtime clients, and the lazily loaded noVNC remote-desktop viewer.
 // Keep the CSS allowance deliberately tight.
 // Keep headroom tight so the check still catches accidental bundle growth.
 const budgets = {
-  initialGzipBytes: 300 * 1024,
-  cssGzipBytes: 35 * 1024,
-  totalJsGzipBytes: 448 * 1024,
+  initialGzipBytes: 307 * 1024,
+  cssGzipBytes: 41 * 1024,
+  totalJsGzipBytes: 600 * 1024,
   largestJsChunkGzipBytes: 120 * 1024,
 }
 

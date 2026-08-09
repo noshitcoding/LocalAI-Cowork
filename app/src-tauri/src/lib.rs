@@ -6,6 +6,7 @@ mod audit_service;
 mod audit_sink;
 mod capability_model;
 mod claude_code_bridge;
+mod codex_runtime;
 mod context;
 mod cowork_features;
 mod credential_store;
@@ -17,6 +18,8 @@ mod file_safety;
 mod file_watch;
 mod github_integration;
 mod insights;
+mod local_daemon_bridge;
+mod local_daemon_manager;
 mod mcp;
 mod memory_engine;
 mod native_windows_sandbox;
@@ -42,7 +45,10 @@ use crew_python_bridge::{
     crew_runtime_bootstrap, crew_runtime_execute_request, crew_runtime_status,
     crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
 };
-use db::Database;
+use db::{
+    ApiProfileRow, AppBackendDefaultsRow, CodexAuthProfileRow, CodexThreadBindingRow, Database,
+    ProviderFallbackApprovalRow,
+};
 use developer_browser::{
     developer_browser_cdp_call, developer_browser_click, developer_browser_history,
     developer_browser_inspect, developer_browser_keypress, developer_browser_navigate,
@@ -636,6 +642,7 @@ struct ConnectorReachabilityResponse {
 #[serde(rename_all = "camelCase")]
 struct CrewProviderHealthCheckRequest {
     provider_kind: String,
+    profile_id: Option<String>,
     base_url: String,
     api_key: Option<String>,
     #[serde(default)]
@@ -658,6 +665,7 @@ struct CrewProviderHealthCheckResponse {
 #[serde(rename_all = "camelCase")]
 struct CrewProviderModelsRequest {
     provider_kind: String,
+    profile_id: Option<String>,
     base_url: String,
     api_key: Option<String>,
     #[serde(default)]
@@ -669,7 +677,10 @@ struct CrewProviderModelsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleChatCompletionRequest {
+    profile_id: Option<String>,
+    preset: Option<String>,
     endpoint: String,
+    #[serde(default)]
     headers: HashMap<String, String>,
     body: String,
     timeout_ms: Option<u64>,
@@ -946,6 +957,7 @@ struct WorkTaskUpsertRequest {
     last_run_at: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
+    backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,6 +990,7 @@ struct WorkTaskRecord {
     last_run_at: Option<String>,
     created_at: String,
     updated_at: String,
+    backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1172,6 +1185,8 @@ struct CrewExecuteAgentRequest {
     personality_id: Option<String>,
     model_override: Option<String>,
     provider_kind: Option<String>,
+    #[serde(default)]
+    backend_selection: Option<ScheduledBackendSelection>,
     #[serde(default)]
     tools: Vec<String>,
     #[serde(default)]
@@ -1488,6 +1503,8 @@ fn normalize_crew_agent_providers(request: &mut CrewExecuteRequest) {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CrewExternalProviderConfigRequest {
+    #[serde(default)]
+    profile_id: Option<String>,
     base_url: String,
     model: String,
     #[serde(default)]
@@ -2540,6 +2557,10 @@ fn extract_replay_provider_config(
     }
 
     Some(CrewExternalProviderConfigRequest {
+        profile_id: profile
+            .get("profileId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         base_url: profile
             .get("baseUrl")
             .and_then(Value::as_str)
@@ -2708,6 +2729,261 @@ fn persist_crew_execution_response(
     persist_crew_run_memory_summary(database, request, run_id, response);
 }
 
+async fn execute_mixed_crew_request(
+    app: &tauri::AppHandle,
+    database: &Arc<Database>,
+    registry: &CrewExecutionRegistry,
+    request: &CrewExecuteRequest,
+    run_id: &str,
+) -> CrewExecutionResponse {
+    let mut pending = request.tasks.clone();
+    let mut outputs: HashMap<String, String> = HashMap::new();
+    let mut task_results = Vec::new();
+    let mut logs = Vec::new();
+    let cwd = request
+        .cwd
+        .clone()
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| ".".to_string());
+    let max_parallel = request.max_parallel_tasks.unwrap_or(1).max(1) as usize;
+
+    while !pending.is_empty() {
+        let ready = pending
+            .iter()
+            .filter(|task| {
+                task.dependencies
+                    .iter()
+                    .all(|dependency| outputs.contains_key(dependency))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if ready.is_empty() {
+            return CrewExecutionResponse {
+                crew_id: request.id.clone(),
+                status: "failed".to_string(),
+                task_results,
+                logs,
+                error: Some(
+                    "Crew dependency graph contains a cycle or failed dependency".to_string(),
+                ),
+            };
+        }
+
+        for batch in ready.chunks(max_parallel) {
+            let dependency_outputs = outputs.clone();
+            let futures = batch.iter().cloned().map(|task| {
+                let app = app.clone();
+                let database = database.clone();
+                let request = request.clone();
+                let cwd = cwd.clone();
+                let dependency_outputs = dependency_outputs.clone();
+                async move {
+                    let agent = request
+                        .agents
+                        .iter()
+                        .find(|agent| agent.id == task.agent_id && agent.enabled)
+                        .cloned()
+                        .ok_or_else(|| format!("Crew task '{}' has no active agent", task.id))?;
+                    let context = task
+                        .dependencies
+                        .iter()
+                        .filter_map(|dependency| {
+                            dependency_outputs
+                                .get(dependency)
+                                .map(|output| format!("Dependency {dependency} output:\n{output}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let prompt = [
+                        format!(
+                            "You are {}. Role: {}. Goal: {}.",
+                            agent.name, agent.role, agent.goal
+                        ),
+                        agent.backstory.clone(),
+                        agent.skills_markdown.clone(),
+                        request.execution_guidelines.clone(),
+                        format!("Task:\n{}", task.description),
+                        format!("Expected output:\n{}", task.expected_output),
+                        context,
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+
+                    let mut last_error = String::new();
+                    for _ in 0..=request.retry_count.max(0) {
+                        let result = match agent.backend_selection.as_ref() {
+                            Some(ScheduledBackendSelection::Codex {
+                                auth_profile_id,
+                                model,
+                                reasoning_effort,
+                            }) => {
+                                let app = app.clone();
+                                let database = database.clone();
+                                let crew_id = request.id.clone();
+                                let agent_id = agent.id.clone();
+                                let model = model.clone().or(agent.model_override.clone());
+                                let auth_profile_id = auth_profile_id.clone();
+                                let reasoning_effort = reasoning_effort.clone();
+                                let prompt = prompt.clone();
+                                let cwd = cwd.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    run_codex_turn(
+                                        &app,
+                                        database.as_ref(),
+                                        "crew",
+                                        &crew_id,
+                                        Some(&agent_id),
+                                        auth_profile_id.as_deref(),
+                                        model.as_deref(),
+                                        reasoning_effort.as_deref(),
+                                        &prompt,
+                                        &cwd,
+                                    )
+                                })
+                                .await
+                                .map_err(|error| error.to_string())?
+                            }
+                            Some(ScheduledBackendSelection::OpenAiCompatible {
+                                profile_id,
+                                model,
+                            }) => {
+                                run_scheduled_api_turn(
+                                    &app,
+                                    database.as_ref(),
+                                    profile_id,
+                                    agent.model_override.as_deref().or(model.as_deref()),
+                                    &prompt,
+                                )
+                                .await
+                            }
+                            None if agent.provider_kind.as_deref().unwrap_or("ollama")
+                                == "ollama" =>
+                            {
+                                chat_turn_internal(
+                                    request.config.clone(),
+                                    prompt.clone(),
+                                    vec![],
+                                    vec![],
+                                )
+                                .await
+                                .map(|response| response.assistant_message)
+                                .map_err(|error| error.to_string())
+                            }
+                            None => Err(format!(
+                                "Crew member '{}' has no migrated backend profile",
+                                agent.name
+                            )),
+                        };
+                        match result {
+                            Ok(output) => return Ok((task, agent, output)),
+                            Err(error) => last_error = error,
+                        }
+                    }
+                    Err(last_error)
+                }
+            });
+
+            for result in futures_util::future::join_all(futures).await {
+                match result {
+                    Ok((task, agent, output)) => {
+                        let provider = match agent.backend_selection.as_ref() {
+                            Some(ScheduledBackendSelection::Codex { .. }) => "codex",
+                            Some(ScheduledBackendSelection::OpenAiCompatible { .. }) => {
+                                "openai-compatible"
+                            }
+                            None => agent.provider_kind.as_deref().unwrap_or("ollama"),
+                        };
+                        let log = CrewExecutionLogRow {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            crew_id: request.id.clone(),
+                            agent_id: agent.id.clone(),
+                            task_id: task.id.clone(),
+                            action: "task_completed".to_string(),
+                            result: output.clone(),
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            agent_name: Some(agent.name.clone()),
+                            source_agent: None,
+                            target_agent: None,
+                            provider: Some(provider.to_string()),
+                            model: agent.model_override.clone(),
+                            task_title: Some(task.description.clone()),
+                            phase: Some("execution".to_string()),
+                            summary: Some(format!("{} completed", task.id)),
+                            detail: None,
+                            severity: Some("info".to_string()),
+                            provider_reasoning: None,
+                        };
+                        emit_crew_execution_log_event(
+                            app,
+                            request.stream_id.clone(),
+                            Some(run_id.to_string()),
+                            log.clone(),
+                        );
+                        outputs.insert(task.id.clone(), output.clone());
+                        task_results.push(CrewTaskExecutionRow {
+                            task_id: task.id.clone(),
+                            agent_id: agent.id,
+                            status: "completed".to_string(),
+                            output: Some(output),
+                        });
+                        logs.push(log);
+                    }
+                    Err(error) => {
+                        task_results.push(CrewTaskExecutionRow {
+                            task_id: "mixed-runtime".to_string(),
+                            agent_id: "runtime".to_string(),
+                            status: "failed".to_string(),
+                            output: None,
+                        });
+                        if request.stop_on_failure {
+                            return CrewExecutionResponse {
+                                crew_id: request.id.clone(),
+                                status: "failed".to_string(),
+                                task_results,
+                                logs,
+                                error: Some(error),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        let ready_ids = ready
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<HashSet<_>>();
+        pending.retain(|task| !ready_ids.contains(task.id.as_str()));
+        if registry
+            .canceled
+            .lock()
+            .is_ok_and(|canceled| canceled.contains(&request.id))
+        {
+            return CrewExecutionResponse {
+                crew_id: request.id.clone(),
+                status: "canceled".to_string(),
+                task_results,
+                logs,
+                error: None,
+            };
+        }
+    }
+
+    CrewExecutionResponse {
+        crew_id: request.id.clone(),
+        status: "completed".to_string(),
+        task_results,
+        logs,
+        error: None,
+    }
+}
+
 async fn execute_crew_request(
     app: &tauri::AppHandle,
     database: &Arc<Database>,
@@ -2717,6 +2993,38 @@ async fn execute_crew_request(
 ) -> Result<CrewExecutionResponse, String> {
     if request.tasks.is_empty() {
         return Err("Crew contains no tasks".to_string());
+    }
+
+    let credential_store = app.state::<Arc<credential_store::CredentialStore>>();
+    for (config, field) in [
+        (
+            request.provider_configs.open_ai_compatible.as_mut(),
+            "openai_compatible_api_key",
+        ),
+        (
+            request.provider_configs.open_router.as_mut(),
+            "openrouter_api_key",
+        ),
+    ] {
+        if let Some(config) = config {
+            let (scope, owner_id, field) = if let Some(profile_id) = config.profile_id.as_deref() {
+                ("llm_profile", profile_id.to_string(), "api_key")
+            } else {
+                ("crew", request.id.clone(), field)
+            };
+            let stored = credential_store
+                .get(&credential_store::CredentialLocator {
+                    scope: scope.to_string(),
+                    owner_id,
+                    field: field.to_string(),
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(secret) = stored {
+                config.api_key = secret;
+            } else {
+                config.api_key.clear();
+            }
+        }
     }
 
     enrich_crew_provider_models_from_history(database, &mut request);
@@ -2833,6 +3141,27 @@ async fn execute_crew_request(
             provider_reasoning: None,
         },
     );
+
+    if request.agents.iter().any(|agent| {
+        matches!(
+            agent.backend_selection,
+            Some(ScheduledBackendSelection::Codex { .. })
+        )
+    }) {
+        let response = execute_mixed_crew_request(app, database, registry, &request, &run_id).await;
+        persist_crew_execution_response(
+            database,
+            &request,
+            &run_id,
+            &started_at,
+            &request_snapshot_json,
+            &response,
+        );
+        if let Ok(mut canceled) = registry.canceled.lock() {
+            canceled.remove(&request.id);
+        }
+        return Ok(response);
+    }
 
     let app_for_runtime_logs = app.clone();
     let stream_id_for_runtime_logs = request.stream_id.clone();
@@ -5841,6 +6170,21 @@ fn db_update_thread_provider_settings(
 }
 
 #[tauri::command]
+fn db_update_thread_title(
+    state: tauri::State<'_, Arc<Database>>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    let normalized = title.trim();
+    if normalized.is_empty() {
+        return Err("Thread name must not be empty".to_string());
+    }
+    state
+        .update_thread_title(id.trim(), normalized)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn db_update_thread_permission_config(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
@@ -5994,6 +6338,52 @@ fn normalize_work_task_status(status: Option<&str>) -> Result<String, String> {
     }
 }
 
+fn normalize_backend_selection_json(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+    else {
+        return Ok(None);
+    };
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|_| "WorkTask backend selection is not valid JSON.".to_string())?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| "WorkTask backend selection must be an object.".to_string())?;
+    let backend = object
+        .get("backend")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "WorkTask backend selection is missing its backend.".to_string())?;
+    let allowed: &[&str] = match backend {
+        "codex" => &["backend", "authProfileId", "model", "reasoningEffort"],
+        "openai-compatible" => {
+            let profile_id = object
+                .get("profileId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if profile_id.is_empty() {
+                return Err("OpenAI-compatible task selection requires a profileId.".to_string());
+            }
+            &["backend", "profileId", "model"]
+        }
+        _ => return Err("WorkTask backend must be 'codex' or 'openai-compatible'.".to_string()),
+    };
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("WorkTask backend selection contains unsupported fields.".to_string());
+    }
+    if object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "backend")
+        .any(|(_, value)| !value.is_string())
+    {
+        return Err("WorkTask backend selection fields must be strings.".to_string());
+    }
+    serde_json::to_string(&parsed)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 fn map_work_task_record(row: db::WorkTaskRow) -> WorkTaskRecord {
     WorkTaskRecord {
         id: row.id,
@@ -6013,6 +6403,7 @@ fn map_work_task_record(row: db::WorkTaskRow) -> WorkTaskRecord {
         last_run_at: row.last_run_at,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        backend_selection_json: row.backend_selection_json,
     }
 }
 
@@ -6041,6 +6432,11 @@ fn work_task_upsert(
     let now = chrono::Utc::now().to_rfc3339();
     let created_at = request.created_at.unwrap_or_else(|| now.clone());
     let updated_at = request.updated_at.unwrap_or_else(|| now.clone());
+    let backend_selection_json = if runner == "model" {
+        normalize_backend_selection_json(request.backend_selection_json)?
+    } else {
+        None
+    };
 
     let row = db::WorkTaskRow {
         id: id.to_string(),
@@ -6086,6 +6482,7 @@ fn work_task_upsert(
         last_run_at: request.last_run_at,
         created_at,
         updated_at,
+        backend_selection_json,
     };
 
     state
@@ -6334,12 +6731,51 @@ async fn credential_get(
     state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: credential_store::CredentialLocator,
 ) -> Result<credential_store::CredentialReadResponse, String> {
-    credential_store::validate_frontend_access(&request).map_err(|error| error.to_string())?;
+    credential_store::validate_frontend_read_access(&request).map_err(|error| error.to_string())?;
     let store = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
             .get(&request)
             .map(|value| credential_store::CredentialReadResponse { value })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "credential storage worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn credential_exists(
+    state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: credential_store::CredentialLocator,
+) -> Result<credential_store::CredentialExistsResponse, String> {
+    credential_store::validate_frontend_access(&request).map_err(|error| error.to_string())?;
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .get(&request)
+            .map(|value| credential_store::CredentialExistsResponse {
+                exists: value.is_some(),
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "credential storage worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn credential_copy(
+    state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: credential_store::CredentialCopyRequest,
+) -> Result<credential_store::CredentialCopyResponse, String> {
+    credential_store::validate_frontend_access(&request.source)
+        .map_err(|error| error.to_string())?;
+    credential_store::validate_frontend_access(&request.destination)
+        .map_err(|error| error.to_string())?;
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .copy_if_destination_empty(&request.source, &request.destination)
+            .map(|copied| credential_store::CredentialCopyResponse { copied })
             .map_err(|error| error.to_string())
     })
     .await
@@ -7520,6 +7956,296 @@ fn map_scheduled_task_row(
     }
 }
 
+async fn run_scheduled_api_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    profile_id: &str,
+    model_override: Option<&str>,
+    prompt: &str,
+) -> Result<String, String> {
+    let profile = database
+        .get_api_profile(profile_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Scheduled API profile '{profile_id}' does not exist"))?;
+    let model = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(profile.model.trim());
+    if model.is_empty() {
+        return Err(format!(
+            "API profile '{}' has no model selected",
+            profile.name
+        ));
+    }
+    let endpoint = format!(
+        "{}/chat/completions",
+        profile.base_url.trim().trim_end_matches('/')
+    );
+    let parsed =
+        Url::parse(&endpoint).map_err(|error| format!("Invalid API profile URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("API profile URL must use HTTP or HTTPS".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(profile.timeout_ms.max(1_000) as u64))
+        .danger_accept_invalid_certs(!profile.verify_tls_certificates)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client
+        .post(parsed)
+        .header("User-Agent", "OpenCowork/0.2")
+        .json(&serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false
+        }));
+    if profile.auth_mode == "bearer" {
+        let credentials = app.state::<Arc<credential_store::CredentialStore>>();
+        let api_key = credentials
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile.id.clone(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "API profile '{}' has no key in the OS credential store",
+                    profile.name
+                )
+            })?;
+        request = request.bearer_auth(api_key);
+    }
+    if profile.preset == "openrouter" {
+        request = request
+            .header("HTTP-Referer", "https://open-cowork.local")
+            .header("X-Title", "OpenCowork");
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "API profile '{}' returned {}: {}",
+            profile.name,
+            status,
+            response_excerpt(&body)
+        ));
+    }
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("API profile returned invalid JSON: {error}"))?;
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "API response contained no assistant message".to_string())
+}
+
+fn update_codex_runtime_status(
+    database: &Database,
+    profile_id: &str,
+    status: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let mut profile = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    profile.status = status.to_string();
+    profile.quota_json = Some(serde_json::json!({ "runtimeReason": reason }).to_string());
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    database
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+fn run_scheduled_codex_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    task_id: &str,
+    auth_profile_id: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    prompt: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    run_codex_turn(
+        app,
+        database,
+        "schedule",
+        task_id,
+        None,
+        auth_profile_id,
+        model,
+        reasoning_effort,
+        prompt,
+        cwd,
+    )
+}
+
+fn run_codex_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    owner_kind: &str,
+    owner_id: &str,
+    member_id: Option<&str>,
+    auth_profile_id: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    prompt: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    let runtime = app.state::<Arc<codex_runtime::CodexRuntimeManager>>();
+    let profile_count = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .len()
+        .max(1);
+
+    for _ in 0..profile_count {
+        let opened = codex_thread_open_impl(
+            database,
+            runtime.inner().as_ref(),
+            CodexThreadOpenRequest {
+                owner_kind: owner_kind.to_string(),
+                owner_id: owner_id.to_string(),
+                member_id: member_id.map(str::to_string),
+                auth_profile_id: auth_profile_id.map(str::to_string),
+                cwd: cwd.to_string(),
+                model: model.map(str::to_string),
+                permission_mode: "plan".to_string(),
+                dynamic_tools: Vec::new(),
+            },
+        )?;
+        let profile_id = opened
+            .get("authProfileId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule returned no account profile".to_string())?
+            .to_string();
+        let thread_id = opened
+            .get("result")
+            .and_then(|value| value.get("thread"))
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule returned no thread".to_string())?
+            .to_string();
+        let receiver = runtime.subscribe(&profile_id)?;
+        let started = runtime.request(
+            &profile_id,
+            "turn/start",
+            Some(serde_json::json!({
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": prompt }],
+                "cwd": cwd,
+                "approvalPolicy": "unlessTrusted",
+                "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
+                "model": model,
+                "effort": reasoning_effort
+            })),
+        )?;
+        let turn_id = started
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule turn returned no id".to_string())?;
+        let mut output = String::new();
+
+        loop {
+            let payload = receiver
+                .recv_timeout(Duration::from_secs(30 * 60))
+                .map_err(|_| "Scheduled Codex turn timed out".to_string())?;
+            let method = payload.get("method").and_then(Value::as_str).unwrap_or("");
+            let params = payload.get("params").cloned().unwrap_or(Value::Null);
+            let event_thread_id = params.get("threadId").and_then(Value::as_str).unwrap_or("");
+            let event_turn_id = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    params
+                        .get("turn")
+                        .and_then(|turn| turn.get("id"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("");
+            if (!event_thread_id.is_empty() && event_thread_id != thread_id)
+                || (!event_turn_id.is_empty() && event_turn_id != turn_id)
+            {
+                continue;
+            }
+            if payload.get("id").and_then(Value::as_u64).is_some()
+                && method.ends_with("/requestApproval")
+            {
+                if let Some(request_id) = payload.get("id").and_then(Value::as_u64) {
+                    let _ = runtime.respond(
+                        &profile_id,
+                        request_id,
+                        serde_json::json!({ "decision": "decline" }),
+                    );
+                }
+                return Err("Scheduled Codex run requires an interactive tool approval".to_string());
+            }
+            match method {
+                "item/agentMessage/delta" => {
+                    if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                        output.push_str(delta);
+                    }
+                }
+                "item/completed" if output.is_empty() => {
+                    if let Some(text) = params
+                        .get("item")
+                        .filter(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                        })
+                        .and_then(|item| item.get("text"))
+                        .and_then(Value::as_str)
+                    {
+                        output.push_str(text);
+                    }
+                }
+                "turn/completed" => {
+                    let turn = params.get("turn").cloned().unwrap_or(Value::Null);
+                    let status = turn.get("status").and_then(Value::as_str).unwrap_or("");
+                    if status == "completed" {
+                        return Ok(output);
+                    }
+                    let message = turn
+                        .get("error")
+                        .and_then(|error| error.get("message").or_else(|| error.get("code")))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex schedule failed")
+                        .to_string();
+                    if auth_profile_id.is_none() && message.to_ascii_lowercase().contains("limit") {
+                        update_codex_runtime_status(database, &profile_id, "limited", &message)?;
+                        break;
+                    }
+                    if message.contains("invalid_grant")
+                        || message.to_ascii_lowercase().contains("unauthorized")
+                    {
+                        update_codex_runtime_status(
+                            database,
+                            &profile_id,
+                            "requires_reauth",
+                            &message,
+                        )?;
+                    }
+                    return Err(message);
+                }
+                "runtime/stopped" | "runtime/protocolError" => {
+                    return Err("Codex App Server stopped during the scheduled run".to_string())
+                }
+                _ => {}
+            }
+        }
+    }
+    Err("All automatically usable Codex accounts have reached their limits".to_string())
+}
+
 fn run_scheduled_task_once(
     app: &tauri::AppHandle,
     database: &Arc<Database>,
@@ -7635,45 +8361,86 @@ fn run_scheduled_task_once(
 
         match runtime_config {
             Ok(runtime_config) => {
-                let config = runtime_config.as_ref().map(|entry| entry.config.clone());
                 let effective_cwd = project_context.preferred_cwd.as_deref().or_else(|| {
                     runtime_config
                         .as_ref()
                         .and_then(|entry| entry.cwd.as_deref())
                 });
-                let history = effective_cwd
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| {
-                        vec![ChatMessage {
-                            role: "system".to_string(),
-                            content: format!("Working directory: {}", value),
-                        }]
-                    })
-                    .unwrap_or_default();
+                let prompt = [
+                    task_prompt.trim(),
+                    project_context.prompt_context.trim(),
+                    project_warnings.trim(),
+                ]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+                let backend = runtime_config
+                    .as_ref()
+                    .and_then(|entry| entry.backend_selection.as_ref());
 
-                tauri::async_runtime::block_on(chat_turn_internal(
-                    config,
-                    [
-                        task_prompt.trim(),
-                        project_context.prompt_context.trim(),
-                        project_warnings.trim(),
-                    ]
-                    .into_iter()
-                    .filter(|value| !value.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
-                    history,
-                    vec![],
-                ))
-                .map(|response| {
-                    (
-                        "succeeded".to_string(),
-                        Some(response.assistant_message),
-                        None,
-                    )
-                })
-                .map_err(|error| error.to_string())
+                let result = match backend {
+                    Some(ScheduledBackendSelection::Codex {
+                        auth_profile_id,
+                        model,
+                        reasoning_effort,
+                    }) => {
+                        let cwd = effective_cwd
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .or_else(|| {
+                                app.path()
+                                    .app_data_dir()
+                                    .ok()
+                                    .map(|path| path.to_string_lossy().into_owned())
+                            })
+                            .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+                        run_scheduled_codex_turn(
+                            app,
+                            database,
+                            task_id,
+                            auth_profile_id.as_deref(),
+                            model.as_deref(),
+                            reasoning_effort.as_deref(),
+                            &prompt,
+                            &cwd,
+                        )
+                    }
+                    Some(ScheduledBackendSelection::OpenAiCompatible { profile_id, model }) => {
+                        tauri::async_runtime::block_on(run_scheduled_api_turn(
+                            app,
+                            database,
+                            profile_id,
+                            model.as_deref(),
+                            &prompt,
+                        ))
+                    }
+                    None => {
+                        let config = runtime_config
+                            .as_ref()
+                            .and_then(ScheduledPromptRuntimeConfig::legacy_ollama_config);
+                        let history = effective_cwd
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| {
+                                vec![ChatMessage {
+                                    role: "system".to_string(),
+                                    content: format!("Working directory: {}", value),
+                                }]
+                            })
+                            .unwrap_or_default();
+                        tauri::async_runtime::block_on(chat_turn_internal(
+                            config,
+                            prompt,
+                            history,
+                            vec![],
+                        ))
+                        .map(|response| response.assistant_message)
+                        .map_err(|error| error.to_string())
+                    }
+                };
+                result.map(|output| ("succeeded".to_string(), Some(output), None))
             }
             Err(error) => Err(error),
         }
@@ -7716,6 +8483,47 @@ fn run_scheduled_task_once(
         }
         Err(err) => {
             let error_text = err.to_string();
+            let waiting_for_fallback = error_text
+                .contains("All automatically usable Codex accounts have reached their limits")
+                || error_text.contains("No automatically usable Codex account is available");
+            if waiting_for_fallback {
+                let approval = ProviderFallbackApprovalRow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    api_profile_id: None,
+                    status: "pending".to_string(),
+                    reason: error_text.clone(),
+                    created_at: finished_at.clone(),
+                    resolved_at: None,
+                    consumed_at: None,
+                };
+                database
+                    .create_provider_fallback_approval(&approval)
+                    .map_err(|error| error.to_string())?;
+                database
+                    .insert_scheduled_run(
+                        &run_id,
+                        task_id,
+                        "waiting_approval",
+                        &started_at,
+                        None,
+                        None,
+                        Some(&error_text),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if scheduled_work_task_exists {
+                    let _ = database.update_work_task_status(
+                        task_id,
+                        "waiting_approval",
+                        None,
+                        Some(&error_text),
+                        Some(&started_at),
+                        &finished_at,
+                    );
+                }
+                let _ = app.emit("provider-fallback-approval-created", &approval);
+                return Ok(());
+            }
             database
                 .insert_scheduled_run(
                     &run_id,
@@ -7812,6 +8620,28 @@ fn start_scheduler_worker(app: tauri::AppHandle, database: Arc<Database>) {
             task_last_run_at,
         ) in due_tasks
         {
+            let daemon_owned = model_config_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|value| {
+                    value
+                        .get("executorTarget")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|target| target == "personal_device_daemon")
+                })
+                .unwrap_or(false);
+            if daemon_owned {
+                let next_run_at =
+                    scheduler::next_run_from_expression(&schedule_expr, chrono::Utc::now())
+                        .ok()
+                        .map(|next| next.to_rfc3339());
+                let _ = database.update_scheduled_task_runtime(
+                    &task_id,
+                    task_last_run_at.as_deref(),
+                    next_run_at.as_deref(),
+                );
+                continue;
+            }
             if !scheduled_task_dependencies_ready(
                 &database,
                 &depends_on_task_ids_json,
@@ -8628,7 +9458,10 @@ fn build_local_gateway_subsystems(
     rows
 }
 
-async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsystemPayload {
+async fn gateway_provider_probe(
+    credential_store: &credential_store::CredentialStore,
+    request: &GatewayHealthRequest,
+) -> GatewaySubsystemPayload {
     let provider_kind = request
         .provider_kind
         .as_deref()
@@ -8648,6 +9481,7 @@ async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsys
     }
 
     let health_request = CrewProviderHealthCheckRequest {
+        profile_id: None,
         provider_kind: provider_kind.to_string(),
         base_url: base_url.to_string(),
         api_key: request.api_key.clone(),
@@ -8655,7 +9489,7 @@ async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsys
         verify_tls_certificates: request.verify_tls_certificates,
     };
 
-    match crew_provider_health_check(health_request).await {
+    match crew_provider_health_check_impl(credential_store, health_request).await {
         Ok(response) => gateway_subsystem(
             "provider",
             "Active provider",
@@ -8736,8 +9570,8 @@ fn map_provider_url_for_runtime(
     })
 }
 
-#[tauri::command]
-async fn crew_provider_health_check(
+async fn crew_provider_health_check_impl(
+    credential_state: &credential_store::CredentialStore,
     request: CrewProviderHealthCheckRequest,
 ) -> Result<CrewProviderHealthCheckResponse, String> {
     let checked_at = chrono::Utc::now().to_rfc3339();
@@ -8768,7 +9602,18 @@ async fn crew_provider_health_check(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let api_key = request.api_key.as_deref();
+    let stored_api_key = if let Some(profile_id) = request.profile_id.as_deref() {
+        credential_state
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile_id.to_string(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let api_key = stored_api_key.as_deref().or(request.api_key.as_deref());
     if is_openai_compatible_provider(&request.provider_kind) {
         let mut last_status = None;
         let mut last_endpoint = request.base_url.trim().to_string();
@@ -8930,7 +9775,16 @@ async fn crew_provider_health_check(
 }
 
 #[tauri::command]
+async fn crew_provider_health_check(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: CrewProviderHealthCheckRequest,
+) -> Result<CrewProviderHealthCheckResponse, String> {
+    crew_provider_health_check_impl(credential_state.inner().as_ref(), request).await
+}
+
+#[tauri::command]
 async fn crew_provider_models_list(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: CrewProviderModelsRequest,
 ) -> Result<CrewProviderModelsResponse, String> {
     let endpoints = build_provider_model_urls(&request.provider_kind, &request.base_url)?;
@@ -8940,7 +9794,18 @@ async fn crew_provider_models_list(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let api_key = request.api_key.as_deref();
+    let stored_api_key = if let Some(profile_id) = request.profile_id.as_deref() {
+        credential_state
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile_id.to_string(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let api_key = stored_api_key.as_deref().or(request.api_key.as_deref());
     let mut last_error = None;
     let mut last_endpoint = request.base_url.trim().to_string();
     let mut received_response = false;
@@ -8992,6 +9857,7 @@ async fn crew_provider_models_list(
 
 #[tauri::command]
 async fn openai_compatible_chat_completion(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: OpenAiCompatibleChatCompletionRequest,
 ) -> Result<OpenAiCompatibleChatCompletionResponse, String> {
     let endpoint = Url::parse(request.endpoint.trim())
@@ -9006,10 +9872,38 @@ async fn openai_compatible_chat_completion(
     let mut call = client
         .post(endpoint)
         .header("User-Agent", "LocalAI-Cowork/1.0")
+        .header("Content-Type", "application/json")
         .body(request.body);
 
+    if let Some(profile_id) = request
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let locator = credential_store::CredentialLocator {
+            scope: "llm_profile".to_string(),
+            owner_id: profile_id.to_string(),
+            field: "api_key".to_string(),
+        };
+        if let Some(api_key) = credential_state
+            .get(&locator)
+            .map_err(|error| error.to_string())?
+        {
+            call = call.bearer_auth(api_key);
+        }
+    }
+    if request.preset.as_deref() == Some("openrouter") {
+        call = call
+            .header("HTTP-Referer", "https://open-cowork.local")
+            .header("X-Title", "OpenCowork");
+    }
+
     for (name, value) in request.headers {
-        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("content-length") {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("authorization")
+        {
             continue;
         }
         let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
@@ -9095,11 +9989,12 @@ fn gateway_status(
 async fn gateway_health(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Database>>,
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: Option<GatewayHealthRequest>,
 ) -> Result<GatewayHealthPayload, String> {
     let mut rows = build_local_gateway_subsystems(&app, state.inner());
     if let Some(request) = request.filter(|entry| entry.include_provider_probe) {
-        rows.push(gateway_provider_probe(&request).await);
+        rows.push(gateway_provider_probe(credential_state.inner().as_ref(), &request).await);
     }
     Ok(gateway_payload(rows))
 }
@@ -9108,6 +10003,7 @@ async fn gateway_health(
 async fn gateway_probe(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Database>>,
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: GatewayProbeRequest,
 ) -> Result<GatewaySubsystemPayload, String> {
     let subsystem = request.subsystem.trim().to_ascii_lowercase();
@@ -9120,7 +10016,7 @@ async fn gateway_probe(
             model: None,
             verify_tls_certificates: true,
         });
-        return Ok(gateway_provider_probe(&provider).await);
+        return Ok(gateway_provider_probe(credential_state.inner().as_ref(), &provider).await);
     }
 
     let rows = build_local_gateway_subsystems(&app, state.inner());
@@ -11025,10 +11921,46 @@ fn default_policy_flags() -> PolicyFlagsPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScheduledPromptRuntimeConfig {
-    #[serde(flatten)]
-    config: OllamaConfig,
+    #[serde(default)]
+    backend_selection: Option<ScheduledBackendSelection>,
     #[serde(default)]
     cwd: Option<String>,
+    // One-release compatibility for existing Ollama schedule snapshots.
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "backend")]
+enum ScheduledBackendSelection {
+    #[serde(rename = "codex", rename_all = "camelCase")]
+    Codex {
+        auth_profile_id: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    },
+    #[serde(rename = "openai-compatible", rename_all = "camelCase")]
+    OpenAiCompatible {
+        profile_id: String,
+        model: Option<String>,
+    },
+}
+
+impl ScheduledPromptRuntimeConfig {
+    fn legacy_ollama_config(&self) -> Option<OllamaConfig> {
+        self.base_url.as_ref().map(|base_url| OllamaConfig {
+            base_url: base_url.clone(),
+            model: self
+                .model
+                .clone()
+                .unwrap_or_else(|| "llama3.1:8b".to_string()),
+            timeout_ms: self.timeout_ms.unwrap_or(600_000),
+        })
+    }
 }
 
 fn wildcard_match(pattern: &str, text: &str) -> bool {
@@ -12864,6 +13796,7 @@ mod tests {
     fn crew_provider_config_uses_python_runtime_key() {
         let configs = CrewProviderConfigsRequest {
             open_ai_compatible: Some(CrewExternalProviderConfigRequest {
+                profile_id: Some("profile-example".to_string()),
                 base_url: "https://inference.example.test/v1".to_string(),
                 model: "example/model".to_string(),
                 models: vec!["vendor/example-model".to_string()],
@@ -14002,11 +14935,682 @@ fn update_backup_create(
     })
 }
 
+// -- Unified API and Codex profiles ----------------------------------------
+
+#[tauri::command]
+fn api_profile_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ApiProfileRow>, String> {
+    state.list_api_profiles().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_profile_upsert(
+    state: tauri::State<'_, Arc<Database>>,
+    profile: ApiProfileRow,
+) -> Result<(), String> {
+    state
+        .upsert_api_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_profile_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<bool, String> {
+    state
+        .delete_api_profile(&id)
+        .map(|deleted| deleted > 0)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn backend_defaults_read(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<AppBackendDefaultsRow, String> {
+    state
+        .get_app_backend_defaults()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn backend_defaults_write(
+    state: tauri::State<'_, Arc<Database>>,
+    defaults: AppBackendDefaultsRow,
+) -> Result<(), String> {
+    if !matches!(
+        defaults.backend.as_deref(),
+        Some("codex") | Some("openai-compatible")
+    ) {
+        return Err("Backend default must be codex or openai-compatible.".to_string());
+    }
+    if defaults.backend.as_deref() == Some("openai-compatible")
+        && defaults
+            .api_profile_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Err("An OpenAI-compatible default requires an API profile.".to_string());
+    }
+    state
+        .upsert_app_backend_defaults(&defaults)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_default_profile_write(
+    state: tauri::State<'_, Arc<Database>>,
+    profile_id: String,
+) -> Result<(), String> {
+    match state
+        .set_default_api_profile(profile_id.trim())
+        .map_err(|error| error.to_string())?
+    {
+        1 => Ok(()),
+        _ => Err("The selected API profile does not exist.".to_string()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderFallbackResolveRequest {
+    id: String,
+    approved: bool,
+    api_profile_id: Option<String>,
+}
+
+#[tauri::command]
+fn provider_fallback_list(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<Vec<ProviderFallbackApprovalRow>, String> {
+    state
+        .list_provider_fallback_approvals(Some("pending"))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn provider_fallback_resolve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: ProviderFallbackResolveRequest,
+) -> Result<(), String> {
+    let approval = state
+        .list_provider_fallback_approvals(Some("pending"))
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|approval| approval.id == request.id)
+        .ok_or_else(|| "Fallback approval is no longer pending.".to_string())?;
+    let resolved_at = chrono::Utc::now().to_rfc3339();
+    if !request.approved {
+        if !state
+            .resolve_provider_fallback_approval(&request.id, "denied", None, &resolved_at)
+            .map_err(|error| error.to_string())?
+        {
+            return Err("Fallback approval was already resolved.".to_string());
+        }
+        if let Some(task_id) = state
+            .scheduled_task_id_for_run(&approval.run_id)
+            .map_err(|error| error.to_string())?
+        {
+            state
+                .insert_scheduled_run(
+                    &approval.run_id,
+                    &task_id,
+                    "denied",
+                    &approval.created_at,
+                    Some(&resolved_at),
+                    None,
+                    Some("The one-shot API fallback was denied by the user."),
+                )
+                .map_err(|error| error.to_string())?;
+            let _ = state.update_work_task_status(
+                &task_id,
+                "failed",
+                None,
+                Some("The one-shot API fallback was denied by the user."),
+                Some(&approval.created_at),
+                &resolved_at,
+            );
+        }
+        return Ok(());
+    }
+    let profile_id = request
+        .api_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Select an API profile for the approved fallback.".to_string())?;
+    state
+        .get_api_profile(profile_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The selected API profile does not exist.".to_string())?;
+
+    // Resolve every referenced object before consuming the one-shot grant. A
+    // malformed or stale approval must remain pending instead of being lost.
+    let task_id = state
+        .scheduled_task_id_for_run(&approval.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The scheduled run for this fallback no longer exists.".to_string())?;
+    let scheduled = state
+        .list_scheduled_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.0 == task_id)
+        .ok_or_else(|| "The scheduled task for this fallback no longer exists.".to_string())?;
+    if scheduled.4 != "prompt" {
+        return Err("One-shot API fallback currently applies only to model schedules.".to_string());
+    }
+    let override_config = serde_json::json!({
+        "backendSelection": {
+            "backend": "openai-compatible",
+            "profileId": profile_id
+        },
+        "cwd": scheduled.7.as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+            .and_then(|json| json.get("cwd").cloned())
+            .unwrap_or(Value::Null)
+    })
+    .to_string();
+
+    if !state
+        .resolve_provider_fallback_approval(&request.id, "approved", Some(profile_id), &resolved_at)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Fallback approval was already resolved.".to_string());
+    }
+    // Consume before dispatch. This makes an approved paid fallback a one-shot
+    // capability even if the process or provider fails during execution.
+    if !state
+        .consume_provider_fallback_approval(&request.id, &resolved_at)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Fallback approval could not be consumed.".to_string());
+    }
+    state
+        .insert_scheduled_run(
+            &approval.run_id,
+            &task_id,
+            "fallback_approved",
+            &approval.created_at,
+            Some(&resolved_at),
+            None,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+    let database = state.inner().clone();
+    let approval_id = request.id;
+    thread::spawn(move || {
+        let _ = database.update_work_task_status(
+            &task_id,
+            "running",
+            None,
+            None,
+            Some(&resolved_at),
+            &resolved_at,
+        );
+        let run_result = run_scheduled_task_once(
+            &app,
+            &database,
+            &scheduled.0,
+            &scheduled.2,
+            &scheduled.3,
+            &scheduled.4,
+            scheduled.5.as_deref(),
+            scheduled.6.as_deref(),
+            Some(&override_config),
+        );
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        let status = if run_result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        let error = run_result.as_ref().err().map(String::as_str);
+        let _ = database.update_work_task_status(
+            &task_id,
+            status,
+            None,
+            error,
+            Some(&resolved_at),
+            &finished_at,
+        );
+        let _ = app.emit(
+            "provider-fallback-consumed",
+            serde_json::json!({ "approvalId": approval_id, "taskId": task_id, "status": status }),
+        );
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_runtime_status(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+) -> codex_runtime::RuntimeStatus {
+    runtime.status()
+}
+
+#[tauri::command]
+fn codex_profile_list(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<Vec<CodexAuthProfileRow>, String> {
+    state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_profile_upsert(
+    state: tauri::State<'_, Arc<Database>>,
+    profile: CodexAuthProfileRow,
+) -> Result<(), String> {
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_profile_delete(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<bool, String> {
+    // Logout first so the pinned app-server removes the corresponding OS-keyring entry.
+    let _ = runtime.request(&profile_id, "account/logout", None);
+    runtime.remove_profile_data(&profile_id)?;
+    state
+        .delete_codex_auth_profile(&profile_id)
+        .map(|deleted| deleted > 0)
+        .map_err(|error| error.to_string())
+}
+
+fn update_codex_profile_from_account(
+    database: &Database,
+    profile_id: &str,
+    result: &Value,
+) -> Result<(), String> {
+    let mut profile = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    let account = result.get("account").filter(|value| !value.is_null());
+    profile.email = account
+        .and_then(|value| value.get("email"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.account_id = account
+        .and_then(|value| value.get("accountId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.plan_type = account
+        .and_then(|value| value.get("planType"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.status = if account
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        == Some("chatgpt")
+    {
+        "ready".to_string()
+    } else {
+        "signed_out".to_string()
+    };
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    database
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_login_start(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    flow: String,
+) -> Result<Value, String> {
+    let mut profile = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    let params = match flow.as_str() {
+        "browser" => serde_json::json!({
+            "type": "chatgpt",
+            "useHostedLoginSuccessPage": true,
+            "appBrand": "chatgpt"
+        }),
+        "device" => serde_json::json!({ "type": "chatgptDeviceCode" }),
+        _ => return Err("Unsupported Codex login flow".to_string()),
+    };
+    let result = runtime.request(&profile_id, "account/login/start", Some(params))?;
+    profile.status = "login_pending".to_string();
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_account_read(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    refresh_token: Option<bool>,
+) -> Result<Value, String> {
+    let result = runtime.request(
+        &profile_id,
+        "account/read",
+        Some(serde_json::json!({ "refreshToken": refresh_token.unwrap_or(false) })),
+    )?;
+    update_codex_profile_from_account(&state, &profile_id, &result)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_model_list(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<Value, String> {
+    runtime.request(
+        &profile_id,
+        "model/list",
+        Some(serde_json::json!({ "limit": 100, "includeHidden": false })),
+    )
+}
+
+#[tauri::command]
+fn codex_rate_limits_read(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<Value, String> {
+    let result = runtime.request(&profile_id, "account/rateLimits/read", None)?;
+    if let Some(mut profile) = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        let limits = result.get("rateLimits").cloned().unwrap_or(Value::Null);
+        profile.status = if limits
+            .get("rateLimitReachedType")
+            .is_some_and(|value| !value.is_null())
+        {
+            "limited".to_string()
+        } else {
+            "ready".to_string()
+        };
+        profile.quota_reset_at = limits
+            .get("primary")
+            .and_then(|value| value.get("resetsAt"))
+            .and_then(Value::as_i64)
+            .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+            .map(|timestamp| timestamp.to_rfc3339());
+        profile.quota_json = Some(limits.to_string());
+        profile.updated_at = chrono::Utc::now().to_rfc3339();
+        state
+            .upsert_codex_auth_profile(&profile)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_logout(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<(), String> {
+    runtime.request(&profile_id, "account/logout", None)?;
+    if let Some(mut profile) = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        profile.email = None;
+        profile.account_id = None;
+        profile.plan_type = None;
+        profile.status = "signed_out".to_string();
+        profile.quota_json = None;
+        profile.quota_reset_at = None;
+        profile.updated_at = chrono::Utc::now().to_rfc3339();
+        state
+            .upsert_codex_auth_profile(&profile)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_profile_mark_limited(
+    state: tauri::State<'_, Arc<Database>>,
+    profile_id: String,
+    reason: String,
+) -> Result<(), String> {
+    let mut profile = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    profile.status = "limited".to_string();
+    profile.quota_json = Some(serde_json::json!({ "limitedReason": reason }).to_string());
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexThreadOpenRequest {
+    owner_kind: String,
+    owner_id: String,
+    member_id: Option<String>,
+    auth_profile_id: Option<String>,
+    cwd: String,
+    model: Option<String>,
+    permission_mode: String,
+    #[serde(default)]
+    dynamic_tools: Vec<Value>,
+}
+
+fn select_codex_profile(
+    database: &Database,
+    pinned_id: Option<&str>,
+) -> Result<CodexAuthProfileRow, String> {
+    let profiles = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?;
+    if let Some(pinned_id) = pinned_id.filter(|value| !value.is_empty()) {
+        let profile = profiles
+            .into_iter()
+            .find(|profile| profile.id == pinned_id)
+            .ok_or_else(|| "The pinned Codex account no longer exists".to_string())?;
+        return if profile.status == "ready" {
+            Ok(profile)
+        } else {
+            Err(format!(
+                "The pinned Codex account '{}' is not usable (status: {}). Pinned accounts never switch automatically.",
+                profile.name, profile.status
+            ))
+        };
+    }
+    profiles
+        .into_iter()
+        .find(|profile| profile.status == "ready")
+        .ok_or_else(|| {
+            "No automatically usable Codex account is available. Sign in again or request an API fallback approval.".to_string()
+        })
+}
+
+fn codex_thread_open_impl(
+    state: &Database,
+    runtime: &codex_runtime::CodexRuntimeManager,
+    request: CodexThreadOpenRequest,
+) -> Result<Value, String> {
+    let profile = select_codex_profile(state, request.auth_profile_id.as_deref())?;
+    let member_id = request.member_id.unwrap_or_default();
+    if let Some(binding) = state
+        .get_codex_thread_binding(
+            &request.owner_kind,
+            &request.owner_id,
+            &member_id,
+            &profile.id,
+        )
+        .map_err(|error| error.to_string())?
+    {
+        match runtime.request(
+            &profile.id,
+            "thread/resume",
+            Some(serde_json::json!({
+                "threadId": binding.codex_thread_id,
+                "cwd": request.cwd,
+                "model": request.model,
+                "dynamicTools": request.dynamic_tools
+            })),
+        ) {
+            Ok(result) => {
+                return Ok(serde_json::json!({
+                    "authProfileId": profile.id,
+                    "rebuilt": false,
+                    "result": result
+                }))
+            }
+            Err(error) => log::warn!(
+                "Codex thread resume failed; rebuilding from OpenCowork history: {error}"
+            ),
+        }
+    }
+
+    let sandbox = if request.permission_mode == "plan" {
+        "readOnly"
+    } else {
+        "workspaceWrite"
+    };
+    let result = runtime.request(
+        &profile.id,
+        "thread/start",
+        Some(serde_json::json!({
+            "cwd": request.cwd,
+            "model": request.model,
+            "approvalPolicy": "unlessTrusted",
+            "sandbox": sandbox,
+            "serviceName": "open_cowork",
+            "dynamicTools": request.dynamic_tools
+        })),
+    )?;
+    let thread_id = result
+        .get("thread")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Codex thread/start returned no thread id".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_thread_binding(&CodexThreadBindingRow {
+            owner_kind: request.owner_kind,
+            owner_id: request.owner_id,
+            member_id,
+            auth_profile_id: profile.id.clone(),
+            codex_thread_id: thread_id.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "authProfileId": profile.id,
+        "rebuilt": true,
+        "result": result
+    }))
+}
+
+#[tauri::command]
+fn codex_thread_open(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    request: CodexThreadOpenRequest,
+) -> Result<Value, String> {
+    codex_thread_open_impl(state.inner().as_ref(), runtime.inner().as_ref(), request)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexTurnStartRequest {
+    auth_profile_id: String,
+    thread_id: String,
+    prompt: String,
+    cwd: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    permission_mode: String,
+    writable_roots: Vec<String>,
+}
+
+#[tauri::command]
+fn codex_turn_start(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    request: CodexTurnStartRequest,
+) -> Result<Value, String> {
+    let sandbox_policy = if request.permission_mode == "plan" {
+        serde_json::json!({ "type": "readOnly", "networkAccess": false })
+    } else {
+        serde_json::json!({
+            "type": "workspaceWrite",
+            "writableRoots": request.writable_roots,
+            "networkAccess": false
+        })
+    };
+    runtime.request(
+        &request.auth_profile_id,
+        "turn/start",
+        Some(serde_json::json!({
+            "threadId": request.thread_id,
+            "input": [{ "type": "text", "text": request.prompt }],
+            "cwd": request.cwd,
+            "approvalPolicy": "unlessTrusted",
+            "sandboxPolicy": sandbox_policy,
+            "model": request.model,
+            "effort": request.reasoning_effort
+        })),
+    )
+}
+
+#[tauri::command]
+fn codex_turn_interrupt(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    thread_id: String,
+    turn_id: String,
+) -> Result<Value, String> {
+    runtime.request(
+        &profile_id,
+        "turn/interrupt",
+        Some(serde_json::json!({ "threadId": thread_id, "turnId": turn_id })),
+    )
+}
+
+#[tauri::command]
+fn codex_server_request_respond(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    request_id: u64,
+    result: Value,
+) -> Result<(), String> {
+    runtime.respond(&profile_id, request_id, result)
+}
+
 // -- App entry --------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}));
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -14018,10 +15622,32 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .expect("failed to resolve app resource dir");
+            match local_daemon_manager::provision_and_start(&resource_dir, &app_data_dir) {
+                Ok(warnings) => {
+                    for warning in warnings {
+                        log::warn!("Local daemon provisioning warning: {warning}");
+                    }
+                }
+                Err(error) => log::error!("Local daemon provisioning failed: {error}"),
+            }
+            let codex_runtime = Arc::new(codex_runtime::CodexRuntimeManager::new(
+                resource_dir,
+                app_data_dir.clone(),
+                app.handle().clone(),
+            ));
             let panic_log_dir = app_data_dir.clone();
             std::panic::set_hook(Box::new(move |panic_info| {
                 let payload = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
@@ -14075,12 +15701,35 @@ pub fn run() {
             app.manage(DeveloperBrowserState::default());
             app.manage(CrewPythonBridge::default());
             app.manage(ClaudeCodeBridge::new());
+            app.manage(codex_runtime);
             configure_pdfium_search_paths(app.handle());
             start_scheduler_worker(app.handle().clone(), shared_database);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            api_profile_list,
+            api_profile_upsert,
+            api_profile_delete,
+            backend_defaults_read,
+            backend_defaults_write,
+            api_default_profile_write,
+            provider_fallback_list,
+            provider_fallback_resolve,
+            codex_runtime_status,
+            codex_profile_list,
+            codex_profile_upsert,
+            codex_profile_delete,
+            codex_login_start,
+            codex_account_read,
+            codex_model_list,
+            codex_rate_limits_read,
+            codex_logout,
+            codex_profile_mark_limited,
+            codex_thread_open,
+            codex_turn_start,
+            codex_turn_interrupt,
+            codex_server_request_respond,
             ollama_health_check,
             generate_plan,
             chat_turn,
@@ -14163,6 +15812,7 @@ pub fn run() {
             project_detach_thread,
             db_save_thread,
             db_list_threads,
+            db_update_thread_title,
             db_update_thread_provider_settings,
             db_update_thread_permission_config,
             db_update_thread_runner,
@@ -14185,6 +15835,8 @@ pub fn run() {
             audit_event,
             credential_set,
             credential_get,
+            credential_exists,
+            credential_copy,
             credential_delete,
             fs_list_allowed_folders,
             fs_add_allowed_folder,
@@ -14343,6 +15995,7 @@ pub fn run() {
             crew_provider_health_check,
             crew_provider_models_list,
             openai_compatible_chat_completion,
+            local_daemon_bridge::local_daemon_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

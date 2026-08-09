@@ -71,6 +71,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "CrewAI runtime preparation failed with exit code $LASTEXITCODE"
     }
+    npm run prepare:codex-runtime
+    if ($LASTEXITCODE -ne 0) {
+        throw "Codex runtime preparation failed with exit code $LASTEXITCODE"
+    }
     if ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
         npm run tauri -- build --target $env:TAURI_BUILD_TARGET
     }

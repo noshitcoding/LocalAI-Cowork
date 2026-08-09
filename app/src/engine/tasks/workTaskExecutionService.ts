@@ -16,7 +16,7 @@ export type CrewMissionDraft = {
 }
 
 type WorkTaskChatProviderContext = {
-  crews: readonly Pick<Crew, 'id' | 'defaultProvider' | 'defaultModel'>[]
+  crews: readonly Pick<Crew, 'id' | 'defaultProvider' | 'defaultBackendSelection' | 'defaultModel'>[]
   ollamaModel: string
   defaultLlmProfileIds: DefaultLlmProfileIds
   llmProfiles: readonly LlmProfile[]
@@ -31,27 +31,54 @@ export function resolveWorkTaskChatProviderSettings(
     const crew = task.crewId ? context.crews.find((item) => item.id === task.crewId) : null
     if (!crew) return undefined
 
+    if (crew.defaultBackendSelection) {
+      return {
+        ...crew.defaultBackendSelection,
+        ...(crew.defaultModel?.trim() ? { model: crew.defaultModel.trim() } : {}),
+      }
+    }
+
     const provider = crew.defaultProvider ?? 'ollama'
-    const profileId = provider === 'ollama' ? undefined : context.defaultLlmProfileIds[provider]
-    const defaultProfile = provider === 'ollama'
-      ? undefined
-      : context.llmProfiles.find((profile) => profile.id === profileId && profile.provider === provider)
-        ?? context.llmProfiles.find((profile) => profile.provider === provider)
+    if (provider === 'codex') {
+      return {
+        backend: 'codex',
+        ...(crew.defaultModel?.trim() ? { model: crew.defaultModel.trim() } : {}),
+      }
+    }
+    const preset = provider === 'openrouter' ? 'openrouter' : provider === 'ollama' ? 'ollama' : undefined
+    const profileId = provider === 'ollama'
+      ? context.defaultLlmProfileIds.ollama
+      : provider === 'openrouter'
+        ? context.defaultLlmProfileIds.openrouter
+        : context.defaultLlmProfileIds['openai-compatible']
+    const defaultProfile = context.llmProfiles.find((profile) => profile.id === profileId)
+      ?? context.llmProfiles.find((profile) => !preset || profile.preset === preset)
+      ?? context.llmProfiles[0]
     const model = crew.defaultModel?.trim()
-      || (provider === 'ollama' ? context.ollamaModel.trim() : defaultProfile?.model.trim() ?? '')
+      || defaultProfile?.model.trim()
+      || (provider === 'ollama' ? context.ollamaModel.trim() : '')
 
     return {
-      provider,
+      backend: 'openai-compatible',
+      profileId: defaultProfile?.id ?? '',
       ...(model ? { model } : {}),
-      ...(defaultProfile?.id ? { profileId: defaultProfile.id } : {}),
     }
   }
 
   const model = task.model.trim()
+  if (task.backendSelection) {
+    return {
+      ...task.backendSelection,
+      ...(model ? { model } : {}),
+    }
+  }
   if (!context.fallbackProviderSettings && !model) return undefined
 
   return {
-    ...(context.fallbackProviderSettings ?? { provider: 'ollama' as const }),
+    ...(context.fallbackProviderSettings ?? {
+      backend: 'openai-compatible' as const,
+      profileId: context.defaultLlmProfileIds.api ?? context.defaultLlmProfileIds.ollama,
+    }),
     ...(model ? { model } : {}),
   }
 }

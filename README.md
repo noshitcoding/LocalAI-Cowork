@@ -38,12 +38,36 @@ The project is early. Windows is the most mature target, while Linux x86_64 is r
 - GitHub workbench for local changes, branches, commits, pull requests, reviews,
   comments, and merges
 - Gated Windows and Linux packages for tagged releases
+- Optional local-first distributed mode with durable server runs, Web and
+  Android control surfaces, encrypted project snapshots, and background local
+  daemons
+- Linux headless/visible Chromium, virtual desktop and LibreOffice sandboxes,
+  plus outbound-only managed Windows executors for Microsoft Office and
+  Windows desktop automation
 
 ## Current Scope
 
-LocalAI Cowork is aimed at local and network-internal AI workflows. It is not a hosted SaaS and does not require a separate web server in normal desktop use.
+LocalAI Cowork remains fully usable as a serverless desktop application. An
+optional self-hosted control plane adds durable runs that continue when every
+client is closed; it does not turn the project into an externally operated
+SaaS and is never required for local work.
 
-The current implementation is strongest on Windows. Linux x86_64 packages are built and smoke-tested on Ubuntu 22.04 for a conservative glibc baseline. Windows-only features such as the native sandbox, OS credential vault integration, and Office automation are not yet available on Linux.
+The desktop implementation is strongest on Windows. Linux x86_64 packages are
+built and smoke-tested on Ubuntu 22.04 for a conservative glibc baseline.
+Server-side Linux runs use hardened Docker sandboxes, Chromium and LibreOffice;
+actual Word, Excel, PowerPoint and arbitrary Windows desktop automation require
+a separately licensed managed Windows executor.
+
+The opt-in distributed runtime contains a durable Rust control plane, personal
+background daemon, Linux Docker workers, managed Windows executors, isolated
+web entry and thin Android shell while preserving the serverless desktop path.
+Deploy it through the single-port Compose stack and review the remaining
+physical release gates before exposing it to untrusted users. Start with the
+[architecture](docs/DISTRIBUTED_ARCHITECTURE.md),
+[deployment guide](docs/SERVER_DEPLOYMENT.md), and explicit
+[implementation-status matrix](docs/DISTRIBUTED_IMPLEMENTATION_STATUS.md).
+The distributed stack is currently suitable for trusted development and pilot
+networks, not public multi-tenant production.
 
 ## Quick Start
 
@@ -149,9 +173,15 @@ Common environment options:
 ## Project Layout
 
 ```text
-app/          Tauri desktop app, React frontend, Rust backend
-docs/         Public user and integration documentation
-scripts/      Repository-level validation helpers
+app/          Shared React UI plus Tauri desktop and web image
+agents/       Personal/managed executor agents and local background daemon
+clients/      Android Tauri shell
+crates/       Shared Rust contracts and headless runtime
+server/       Axum control plane, worker and signed Docker runner
+deploy/       Single-port Compose, sandboxes, gateway and security policies
+contracts/    Versioned generated OpenAPI and JSON Schema artifacts
+docs/         Public user, architecture and operations documentation
+scripts/      Repository-level validation and acceptance helpers
 .github/      CI, release automation, and community templates
 site/         Public product website and search metadata
 ```
@@ -165,6 +195,13 @@ npm run lint
 npm run typecheck
 npm run test:ci
 npm run build
+npm run build:web
+npm run test:web
+npm run test:gateway
+npm run test:storage-chaos
+npm run test:storage-pressure
+npm run prepare:local-daemon
+npm run test:local-daemon
 ```
 
 Rust checks:
@@ -195,8 +232,8 @@ npm run smoke:desktop
 The GitHub Actions workflow in `.github/workflows/release.yml` builds Windows x64 and Linux x64 packages, then publishes one GitHub Release only after every required job succeeds.
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 Release conditions are fail-closed: the tag must be valid `v`-prefixed SemVer, already exist, match the shared npm/Cargo/Tauri version, and point to a commit contained in `main`. Windows verification, Linux compilation and package smoke tests, vulnerability audits, updater signatures, and the `release` environment (including any configured protection rules) must all pass before publication. Stable tags cannot be manually marked as prereleases; prerelease tags use a SemVer suffix such as `v0.3.0-beta.1`.

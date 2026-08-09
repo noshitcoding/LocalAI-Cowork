@@ -131,7 +131,7 @@ test('chat dropdowns open upward and stay inside fullscreen dimensions', async (
     await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: withTheme('/', theme) })
 
     const controls = page.locator('.chat-input-toolbar-compact .chat-dropdown-toggle')
-    await expect(controls).toHaveCount(3)
+    await expect(controls).toHaveCount(4)
 
     const readability = await controls.evaluateAll((toggles) => {
       const rgb = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
@@ -255,10 +255,10 @@ test('burger navigation has deterministic focus and closes on route changes', as
 
   await page.getByRole('button', { name: 'Open main menu' }).click()
   const settingsSections = menu.getByLabel('Settings Sections')
-  await expect(settingsSections.getByRole('button')).toHaveCount(9)
-  await settingsSections.getByRole('button', { name: 'Interface' }).click()
-  await expect(page).toHaveURL(/\/settings\?section=ui$/)
-  await expect(page.getByRole('heading', { name: 'Interface' })).toBeVisible()
+  await expect(settingsSections.getByRole('button')).toHaveCount(10)
+  await settingsSections.getByRole('button', { name: 'AI Sandbox' }).click()
+  await expect(page).toHaveURL(/\/settings\?section=sandbox$/)
+  await expect(page.getByRole('heading', { name: 'AI Sandbox', level: 2 })).toBeVisible()
 })
 
 test('run context renders persisted events and artifacts', async ({ page }) => {
@@ -299,6 +299,16 @@ test('run context renders persisted events and artifacts', async ({ page }) => {
           if (command === 'plugin:event|listen') return args?.handler ?? 1
           if (command.startsWith('plugin:event|') || command.startsWith('plugin:window|')) return null
           if (command === 'credential_get') return { value: null }
+          if (command === 'credential_exists') return { exists: false }
+          if (command === 'credential_copy') return { copied: false }
+          if (command === 'backend_defaults_read') {
+            return {
+              backend: 'openai-compatible',
+              apiProfileId: 'default-ollama',
+              setupCompleted: true,
+              updatedAt: '2026-07-12T20:00:00Z',
+            }
+          }
           if (command === 'engine_run_event_list') {
             return [
               { id: 'event-2', run_id: 'run-visual-evidence', sequence: 2, event_type: 'artifact_written', summary: 'Wrote release report', created_at: '2026-07-12T20:01:00Z' },

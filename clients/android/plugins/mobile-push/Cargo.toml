@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-mobile-push"
+version = "0.3.0"
+description = "Open Cowork Android Firebase Cloud Messaging bridge"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+links = "tauri-plugin-mobile-push"
+build = "build.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.10.3", default-features = false }
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = { version = "2.5.4", features = ["build"] }

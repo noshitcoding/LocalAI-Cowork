@@ -139,6 +139,12 @@ function parseStoredChatMessagePayload(rawContent: string): ChatMessage | null {
       crewLive: message.crewLive && typeof message.crewLive === 'object'
         ? message.crewLive as ChatMessage['crewLive']
         : undefined,
+      durableRunId: typeof message.durableRunId === 'string' ? message.durableRunId : undefined,
+      durableRunState: typeof message.durableRunState === 'string' ? message.durableRunState : undefined,
+      durableRequestId: typeof message.durableRequestId === 'string' ? message.durableRequestId : undefined,
+      durableRequestKind: message.durableRequestKind === 'approval' || message.durableRequestKind === 'input'
+        ? message.durableRequestKind
+        : undefined,
       streaming: false,
     }
   } catch {
@@ -162,6 +168,10 @@ export function serializeChatMessageForStorage(message: ChatMessage): string {
       verboseContent: message.verboseContent,
       liveToolCalls: message.liveToolCalls,
       crewLive: message.crewLive,
+      durableRunId: message.durableRunId,
+      durableRunState: message.durableRunState,
+      durableRequestId: message.durableRequestId,
+      durableRequestKind: message.durableRequestKind,
       streaming: false,
     },
   })

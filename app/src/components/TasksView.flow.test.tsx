@@ -140,16 +140,20 @@ describe('TasksView crew mission flow', () => {
       llmProfiles: [{
         id: 'openrouter-free',
         name: 'OpenRouter Free',
-        provider: 'openrouter',
+        provider: 'openai-compatible',
+        preset: 'openrouter',
+        authMode: 'bearer',
         baseUrl: 'https://openrouter.ai/api/v1',
         model: freeModel,
-        apiKey: 'or-test',
+        apiKey: '',
+        hasApiKey: true,
         timeoutMs: 600000,
         verifyTlsCertificates: true,
         contextWindow: null,
         temperature: null,
       }],
       defaultLlmProfileIds: {
+        api: 'openrouter-free',
         ollama: 'default-ollama',
         'openai-compatible': 'default-openai-compatible',
         openrouter: 'openrouter-free',
@@ -198,7 +202,7 @@ describe('TasksView crew mission flow', () => {
     expect(task.prompt).toBe(crew.description)
     expect(task.threadId).toBe(thread.id)
     expect(thread.providerSettings).toEqual({
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: freeModel,
       profileId: 'openrouter-free',
     })

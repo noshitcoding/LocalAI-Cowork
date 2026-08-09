@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: ['**/web-runtime.spec.ts'],
   outputDir: './test-results',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
@@ -21,7 +22,7 @@ export default defineConfig({
     ? [['line'], ['html', { open: 'never' }]]
     : [['list'], ['html', { open: 'never' }]],
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: 'http://127.0.0.1:4186',
     colorScheme: 'light',
     locale: 'en-US',
     reducedMotion: 'reduce',
@@ -31,7 +32,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm run preview:e2e',
-    url: 'http://127.0.0.1:4173',
+    url: 'http://127.0.0.1:4186',
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

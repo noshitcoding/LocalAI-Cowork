@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first desktop workspace for agentic work with Ollama, MCP, tasks, and tools."
 authors = ["noshitcoding"]
 license = "Apache-2.0"
@@ -14,6 +14,10 @@ rust-version = "1.95"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["tauri-shell"]
+tauri-shell = []
+
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }
 
@@ -26,8 +30,8 @@ tauri = { version = "2.10.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["net", "time"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
+tokio = { version = "1", features = ["io-util", "net", "time"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 thiserror = "2"
 sha2 = "0.11"
 hmac = "0.13"
@@ -37,6 +41,7 @@ rusqlite = { version = "0.40", features = ["backup", "bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-notification = "2"
 notify = "8"
 image = { version = "0.25", default-features = true }
@@ -51,6 +56,12 @@ portable-pty = "0.9.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
+tauri-plugin-single-instance = { version = "2.4.3", features = ["deep-link"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }

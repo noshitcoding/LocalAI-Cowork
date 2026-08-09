@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { resolveCrewAgentWithProfile, useCrewStore, type CrewAgent } from './crewStore'
+import {
+  crewDefinitionForDaemon,
+  crewFromDaemonDefinition,
+  resolveCrewAgentWithProfile,
+  useCrewStore,
+  type CrewAgent,
+} from './crewStore'
 import { usePersonalityStore } from './personalityStore'
 import { safeInvoke } from '../utils/safeInvoke'
 
@@ -111,6 +117,30 @@ describe('crewStore', () => {
     expect(crew?.tasks[1].dependencies).toEqual([crew?.tasks[0].id])
     expect(crew?.tasks[2].dependencies).toEqual([crew?.tasks[1].id])
     expect(crew?.knowledgeFocus).toBe('Prepare and verify the release candidate')
+  })
+
+  it('syncs crew definitions without secrets, endpoints, or volatile run output', () => {
+    const crewId = useCrewStore.getState().createStarterCrew('Sync Crew', 'Verify sync privacy')
+    const crew = useCrewStore.getState().crews.find((entry) => entry.id === crewId)!
+    crew.providerProfiles.openAICompatible.apiKey = 'secret-key'
+    crew.providerProfiles.openAICompatible.baseUrl = 'http://127.0.0.1:8000/v1'
+    crew.runtimeConfig.baseUrl = 'http://127.0.0.1:11434'
+    crew.tasks[0].status = 'completed'
+    crew.tasks[0].output = 'volatile output'
+
+    const payload = crewDefinitionForDaemon(crew)
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('secret-key')
+    expect(serialized).not.toContain('127.0.0.1')
+    expect(serialized).not.toContain('volatile output')
+    expect(serialized).not.toContain('apiKey')
+
+    const restored = crewFromDaemonDefinition(payload, crew)
+    expect(restored).toMatchObject({ id: crewId, name: 'Sync Crew' })
+    expect(restored?.runtimeConfig.baseUrl).toBe('http://127.0.0.1:11434')
+    expect(restored?.providerProfiles.openAICompatible.baseUrl).toBe('http://127.0.0.1:8000/v1')
+    expect(restored?.providerProfiles.openAICompatible.apiKey).toBe('')
+    expect(restored?.tasks[0]).toMatchObject({ status: 'completed', output: 'volatile output' })
   })
 
   it('syncs global profile fields while preserving crew-specific permissions', () => {

@@ -1,0 +1,14 @@
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${COWORK_E2E_POSTGRES_PORT:-15432}:5432"
+    networks:
+      - control
+      - egress
+
+  minio:
+    ports:
+      - "127.0.0.1:${COWORK_E2E_MINIO_PORT:-19000}:9000"
+    networks:
+      - control
+      - egress

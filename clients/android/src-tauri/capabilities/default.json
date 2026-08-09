@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "android-default",
+  "description": "Minimum permissions for the Open Cowork Android remote shell",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "deep-link:default",
+    "biometric:default",
+    "mobile-secure:default",
+    "mobile-push:default",
+    "notification:default",
+    "opener:default"
+  ],
+  "platforms": ["android"]
+}

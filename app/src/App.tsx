@@ -22,6 +22,11 @@ import { hasTauriRuntime, safeInvoke } from './utils/safeInvoke'
 import { PRODUCT_ROUTES, type ProductRouteId, type ProductRoutePath } from './product/routeRegistry'
 import { initializeCredentialVault } from './security/credentialMigration'
 import i18n from './i18n'
+import BackendSetupDialog from './components/BackendSetupDialog'
+import { useBackendDefaultsStore } from './stores/backendDefaultsStore'
+import ProviderFallbackApprovalDialog from './components/ProviderFallbackApprovalDialog'
+import { reconcileDurableLocalRuns } from './runtime/localDaemonChat'
+import { reconcileDurableLocalEntities } from './runtime/localDaemonEntities'
 import './App.css'
 
 const CoworkView = lazy(() => import('./components/CoworkView'))
@@ -32,6 +37,10 @@ const ProjectView = lazy(() => import('./components/ProjectView'))
 const FeaturesView = lazy(() => import('./components/FeaturesView'))
 const DeveloperBrowserView = lazy(() => import('./components/DeveloperBrowserView'))
 const GitHubView = lazy(() => import('./components/GitHubView'))
+const RemoteServerView = lazy(() => import('./components/RemoteServerView'))
+const MobileApp = lazy(() => import('./mobile/MobileApp'))
+const OidcCallbackPage = lazy(() => import('./components/OidcCallbackPage'))
+const IS_ANDROID_SHELL = import.meta.env.VITE_COWORK_ANDROID === 'true'
 
 type BackendPolicyState = {
   flags: Record<string, boolean>
@@ -96,6 +105,9 @@ function ProductRouteReady({ routeId }: { routeId: ProductRouteId }) {
     case 'github':
       content = <GitHubView />
       break
+    case 'server':
+      content = <RemoteServerView />
+      break
     default:
       content = <CoworkView />
   }
@@ -109,11 +121,19 @@ function hasRunningWork(): boolean {
   const workTasks = useWorkTasksStore.getState().tasks
   const crews = useCrewStore.getState().crews
   const engineStatus = useEngineStore.getState().status
+  const activeDurableThreadIds = new Set(chatState.threads
+    .filter((thread) => thread.messages.some((message) => (
+      message.durableRunId
+      && !['completed', 'failed', 'canceled', 'expired', 'interrupted'].includes(message.durableRunState ?? '')
+    )))
+    .map((thread) => thread.id))
 
-  return chatState.busy
-    || chatState.threads.some((thread) => thread.messages.some((message) => message.streaming))
+  return chatState.threads.some((thread) => thread.messages.some((message) => message.streaming && !message.durableRunId))
     || legacyTasks.some((task) => task.status === 'running' || task.status === 'waiting_approval')
-    || workTasks.some((task) => task.status === 'running' || task.status === 'waiting_approval')
+    || workTasks.some((task) => (
+      (task.status === 'running' || task.status === 'waiting_approval')
+      && (!task.threadId || !activeDurableThreadIds.has(task.threadId))
+    ))
     || crews.some((crew) => crew.status === 'running' || crew.status === 'awaiting-approval')
     || engineStatus === 'streaming'
     || engineStatus === 'tool_running'
@@ -151,6 +171,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
+        <Route path="auth/callback" element={<OidcCallbackPage />} />
         {PRODUCT_ROUTES.map((route) => (
           route.path === '/'
             ? <Route key={route.id} index element={<ProductRouteReady routeId={route.id} />} />
@@ -162,7 +183,12 @@ function AppRoutes() {
   )
 }
 
-function App() {
+function DesktopApp() {
+  const existingInstallationAtBoot = useState(() => (
+    typeof window !== 'undefined'
+      && ['open-cowork-config', 'engine-store', 'open-cowork-work-tasks']
+        .some((key) => window.localStorage.getItem(key) !== null)
+  ))[0]
   const [credentialsReady, setCredentialsReady] = useState(false)
   const [credentialError, setCredentialError] = useState(false)
   const [credentialRetry, setCredentialRetry] = useState(0)
@@ -178,6 +204,7 @@ function App() {
   const loadScheduledRuns = useCoworkStore((s) => s.loadScheduledRuns)
   const setPolicySnapshot = useCoworkStore((s) => s.setPolicySnapshot)
   const ensureCrewRuntimeReady = useCrewRuntimeStore((s) => s.ensureReady)
+  const loadBackendDefaults = useBackendDefaultsStore((s) => s.load)
 
   useEffect(() => {
     let cancelled = false
@@ -198,12 +225,19 @@ function App() {
   useEffect(() => {
     if (!credentialsReady) return
     const startedAt = performance.now()
-    void loadChatFromDb().catch((error) => console.warn('[startup] Chat loading failed', error))
+    const chatLoad = loadChatFromDb()
+    const workTaskLoad = loadWorkTasksFromDb()
+    void Promise.all([chatLoad, workTaskLoad])
+      .then(async () => {
+        await reconcileDurableLocalEntities()
+        await reconcileDurableLocalRuns()
+      })
+      .catch((error) => console.warn('[startup] Chat/task/local-run reconciliation failed', error))
     void loadTasksFromDb().catch((error) => console.warn('[startup] Task loading failed', error))
-    void loadWorkTasksFromDb().catch((error) => console.warn('[startup] Work task loading failed', error))
     void loadProjectsFromDb()
     void loadScheduledTasks()
     void loadScheduledRuns(20)
+    void loadBackendDefaults(existingInstallationAtBoot)
     void safeInvoke<BackendPolicyState | null>('policy_get', undefined, null)
       .then((policy) => {
         if (!policy) return
@@ -233,7 +267,7 @@ function App() {
     // Start scheduled tasks worker
     startScheduledWorker()
     return () => stopScheduledWorker()
-  }, [addLog, credentialsReady, ensureCrewRuntimeReady, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
+  }, [addLog, credentialsReady, ensureCrewRuntimeReady, existingInstallationAtBoot, loadBackendDefaults, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -334,8 +368,15 @@ function App() {
   return (
     <BrowserRouter>
       <AppRoutes />
+      <BackendSetupDialog />
+      <ProviderFallbackApprovalDialog />
     </BrowserRouter>
   )
+}
+
+function App() {
+  if (IS_ANDROID_SHELL) return <MobileApp />
+  return <DesktopApp />
 }
 
 export default App
