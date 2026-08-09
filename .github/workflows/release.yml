@@ -366,6 +366,7 @@ jobs:
       - name: Build AppImage, DEB, and RPM
         working-directory: app
         env:
+          NO_STRIP: '1'
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
         run: |
