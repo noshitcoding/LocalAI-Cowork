@@ -2079,6 +2079,7 @@ mod tests {
         assert_eq!(validated.packages.len(), 1);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn validates_generated_release_bundle_assets() {
         let tauri_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2208,6 +2209,7 @@ mod tests {
         assert!(error.contains("test-suite result"), "{error}");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn rejects_release_assets_without_manifest_instead_of_allowing_network_fallback() {
         let bundle = write_valid_test_bundle();
