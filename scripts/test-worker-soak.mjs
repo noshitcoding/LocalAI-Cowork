@@ -689,7 +689,8 @@ const disposableMessageRun = await request(`/threads/${disposableThread.id}/mess
     },
   },
 })
-await request(`/threads/${disposableThread.id}?expected_revision=${disposableThread.revision}`, {
+const disposableThreadBeforeDelete = await request(`/threads/${disposableThread.id}`, { token })
+await request(`/threads/${disposableThread.id}?expected_revision=${disposableThreadBeforeDelete.revision}`, {
   method: 'DELETE', token,
 })
 const threadsAfterCanonicalDelete = await request(`/projects/${syncedProjectId}/threads`, { token })
