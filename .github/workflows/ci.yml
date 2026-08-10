@@ -492,7 +492,7 @@ jobs:
 
           postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
           test -n "${postgres_container}"
-          docker exec "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
+          docker exec -i "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
           INSERT INTO auth_refresh_token_history (token_hash, session_id, refresh_family_id)
           SELECT decode(repeat('ab', 32), 'hex'), id, refresh_family_id
           FROM auth_sessions
@@ -513,7 +513,7 @@ jobs:
             exit 1
           fi
           echo 'auth_session_retention_fixture=ok'
-          docker exec "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
+          docker exec -i "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
           UPDATE auth_sessions
           SET expires_at = now() - interval '91 days'
           WHERE id = (SELECT id FROM auth_sessions ORDER BY created_at LIMIT 1);
