@@ -768,7 +768,7 @@ mod tests {
                 .unwrap();
         let config = FcmConfig {
             project_id: "test-project".to_owned(),
-            client_email: "push@test-project.iam.gserviceaccount.com".to_owned(),
+            client_email: "push@opencowork.invalid".to_owned(),
             private_key,
             token_uri: "https://oauth2.googleapis.com/token".to_owned(),
         };
