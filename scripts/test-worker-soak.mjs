@@ -473,6 +473,61 @@ if (!roundTripThreads.some((item) => (
 ))) {
   throw new Error(`server-created thread did not round-trip through device sync: ${JSON.stringify(roundTripThreads)}`)
 }
+const syncAgentId = randomUUID()
+await request('/executors', {
+  method: 'POST',
+  token,
+  body: {
+    schema_version: 2,
+    executor_id: syncAgentId,
+    kind: 'personal_device',
+    pool_id: null,
+    owner_user_id: null,
+    display_name: 'Metadata sync soak device',
+    protocol_version: 2,
+    capabilities: [],
+    labels: { os: 'soak' },
+    personal_device_remote_control: 'off',
+    max_concurrent_runs: 1,
+  },
+})
+const syncAgentCredential = await request(`/executors/${syncAgentId}/credentials`, {
+  method: 'POST',
+  token,
+  body: {
+    label: 'Metadata sync soak credential',
+    expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+  },
+})
+const agentFeed = await request(`/agent/executors/${syncAgentId}/sync/changes?after=0&limit=1000`, {
+  token: syncAgentCredential.token,
+})
+if (!agentFeed.changes.some((change) => change.entity_id === serverThread.id)) {
+  throw new Error(`personal executor could not read its owner's sync feed: ${JSON.stringify(agentFeed)}`)
+}
+const agentEntityId = randomUUID()
+await request(`/agent/executors/${syncAgentId}/sync/changes`, {
+  method: 'POST',
+  token: syncAgentCredential.token,
+  body: { changes: [{
+    schema_version: 2,
+    operation_id: randomUUID(),
+    device_id: syncAgentId,
+    entity_type: 'skill',
+    entity_id: agentEntityId,
+    base_revision: 0,
+    operation: 'upsert',
+    payload: { name: 'Pushed by the background personal executor' },
+    client_timestamp: new Date().toISOString(),
+  }] },
+})
+const agentSnapshot = await request(
+  `/agent/executors/${syncAgentId}/sync/entities/skill?limit=100`,
+  { token: syncAgentCredential.token },
+)
+if (!agentSnapshot.items.some((item) => item.entity_id === agentEntityId)) {
+  throw new Error(`personal executor push was not materialized: ${JSON.stringify(agentSnapshot)}`)
+}
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -493,3 +548,4 @@ console.log('metadata_sync_canonical_materialization=ok')
 console.log('metadata_sync_out_of_order_convergence=ok')
 console.log('metadata_sync_reverse_projection=ok')
 console.log('metadata_sync_bidirectional_roundtrip=ok')
+console.log('metadata_sync_personal_executor_channel=ok')

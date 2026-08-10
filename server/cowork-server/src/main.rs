@@ -352,6 +352,14 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
             post(routes::heartbeat_executor),
         )
         .route(
+            "/agent/executors/{executor_id}/sync/changes",
+            get(sync::agent_pull_changes).post(sync::agent_push_changes),
+        )
+        .route(
+            "/agent/executors/{executor_id}/sync/entities/{entity_type}",
+            get(sync::agent_list_entities),
+        )
+        .route(
             "/agent/executors/{executor_id}/claim",
             post(routes::claim_executor_run),
         )

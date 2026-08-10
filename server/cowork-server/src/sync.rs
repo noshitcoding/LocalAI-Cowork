@@ -17,7 +17,11 @@ use serde_json::Value;
 use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{auth::Principal, error::ApiError, governance, AppState};
+use crate::{
+    auth::{ExecutorPrincipal, Principal},
+    error::ApiError,
+    governance, AppState,
+};
 
 const MAX_SYNC_BATCH: usize = 100;
 const MAX_SYNC_PAYLOAD_BYTES: usize = 512 * 1024;
@@ -53,23 +57,46 @@ pub async fn push_changes(
     Extension(principal): Extension<Principal>,
     Json(request): Json<PushSyncChangesRequest>,
 ) -> Result<Json<PushSyncChangesResponse>, ApiError> {
+    let device_id = session_device_id(&state.pool, &principal).await?;
+    Ok(Json(
+        push_changes_for_device(&state.pool, principal.user_id, device_id, request).await?,
+    ))
+}
+
+pub async fn agent_push_changes(
+    State(state): State<AppState>,
+    axum::extract::Path(executor_id): axum::extract::Path<Uuid>,
+    Extension(principal): Extension<ExecutorPrincipal>,
+    Json(request): Json<PushSyncChangesRequest>,
+) -> Result<Json<PushSyncChangesResponse>, ApiError> {
+    let user_id = personal_executor_owner(&state.pool, executor_id, &principal).await?;
+    Ok(Json(
+        push_changes_for_device(&state.pool, user_id, executor_id, request).await?,
+    ))
+}
+
+async fn push_changes_for_device(
+    pool: &PgPool,
+    user_id: Uuid,
+    device_id: Uuid,
+    request: PushSyncChangesRequest,
+) -> Result<PushSyncChangesResponse, ApiError> {
     if request.changes.is_empty() || request.changes.len() > MAX_SYNC_BATCH {
         return Err(ApiError::Unprocessable(format!(
             "sync batch must contain 1 to {MAX_SYNC_BATCH} changes"
         )));
     }
-    let device_id = session_device_id(&state.pool, &principal).await?;
     for change in &request.changes {
         validate_change(change, device_id)?;
     }
     let mut results = Vec::with_capacity(request.changes.len());
     for change in request.changes {
-        results.push(apply_change(&state.pool, principal.user_id, change).await?);
+        results.push(apply_change(pool, user_id, change).await?);
     }
-    Ok(Json(PushSyncChangesResponse {
+    Ok(PushSyncChangesResponse {
         schema_version: SCHEMA_VERSION,
         results,
-    }))
+    })
 }
 
 pub async fn pull_changes(
@@ -77,6 +104,30 @@ pub async fn pull_changes(
     Extension(principal): Extension<Principal>,
     Query(query): Query<PullQuery>,
 ) -> Result<Json<PullSyncChangesResponse>, ApiError> {
+    let device_id = session_device_id(&state.pool, &principal).await?;
+    Ok(Json(
+        pull_changes_for_device(&state.pool, principal.user_id, device_id, query).await?,
+    ))
+}
+
+pub async fn agent_pull_changes(
+    State(state): State<AppState>,
+    axum::extract::Path(executor_id): axum::extract::Path<Uuid>,
+    Extension(principal): Extension<ExecutorPrincipal>,
+    Query(query): Query<PullQuery>,
+) -> Result<Json<PullSyncChangesResponse>, ApiError> {
+    let user_id = personal_executor_owner(&state.pool, executor_id, &principal).await?;
+    Ok(Json(
+        pull_changes_for_device(&state.pool, user_id, executor_id, query).await?,
+    ))
+}
+
+async fn pull_changes_for_device(
+    pool: &PgPool,
+    user_id: Uuid,
+    device_id: Uuid,
+    query: PullQuery,
+) -> Result<PullSyncChangesResponse, ApiError> {
     let after = query.after.unwrap_or(0);
     if after < 0 {
         return Err(ApiError::Unprocessable(
@@ -84,8 +135,7 @@ pub async fn pull_changes(
         ));
     }
     let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
-    let device_id = session_device_id(&state.pool, &principal).await?;
-    let mut tx = state.pool.begin().await?;
+    let mut tx = pool.begin().await?;
     let rows = sqlx::query(
         r#"
         SELECT cursor, entity_type, entity_id, revision, operation, payload, created_at
@@ -95,7 +145,7 @@ pub async fn pull_changes(
         LIMIT $3
         "#,
     )
-    .bind(principal.user_id)
+    .bind(user_id)
     .bind(after)
     .bind(limit)
     .fetch_all(&mut *tx)
@@ -111,7 +161,7 @@ pub async fn pull_changes(
     .bind(device_id)
     .fetch_optional(&mut *tx)
     .await?;
-    if existing_user.is_some_and(|user_id| user_id != principal.user_id) {
+    if existing_user.is_some_and(|existing| existing != user_id) {
         return Err(ApiError::Conflict(
             "device identifier is already registered to another account".to_owned(),
         ));
@@ -126,16 +176,16 @@ pub async fn pull_changes(
         "#,
     )
     .bind(device_id)
-    .bind(principal.user_id)
+    .bind(user_id)
     .bind(next_cursor)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(Json(PullSyncChangesResponse {
+    Ok(PullSyncChangesResponse {
         schema_version: SCHEMA_VERSION,
         changes,
         next_cursor,
-    }))
+    })
 }
 
 pub async fn change_events(
@@ -210,9 +260,32 @@ pub async fn list_entities(
     Query(query): Query<EntityPageQuery>,
 ) -> Result<Json<SyncedEntityPage>, ApiError> {
     session_device_id(&state.pool, &principal).await?;
+    Ok(Json(
+        list_entities_for_user(&state.pool, principal.user_id, entity_type, query).await?,
+    ))
+}
+
+pub async fn agent_list_entities(
+    State(state): State<AppState>,
+    axum::extract::Path((executor_id, entity_type)): axum::extract::Path<(Uuid, String)>,
+    Extension(principal): Extension<ExecutorPrincipal>,
+    Query(query): Query<EntityPageQuery>,
+) -> Result<Json<SyncedEntityPage>, ApiError> {
+    let user_id = personal_executor_owner(&state.pool, executor_id, &principal).await?;
+    Ok(Json(
+        list_entities_for_user(&state.pool, user_id, entity_type, query).await?,
+    ))
+}
+
+async fn list_entities_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+    entity_type: String,
+    query: EntityPageQuery,
+) -> Result<SyncedEntityPage, ApiError> {
     validate_entity_type(&entity_type)?;
     let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
-    let mut tx = state.pool.begin().await?;
+    let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         .execute(&mut *tx)
         .await?;
@@ -225,7 +298,7 @@ pub async fn list_entities(
         LIMIT $4
         "#,
     )
-    .bind(principal.user_id)
+    .bind(user_id)
     .bind(&entity_type)
     .bind(query.after)
     .bind(limit)
@@ -238,19 +311,42 @@ pub async fn list_entities(
     let watermark_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(max(cursor), 0)::bigint FROM sync_changes WHERE user_id = $1",
     )
-    .bind(principal.user_id)
+    .bind(user_id)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
     let next_after = (items.len() == usize::try_from(limit).unwrap_or(usize::MAX))
         .then(|| items.last().map(|item| item.entity_id))
         .flatten();
-    Ok(Json(SyncedEntityPage {
+    Ok(SyncedEntityPage {
         schema_version: SCHEMA_VERSION,
         items,
         next_after,
         watermark_cursor,
-    }))
+    })
+}
+
+async fn personal_executor_owner(
+    pool: &PgPool,
+    executor_id: Uuid,
+    principal: &ExecutorPrincipal,
+) -> Result<Uuid, ApiError> {
+    if principal.executor_id != executor_id {
+        return Err(ApiError::Unauthorized(
+            "executor credential does not match the requested executor".to_owned(),
+        ));
+    }
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT owner_user_id FROM executors WHERE id = $1 AND kind = 'personal_device' AND owner_user_id IS NOT NULL",
+    )
+    .bind(executor_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Unauthorized(
+            "metadata sync is only available to owner-bound personal executors".to_owned(),
+        )
+    })
 }
 
 async fn session_device_id(pool: &PgPool, principal: &Principal) -> Result<Uuid, ApiError> {

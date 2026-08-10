@@ -6309,6 +6309,138 @@
         ]
       }
     },
+    "/api/v1/agent/executors/{executor_id}/sync/changes": {
+      "get": {
+        "operationId": "getAgentExecutorsExecutorIdSyncChanges",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "executor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullSyncChangesResponse"
+                }
+              }
+            },
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "executorBearerAuth": []
+          }
+        ],
+        "tags": [
+          "agent"
+        ]
+      },
+      "post": {
+        "operationId": "postAgentExecutorsExecutorIdSyncChanges",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "executor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushSyncChangesResponse"
+                }
+              }
+            },
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "executorBearerAuth": []
+          }
+        ],
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/v1/agent/executors/{executor_id}/sync/entities/{entity_type}": {
+      "get": {
+        "operationId": "getAgentExecutorsExecutorIdSyncEntitiesEntityType",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "executor_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entity_type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncedEntityPage"
+                }
+              }
+            },
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "executorBearerAuth": []
+          }
+        ],
+        "tags": [
+          "agent"
+        ]
+      }
+    },
     "/api/v1/auth/bootstrap": {
       "post": {
         "operationId": "postAuthBootstrap",
