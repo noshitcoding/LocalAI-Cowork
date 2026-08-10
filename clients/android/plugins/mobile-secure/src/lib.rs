@@ -13,7 +13,7 @@ pub enum Error {
 }
 
 impl Serialize for Error {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -38,7 +38,7 @@ struct StoreRequest<'a> {
     value: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrieveResponse {
     pub value: Option<String>,

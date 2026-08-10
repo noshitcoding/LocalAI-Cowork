@@ -13,7 +13,7 @@ pub enum Error {
 }
 
 impl Serialize for Error {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -32,20 +32,20 @@ struct FirebaseConfig<'a> {
     sender_id: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenResponse {
     pub token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionResponse {
     pub granted: bool,
     pub requested: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushEvent {
     pub run_id: String,
@@ -54,7 +54,7 @@ pub struct PushEvent {
     pub received_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PushEventsResponse {
     pub events: Vec<PushEvent>,
@@ -64,7 +64,9 @@ pub struct MobilePush<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> MobilePush<R> {
     fn token(&self, config: FirebaseConfig<'_>) -> Result<TokenResponse> {
-        self.0.run_mobile_plugin("token", config).map_err(Into::into)
+        self.0
+            .run_mobile_plugin("token", config)
+            .map_err(Into::into)
     }
 
     fn permission_status(&self) -> Result<PermissionResponse> {

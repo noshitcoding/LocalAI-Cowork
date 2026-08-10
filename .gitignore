@@ -16,6 +16,8 @@ app/src-tauri/target/
 app/src-tauri/gen/schemas/
 clients/android/src-tauri/target/
 clients/android/src-tauri/gen/schemas/
+clients/android/plugins/*/android/.tauri/
+clients/android/plugins/*/permissions/
 
 # Generated Python runtime artifacts
 app/src-tauri/python/crew_runtime/wheels/
