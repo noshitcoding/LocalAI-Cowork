@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { connect } from 'node:tls'
 import { tmpdir } from 'node:os'
@@ -99,6 +99,9 @@ await new Promise((resolveListen, reject) => upstream.listen(18100, '0.0.0.0', r
 let succeeded = false
 try {
   command('openssl', ['req', '-config', process.platform === 'win32' ? 'NUL' : '/dev/null', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=cowork.test', '-addext', 'subjectAltName=DNS:cowork.test', '-keyout', join(certificateRoot, 'server.key'), '-out', join(certificateRoot, 'server.crt')], { capture: true })
+  chmodSync(certificateRoot, 0o555)
+  chmodSync(join(certificateRoot, 'server.key'), 0o444)
+  chmodSync(join(certificateRoot, 'server.crt'), 0o444)
   command('docker', ['compose', '-f', compose, 'up', '-d'])
   await waitReady()
 
@@ -142,5 +145,6 @@ try {
   try { command('docker', ['compose', '-f', compose, 'down', '--volumes', '--remove-orphans'], { capture: true }) } catch { /* retain primary failure */ }
   for (const socket of upstreamSockets) socket.destroy()
   await new Promise((resolveClose) => upstream.close(resolveClose))
+  try { chmodSync(certificateRoot, 0o700) } catch { /* best-effort temporary cleanup */ }
   rmSync(certificateRoot, { recursive: true, force: true })
 }
