@@ -23,6 +23,7 @@ import {
   pushSubscriptionRecordSchema,
   runEventSchema,
   runRecordSchema,
+  serverSyncChangeSchema,
   pushSyncChangesResponseSchema,
   runInputRequestSchema,
   scheduleRecordSchema,
@@ -57,6 +58,7 @@ import {
   type PushSyncChangesResponse,
   type RunInputRequest,
   type ScheduleRecord,
+  type ServerSyncChange,
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
   type SyncChange,
@@ -203,6 +205,16 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return pullSyncChangesResponseSchema.parse(await this.#request(
       `/api/v1/sync/changes?after=${Math.max(0, Math.trunc(after))}&limit=${Math.max(1, Math.min(1_000, Math.trunc(limit)))}`,
     ))
+  }
+
+  subscribeSyncEvents(
+    afterCursor: number,
+    onEvent: (event: ServerSyncChange) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    const controller = new AbortController()
+    void this.#consumeSyncEvents(afterCursor, controller.signal, onEvent, onError)
+    return () => controller.abort()
   }
 
   async listSupportGrants(): Promise<SupportGrantRecord[]> {
@@ -641,6 +653,41 @@ export class RemoteRuntimeClient implements RuntimeClient {
         if (signal.aborted) return
         const error = cause instanceof Error ? cause : new Error(String(cause))
         onError?.(error)
+      }
+      await abortableDelay(this.#reconnectDelayMs, signal)
+    }
+  }
+
+  async #consumeSyncEvents(
+    initialCursor: number,
+    signal: AbortSignal,
+    onEvent: (event: ServerSyncChange) => void,
+    onError?: (error: Error) => void,
+  ): Promise<void> {
+    let cursor = Math.max(0, Math.trunc(initialCursor))
+    while (!signal.aborted) {
+      try {
+        const token = await this.#accessToken()
+        const response = await this.#fetch(`${this.#baseUrl}/api/v1/sync/events`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'text/event-stream',
+            'last-event-id': String(cursor),
+          },
+          signal,
+        })
+        if (!response.ok) throw await RuntimeHttpError.fromResponse(response)
+        if (!response.body) throw new Error('The server returned an empty sync event stream')
+        for await (const frame of parseSse(response.body, signal)) {
+          if (frame.data === '' || frame.data === 'keep-alive') continue
+          const event = serverSyncChangeSchema.parse(JSON.parse(frame.data))
+          if (event.cursor <= cursor) continue
+          cursor = event.cursor
+          onEvent(event)
+        }
+      } catch (cause) {
+        if (signal.aborted) return
+        onError?.(cause instanceof Error ? cause : new Error(String(cause)))
       }
       await abortableDelay(this.#reconnectDelayMs, signal)
     }

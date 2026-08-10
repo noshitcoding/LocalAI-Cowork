@@ -309,4 +309,43 @@ describe('runtime routing', () => {
       },
     ])
   })
+
+  it('resumes sync SSE from the last durable cursor', async () => {
+    const entityId = '10000000-0000-4000-8000-000000000031'
+    const event = {
+      schema_version: 2,
+      cursor: 9,
+      entity_type: 'memory',
+      entity_id: entityId,
+      revision: 2,
+      operation: 'delete',
+      payload: null,
+      created_at: '2026-08-10T12:00:00Z',
+    }
+    let lastEventId: string | null = null
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      reconnectDelayMs: 1,
+      fetch: async (_input, init) => {
+        lastEventId = new Headers(init?.headers).get('last-event-id')
+        const encoded = new TextEncoder().encode(
+          `id: 9\nevent: sync_change\ndata: ${JSON.stringify(event)}\n\n`,
+        )
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoded)
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      },
+    })
+    let resolveEvent!: (value: unknown) => void
+    const received = new Promise((resolve) => { resolveEvent = resolve })
+    const unsubscribe = client.subscribeSyncEvents(4, resolveEvent)
+
+    await expect(received).resolves.toEqual(event)
+    unsubscribe()
+    expect(lastEventId).toBe('4')
+  })
 })

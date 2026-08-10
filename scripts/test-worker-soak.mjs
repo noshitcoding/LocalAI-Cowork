@@ -61,6 +61,45 @@ async function waitForWave(ids, token) {
   throw new Error(`wave timed out: ${records.map((run) => `${run.spec.id}:${run.state}`).join(', ')}`)
 }
 
+async function firstSyncEvent(token, after = 0) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error('sync SSE timed out')), 10_000)
+  try {
+    const response = await fetch(`${apiBase}/sync/events`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'text/event-stream',
+        'last-event-id': String(after),
+      },
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) {
+      throw new Error(`sync SSE returned ${response.status}`)
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error('sync SSE ended before an event arrived')
+      buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n')
+      let boundary
+      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const data = frame.split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n')
+        if (data && data !== 'keep-alive') return JSON.parse(data)
+      }
+    }
+  } finally {
+    clearTimeout(timeout)
+    controller.abort()
+  }
+}
+
 const soakDeviceId = randomUUID()
 const session = await request('/auth/bootstrap', {
   method: 'POST',
@@ -258,6 +297,10 @@ if (entityChanges.length !== 2
     || pulledSync.next_cursor < entityChanges[1].cursor) {
   throw new Error(`sync cursor feed is incomplete or unordered: ${JSON.stringify(pulledSync)}`)
 }
+const streamedSync = await firstSyncEvent(token, 0)
+if (streamedSync.entity_id !== syncEntityId || streamedSync.cursor !== entityChanges[0].cursor) {
+  throw new Error(`sync SSE did not resume from its durable cursor: ${JSON.stringify(streamedSync)}`)
+}
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -272,3 +315,4 @@ console.log('metadata_sync_idempotency=ok')
 console.log('metadata_sync_conflict=ok')
 console.log('metadata_sync_tombstone=ok')
 console.log('metadata_sync_cursor=ok')
+console.log('metadata_sync_sse_resume=ok')

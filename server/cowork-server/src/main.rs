@@ -179,6 +179,7 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
             "/sync/changes",
             post(sync::push_changes).get(sync::pull_changes),
         )
+        .route("/sync/events", get(sync::change_events))
         .route(
             "/teams",
             post(organization::create_team).get(organization::list_teams),

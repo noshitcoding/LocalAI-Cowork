@@ -1,5 +1,9 @@
+use std::{convert::Infallible, time::Duration as StdDuration};
+
 use axum::{
     extract::{Extension, Query, State},
+    http::HeaderMap,
+    response::{sse::Event, sse::KeepAlive, Sse},
     Json,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -126,6 +130,71 @@ pub async fn pull_changes(
         changes,
         next_cursor,
     }))
+}
+
+pub async fn change_events(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    headers: HeaderMap,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    session_device_id(&state.pool, &principal).await?;
+    let mut cursor = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
+    let pool = state.pool.clone();
+    let user_id = principal.user_id;
+    let stream = async_stream::stream! {
+        loop {
+            match sqlx::query(
+                r#"
+                SELECT cursor, entity_type, entity_id, revision, operation, payload, created_at
+                FROM sync_changes
+                WHERE user_id = $1 AND cursor > $2
+                ORDER BY cursor
+                LIMIT 250
+                "#,
+            )
+            .bind(user_id)
+            .bind(cursor)
+            .fetch_all(&pool)
+            .await
+            {
+                Ok(rows) => {
+                    for row in rows {
+                        match row_to_server_change(&row) {
+                            Ok(change) => {
+                                cursor = change.cursor;
+                                match serde_json::to_string(&change) {
+                                    Ok(data) => yield Ok(Event::default()
+                                        .id(change.cursor.to_string())
+                                        .event("sync_change")
+                                        .data(data)),
+                                    Err(error) => {
+                                        tracing::error!(?error, %user_id, "failed to encode sync SSE event");
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(?error, %user_id, "failed to decode sync SSE row");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(?error, %user_id, "sync event stream database read failed"),
+            }
+            tokio::time::sleep(StdDuration::from_millis(750)).await;
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(StdDuration::from_secs(15))
+            .text("keep-alive"),
+    ))
 }
 
 async fn session_device_id(pool: &PgPool, principal: &Principal) -> Result<Uuid, ApiError> {

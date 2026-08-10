@@ -9149,6 +9149,30 @@
         ]
       }
     },
+    "/api/v1/sync/events": {
+      "get": {
+        "operationId": "getSyncEvents",
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "protected"
+        ]
+      }
+    },
     "/api/v1/tasks": {
       "get": {
         "operationId": "getTasks",
