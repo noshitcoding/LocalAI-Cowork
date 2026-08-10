@@ -120,6 +120,11 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
     let protected = Router::new()
         .route("/auth/bootstrap", post(auth::bootstrap_admin))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/sessions", get(auth::list_sessions))
+        .route(
+            "/auth/sessions/{session_id}",
+            axum::routing::delete(auth::revoke_session),
+        )
         .route("/auth/oidc/link/start", post(oidc::start_link))
         .route("/auth/reauthenticate", post(auth::reauthenticate))
         .route("/auth/totp", get(auth::totp_status))

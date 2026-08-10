@@ -4,7 +4,7 @@ use argon2::{
 };
 use axum::{
     body::{to_bytes, Body},
-    extract::{Extension, Request, State},
+    extract::{Extension, Path, Request, State},
     http::{
         header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, COOKIE, SET_COOKIE, VARY},
         HeaderMap, HeaderValue, StatusCode,
@@ -16,11 +16,11 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use cowork_contracts::{
-    AcceptInvitationRequest, AuthTokens, BootstrapAdminRequest, CreateInvitationRequest,
-    DisableTotpRequest, InvitationSecret, NativeAuthorizationCode, NativeAuthorizationRequest,
-    NativeTokenRequest, PasswordLoginRequest, ReauthenticateRequest, ReauthenticationGrant,
-    RefreshSessionRequest, TotpRecoveryCodes, TotpSetupResponse, TotpStatus, VerifyTotpRequest,
-    SCHEMA_VERSION,
+    AcceptInvitationRequest, AuthSessionRecord, AuthTokens, BootstrapAdminRequest,
+    CreateInvitationRequest, DisableTotpRequest, InvitationSecret, NativeAuthorizationCode,
+    NativeAuthorizationRequest, NativeTokenRequest, PasswordLoginRequest, ReauthenticateRequest,
+    ReauthenticationGrant, RefreshSessionRequest, TotpRecoveryCodes, TotpSetupResponse, TotpStatus,
+    VerifyTotpRequest, SCHEMA_VERSION,
 };
 use hmac::{Hmac, Mac};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -733,6 +733,108 @@ pub async fn logout(
         .bind(session_id)
         .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<AuthSessionRecord>>, ApiError> {
+    let current_session_id = principal.session_id.ok_or_else(|| {
+        ApiError::Unauthorized("session listing requires a signed-in user session".to_owned())
+    })?;
+    let rows = sqlx::query(
+        r#"
+        SELECT id, device_id, created_at, last_used_at, expires_at, revoked_at, revoke_reason,
+            id = $2 AS current,
+            revoked_at IS NULL AND expires_at > now() AS active
+        FROM auth_sessions
+        WHERE user_id = $1 AND created_at > now() - interval '90 days'
+        ORDER BY (id = $2) DESC, active DESC, last_used_at DESC
+        LIMIT 100
+        "#,
+    )
+    .bind(principal.user_id)
+    .bind(current_session_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| AuthSessionRecord {
+                schema_version: SCHEMA_VERSION,
+                id: row.get("id"),
+                device_id: row.get("device_id"),
+                current: row.get("current"),
+                active: row.get("active"),
+                created_at: row.get("created_at"),
+                last_used_at: row.get("last_used_at"),
+                expires_at: row.get("expires_at"),
+                revoked_at: row.get("revoked_at"),
+                revoke_reason: row.get("revoke_reason"),
+            })
+            .collect(),
+    ))
+}
+
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(session_id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let current_session_id = principal.session_id.ok_or_else(|| {
+        ApiError::Unauthorized("session revocation requires a signed-in user session".to_owned())
+    })?;
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        "SELECT device_id, revoked_at FROM auth_sessions WHERE id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(session_id)
+    .bind(principal.user_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound("authentication session was not found".to_owned()))?;
+    let device_id: Uuid = row.get("device_id");
+    let revoked_at: Option<DateTime<Utc>> = row.get("revoked_at");
+    if revoked_at.is_none() {
+        sqlx::query(
+            "UPDATE auth_sessions SET revoked_at = now(), revoke_reason = 'user_device_revoked' WHERE id = $1",
+        )
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE access_tokens SET revoked_at = now() WHERE session_id = $1")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            DELETE FROM push_subscriptions subscription
+            WHERE subscription.user_id = $1 AND subscription.device_id = $2
+              AND NOT EXISTS (
+                SELECT 1 FROM auth_sessions session
+                WHERE session.user_id = $1 AND session.device_id = $2
+                  AND session.revoked_at IS NULL AND session.expires_at > now()
+              )
+            "#,
+        )
+        .bind(principal.user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO audit_events (id, actor_user_id, action, target_type, target_id, metadata) VALUES ($1, $2, 'auth.session.revoked', 'auth_session', $3, $4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(principal.user_id)
+        .bind(session_id)
+        .bind(serde_json::json!({
+            "device_id": device_id,
+            "current": session_id == current_session_id,
+        }))
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

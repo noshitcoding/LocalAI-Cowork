@@ -1,7 +1,7 @@
 import { Copy, Fingerprint, KeyRound, RefreshCw, ShieldCheck, ShieldOff, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
-import type { PasskeyRecord, TotpSetup, TotpStatus } from '../runtime/contracts'
+import type { AuthSessionRecord, PasskeyRecord, TotpSetup, TotpStatus } from '../runtime/contracts'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import { oidcEnabled } from '../runtime/oidc'
 import { useRemoteRuntimeStore } from '../stores/remoteRuntimeStore'
@@ -14,6 +14,7 @@ export default function RemoteSecuritySettings({ client, compact = false }: Prop
   const [status, setStatus] = useState<TotpStatus | null>(null)
   const [setup, setSetup] = useState<TotpSetup | null>(null)
   const [passkeys, setPasskeys] = useState<PasskeyRecord[]>([])
+  const [sessions, setSessions] = useState<AuthSessionRecord[]>([])
   const [passkeyLabel, setPasskeyLabel] = useState('')
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
@@ -26,9 +27,12 @@ export default function RemoteSecuritySettings({ client, compact = false }: Prop
 
   const load = useCallback(async () => {
     try {
-      const [totp, registeredPasskeys] = await Promise.all([client.totpStatus(), client.listPasskeys()])
+      const [totp, registeredPasskeys, registeredSessions] = await Promise.all([
+        client.totpStatus(), client.listPasskeys(), client.listAuthSessions(),
+      ])
       setStatus(totp)
       setPasskeys(registeredPasskeys)
+      setSessions(registeredSessions)
       setError(null)
     } catch (cause) { setError(messageOf(cause)) }
   }, [client])
@@ -70,6 +74,11 @@ export default function RemoteSecuritySettings({ client, compact = false }: Prop
     try { await client.removePasskey(passkeyId, password, code); setPassword(''); setCode(''); await load() }
     catch (cause) { setError(messageOf(cause)) } finally { setBusy(false) }
   }
+  const revokeSession = async (sessionId: string) => {
+    setBusy(true)
+    try { await client.revokeAuthSession(sessionId); await load() }
+    catch (cause) { setError(messageOf(cause)) } finally { setBusy(false) }
+  }
   const copy = async (value: string) => { await navigator.clipboard.writeText(value) }
   const linkSso = async () => {
     setBusy(true)
@@ -100,6 +109,10 @@ export default function RemoteSecuritySettings({ client, compact = false }: Prop
         {passkeys.length > 0 ? <ul>{passkeys.map((passkey) => <li key={passkey.id}><span><strong>{passkey.label}</strong><small>{passkey.last_used_at ? `Last used ${new Date(passkey.last_used_at).toLocaleString()}` : `Added ${new Date(passkey.created_at).toLocaleString()}`}</small></span><button type="button" aria-label={`Remove passkey ${passkey.label}`} disabled={busy || !password || (status?.enabled === true && !code.trim())} onClick={() => { void removePasskey(passkey.id) }}><Trash2 size={14} /></button></li>)}</ul> : <p>No passkeys registered.</p>}
         {passkeysAvailable ? <form onSubmit={registerPasskey}><label>New passkey label<input value={passkeyLabel} onChange={(event) => setPasskeyLabel(event.target.value)} maxLength={100} placeholder="Work laptop" required /></label><button type="submit" disabled={busy || !passkeyLabel.trim()}><Fingerprint size={14} /> Add passkey</button></form> : <p>Open the web app on the server domain to add a passkey.</p>}
         {passkeys.length > 0 ? <p>Enter your password{status?.enabled ? ' and authenticator or recovery code' : ''} above before removing a passkey.</p> : null}
+      </div>
+      <div className="remote-security-passkeys">
+        <div className="remote-security-status"><KeyRound size={18} /><div><strong>Signed-in devices</strong><small>Review and revoke server sessions for this account</small></div></div>
+        {sessions.length > 0 ? <ul>{sessions.map((session) => <li key={session.id}><span><strong>{session.current ? 'This session' : `Device ${session.device_id.slice(0, 8)}`}</strong><small>{session.active ? `Last used ${new Date(session.last_used_at).toLocaleString()}` : `Revoked ${session.revoked_at ? new Date(session.revoked_at).toLocaleString() : 'or expired'}`}</small></span>{session.active && !session.current ? <button type="button" aria-label={`Revoke device ${session.device_id.slice(0, 8)}`} disabled={busy} onClick={() => { void revokeSession(session.id) }}><Trash2 size={14} /></button> : null}</li>)}</ul> : <p>No recent server sessions.</p>}
       </div>
       {ssoEnabled ? <div className="remote-security-passkeys"><div className="remote-security-status"><KeyRound size={18} /><div><strong>Single sign-on</strong><small>Link this account to the configured OpenID Connect provider</small></div></div><button type="button" disabled={busy} onClick={() => { void linkSso() }}><KeyRound size={14} /> Link SSO identity</button></div> : null}
       {recoveryCodes.length > 0 ? <div className="remote-recovery-codes"><strong>Save these one-time recovery codes now</strong><p>They are shown only once. Store them outside this device.</p><code>{recoveryCodes.join('\n')}</code><button type="button" onClick={() => { void copy(recoveryCodes.join('\n')) }}><Copy size={14} /> Copy all</button></div> : null}

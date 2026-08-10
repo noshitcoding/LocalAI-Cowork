@@ -1,4 +1,5 @@
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { createServer, request as httpsRequest } from 'node:https'
 import { request as httpRequest } from 'node:http'
 import { extname, resolve, sep } from 'node:path'
@@ -107,6 +108,19 @@ function rawRefresh(cookie) {
   })
 }
 
+async function api(path, { method = 'GET', token, body } = {}) {
+  const response = await fetch(new URL(`/api/v1${path}`, apiOrigin), {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const text = await response.text()
+  return { response, body: text ? JSON.parse(text) : null }
+}
+
 let browser
 try {
   await listen()
@@ -140,6 +154,31 @@ try {
   const storage = await page.evaluate(() => JSON.stringify({ ...localStorage }))
   if (storage.includes(first.value) || storage.includes(tokenBody.access_token)) {
     throw new Error('authentication token leaked into localStorage')
+  }
+
+  const secondaryDeviceId = randomUUID()
+  const secondaryLogin = await api('/auth/login', {
+    method: 'POST',
+    body: { email, password, device_id: secondaryDeviceId },
+  })
+  if (!secondaryLogin.response.ok) throw new Error(`secondary device login returned ${secondaryLogin.response.status}`)
+  const beforeRevoke = await api('/auth/sessions', { token: tokenBody.access_token })
+  if (!beforeRevoke.response.ok) throw new Error(`session listing returned ${beforeRevoke.response.status}`)
+  const current = beforeRevoke.body.find((session) => session.current)
+  const secondary = beforeRevoke.body.find((session) => session.device_id === secondaryDeviceId)
+  if (!current?.active || !secondary?.active || secondary.current) {
+    throw new Error('session listing did not identify the current and secondary devices')
+  }
+  const revoked = await api(`/auth/sessions/${secondary.id}`, {
+    method: 'DELETE', token: tokenBody.access_token,
+  })
+  if (revoked.response.status !== 204) throw new Error(`session revocation returned ${revoked.response.status}`)
+  const secondaryAccess = await api('/auth/sessions', { token: secondaryLogin.body.access_token })
+  if (secondaryAccess.response.status !== 401) throw new Error('revoked device access token remained usable')
+  const afterRevoke = await api('/auth/sessions', { token: tokenBody.access_token })
+  const revokedRecord = afterRevoke.body.find((session) => session.id === secondary.id)
+  if (revokedRecord?.active || revokedRecord?.revoke_reason !== 'user_device_revoked') {
+    throw new Error('revoked session history did not expose the revocation state')
   }
 
   const refreshValues = new Set([first.value])
@@ -183,6 +222,7 @@ try {
   console.log('canonical_same_origin=ok')
   console.log('refresh_token_hidden_from_javascript=ok')
   console.log('secure_httponly_samesite_cookie=ok')
+  console.log('device_session_revocation=ok')
   console.log(`reload_rotations=${refreshRotations}`)
   console.log('refresh_reuse_family_revocation=ok')
   console.log('logout_cookie_clear=ok')

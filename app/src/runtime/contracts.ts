@@ -433,6 +433,20 @@ export const totpRecoveryCodesSchema = z.object({
 })
 export type TotpRecoveryCodes = z.infer<typeof totpRecoveryCodesSchema>
 
+export const authSessionRecordSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  device_id: z.string().uuid(),
+  current: z.boolean(),
+  active: z.boolean(),
+  created_at: z.string().datetime({ offset: true }),
+  last_used_at: z.string().datetime({ offset: true }),
+  expires_at: z.string().datetime({ offset: true }),
+  revoked_at: z.string().datetime({ offset: true }).nullable(),
+  revoke_reason: z.string().nullable(),
+})
+export type AuthSessionRecord = z.infer<typeof authSessionRecordSchema>
+
 export const passkeyChallengeSchema = z.object({
   schema_version: z.number().int(),
   challenge_id: z.string().uuid(),

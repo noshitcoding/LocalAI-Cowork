@@ -93,4 +93,37 @@ describe('runtime routing', () => {
     expect(updated.registration.personal_device_remote_control).toBe('off')
     expect(updated.registration.labels.local_remote_control_mode).toBe('confirm_each_session')
   })
+
+  it('lists and revokes authentication sessions through the protected API', async () => {
+    const requests: Array<{ url: string; method: string }> = []
+    const session = {
+      schema_version: 2,
+      id: '10000000-0000-4000-8000-000000000001',
+      device_id: '20000000-0000-4000-8000-000000000001',
+      current: true,
+      active: true,
+      created_at: '2026-08-10T10:00:00Z',
+      last_used_at: '2026-08-10T12:00:00Z',
+      expires_at: '2026-09-09T10:00:00Z',
+      revoked_at: null,
+      revoke_reason: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({ url: String(input), method: init?.method ?? 'GET' })
+        return init?.method === 'DELETE'
+          ? new Response(null, { status: 204 })
+          : new Response(JSON.stringify([session]), { status: 200 })
+      },
+    })
+
+    await expect(client.listAuthSessions()).resolves.toEqual([session])
+    await client.revokeAuthSession(session.id)
+    expect(requests).toEqual([
+      { url: 'https://cowork.example.test/api/v1/auth/sessions', method: 'GET' },
+      { url: `https://cowork.example.test/api/v1/auth/sessions/${session.id}`, method: 'DELETE' },
+    ])
+  })
 })

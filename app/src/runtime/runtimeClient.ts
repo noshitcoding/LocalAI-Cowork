@@ -1,6 +1,7 @@
 import {
   assertProtocolCompatible,
   approvalRequestSchema,
+  authSessionRecordSchema,
   capabilityCatalogSchema,
   desktopSessionSchema,
   desktopStreamTicketSchema,
@@ -29,6 +30,7 @@ import {
   versionResponseSchema,
   type CapabilityCatalog,
   type ApprovalRequest,
+  type AuthSessionRecord,
   type CreateRunRequest,
   type DesktopSession,
   type DesktopStreamTicket,
@@ -220,6 +222,16 @@ export class RemoteRuntimeClient implements RuntimeClient {
 
   async listSchedules(): Promise<ScheduleRecord[]> {
     return scheduleRecordSchema.array().parse(await this.#request('/api/v1/schedules'))
+  }
+
+  async listAuthSessions(): Promise<AuthSessionRecord[]> {
+    return authSessionRecordSchema.array().parse(await this.#request('/api/v1/auth/sessions'))
+  }
+
+  async revokeAuthSession(sessionId: string): Promise<void> {
+    await this.#request(`/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    }, false)
   }
 
   async createSchedule(request: {

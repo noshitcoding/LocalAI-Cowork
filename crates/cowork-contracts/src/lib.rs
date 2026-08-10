@@ -632,6 +632,20 @@ pub struct AuthTokens {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthSessionRecord {
+    pub schema_version: u16,
+    pub id: Uuid,
+    pub device_id: Uuid,
+    pub current: bool,
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoke_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcConfiguration {
     pub schema_version: u16,
     pub enabled: bool,

@@ -4,6 +4,7 @@ import {
   MIN_COMPATIBLE_SCHEMA_VERSION,
   SCHEMA_VERSION,
   approvalRequestSchema,
+  authSessionRecordSchema,
   capabilityCatalogSchema,
   capabilityDescriptorSchema,
   capabilitySchema,
@@ -100,6 +101,7 @@ export const runCheckpointSchema = z.object({
 
 export const contractSchemaRegistry = {
   ApprovalRequest: approvalRequestSchema,
+  AuthSessionRecord: authSessionRecordSchema,
   Capability: capabilitySchema,
   CapabilityCatalog: capabilityCatalogSchema,
   CapabilityDescriptor: capabilityDescriptorSchema,

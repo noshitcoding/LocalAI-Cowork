@@ -78,6 +78,7 @@ const responseSchemas = new Map([
   ['get /api/v1/schedules', 'ScheduleRecord'], ['post /api/v1/schedules', 'ScheduleRecord'],
   ['put /api/v1/schedules/{schedule_id}', 'ScheduleRecord'],
   ['get /api/v1/operations/metrics', 'OperationsSnapshot'],
+  ['get /api/v1/auth/sessions', 'AuthSessionRecord'],
   ['get /api/v1/support-grants', 'SupportGrantRecord'], ['post /api/v1/support-grants', 'SupportGrantRecord'],
   ['get /api/v1/runs/{run_id}/artifacts', 'RunArtifact'],
   ['get /api/v1/runs/{run_id}/approvals', 'ApprovalRequest'],
@@ -94,6 +95,7 @@ const responseSchemas = new Map([
 ])
 const arrayResponses = new Set([
   'get /api/v1/projects', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/auth/sessions',
   'get /api/v1/support-grants', 'get /api/v1/runs/{run_id}/artifacts',
   'get /api/v1/runs/{run_id}/approvals', 'get /api/v1/runs/{run_id}/input-requests',
   'get /api/v1/runs/{run_id}/checkpoints', 'get /api/v1/runs/{run_id}/desktop-sessions',
