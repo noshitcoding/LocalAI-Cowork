@@ -162,13 +162,47 @@ try {
     body: { email, password, device_id: secondaryDeviceId },
   })
   if (!secondaryLogin.response.ok) throw new Error(`secondary device login returned ${secondaryLogin.response.status}`)
+  const outsiderEmail = `browser-session-outsider-${randomUUID()}@opencowork.invalid`
+  const outsiderDeviceId = randomUUID()
+  const invitation = await api('/auth/invitations', {
+    method: 'POST',
+    token: tokenBody.access_token,
+    body: { email: outsiderEmail },
+  })
+  if (invitation.response.status !== 201) throw new Error(`outsider invitation returned ${invitation.response.status}`)
+  const outsider = await api('/auth/invitations/accept', {
+    method: 'POST',
+    body: {
+      token: invitation.body.token,
+      display_name: 'Browser Session Outsider',
+      password: 'Browser-Session-Outsider-Password-42!',
+      device_id: outsiderDeviceId,
+    },
+  })
+  if (outsider.response.status !== 201) throw new Error(`outsider registration returned ${outsider.response.status}`)
   const beforeRevoke = await api('/auth/sessions', { token: tokenBody.access_token })
   if (!beforeRevoke.response.ok) throw new Error(`session listing returned ${beforeRevoke.response.status}`)
   const current = beforeRevoke.body.find((session) => session.current)
   const secondary = beforeRevoke.body.find((session) => session.device_id === secondaryDeviceId)
-  if (!current?.active || !secondary?.active || secondary.current) {
+  if (!current?.active || !secondary?.active || secondary.current
+    || beforeRevoke.body.some((session) => session.device_id === outsiderDeviceId)) {
     throw new Error('session listing did not identify the current and secondary devices')
   }
+  const outsiderSessions = await api('/auth/sessions', { token: outsider.body.access_token })
+  if (!outsiderSessions.response.ok
+    || outsiderSessions.body.length !== 1
+    || outsiderSessions.body[0].device_id !== outsiderDeviceId
+    || !outsiderSessions.body[0].current) {
+    throw new Error('session listing crossed the user ownership boundary')
+  }
+  const outsiderRevoke = await api(`/auth/sessions/${current.id}`, {
+    method: 'DELETE', token: outsider.body.access_token,
+  })
+  if (outsiderRevoke.response.status !== 404) {
+    throw new Error(`cross-user session revocation returned ${outsiderRevoke.response.status}`)
+  }
+  const adminAfterOutsider = await api('/auth/sessions', { token: tokenBody.access_token })
+  if (!adminAfterOutsider.response.ok) throw new Error('cross-user revocation affected the owning session')
   const revoked = await api(`/auth/sessions/${secondary.id}`, {
     method: 'DELETE', token: tokenBody.access_token,
   })
@@ -222,6 +256,7 @@ try {
   console.log('canonical_same_origin=ok')
   console.log('refresh_token_hidden_from_javascript=ok')
   console.log('secure_httponly_samesite_cookie=ok')
+  console.log('cross_user_session_isolation=ok')
   console.log('device_session_revocation=ok')
   console.log(`reload_rotations=${refreshRotations}`)
   console.log('refresh_reuse_family_revocation=ok')
