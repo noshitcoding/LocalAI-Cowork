@@ -430,6 +430,23 @@ export const taskDefinitionSchema = z.object({
 })
 export type TaskDefinition = z.infer<typeof taskDefinitionSchema>
 
+export const providerProfileSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  owner_user_id: z.string().uuid().nullable(),
+  team_id: z.string().uuid().nullable(),
+  name: z.string(),
+  provider_kind: z.string(),
+  model_defaults: z.unknown(),
+  has_secret: z.boolean(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type ProviderProfile = z.infer<typeof providerProfileSchema>
+
 export const scheduleRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),

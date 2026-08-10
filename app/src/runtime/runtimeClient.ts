@@ -16,6 +16,7 @@ import {
   passkeyChallengeSchema,
   passkeyRecordSchema,
   projectRecordSchema,
+  providerProfileSchema,
   quotaStatusSchema,
   reauthenticationGrantSchema,
   runArtifactSchema,
@@ -49,6 +50,7 @@ import {
   type PushConfiguration,
   type PushSubscriptionRecord,
   type ProjectRecord,
+  type ProviderProfile,
   type QuotaScopeType,
   type QuotaStatus,
   type PasskeyRecord,
@@ -163,6 +165,58 @@ export class RemoteRuntimeClient implements RuntimeClient {
 
   async listProjects(): Promise<ProjectRecord[]> {
     return projectRecordSchema.array().parse(await this.#request('/api/v1/projects'))
+  }
+
+  async listProviderProfiles(): Promise<ProviderProfile[]> {
+    return providerProfileSchema.array().parse(
+      await this.#request('/api/v1/provider-profiles'),
+    )
+  }
+
+  async createProviderProfile(request: {
+    team_id: string | null
+    name: string
+    provider_kind: string
+    model_defaults: unknown
+    api_key: string | null
+  }): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request('/api/v1/provider-profiles', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
+  async updateProviderProfile(profileId: string, request: {
+    expected_revision: number
+    name: string
+    provider_kind: string
+    model_defaults: unknown
+  }): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async setProviderProfileSecret(
+    profileId: string,
+    expectedRevision: number,
+    apiKey: string | null,
+  ): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}/secret`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ expected_revision: expectedRevision, api_key: apiKey }),
+      },
+    ))
+  }
+
+  async deleteProviderProfile(profileId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
   }
 
   async updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectRecord> {

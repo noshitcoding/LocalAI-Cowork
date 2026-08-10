@@ -504,6 +504,7 @@ const syncedThreadId = randomUUID()
 const syncedMessageId = randomUUID()
 const syncedTaskId = randomUUID()
 const syncedScheduleId = randomUUID()
+const syncedProviderId = randomUUID()
 const syncChange = (entityType, entityId, baseRevision, operation, payload) => ({
   schema_version: 2,
   operation_id: randomUUID(),
@@ -534,8 +535,23 @@ await request('/sync/changes', {
     timezone: 'Europe/Berlin',
     executor_target: { kind: 'server_linux', pool_id: null },
     input: { prompt: 'Offline schedule metadata' },
-    model_profile_id: null,
+    model_profile_id: syncedProviderId,
     enabled: false,
+    source: 'desktop',
+  })] },
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('provider_profile', syncedProviderId, 0, 'upsert', {
+    name: 'Offline Ollama profile',
+    provider: 'openai-compatible',
+    preset: 'ollama',
+    auth_mode: 'none',
+    model: 'llama3.1:8b',
+    timeout_ms: 600000,
+    verify_tls_certificates: true,
+    endpoint_binding: 'per_device',
     source: 'desktop',
   })] },
 })
@@ -602,8 +618,17 @@ if (!materializedTask || materializedTask.revision !== 1 || !materializedTask.re
 const materializedSchedules = await request(`/schedules?project_id=${syncedProjectId}`, { token })
 const materializedSchedule = materializedSchedules.find((item) => item.id === syncedScheduleId)
 if (!materializedSchedule || materializedSchedule.revision !== 1 || materializedSchedule.enabled
-    || materializedSchedule.timezone !== 'Europe/Berlin') {
+    || materializedSchedule.timezone !== 'Europe/Berlin'
+    || materializedSchedule.model_profile_id !== null
+    || materializedSchedule.blocked_reason !== 'model profile is bound to a different executor class') {
   throw new Error(`out-of-order synced schedule did not converge: ${JSON.stringify(materializedSchedules)}`)
+}
+const materializedProviders = await request('/provider-profiles', { token })
+const materializedProvider = materializedProviders.find((item) => item.id === syncedProviderId)
+if (!materializedProvider || materializedProvider.owner_user_id !== session.user_id
+    || materializedProvider.model_defaults?.endpoint_binding !== 'per_device'
+    || materializedProvider.has_secret) {
+  throw new Error(`synced provider profile was not safely materialized: ${JSON.stringify(materializedProviders)}`)
 }
 await request('/sync/changes', {
   method: 'POST',
@@ -662,6 +687,15 @@ const tasksAfterDeviceTombstone = await request(`/tasks?project_id=${syncedProje
 if (tasksAfterDeviceTombstone.some((item) => item.id === syncedTaskId)) {
   throw new Error(`synced task tombstone was not materialized: ${JSON.stringify(tasksAfterDeviceTombstone)}`)
 }
+await request('/sync/changes', {
+  method: 'POST', token, body: {
+    changes: [syncChange('provider_profile', syncedProviderId, 1, 'delete', null)],
+  },
+})
+const profilesAfterDeviceTombstone = await request('/provider-profiles', { token })
+if (profilesAfterDeviceTombstone.some((item) => item.id === syncedProviderId)) {
+  throw new Error(`synced provider tombstone was not materialized: ${JSON.stringify(profilesAfterDeviceTombstone)}`)
+}
 const beforeServerProjection = await request('/sync/changes?after=0&limit=1000', { token })
 const serverThread = await request('/threads', {
   method: 'POST',
@@ -693,6 +727,24 @@ const serverTask = await request('/tasks', {
     release: true,
   },
 })
+const serverProfile = await request('/provider-profiles', {
+  method: 'POST',
+  token,
+  body: {
+    team_id: null,
+    name: 'Server OpenAI-compatible profile',
+    provider_kind: 'openai_compatible',
+    model_defaults: {
+      base_url: 'https://models.example.test/v1',
+      model: 'server-model-v1',
+      auth_mode: 'none',
+      timeout_ms: 600000,
+      max_steps: 64,
+      verify_tls_certificates: true,
+    },
+    api_key: null,
+  },
+})
 const serverSchedule = await request('/schedules', {
   method: 'POST',
   token,
@@ -704,7 +756,7 @@ const serverSchedule = await request('/schedules', {
     timezone: 'Europe/Berlin',
     executor_target: { kind: 'server_linux', pool_id: null },
     input: { prompt: 'Server-created schedule metadata' },
-    model_profile_id: null,
+    model_profile_id: serverProfile.id,
     enabled: false,
   },
 })
@@ -742,6 +794,7 @@ const projectedIds = new Set(serverProjection.changes.map((change) => change.ent
 if (!projectedIds.has(syncedProjectId)
     || !projectedIds.has(serverThread.id)
     || !projectedIds.has(serverTask.id)
+    || !projectedIds.has(serverProfile.id)
     || !projectedIds.has(serverSchedule.id)
     || !projectedIds.has(serverMessageRun.message.id)) {
   throw new Error(`canonical server changes did not reach the device feed: ${JSON.stringify(serverProjection)}`)
@@ -755,6 +808,14 @@ const serverTaskSnapshot = await request('/sync/entities/task?limit=1000', { tok
 const projectedTask = serverTaskSnapshot.items.find((item) => item.entity_id === serverTask.id)
 if (!projectedTask || projectedTask.tombstone || projectedTask.payload?.project_id !== syncedProjectId) {
   throw new Error(`server-created task is missing from the sync snapshot: ${JSON.stringify(serverTaskSnapshot)}`)
+}
+const serverProfileSnapshot = await request('/sync/entities/provider_profile?limit=1000', { token })
+const projectedProfile = serverProfileSnapshot.items
+  .find((item) => item.entity_id === serverProfile.id)
+if (!projectedProfile || projectedProfile.tombstone
+    || projectedProfile.payload?.endpoint_binding !== 'server'
+    || projectedProfile.payload?.has_api_key !== false) {
+  throw new Error(`server-created provider profile is missing from the sync snapshot: ${JSON.stringify(serverProfileSnapshot)}`)
 }
 const serverScheduleSnapshot = await request('/sync/entities/schedule?limit=1000', { token })
 const projectedSchedule = serverScheduleSnapshot.items
@@ -792,6 +853,25 @@ if (roundTripTask.revision !== projectedTask.revision + 1
     || roundTripTask.name !== 'Edited offline after server creation'
     || !roundTripTask.released) {
   throw new Error(`server-created task did not round-trip through device sync: ${JSON.stringify(roundTripTask)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange(
+    'provider_profile',
+    serverProfile.id,
+    projectedProfile.revision,
+    'upsert',
+    { ...projectedProfile.payload, model: 'server-model-v2' },
+  )] },
+})
+const roundTripProfile = (await request('/provider-profiles', { token }))
+  .find((item) => item.id === serverProfile.id)
+if (!roundTripProfile || roundTripProfile.revision !== serverProfile.revision + 1
+    || roundTripProfile.model_defaults?.model !== 'server-model-v2'
+    || roundTripProfile.model_defaults?.base_url !== 'https://models.example.test/v1'
+    || roundTripProfile.model_defaults?.endpoint_binding !== 'server') {
+  throw new Error(`server-created provider profile did not round-trip safely: ${JSON.stringify(roundTripProfile)}`)
 }
 await request('/sync/changes', {
   method: 'POST',
@@ -854,6 +934,24 @@ const deletedProjectedTask = taskSnapshotAfterCanonicalDelete.items
   .find((item) => item.entity_id === serverTask.id)
 if (!deletedProjectedTask?.tombstone) {
   throw new Error(`server task deletion did not reach the device snapshot: ${JSON.stringify(taskSnapshotAfterCanonicalDelete)}`)
+}
+await expectRequestStatus(
+  `/provider-profiles/${serverProfile.id}?expected_revision=${serverProfile.revision}`,
+  409,
+  { method: 'DELETE', token },
+)
+await request(
+  `/provider-profiles/${serverProfile.id}?expected_revision=${roundTripProfile.revision}`,
+  { method: 'DELETE', token },
+)
+const profileSnapshotAfterCanonicalDelete = await request(
+  '/sync/entities/provider_profile?limit=1000',
+  { token },
+)
+const deletedProjectedProfile = profileSnapshotAfterCanonicalDelete.items
+  .find((item) => item.entity_id === serverProfile.id)
+if (!deletedProjectedProfile?.tombstone) {
+  throw new Error(`server provider deletion did not reach the device snapshot: ${JSON.stringify(profileSnapshotAfterCanonicalDelete)}`)
 }
 const beforeCanonicalCrud = await request('/sync/changes?after=0&limit=1000', { token })
 const updatedServerThread = await request(`/threads/${serverThread.id}`, {

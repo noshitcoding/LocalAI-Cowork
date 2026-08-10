@@ -10,6 +10,7 @@ mod oidc;
 mod operations;
 mod organization;
 mod passkey;
+mod providers;
 mod push;
 mod routes;
 mod storage;
@@ -202,6 +203,18 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         .route(
             "/projects/{project_id}/members",
             post(organization::set_project_member),
+        )
+        .route(
+            "/provider-profiles",
+            post(providers::create).get(providers::list),
+        )
+        .route(
+            "/provider-profiles/{profile_id}",
+            put(providers::update).delete(providers::delete),
+        )
+        .route(
+            "/provider-profiles/{profile_id}/secret",
+            put(providers::set_secret),
         )
         .route("/threads", post(organization::create_thread))
         .route(

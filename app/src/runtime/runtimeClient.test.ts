@@ -431,6 +431,72 @@ describe('runtime routing', () => {
     ])
   })
 
+  it('manages server provider profiles without returning secret material', async () => {
+    const profileId = '10000000-0000-4000-8000-000000000040'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const profile = {
+      schema_version: 2,
+      id: profileId,
+      revision: 1,
+      etag: `W/"${profileId}:1"`,
+      owner_user_id: '10000000-0000-4000-8000-000000000041',
+      team_id: null,
+      name: 'Server OpenAI-compatible',
+      provider_kind: 'openai_compatible',
+      model_defaults: {
+        base_url: 'https://models.example.test/v1',
+        model: 'example-model',
+        endpoint_binding: 'server',
+      },
+      has_secret: false,
+      created_at: '2026-08-10T12:00:00Z',
+      updated_at: '2026-08-10T12:00:00Z',
+      deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(init?.method ? profile : [profile]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listProviderProfiles()).resolves.toEqual([profile])
+    await expect(client.createProviderProfile({
+      team_id: null,
+      name: profile.name,
+      provider_kind: profile.provider_kind,
+      model_defaults: profile.model_defaults,
+      api_key: null,
+    })).resolves.toEqual(profile)
+    await expect(client.setProviderProfileSecret(profileId, 1, 'one-time-secret'))
+      .resolves.toEqual(profile)
+    await client.deleteProviderProfile(profileId, 1)
+
+    expect(requests.map(({ url, method }) => ({ url, method }))).toEqual([
+      { url: 'https://cowork.example.test/api/v1/provider-profiles', method: 'GET' },
+      { url: 'https://cowork.example.test/api/v1/provider-profiles', method: 'POST' },
+      {
+        url: `https://cowork.example.test/api/v1/provider-profiles/${profileId}/secret`,
+        method: 'PUT',
+      },
+      {
+        url: `https://cowork.example.test/api/v1/provider-profiles/${profileId}?expected_revision=1`,
+        method: 'DELETE',
+      },
+    ])
+    expect(requests[2].body).toEqual({ expected_revision: 1, api_key: 'one-time-secret' })
+  })
+
   it('resumes sync SSE from the last durable cursor', async () => {
     const entityId = '10000000-0000-4000-8000-000000000031'
     const event = {

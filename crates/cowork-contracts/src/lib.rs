@@ -1012,6 +1012,48 @@ pub struct GrantExecutorPoolRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderProfile {
+    pub schema_version: u16,
+    pub id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub owner_user_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub name: String,
+    pub provider_kind: String,
+    pub model_defaults: Value,
+    pub has_secret: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProviderProfileRequest {
+    pub team_id: Option<Uuid>,
+    pub name: String,
+    pub provider_kind: String,
+    #[serde(default)]
+    pub model_defaults: Value,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProviderProfileRequest {
+    pub expected_revision: i64,
+    pub name: String,
+    pub provider_kind: String,
+    #[serde(default)]
+    pub model_defaults: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetProviderProfileSecretRequest {
+    pub expected_revision: i64,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDefinition {
     pub schema_version: u16,
     pub id: Uuid,

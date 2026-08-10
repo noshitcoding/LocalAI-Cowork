@@ -26,7 +26,7 @@ use crate::{
     auth::{ExecutorPrincipal, Principal},
     db,
     error::ApiError,
-    organization, sync, AppState,
+    organization, providers, sync, AppState,
 };
 
 const DEFAULT_WAIT_DAYS: i64 = 7;
@@ -383,6 +383,14 @@ pub async fn create_schedule(
         &request.executor_target,
     )
     .await?;
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        request.model_profile_id,
+        &request.executor_target,
+    )
+    .await?;
     let next_run_at = if request.enabled {
         Some(next_occurrence(
             &request.cron,
@@ -473,6 +481,14 @@ pub async fn update_schedule(
         &state.pool,
         principal.user_id,
         project_id,
+        &request.executor_target,
+    )
+    .await?;
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        request.model_profile_id,
         &request.executor_target,
     )
     .await?;

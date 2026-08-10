@@ -23,7 +23,7 @@ use crate::{
     auth::{self, ExecutorPrincipal, Principal},
     db, desktop,
     error::ApiError,
-    organization, AppState,
+    organization, providers, AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -150,6 +150,14 @@ async fn prepare_run(
         request.thread_id,
         request.project_revision,
         request.project_privacy,
+        &request.executor_target,
+    )
+    .await?;
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        request.model_profile_id,
         &request.executor_target,
     )
     .await?;

@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::{
     auth::{ExecutorPrincipal, Principal},
     error::ApiError,
-    governance, AppState,
+    governance, providers, AppState,
 };
 
 const MAX_SYNC_BATCH: usize = 100;
@@ -618,6 +618,9 @@ async fn materialize_canonical_entity(
         }
         "schedule" => {
             materialize_schedule(tx, user_id, entity_id, operation, payload).await?;
+        }
+        "provider_profile" => {
+            materialize_provider_profile(tx, user_id, entity_id, operation, payload).await?;
         }
         _ => {}
     }
@@ -1301,7 +1304,10 @@ async fn reconcile_schedules_for_reference(
     reference_key: &str,
     reference_id: Uuid,
 ) -> Result<(), ApiError> {
-    if !matches!(reference_key, "task_id" | "thread_id" | "project_id") {
+    if !matches!(
+        reference_key,
+        "task_id" | "thread_id" | "project_id" | "model_profile_id"
+    ) {
         return Err(ApiError::Internal(anyhow::anyhow!(
             "unsupported schedule reference key {reference_key}"
         )));
@@ -1329,6 +1335,152 @@ async fn reconcile_schedules_for_reference(
         let payload = schedule.try_get::<Option<Value>, _>("payload")?;
         materialize_schedule(tx, user_id, schedule_id, operation, payload.as_ref()).await?;
     }
+    Ok(())
+}
+
+async fn materialize_provider_profile(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    profile_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "provider_profile", profile_id).await?;
+    let current = sqlx::query("SELECT * FROM provider_profiles WHERE id = $1 FOR UPDATE")
+        .bind(profile_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced provider profile ID collides with an independent server profile".to_owned(),
+        ));
+    }
+    if let Some(row) = &current {
+        if row.try_get::<Option<Uuid>, _>("owner_user_id")? != Some(user_id)
+            || row.try_get::<Option<Uuid>, _>("team_id")?.is_some()
+        {
+            return Err(ApiError::Conflict(
+                "synced provider profiles may only modify their owner's personal profile"
+                    .to_owned(),
+            ));
+        }
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            sqlx::query(
+                r#"
+                UPDATE provider_profiles
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    encrypted_secret = NULL, encrypted_data_key = NULL,
+                    secret_nonce = NULL, secret_wrap_nonce = NULL,
+                    deleted_at = now(), updated_at = now()
+                WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+                "#,
+            )
+            .bind(profile_id)
+            .bind(user_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE schedules
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    enabled = FALSE, next_run_at = NULL,
+                    blocked_reason = 'model profile was deleted', updated_at = now()
+                WHERE model_profile_id = $1 AND deleted_at IS NULL
+                "#,
+            )
+            .bind(profile_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        return Ok(());
+    }
+    let (name, provider_kind, mut model_defaults) =
+        providers::normalized_synced_profile(payload.ok_or_else(|| {
+            ApiError::Unprocessable("provider profile sync payload is required".to_owned())
+        })?)?;
+    if let Some(row) = &current {
+        let existing_defaults: Value = row.try_get("model_defaults")?;
+        if existing_defaults
+            .get("endpoint_binding")
+            .and_then(Value::as_str)
+            == Some("server")
+        {
+            let mut merged = existing_defaults.as_object().cloned().unwrap_or_default();
+            let incoming = model_defaults.as_object().cloned().unwrap_or_default();
+            for key in [
+                "model",
+                "timeout_ms",
+                "verify_tls_certificates",
+                "context_window",
+                "temperature",
+                "preset",
+            ] {
+                if let Some(value) = incoming.get(key) {
+                    merged.insert(key.to_owned(), value.clone());
+                }
+            }
+            model_defaults = Value::Object(merged);
+        }
+        let unchanged = row.try_get::<String, _>("name")? == name
+            && row.try_get::<String, _>("provider_kind")? == provider_kind
+            && row.try_get::<Value, _>("model_defaults")? == model_defaults
+            && row
+                .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
+                .is_none();
+        if unchanged {
+            remember_materialization(tx, user_id, "provider_profile", profile_id).await?;
+            reconcile_schedules_for_reference(tx, user_id, "model_profile_id", profile_id).await?;
+            return Ok(());
+        }
+    }
+    let revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision"))
+        .transpose()?
+        .unwrap_or(0)
+        + 1;
+    if current.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE provider_profiles
+            SET revision = $2, etag = $3, name = $4, provider_kind = $5,
+                model_defaults = $6, deleted_at = NULL, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(profile_id)
+        .bind(revision)
+        .bind(format!("W/\"{profile_id}:{revision}\""))
+        .bind(name)
+        .bind(provider_kind)
+        .bind(model_defaults)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"
+            INSERT INTO provider_profiles (
+                id, revision, etag, owner_user_id, team_id, name,
+                provider_kind, model_defaults
+            ) VALUES ($1, $2, $3, $4, NULL, $5, $6, $7)
+            "#,
+        )
+        .bind(profile_id)
+        .bind(revision)
+        .bind(format!("W/\"{profile_id}:{revision}\""))
+        .bind(user_id)
+        .bind(name)
+        .bind(provider_kind)
+        .bind(model_defaults)
+        .execute(&mut **tx)
+        .await?;
+    }
+    remember_materialization(tx, user_id, "provider_profile", profile_id).await?;
+    reconcile_schedules_for_reference(tx, user_id, "model_profile_id", profile_id).await?;
     Ok(())
 }
 
@@ -1515,18 +1667,29 @@ async fn materialize_schedule(
         .map_err(|_| {
             ApiError::Unprocessable("schedule model_profile_id must be a UUID string".to_owned())
         })?;
-    let model_profile_id = if let Some(profile_id) = requested_profile_id {
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM provider_profiles WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL)",
+    let expected_profile_binding = if matches!(target, ExecutorTarget::PersonalDevice { .. }) {
+        "per_device"
+    } else {
+        "server"
+    };
+    let profile_defaults = if let Some(profile_id) = requested_profile_id {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT model_defaults FROM provider_profiles WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL",
         )
         .bind(profile_id)
         .bind(user_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        exists.then_some(profile_id)
+        .fetch_optional(&mut **tx)
+        .await?
     } else {
         None
     };
+    let profile_binding = profile_defaults
+        .as_ref()
+        .and_then(|defaults| defaults.get("endpoint_binding"))
+        .and_then(Value::as_str);
+    let model_profile_id = requested_profile_id.filter(|_| {
+        profile_defaults.is_some() && profile_binding == Some(expected_profile_binding)
+    });
     let enabled = object
         .get("enabled")
         .and_then(Value::as_bool)
@@ -1556,7 +1719,16 @@ async fn materialize_schedule(
         .transpose()?
         .unwrap_or(0)
         + 1;
-    let next_run_at = if enabled {
+    let blocked_reason = requested_profile_id.and_then(|_| {
+        if profile_defaults.is_none() {
+            Some("waiting for model profile metadata")
+        } else if model_profile_id.is_none() {
+            Some("model profile is bound to a different executor class")
+        } else {
+            None
+        }
+    });
+    let next_run_at = if enabled && blocked_reason.is_none() {
         Some(crate::workflow::next_occurrence_normalized(
             &cron,
             timezone,
@@ -1565,9 +1737,6 @@ async fn materialize_schedule(
     } else {
         None
     };
-    let blocked_reason = requested_profile_id
-        .filter(|_| model_profile_id.is_none())
-        .map(|_| "waiting for model profile metadata");
     if current.is_some() {
         sqlx::query(
             r#"
@@ -2003,6 +2172,75 @@ pub(crate) async fn publish_canonical_schedule_tx(
     publish_server_entity_tx(tx, user_id, "schedule", schedule_id, payload).await?;
     remember_materialization(tx, user_id, "schedule", schedule_id).await?;
     Ok(true)
+}
+
+pub(crate) async fn publish_canonical_provider_profile_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    profile_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query("SELECT * FROM provider_profiles WHERE id = $1 AND deleted_at IS NULL")
+        .bind(profile_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let defaults: Value = row.try_get("model_defaults")?;
+    let value = |key: &str| defaults.get(key).cloned().unwrap_or(Value::Null);
+    let payload = serde_json::json!({
+        "name": row.try_get::<String, _>("name")?,
+        "provider": "openai-compatible",
+        "provider_kind": row.try_get::<String, _>("provider_kind")?,
+        "preset": value("preset"),
+        "auth_mode": value("auth_mode"),
+        "model": value("model"),
+        "timeout_ms": value("timeout_ms"),
+        "verify_tls_certificates": value("verify_tls_certificates"),
+        "context_window": value("context_window"),
+        "temperature": value("temperature"),
+        "endpoint_binding": value("endpoint_binding"),
+        "has_api_key": row.try_get::<Option<Vec<u8>>, _>("encrypted_secret")?.is_some(),
+        "canonical_revision": row.try_get::<i64, _>("revision")?,
+        "source": "server"
+    });
+    if let Some(user_id) = row.try_get::<Option<Uuid>, _>("owner_user_id")? {
+        publish_server_entity_tx(tx, user_id, "provider_profile", profile_id, payload).await?;
+        remember_materialization(tx, user_id, "provider_profile", profile_id).await?;
+    } else if let Some(team_id) = row.try_get::<Option<Uuid>, _>("team_id")? {
+        let members = sqlx::query_scalar::<_, Uuid>(
+            "SELECT user_id FROM team_members WHERE team_id = $1 ORDER BY user_id",
+        )
+        .bind(team_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        for user_id in members {
+            publish_server_entity_tx(tx, user_id, "provider_profile", profile_id, payload.clone())
+                .await?;
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) async fn publish_provider_profile_tombstones_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    profile_id: Uuid,
+    owner_user_id: Option<Uuid>,
+    team_id: Option<Uuid>,
+) -> Result<(), ApiError> {
+    if let Some(user_id) = owner_user_id {
+        publish_server_tombstone_tx(tx, user_id, "provider_profile", profile_id).await?;
+    } else if let Some(team_id) = team_id {
+        let members = sqlx::query_scalar::<_, Uuid>(
+            "SELECT user_id FROM team_members WHERE team_id = $1 ORDER BY user_id",
+        )
+        .bind(team_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        for user_id in members {
+            publish_server_tombstone_tx(tx, user_id, "provider_profile", profile_id).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn publish_server_entity_tx(

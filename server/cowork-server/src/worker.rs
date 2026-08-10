@@ -24,7 +24,7 @@ use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use crate::{config::Config, db, desktop, governance, storage, workflow};
+use crate::{config::Config, db, desktop, governance, providers, storage, workflow};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -173,9 +173,6 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
                 }
             }
         }
-        if runtime.agent.is_none() && runtime.runner.is_none() {
-            continue;
-        }
         match db::claim_server_run(
             &pool,
             config.worker_id,
@@ -308,9 +305,29 @@ async fn execute_agent_run(
     runtime: &WorkerRuntime,
     lease: &RunLease,
 ) -> Result<Value> {
-    let agent = runtime
-        .agent
+    let selected_agent = if let Some(profile_id) = lease.run.spec.model_profile_id {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        Some(AgentRuntime::new(AgentModelConfig {
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            model: profile.model,
+            timeout: profile.timeout,
+            max_steps: profile.max_steps,
+            verify_tls_certificates: profile.verify_tls_certificates,
+        })?)
+    } else {
+        None
+    };
+    let agent = selected_agent
         .as_ref()
+        .or(runtime.agent.as_deref())
         .context("the server model provider is not configured")?;
     let host = ServerRuntimeHost {
         pool,
