@@ -73,6 +73,8 @@ import {
   type TerminalSessionTicket,
   type ThreadRecord,
   type ThreadMessageRun,
+  type UpdateProjectRequest,
+  type UpdateThreadRequest,
 } from './contracts'
 import { createPasskey, webauthnAvailableForOrigin } from './webauthn'
 
@@ -163,6 +165,21 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return projectRecordSchema.array().parse(await this.#request('/api/v1/projects'))
   }
 
+  async updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectRecord> {
+    return projectRecordSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteProject(projectId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}?expected_revision=${Math.max(0, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
   async createThread(projectId: string, title: string): Promise<ThreadRecord> {
     return threadRecordSchema.parse(await this.#request('/api/v1/threads', {
       method: 'POST',
@@ -173,6 +190,21 @@ export class RemoteRuntimeClient implements RuntimeClient {
         forked_from_message_id: null,
       }),
     }))
+  }
+
+  async updateThread(threadId: string, request: UpdateThreadRequest): Promise<ThreadRecord> {
+    return threadRecordSchema.parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteThread(threadId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}?expected_revision=${Math.max(0, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
   }
 
   async createThreadMessage(

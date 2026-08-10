@@ -193,12 +193,21 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
             "/projects",
             post(organization::create_project).get(organization::list_projects),
         )
-        .route("/projects/{project_id}", get(organization::get_project))
+        .route(
+            "/projects/{project_id}",
+            get(organization::get_project)
+                .put(organization::update_project)
+                .delete(organization::delete_project),
+        )
         .route(
             "/projects/{project_id}/members",
             post(organization::set_project_member),
         )
         .route("/threads", post(organization::create_thread))
+        .route(
+            "/threads/{thread_id}",
+            put(organization::update_thread).delete(organization::delete_thread),
+        )
         .route(
             "/threads/{thread_id}/messages",
             post(routes::create_thread_message).get(routes::list_thread_messages),

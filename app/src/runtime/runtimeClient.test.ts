@@ -127,6 +127,94 @@ describe('runtime routing', () => {
     ])
   })
 
+  it('updates and deletes projects and threads with optimistic revisions', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000031'
+    const threadId = '10000000-0000-4000-8000-000000000032'
+    const userId = '10000000-0000-4000-8000-000000000033'
+    const now = '2026-08-10T12:00:00Z'
+    const project = {
+      schema_version: 2,
+      id: projectId,
+      revision: 2,
+      etag: `W/"${projectId}:2"`,
+      owner_user_id: userId,
+      team_id: null,
+      privacy: 'private_local',
+      name: 'Updated project',
+      description: '',
+      preferred_executor_target: null,
+      current_version_id: null,
+      policy: {},
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    } as const
+    const thread = {
+      schema_version: 2,
+      id: threadId,
+      revision: 2,
+      etag: `W/"${threadId}:2"`,
+      project_id: projectId,
+      forked_from_thread_id: null,
+      forked_from_message_id: null,
+      title: 'Updated thread',
+      deleted_at: null,
+    } as const
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(String(input).includes('/threads/') ? thread : project), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const projectUpdate = {
+      expected_revision: 1,
+      name: project.name,
+      description: project.description,
+      preferred_executor_target: null,
+      policy: {},
+    }
+    const threadUpdate = { expected_revision: 1, title: thread.title }
+
+    await expect(client.updateProject(projectId, projectUpdate)).resolves.toEqual(project)
+    await expect(client.updateThread(threadId, threadUpdate)).resolves.toEqual(thread)
+    await client.deleteThread(threadId, thread.revision)
+    await client.deleteProject(projectId, project.revision)
+
+    expect(requests).toEqual([
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}`,
+        method: 'PUT',
+        body: projectUpdate,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}`,
+        method: 'PUT',
+        body: threadUpdate,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}?expected_revision=2`,
+        method: 'DELETE',
+        body: undefined,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}?expected_revision=2`,
+        method: 'DELETE',
+        body: undefined,
+      },
+    ])
+  })
+
   it('creates and lists the durable message/run pair through the thread API', async () => {
     const threadId = '10000000-0000-4000-8000-000000000011'
     const projectId = '10000000-0000-4000-8000-000000000012'

@@ -53,6 +53,8 @@ import {
   totpSetupSchema,
   totpStatusSchema,
   versionResponseSchema,
+  updateProjectRequestSchema,
+  updateThreadRequestSchema,
 } from './contracts'
 
 export const protocolSchemaVersion = SCHEMA_VERSION
@@ -159,6 +161,8 @@ export const contractSchemaRegistry = {
   TerminalSessionTicket: terminalSessionTicketSchema,
   ThreadRecord: threadRecordSchema,
   ThreadMessageRun: threadMessageRunSchema,
+  UpdateProjectRequest: updateProjectRequestSchema,
+  UpdateThreadRequest: updateThreadRequestSchema,
   TotpRecoveryCodes: totpRecoveryCodesSchema,
   TotpSetup: totpSetupSchema,
   TotpStatus: totpStatusSchema,

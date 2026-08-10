@@ -81,7 +81,9 @@ const responseSchemas = new Map([
   ['post /api/v1/agent/executors/{executor_id}/sync/changes', 'PushSyncChangesResponse'],
   ['get /api/v1/agent/executors/{executor_id}/sync/entities/{entity_type}', 'SyncedEntityPage'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
-  ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
+  ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['put /api/v1/projects/{project_id}', 'ProjectRecord'],
+  ['put /api/v1/threads/{thread_id}', 'ThreadRecord'],
+  ['get /api/v1/projects/{project_id}/threads', 'ThreadRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
   ['post /api/v1/tasks', 'TaskDefinition'], ['get /api/v1/tasks/{task_id}', 'TaskDefinition'],
   ['get /api/v1/schedules', 'ScheduleRecord'], ['post /api/v1/schedules', 'ScheduleRecord'],
   ['put /api/v1/schedules/{schedule_id}', 'ScheduleRecord'],
@@ -103,6 +105,7 @@ const responseSchemas = new Map([
 ])
 const arrayResponses = new Set([
   'get /api/v1/projects', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/projects/{project_id}/threads',
   'get /api/v1/threads/{thread_id}/messages',
   'get /api/v1/auth/sessions',
   'get /api/v1/support-grants', 'get /api/v1/runs/{run_id}/artifacts',

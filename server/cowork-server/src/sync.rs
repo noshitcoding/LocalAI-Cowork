@@ -1398,6 +1398,71 @@ async fn publish_server_entity_tx(
     Ok(())
 }
 
+pub(crate) async fn publish_server_tombstone_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+) -> Result<(), ApiError> {
+    validate_entity_type(entity_type)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("sync:entity:{user_id}:{entity_type}:{entity_id}"))
+        .execute(&mut **tx)
+        .await?;
+    let current = sqlx::query(
+        "SELECT revision, tombstone FROM sync_entities WHERE user_id = $1 AND entity_type = $2 AND entity_id = $3 FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = &current {
+        if row.try_get::<bool, _>("tombstone")? {
+            return Ok(());
+        }
+    }
+    let revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision"))
+        .transpose()?
+        .unwrap_or(0)
+        + 1;
+    let etag = format!("W/\"{entity_id}:{revision}\"");
+    sqlx::query(
+        r#"
+        INSERT INTO sync_entities (
+            user_id, entity_type, entity_id, revision, etag, payload, tombstone
+        ) VALUES ($1, $2, $3, $4, $5, NULL, TRUE)
+        ON CONFLICT (user_id, entity_type, entity_id) DO UPDATE
+        SET revision = EXCLUDED.revision, etag = EXCLUDED.etag,
+            payload = NULL, tombstone = TRUE, updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(revision)
+    .bind(etag)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO sync_changes (
+            user_id, entity_type, entity_id, revision, operation, payload
+        ) VALUES ($1, $2, $3, $4, 'delete', NULL)
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(revision)
+    .execute(&mut **tx)
+    .await?;
+    remember_materialization(tx, user_id, entity_type, entity_id).await?;
+    Ok(())
+}
+
 fn bounded_message_text(content: &Value, maximum_bytes: usize) -> (String, bool) {
     let mut text = match content {
         Value::String(value) => value.clone(),

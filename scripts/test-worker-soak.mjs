@@ -31,6 +31,20 @@ async function request(path, { method = 'GET', token, body } = {}) {
   return text ? JSON.parse(text) : null
 }
 
+async function expectRequestStatus(path, expectedStatus, { method = 'GET', token, body } = {}) {
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (response.status !== expectedStatus) {
+    throw new Error(`${method} ${path} returned ${response.status}, expected ${expectedStatus}: ${await response.text()}`)
+  }
+}
+
 function sandboxInput(label) {
   return {
     sandbox: {
@@ -600,10 +614,156 @@ await request('/sync/changes', {
   })] },
 })
 const roundTripThreads = await request(`/projects/${syncedProjectId}/threads`, { token })
-if (!roundTripThreads.some((item) => (
+const roundTripThread = roundTripThreads.find((item) => (
   item.id === serverThread.id && item.title === 'Renamed offline after server creation'
-))) {
+))
+if (!roundTripThread) {
   throw new Error(`server-created thread did not round-trip through device sync: ${JSON.stringify(roundTripThreads)}`)
+}
+const beforeCanonicalCrud = await request('/sync/changes?after=0&limit=1000', { token })
+const updatedServerThread = await request(`/threads/${serverThread.id}`, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: roundTripThread.revision,
+    title: 'Renamed through the canonical server API',
+  },
+})
+if (updatedServerThread.revision !== roundTripThread.revision + 1
+    || updatedServerThread.title !== 'Renamed through the canonical server API') {
+  throw new Error(`canonical thread update lost its optimistic revision: ${JSON.stringify(updatedServerThread)}`)
+}
+await expectRequestStatus(`/threads/${serverThread.id}`, 409, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: roundTripThread.revision,
+    title: 'Stale canonical rename',
+  },
+})
+const privateProjectBeforeUpdate = (await request('/projects', { token }))
+  .find((item) => item.id === syncedProjectId)
+if (!privateProjectBeforeUpdate) throw new Error('private project disappeared before canonical update')
+const updatedPrivateProject = await request(`/projects/${syncedProjectId}`, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: privateProjectBeforeUpdate.revision,
+    name: 'Updated through the canonical server API',
+    description: privateProjectBeforeUpdate.description,
+    preferred_executor_target: privateProjectBeforeUpdate.preferred_executor_target,
+    policy: privateProjectBeforeUpdate.policy,
+  },
+})
+if (updatedPrivateProject.revision !== privateProjectBeforeUpdate.revision + 1
+    || updatedPrivateProject.name !== 'Updated through the canonical server API') {
+  throw new Error(`canonical project update lost its optimistic revision: ${JSON.stringify(updatedPrivateProject)}`)
+}
+const disposableThread = await request('/threads', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: syncedProjectId,
+    title: 'Disposable canonical thread',
+    forked_from_thread_id: null,
+    forked_from_message_id: null,
+  },
+})
+const disposableMessageRun = await request(`/threads/${disposableThread.id}/messages`, {
+  method: 'POST',
+  token,
+  body: {
+    content: { text: 'This message must receive a cascade tombstone' },
+    run: {
+      thread_id: disposableThread.id,
+      project_id: syncedProjectId,
+      project_revision: updatedPrivateProject.revision,
+      project_privacy: 'private_local',
+      task: null,
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: [],
+      input: sandboxInput('disposable-private-message'),
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `disposable-projection-${randomUUID()}`,
+    },
+  },
+})
+await request(`/threads/${disposableThread.id}?expected_revision=${disposableThread.revision}`, {
+  method: 'DELETE', token,
+})
+const threadsAfterCanonicalDelete = await request(`/projects/${syncedProjectId}/threads`, { token })
+if (threadsAfterCanonicalDelete.some((item) => item.id === disposableThread.id)) {
+  throw new Error(`canonically deleted thread remained visible: ${JSON.stringify(threadsAfterCanonicalDelete)}`)
+}
+const canonicalCrudProjection = await request(
+  `/sync/changes?after=${beforeCanonicalCrud.next_cursor}&limit=1000`,
+  { token },
+)
+const projectedThreadUpdate = canonicalCrudProjection.changes.find((change) => (
+  change.entity_id === serverThread.id && change.operation === 'upsert'
+    && change.payload?.title === 'Renamed through the canonical server API'
+))
+const projectedProjectUpdate = canonicalCrudProjection.changes.find((change) => (
+  change.entity_id === syncedProjectId && change.operation === 'upsert'
+    && change.payload?.title === 'Updated through the canonical server API'
+))
+const projectedThreadDelete = canonicalCrudProjection.changes.find((change) => (
+  change.entity_id === disposableThread.id && change.operation === 'delete'
+))
+const projectedMessageDelete = canonicalCrudProjection.changes.find((change) => (
+  change.entity_id === disposableMessageRun.message.id && change.operation === 'delete'
+))
+if (!projectedThreadUpdate || !projectedProjectUpdate
+    || !projectedThreadDelete || !projectedMessageDelete) {
+  throw new Error(`canonical CRUD changes were not fully projected: ${JSON.stringify(canonicalCrudProjection)}`)
+}
+const disposableProject = await request('/projects', {
+  method: 'POST',
+  token,
+  body: {
+    name: 'Disposable canonical project',
+    description: '',
+    privacy: 'private_local',
+    team_id: null,
+    preferred_executor_target: null,
+    policy: {},
+  },
+})
+const updatedDisposableProject = await request(`/projects/${disposableProject.id}`, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: disposableProject.revision,
+    name: 'Disposable canonical project updated',
+    description: 'Revision checked before deletion',
+    preferred_executor_target: null,
+    policy: {},
+  },
+})
+await expectRequestStatus(`/projects/${disposableProject.id}`, 409, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: disposableProject.revision,
+    name: 'Stale project update',
+    description: '',
+    preferred_executor_target: null,
+    policy: {},
+  },
+})
+const beforeProjectDelete = await request('/sync/changes?after=0&limit=1000', { token })
+await request(`/projects/${disposableProject.id}?expected_revision=${updatedDisposableProject.revision}`, {
+  method: 'DELETE', token,
+})
+const projectDeleteProjection = await request(
+  `/sync/changes?after=${beforeProjectDelete.next_cursor}&limit=100`,
+  { token },
+)
+if (!projectDeleteProjection.changes.some((change) => (
+  change.entity_id === disposableProject.id && change.operation === 'delete'
+))) {
+  throw new Error(`canonical project deletion did not reach the device feed: ${JSON.stringify(projectDeleteProjection)}`)
 }
 const syncAgentId = randomUUID()
 await request('/executors', {

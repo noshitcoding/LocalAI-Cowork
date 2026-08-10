@@ -255,6 +255,15 @@ export const projectRecordSchema = z.object({
 })
 export type ProjectRecord = z.infer<typeof projectRecordSchema>
 
+export const updateProjectRequestSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  name: z.string(),
+  description: z.string(),
+  preferred_executor_target: executorTargetSchema.nullable(),
+  policy: z.unknown(),
+})
+export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>
+
 export const threadRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),
@@ -267,6 +276,12 @@ export const threadRecordSchema = z.object({
   deleted_at: z.string().datetime({ offset: true }).nullable(),
 })
 export type ThreadRecord = z.infer<typeof threadRecordSchema>
+
+export const updateThreadRequestSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  title: z.string(),
+})
+export type UpdateThreadRequest = z.infer<typeof updateThreadRequestSchema>
 
 export const messageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 export type MessageRole = z.infer<typeof messageRoleSchema>

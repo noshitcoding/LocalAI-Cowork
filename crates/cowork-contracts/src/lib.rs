@@ -894,6 +894,17 @@ pub struct CreateProjectRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProjectRequest {
+    pub expected_revision: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub preferred_executor_target: Option<ExecutorTarget>,
+    #[serde(default)]
+    pub policy: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetProjectMemberRequest {
     pub user_id: Uuid,
     pub role: ProjectRole,
@@ -905,6 +916,12 @@ pub struct CreateThreadRequest {
     pub title: String,
     pub forked_from_thread_id: Option<Uuid>,
     pub forked_from_message_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateThreadRequest {
+    pub expected_revision: i64,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
