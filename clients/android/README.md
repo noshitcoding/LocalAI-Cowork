@@ -30,3 +30,10 @@ requires `OPEN_COWORK_ANDROID_KEYSTORE_BASE64`,
 `OPEN_COWORK_ANDROID_KEY_ALIAS`, `OPEN_COWORK_ANDROID_KEY_PASSWORD`, and the
 four `OPEN_COWORK_FIREBASE_*` repository secrets. No unsigned release artifact
 is published.
+
+For credential-free build acceptance, manually dispatch the `CI` workflow on
+the distributed branch. Its `android-unsigned-apk` job builds the shared UI and
+an arm64 release APK, checks the `dev.opencowork.android` package with `aapt`,
+records its SHA-256 digest, and retains the
+`open-cowork-android-unsigned-<commit>` artifact for seven days. This artifact
+is deliberately unsigned and is not a production release substitute.

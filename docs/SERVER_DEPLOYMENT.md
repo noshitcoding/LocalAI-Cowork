@@ -269,6 +269,11 @@ host-only cookie. Logout and rejected replay clear that cookie; presenting an
 old rotated token revokes the complete session family. Reproduce the real HTTPS
 login/reload/replay/logout acceptance with `npm --prefix app run
 test:browser-session` (it uses a disposable PostgreSQL database).
+The acceptance defaults to 25 consecutive refresh-cookie rotations before it
+replays the first token and verifies whole-family revocation. Set
+`COWORK_TEST_REFRESH_ROTATIONS` to a value from 2 through 250 for a shorter or
+longer local run. A manual CI job runs the same flow against an isolated
+PostgreSQL service and ephemeral TLS certificate.
 Users add passkeys in the web app on the canonical server origin. Desktop and
 Android use the system browser for the WebAuthn ceremony, then return through
 the registered `open-cowork://auth/callback` scheme. The callback carries only
