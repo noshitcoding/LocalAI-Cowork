@@ -10,7 +10,7 @@ import { deleteCredential, getCredential, setCredential } from '../security/cred
 const CONNECTION_KEY = 'open-cowork-remote-connection-v1'
 const DEVICE_KEY = 'open-cowork-remote-device-v1'
 const BROWSER_SESSION_HINT_KEY = 'open-cowork-browser-session-v1'
-const IS_WEB_APP = import.meta.env.VITE_COWORK_WEB === 'true'
+const IS_WEB_APP = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 const TOKEN_LOCATOR = {
   scope: 'remote_server' as const,
   ownerId: 'primary',

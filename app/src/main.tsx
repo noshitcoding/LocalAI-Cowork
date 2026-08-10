@@ -8,7 +8,7 @@ import PlatformApp from './PlatformApp'
 
 const queryClient = new QueryClient()
 const IS_ANDROID_SHELL = import.meta.env.VITE_COWORK_ANDROID === 'true'
-const IS_WEB_CLIENT = import.meta.env.VITE_COWORK_WEB === 'true'
+const IS_WEB_CLIENT = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 
 registerGlobalCrashLogging()
 if (!IS_ANDROID_SHELL && !IS_WEB_CLIENT) {

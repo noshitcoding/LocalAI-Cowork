@@ -47,6 +47,10 @@ test('web build loads only the remote control plane without Tauri initialization
   await expect(page.getByRole('heading', { name: 'Connect to Open Cowork Server' })).toBeVisible()
   await expect(page.locator('#boot-loader')).toHaveCount(0)
   await expectWcagAa(page)
+  await expect.poll(() => page.evaluate(() => ({
+    publicApi: '__TAURI__' in window,
+    nativeBridge: '__TAURI_INTERNALS__' in window,
+  }))).toEqual({ publicApi: false, nativeBridge: false })
   const loadedResources = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name))
   expect(loadedResources.filter((url) => /\/tauri-[^/]+\.js(?:\?|$)/.test(url))).toEqual([])
   expect(errors).toEqual([])

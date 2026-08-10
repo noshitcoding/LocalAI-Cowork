@@ -17,7 +17,7 @@ const authTokensSchema = z.object({
 })
 export type AuthTokens = z.infer<typeof authTokensSchema>
 
-const IS_WEB_APP = import.meta.env.VITE_COWORK_WEB === 'true'
+const IS_WEB_APP = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 const BROWSER_SESSION_HEADER = { 'x-cowork-session-mode': 'browser-cookie' } as const
 
 export interface PasswordCredentials {

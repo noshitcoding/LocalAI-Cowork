@@ -121,8 +121,9 @@ try {
 
   await page.goto(`${webOrigin}/server`, { waitUntil: 'networkidle' })
   await expect(page.getByRole('heading', { name: 'Connect to Open Cowork Server' })).toBeVisible()
-  await expect(page.getByLabel('Workspace server')).toHaveValue(webOrigin)
-  await expect(page.getByLabel('Workspace server')).toHaveAttribute('readonly', '')
+  const serverInput = page.getByRole('textbox', { name: /server/i })
+  await expect(serverInput).toHaveValue(webOrigin)
+  await expect(serverInput).toHaveAttribute('readonly', '')
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password', { exact: true }).fill(password)
   const tokenResponse = page.waitForResponse((response) => response.url().endsWith('/auth/native/token'))

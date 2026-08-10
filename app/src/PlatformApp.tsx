@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect } from 'react'
 
 const IS_ANDROID_SHELL = import.meta.env.VITE_COWORK_ANDROID === 'true'
-const IS_WEB_CLIENT = import.meta.env.VITE_COWORK_WEB === 'true'
+const IS_WEB_CLIENT = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 const PlatformRoot = lazy(() => {
   if (IS_ANDROID_SHELL) return import('./mobile/MobileApp')
   if (IS_WEB_CLIENT) return import('./WebApp')

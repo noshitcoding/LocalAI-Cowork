@@ -17,7 +17,7 @@ import RemoteSecuritySettings from './RemoteSecuritySettings'
 import RemoteGovernancePanel from './RemoteGovernancePanel'
 import RemoteDeviceSettings from './RemoteDeviceSettings'
 
-const IS_WEB_APP = import.meta.env.VITE_COWORK_WEB === 'true'
+const IS_WEB_APP = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
