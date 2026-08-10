@@ -1,9 +1,10 @@
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +29,9 @@ struct RuntimeManifest {
     version: String,
     protocol_schema: String,
     binary: String,
+    binary_archive: Option<String>,
+    binary_archive_sha256: Option<String>,
+    binary_size: Option<u64>,
     sha256: String,
     license: String,
 }
@@ -137,7 +141,9 @@ impl CodexProcess {
 
 pub struct CodexRuntimeManager {
     resource_dir: PathBuf,
+    runtime_cache_dir: PathBuf,
     profiles_dir: PathBuf,
+    runtime_prepare_lock: Mutex<()>,
     app: AppHandle,
     processes: Mutex<HashMap<String, Arc<CodexProcess>>>,
 }
@@ -146,7 +152,9 @@ impl CodexRuntimeManager {
     pub fn new(resource_dir: PathBuf, app_data_dir: PathBuf, app: AppHandle) -> Self {
         Self {
             resource_dir,
+            runtime_cache_dir: app_data_dir.join("codex-runtime"),
             profiles_dir: app_data_dir.join("codex-profiles"),
+            runtime_prepare_lock: Mutex::new(()),
             app,
             processes: Mutex::new(HashMap::new()),
         }
@@ -395,6 +403,10 @@ impl CodexRuntimeManager {
     }
 
     fn verified_runtime(&self) -> Result<PathBuf, String> {
+        let _prepare_guard = self
+            .runtime_prepare_lock
+            .lock()
+            .map_err(|_| "The bundled Codex runtime preparation lock is unavailable".to_string())?;
         let runtime_dir = self.resource_dir.join("codex");
         let manifest_path = runtime_dir.join("runtime-bundle-manifest.json");
         let manifest_bytes = fs::read(&manifest_path).map_err(|_| {
@@ -415,7 +427,26 @@ impl CodexRuntimeManager {
         if !runtime_dir.join(&manifest.license).is_file() {
             return Err("The bundled Codex license file is missing".to_string());
         }
-        let binary = runtime_dir.join(&manifest.binary);
+        let binary = if let Some(archive_name) = manifest.binary_archive.as_deref() {
+            validate_resource_path(archive_name)?;
+            let expected_archive_hash = manifest
+                .binary_archive_sha256
+                .as_deref()
+                .ok_or_else(|| "The bundled Codex archive hash is missing".to_string())?;
+            let expected_binary_size = manifest
+                .binary_size
+                .ok_or_else(|| "The bundled Codex executable size is missing".to_string())?;
+            let archive = runtime_dir.join(archive_name);
+            verify_file_hash(&archive, expected_archive_hash, "archive")?;
+            materialize_archived_runtime(
+                &archive,
+                &self.runtime_cache_dir.join(CODEX_VERSION).join("codex"),
+                manifest.sha256.trim(),
+                expected_binary_size,
+            )?
+        } else {
+            runtime_dir.join(&manifest.binary)
+        };
         let bytes =
             fs::read(&binary).map_err(|_| "The bundled Codex executable is missing".to_string())?;
         let actual = Sha256::digest(&bytes)
@@ -427,6 +458,80 @@ impl CodexRuntimeManager {
         }
         Ok(binary)
     }
+}
+
+fn verify_file_hash(path: &Path, expected: &str, label: &str) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|_| format!("The bundled Codex {label} is missing"))?;
+    let actual = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if !actual.eq_ignore_ascii_case(expected.trim()) {
+        return Err(format!(
+            "The bundled Codex {label} failed SHA-256 verification"
+        ));
+    }
+    Ok(())
+}
+
+fn materialize_archived_runtime(
+    archive: &Path,
+    destination: &Path,
+    expected_hash: &str,
+    expected_size: u64,
+) -> Result<PathBuf, String> {
+    if destination.is_file()
+        && fs::metadata(destination)
+            .map(|metadata| metadata.len())
+            .ok()
+            == Some(expected_size)
+        && verify_file_hash(destination, expected_hash, "cached executable").is_ok()
+    {
+        return Ok(destination.to_path_buf());
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "The Codex runtime cache path is invalid".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the Codex runtime cache: {error}"))?;
+    let temporary = parent.join(format!(".codex-{}.tmp", std::process::id()));
+    let result = (|| {
+        let source = fs::File::open(archive)
+            .map_err(|error| format!("Could not open the bundled Codex archive: {error}"))?;
+        let decoder = GzDecoder::new(source);
+        let mut limited_decoder = decoder.take(expected_size.saturating_add(1));
+        let mut output = fs::File::create(&temporary)
+            .map_err(|error| format!("Could not create the cached Codex executable: {error}"))?;
+        let written = io::copy(&mut limited_decoder, &mut output)
+            .map_err(|error| format!("Could not extract the bundled Codex executable: {error}"))?;
+        output
+            .sync_all()
+            .map_err(|error| format!("Could not finalize the cached Codex executable: {error}"))?;
+        if written != expected_size {
+            return Err("The bundled Codex executable size verification failed".to_string());
+        }
+        verify_file_hash(&temporary, expected_hash, "executable")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700)).map_err(
+                |error| format!("Could not secure the cached Codex executable: {error}"),
+            )?;
+        }
+        if destination.exists() {
+            fs::remove_file(destination).map_err(|error| {
+                format!("Could not replace the cached Codex executable: {error}")
+            })?;
+        }
+        fs::rename(&temporary, destination)
+            .map_err(|error| format!("Could not activate the cached Codex executable: {error}"))?;
+        Ok(destination.to_path_buf())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 impl Drop for CodexRuntimeManager {
@@ -517,6 +622,7 @@ fn suppress_window(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{write::GzEncoder, Compression};
 
     #[test]
     fn profile_ids_cannot_escape_the_isolated_root() {
@@ -530,5 +636,40 @@ mod tests {
         assert!(validate_resource_path("vendor/bin/codex.exe").is_ok());
         assert!(validate_resource_path("../codex.exe").is_err());
         assert!(validate_resource_path("/absolute/codex").is_err());
+    }
+
+    #[test]
+    fn archived_runtime_is_bounded_and_verified_before_activation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let archive = root.path().join("codex.gz");
+        let destination = root.path().join("cache").join("codex");
+        let payload = b"verified codex payload";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(payload).expect("compress payload");
+        fs::write(&archive, encoder.finish().expect("finish archive")).expect("write archive");
+        let expected_hash = Sha256::digest(payload)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        let materialized = materialize_archived_runtime(
+            &archive,
+            &destination,
+            &expected_hash,
+            payload.len() as u64,
+        )
+        .expect("materialize archive");
+        assert_eq!(fs::read(materialized).expect("read payload"), payload);
+
+        fs::remove_file(&destination).expect("remove cached payload");
+        let error = materialize_archived_runtime(
+            &archive,
+            &destination,
+            &expected_hash,
+            payload.len() as u64 - 1,
+        )
+        .expect_err("oversized archive must fail");
+        assert!(error.contains("size verification"));
+        assert!(!destination.exists());
     }
 }

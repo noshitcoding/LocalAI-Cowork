@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
+import { createGzip, gunzipSync } from 'node:zlib'
 
 const VERSION = '0.147.0'
 const PROTOCOL_SCHEMA = `app-server-${VERSION}`
@@ -33,6 +34,17 @@ function targetFromArgs() {
 
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function cachedArchiveMatches(path, manifest) {
+  try {
+    if (!existsSync(path) || manifest.binaryArchiveSha256 !== sha256(path)) return false
+    const binary = gunzipSync(readFileSync(path))
+    return manifest.binarySize === binary.length
+      && manifest.sha256 === createHash('sha256').update(binary).digest('hex')
+  } catch {
+    return false
+  }
 }
 
 function run(command, args, options = {}) {
@@ -123,14 +135,22 @@ const destination = join(appRoot, 'src-tauri', 'resources', 'codex')
 const manifestPath = join(destination, 'runtime-bundle-manifest.json')
 const destinationBinary = join(destination, ...target.binary.split('/'))
 
-if (existsSync(manifestPath) && existsSync(destinationBinary)) {
+if (existsSync(manifestPath)) {
   const cached = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const cachedBinaryMatches = existsSync(destinationBinary)
+    && cached.sha256 === sha256(destinationBinary)
+  const cachedArchivePath = typeof cached.binaryArchive === 'string'
+    ? join(destination, ...cached.binaryArchive.split('/'))
+    : undefined
+  const cachedArchiveIsValid = cached.binaryArchive === `${target.binary}.gz`
+    && cachedArchivePath
+    && cachedArchiveMatches(cachedArchivePath, cached)
   if (
     cached.version === VERSION
     && cached.protocolSchema === PROTOCOL_SCHEMA
     && cached.target === targetName
     && cached.binary === target.binary
-    && cached.sha256 === sha256(destinationBinary)
+    && (cachedBinaryMatches || cachedArchiveIsValid)
     && existsSync(join(destination, cached.license ?? 'LICENSE'))
   ) {
     console.log(`Verified cached Codex ${VERSION} bundle for ${targetName}`)
@@ -179,6 +199,22 @@ try {
   if (!versionOutput.includes(VERSION)) throw new Error(`Codex version check failed: ${versionOutput}`)
   await verifyHandshake(destinationBinary, codexHome)
 
+  const binaryHash = sha256(destinationBinary)
+  const binarySize = statSync(destinationBinary).size
+  let binaryArchive
+  let binaryArchiveSha256
+  if (targetName === 'linux-x64') {
+    binaryArchive = `${target.binary}.gz`
+    const archivePath = join(destination, ...binaryArchive.split('/'))
+    await pipeline(
+      createReadStream(destinationBinary),
+      createGzip({ level: 9 }),
+      createWriteStream(archivePath),
+    )
+    binaryArchiveSha256 = sha256(archivePath)
+    rmSync(destinationBinary)
+  }
+
   const manifest = {
     version: VERSION,
     protocolSchema: PROTOCOL_SCHEMA,
@@ -186,7 +222,9 @@ try {
     package: `@openai/codex@${target.npmVersion}`,
     archiveSha256: archiveHash,
     binary: target.binary,
-    sha256: sha256(destinationBinary),
+    sha256: binaryHash,
+    binarySize,
+    ...(binaryArchive ? { binaryArchive, binaryArchiveSha256 } : {}),
     license: 'LICENSE',
     licenseSha256: sha256(licensePath),
     verifiedAt: new Date().toISOString(),
