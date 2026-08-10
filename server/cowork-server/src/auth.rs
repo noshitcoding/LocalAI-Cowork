@@ -647,7 +647,7 @@ async fn rotate_refresh_session(
         // A previous token being presented again indicates theft/replay. Revoke
         // the complete rotation family rather than accepting either copy.
         if let Some(family_id) = sqlx::query_scalar::<_, Uuid>(
-            "SELECT refresh_family_id FROM auth_sessions WHERE previous_token_hash = $1 LIMIT 1",
+            "SELECT refresh_family_id FROM auth_refresh_token_history WHERE token_hash = $1 LIMIT 1",
         )
         .bind(supplied_hash.as_slice())
         .fetch_optional(&mut *tx)
@@ -667,6 +667,7 @@ async fn rotate_refresh_session(
     };
     let session_id: Uuid = row.get("id");
     let user_id: Uuid = row.get("user_id");
+    let refresh_family_id: Uuid = row.get("refresh_family_id");
     let expires_at: DateTime<Utc> = row.get("expires_at");
     if expires_at <= Utc::now() {
         return Err(ApiError::Unauthorized(
@@ -675,6 +676,18 @@ async fn rotate_refresh_session(
     }
     let refresh_token = random_token()?;
     let refresh_hash = token_hash(&refresh_token);
+    sqlx::query(
+        r#"
+        INSERT INTO auth_refresh_token_history
+            (token_hash, session_id, refresh_family_id)
+        VALUES ($1, $2, $3)
+        "#,
+    )
+    .bind(supplied_hash.as_slice())
+    .bind(session_id)
+    .bind(refresh_family_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         r#"
         UPDATE auth_sessions SET previous_token_hash = refresh_token_hash,

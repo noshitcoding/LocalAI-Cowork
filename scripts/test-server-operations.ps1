@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$migrationRoot = Join-Path $workspace 'server/cowork-server/migrations'
+$expectedMigrationVersion = [int]((Get-ChildItem -LiteralPath $migrationRoot -Filter '*.sql' | Sort-Object Name | Select-Object -Last 1).BaseName.Substring(0, 4))
 $secretRoot = Join-Path $workspace 'deploy/secrets'
 $databaseName = "cowork_operations_$([guid]::NewGuid().ToString('N'))"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) $databaseName
@@ -82,7 +84,7 @@ try {
   Assert-Unauthorized { Invoke-Json 'GET' '/operations/support-bundle' $null $member.access_token } 'member support bundle export'
 
   $metrics = Invoke-Json 'GET' '/operations/metrics' $null $admin.access_token
-  if ($metrics.application.database_migration_version -ne 19) { throw 'operations metrics returned an unexpected database migration' }
+  if ($metrics.application.database_migration_version -ne $expectedMigrationVersion) { throw 'operations metrics returned an unexpected database migration' }
   if ($metrics.database.users -ne 2) { throw 'operations metrics did not return aggregate user counts' }
   if ($metrics.PSObject.Properties.Name -contains 'email') { throw 'operations metrics exposed identities' }
 
@@ -91,7 +93,7 @@ try {
     -Headers @{ authorization = "Bearer $($admin.access_token)" } -OutFile $bundlePath | Out-Null
   $bundleText = [IO.File]::ReadAllText($bundlePath)
   $bundle = $bundleText | ConvertFrom-Json
-  if ($bundle.application.database_migration_version -ne 19) { throw 'support bundle is incomplete' }
+  if ($bundle.application.database_migration_version -ne $expectedMigrationVersion) { throw 'support bundle is incomplete' }
   foreach ($forbidden in @('operations-admin@', 'Operations Admin', 'password_hash', 'object_key', 'prompt')) {
     if ($bundleText.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
       throw "support bundle exposed forbidden content: $forbidden"

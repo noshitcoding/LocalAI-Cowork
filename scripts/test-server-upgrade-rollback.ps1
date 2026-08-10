@@ -3,6 +3,9 @@ Set-StrictMode -Version Latest
 
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $migrationRoot = Join-Path $workspace 'server/cowork-server/migrations'
+$migrations = @(Get-ChildItem -LiteralPath $migrationRoot -Filter '*.sql' | Sort-Object Name)
+$currentMigrationVersion = [int]$migrations[-1].BaseName.Substring(0, 4)
+$previousMigrationVersion = $currentMigrationVersion - 1
 $secretRoot = Join-Path $workspace 'deploy/secrets'
 $databaseName = "cowork_upgrade_$([guid]::NewGuid().ToString('N'))"
 $dumpName = "$databaseName.dump"
@@ -40,8 +43,7 @@ CREATE TABLE _sqlx_migrations (
 )
 '@ | Out-Null
 
-  $migrations = Get-ChildItem -LiteralPath $migrationRoot -Filter '*.sql' | Sort-Object Name
-  foreach ($migration in $migrations | Where-Object { [int]$_.BaseName.Substring(0, 4) -le 18 }) {
+  foreach ($migration in $migrations | Where-Object { [int]$_.BaseName.Substring(0, 4) -le $previousMigrationVersion }) {
     Get-Content -LiteralPath $migration.FullName -Raw | docker exec -i open-cowork-postgres-1 `
       psql -v ON_ERROR_STOP=1 -U cowork -d $databaseName | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "failed to apply $($migration.Name)" }
@@ -50,15 +52,18 @@ CREATE TABLE _sqlx_migrations (
     $checksum = (Get-FileHash -LiteralPath $migration.FullName -Algorithm SHA384).Hash.ToLowerInvariant()
     Invoke-Psql "INSERT INTO _sqlx_migrations(version, description, success, checksum, execution_time) VALUES ($version, '$description', TRUE, decode('$checksum', 'hex'), 0)" | Out-Null
   }
-  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne 18) {
+  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne $previousMigrationVersion) {
     throw 'failed to construct the N-1 migration state'
   }
 
   $userId = [guid]::NewGuid().ToString()
   $identityId = [guid]::NewGuid().ToString()
+  $sessionId = [guid]::NewGuid().ToString()
+  $refreshFamilyId = [guid]::NewGuid().ToString()
   $runId = [guid]::NewGuid().ToString()
   Invoke-Psql "INSERT INTO users(id, etag, email, display_name, platform_admin) VALUES ('$userId', 'W/`"$userId`:1`"', 'upgrade-marker@opencowork.invalid', 'Before Upgrade', TRUE)" | Out-Null
   Invoke-Psql "INSERT INTO oidc_identities(id, user_id, issuer, subject) VALUES ('$identityId', '$userId', 'https://upgrade.invalid', 'persistent-subject')" | Out-Null
+  Invoke-Psql "INSERT INTO auth_sessions(id, user_id, device_id, refresh_token_hash, refresh_family_id, previous_token_hash, expires_at) VALUES ('$sessionId', '$userId', '$([guid]::NewGuid())', decode(repeat('aa', 32), 'hex'), '$refreshFamilyId', decode(repeat('bb', 32), 'hex'), now()+interval '1 day')" | Out-Null
   Invoke-Psql "INSERT INTO runs(id, thread_id, project_id, creator_user_id, idempotency_key, target_kind, state, spec, created_at, updated_at, finished_at) VALUES ('$runId', '$([guid]::NewGuid())', '$([guid]::NewGuid())', '$userId', 'upgrade-event-cursor', 'server_linux', 'completed', '{}', now()-interval '100 days', now()-interval '100 days', now()-interval '100 days'); INSERT INTO run_events(run_id, sequence, event_id, kind, payload, created_at) VALUES ('$runId', 2, '$([guid]::NewGuid())', 'state_changed', '{}', now()-interval '100 days'), ('$runId', 7, '$([guid]::NewGuid())', 'completed', '{}', now()-interval '100 days');" | Out-Null
 
   docker exec open-cowork-postgres-1 pg_dump -U cowork -d $databaseName --format=custom --file=$containerDump
@@ -87,7 +92,7 @@ CREATE TABLE _sqlx_migrations (
     -RedirectStandardError (Join-Path $testRoot 'server.stderr.log')
   Wait-Http 'http://127.0.0.1:18092/readyz' 30
 
-  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne 19) {
+  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne $currentMigrationVersion) {
     throw 'the current server did not migrate N-1 to the current schema'
   }
   if ((Invoke-Psql "SELECT display_name FROM users WHERE id = '$userId'") -ne 'Before Upgrade') {
@@ -102,6 +107,9 @@ CREATE TABLE _sqlx_migrations (
   if ([int](Invoke-Psql "SELECT next_event_sequence FROM runs WHERE id='$runId'") -ne 8) {
     throw 'the event cursor migration did not preserve the prior maximum sequence'
   }
+  if ([int](Invoke-Psql "SELECT count(*) FROM auth_refresh_token_history WHERE session_id='$sessionId' AND token_hash=decode(repeat('bb', 32), 'hex')") -ne 1) {
+    throw 'the refresh history migration did not preserve the previous token replay marker'
+  }
 
   Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
   $serverProcess.WaitForExit()
@@ -115,14 +123,14 @@ CREATE TABLE _sqlx_migrations (
   docker exec open-cowork-postgres-1 pg_restore --exit-on-error -U cowork -d $databaseName $containerDump
   if ($LASTEXITCODE -ne 0) { throw 'rollback pg_restore failed' }
 
-  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne 18) {
+  if ([int](Invoke-Psql 'SELECT max(version) FROM _sqlx_migrations') -ne $previousMigrationVersion) {
     throw 'rollback did not restore the N-1 migration ledger'
   }
   if ((Invoke-Psql "SELECT display_name FROM users WHERE id = '$userId'") -ne 'Before Upgrade') {
     throw 'rollback did not restore the pre-upgrade data'
   }
-  if ((Invoke-Psql "SELECT NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='runs' AND column_name='next_event_sequence')") -ne 't') {
-    throw 'rollback retained the event cursor schema that did not exist in the backup'
+  if ((Invoke-Psql "SELECT to_regclass('public.auth_refresh_token_history') IS NULL") -ne 't') {
+    throw 'rollback retained the current refresh-history schema that did not exist in the backup'
   }
   if ([int](Invoke-Psql "SELECT max(sequence) FROM run_events WHERE run_id='$runId'") -ne 7) {
     throw 'rollback did not restore the original event sequence history'
