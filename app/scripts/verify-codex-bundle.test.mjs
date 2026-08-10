@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { gzipSync } from 'node:zlib'
 import { CODEX_BUNDLE_VERSION, CODEX_PROTOCOL_SCHEMA, verifyCodexBundle } from './verify-codex-bundle.mjs'
 
 function hash(value) {
@@ -47,6 +48,39 @@ test('rejects target drift and path traversal', () => {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     writeFileSync(manifestPath, JSON.stringify({ ...manifest, binary: '../codex' }))
     assert.throws(() => verifyCodexBundle(root, { expectedTarget: 'linux-x64', verifyExecutable: false }), /escapes the Codex bundle root/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('verifies an archived Linux executable and rejects archive tampering', () => {
+  const root = fixture()
+  try {
+    const manifestPath = join(root, 'runtime-bundle-manifest.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const binaryPath = join(root, manifest.binary)
+    const binaryBytes = readFileSync(binaryPath)
+    const archive = `${manifest.binary}.gz`
+    const archivePath = join(root, archive)
+    const archiveBytes = gzipSync(binaryBytes)
+    writeFileSync(archivePath, archiveBytes)
+    rmSync(binaryPath)
+    writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      binaryArchive: archive,
+      binaryArchiveSha256: hash(archiveBytes),
+      binarySize: binaryBytes.length,
+    }))
+
+    assert.equal(
+      verifyCodexBundle(root, { expectedTarget: 'linux-x64', verifyExecutable: false }).manifest.version,
+      CODEX_BUNDLE_VERSION,
+    )
+    writeFileSync(archivePath, Buffer.from('tampered'))
+    assert.throws(
+      () => verifyCodexBundle(root, { expectedTarget: 'linux-x64', verifyExecutable: false }),
+      /archive SHA-256/,
+    )
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
