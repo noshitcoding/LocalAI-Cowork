@@ -118,6 +118,100 @@ jobs:
           xvfb-run --auto-servernum env COWORK_REQUIRE_LINUX_DESKTOP_TEST=1 cargo test --locked --package cowork-device-agent --all-targets
           cargo clippy --locked --package cowork-device-agent --all-targets -- -D warnings
 
+  android-unsigned-apk:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_NDK_VERSION: 27.2.12479018
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            clients/android/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Rust Android target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-linux-android
+
+      - name: Install pinned Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;35.0.0' \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Install locked Android and shared UI dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app
+          npm ci --prefix clients/android
+
+      - name: Validate Android offline shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix app run test -- --run src/mobile/mobileOfflineStore.test.ts src/mobile/mobileSecure.test.ts
+          npm --prefix app run build -- --mode android
+          cargo check --locked --manifest-path clients/android/src-tauri/Cargo.toml
+
+      - name: Build unsigned ARM64 APK
+        working-directory: clients/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run android:init -- --ci
+          npm run android:build -- --apk --target aarch64
+
+      - name: Verify unsigned APK payload
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          unsigned_apk="$(find clients/android/src-tauri/gen/android/app/build/outputs/apk -type f -name '*release-unsigned.apk' -print -quit)"
+          if [[ -z "${unsigned_apk}" ]]; then
+            echo 'Tauri did not produce an unsigned release APK.' >&2
+            find clients/android/src-tauri/gen/android/app/build/outputs -type f -maxdepth 8 -print || true
+            exit 1
+          fi
+          mkdir -p android-ci
+          cp "${unsigned_apk}" android-ci/Open-Cowork-Android-arm64-unsigned.apk
+          "${ANDROID_HOME}/build-tools/35.0.0/aapt" dump badging "${unsigned_apk}" > android-ci/APK-BADGING.txt
+          grep -F "package: name='dev.opencowork.android'" android-ci/APK-BADGING.txt
+          sha256sum android-ci/Open-Cowork-Android-arm64-unsigned.apk > android-ci/SHA256SUMS
+
+      - name: Upload unsigned APK acceptance artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: open-cowork-android-unsigned-${{ github.sha }}
+          path: android-ci/*
+          if-no-files-found: error
+          retention-days: 7
+
   security:
     runs-on: ubuntu-latest
 
