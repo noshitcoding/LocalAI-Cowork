@@ -523,7 +523,9 @@ mod tests {
             "printf 'hello\\n'; printf 'warning\\n' >&2; exit 7"
         };
 
-        let result = execute_local(&local_config(), command, None, Some(5_000));
+        // Process startup on a loaded Windows runner can exceed five seconds. Timeout behavior
+        // has a dedicated test below; this assertion only verifies output and exit capture.
+        let result = execute_local(&local_config(), command, None, Some(30_000));
 
         assert!(!result.timed_out);
         assert_eq!(result.exit_code, Some(7));
