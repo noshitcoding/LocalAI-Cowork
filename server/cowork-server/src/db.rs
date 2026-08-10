@@ -1199,41 +1199,57 @@ pub async fn enforce_auth_session_retention(
     now: DateTime<Utc>,
     limit: i64,
 ) -> Result<u64, ApiError> {
-    let result = sqlx::query(
+    let mut tx = pool.begin().await?;
+    let rows = sqlx::query(
         r#"
-        WITH expired AS (
-            SELECT id, user_id, device_id
-            FROM auth_sessions
-            WHERE expires_at < $1 - interval '90 days'
-               OR revoked_at < $1 - interval '90 days'
-            ORDER BY COALESCE(revoked_at, expires_at), id
-            LIMIT $2
-            FOR UPDATE SKIP LOCKED
-        ), removed_push_subscriptions AS (
-            DELETE FROM push_subscriptions subscription
-            WHERE EXISTS (
-                SELECT 1 FROM expired
-                WHERE expired.user_id = subscription.user_id
-                  AND expired.device_id = subscription.device_id
-            )
-              AND NOT EXISTS (
-                SELECT 1 FROM auth_sessions active
-                WHERE active.user_id = subscription.user_id
-                  AND active.device_id = subscription.device_id
-                  AND active.revoked_at IS NULL
-                  AND active.expires_at > $1
-              )
-            RETURNING subscription.id
-        )
-        DELETE FROM auth_sessions session
-        USING expired
-        WHERE session.id = expired.id
+        SELECT id, user_id, device_id
+        FROM auth_sessions
+        WHERE expires_at < $1 - interval '90 days'
+           OR revoked_at < $1 - interval '90 days'
+        ORDER BY COALESCE(revoked_at, expires_at), id
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
         "#,
     )
     .bind(now)
     .bind(limit.clamp(1, 10_000))
-    .execute(pool)
+    .fetch_all(&mut *tx)
     .await?;
+    if rows.is_empty() {
+        tx.commit().await?;
+        return Ok(0);
+    }
+    let session_ids: Vec<Uuid> = rows.iter().map(|row| row.get("id")).collect();
+    let user_ids: Vec<Uuid> = rows.iter().map(|row| row.get("user_id")).collect();
+    let device_ids: Vec<Uuid> = rows.iter().map(|row| row.get("device_id")).collect();
+    sqlx::query(
+        r#"
+        DELETE FROM push_subscriptions subscription
+        WHERE EXISTS (
+            SELECT 1
+            FROM unnest($1::uuid[], $2::uuid[]) AS expired(user_id, device_id)
+            WHERE expired.user_id = subscription.user_id
+              AND expired.device_id = subscription.device_id
+        )
+          AND NOT EXISTS (
+            SELECT 1 FROM auth_sessions active
+            WHERE active.user_id = subscription.user_id
+              AND active.device_id = subscription.device_id
+              AND active.revoked_at IS NULL
+              AND active.expires_at > $3
+          )
+        "#,
+    )
+    .bind(&user_ids)
+    .bind(&device_ids)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    let result = sqlx::query("DELETE FROM auth_sessions WHERE id = ANY($1)")
+        .bind(&session_ids)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(result.rows_affected())
 }
 

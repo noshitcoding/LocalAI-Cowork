@@ -517,6 +517,7 @@ jobs:
           done
           if [[ "${retained}" != '0|0|0|0' ]]; then
             echo "authentication retention left rows: ${retained}" >&2
+            for log in "${test_root}"/worker-*.log; do echo "==> ${log}"; cat "${log}"; done
             exit 1
           fi
           echo 'auth_session_retention=ok'
