@@ -149,6 +149,13 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
             }
         }
         if reap_counter % 60 == 0 {
+            match db::enforce_auth_session_retention(&pool, chrono::Utc::now(), 10_000).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!(count, "removed authentication sessions past retention")
+                }
+                Err(error) => tracing::error!(?error, "authentication retention failed"),
+                _ => {}
+            }
             match db::enforce_run_event_retention(&pool, chrono::Utc::now(), 10_000).await {
                 Ok(count) if count > 0 => {
                     tracing::info!(count, "removed run events past the 90-day retention window")

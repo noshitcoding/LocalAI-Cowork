@@ -1189,6 +1189,54 @@ pub async fn enforce_run_event_retention(
     Ok(result.rows_affected())
 }
 
+/// Keeps revoked and expired authentication material for a bounded support and
+/// security-review window. Foreign-key cascades remove access tokens, refresh
+/// history, and reauthentication grants with the selected sessions. A push
+/// subscription is removed only when no other active session remains for that
+/// user/device pair.
+pub async fn enforce_auth_session_retention(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<u64, ApiError> {
+    let result = sqlx::query(
+        r#"
+        WITH expired AS (
+            SELECT id, user_id, device_id
+            FROM auth_sessions
+            WHERE expires_at < $1 - interval '90 days'
+               OR revoked_at < $1 - interval '90 days'
+            ORDER BY COALESCE(revoked_at, expires_at), id
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+        ), removed_push_subscriptions AS (
+            DELETE FROM push_subscriptions subscription
+            WHERE EXISTS (
+                SELECT 1 FROM expired
+                WHERE expired.user_id = subscription.user_id
+                  AND expired.device_id = subscription.device_id
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM auth_sessions active
+                WHERE active.user_id = subscription.user_id
+                  AND active.device_id = subscription.device_id
+                  AND active.revoked_at IS NULL
+                  AND active.expires_at > $1
+              )
+            RETURNING subscription.id
+        )
+        DELETE FROM auth_sessions session
+        USING expired
+        WHERE session.id = expired.id
+        "#,
+    )
+    .bind(now)
+    .bind(limit.clamp(1, 10_000))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 fn should_push(kind: RunEventKind) -> bool {
     matches!(
         kind,

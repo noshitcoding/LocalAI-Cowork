@@ -489,6 +489,38 @@ jobs:
             exit 1
           fi
 
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "${postgres_container}"
+          docker exec "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
+          INSERT INTO auth_refresh_token_history (token_hash, session_id, refresh_family_id)
+          SELECT decode(repeat('ab', 32), 'hex'), id, refresh_family_id
+          FROM auth_sessions
+          LIMIT 1;
+          INSERT INTO push_subscriptions (
+            id, user_id, device_id, provider, endpoint_hash, ciphertext,
+            encrypted_data_key, nonce, wrap_nonce
+          )
+          SELECT gen_random_uuid(), user_id, device_id, 'fcm', decode('01', 'hex'),
+            decode('02', 'hex'), decode('03', 'hex'), decode('04', 'hex'), decode('05', 'hex')
+          FROM auth_sessions
+          LIMIT 1;
+          UPDATE auth_sessions
+          SET expires_at = now() - interval '91 days'
+          WHERE id = (SELECT id FROM auth_sessions ORDER BY created_at LIMIT 1);
+          SQL
+          retained=''
+          for _ in $(seq 1 100); do
+            retained="$(docker exec "${postgres_container}" psql -U cowork -d cowork_worker_soak_ci -tAc \
+              "SELECT (SELECT count(*) FROM auth_sessions) || '|' || (SELECT count(*) FROM access_tokens) || '|' || (SELECT count(*) FROM auth_refresh_token_history) || '|' || (SELECT count(*) FROM push_subscriptions);")"
+            [[ "${retained}" == '0|0|0|0' ]] && break
+            sleep 0.1
+          done
+          if [[ "${retained}" != '0|0|0|0' ]]; then
+            echo "authentication retention left rows: ${retained}" >&2
+            exit 1
+          fi
+          echo 'auth_session_retention=ok'
+
   security:
     runs-on: ubuntu-latest
 
