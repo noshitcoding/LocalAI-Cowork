@@ -184,7 +184,6 @@ jobs:
           set -euo pipefail
           npm --prefix app run test -- --run src/mobile/mobileOfflineStore.test.ts src/mobile/mobileSecure.test.ts
           npm --prefix app run build -- --mode android
-          cargo check --locked --manifest-path clients/android/src-tauri/Cargo.toml
 
       - name: Build unsigned ARM64 APK
         working-directory: clients/android
