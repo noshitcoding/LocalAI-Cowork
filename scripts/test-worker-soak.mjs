@@ -141,8 +141,18 @@ if (assignedWorkers.size !== expectedWorkers) {
 if (stats.max_active < expectedWorkers) {
   throw new Error(`expected ${expectedWorkers} concurrent runner jobs, observed ${stats.max_active}`)
 }
-if (completed.some((run) => !String(run.result?.stdout ?? '').includes(run.spec.id))) {
-  throw new Error('one or more completed runs received another run\'s result')
+const mismatchedResults = completed
+  .filter((run) => (
+    run.result?.sandbox?.run_id !== run.spec.id
+    || !String(run.result?.sandbox?.stdout ?? '').includes(run.spec.id)
+  ))
+  .map((run) => ({
+    run_id: run.spec.id,
+    result_run_id: run.result?.sandbox?.run_id ?? null,
+    stdout: run.result?.sandbox?.stdout ?? null,
+  }))
+if (mismatchedResults.length) {
+  throw new Error(`one or more completed runs received another run's result: ${JSON.stringify(mismatchedResults)}`)
 }
 
 console.log(`waves=${waves}`)
