@@ -70,6 +70,10 @@ jobs:
         working-directory: app
         run: npm run prepare:crew-runtime -- -Force
 
+      - name: Prepare and verify bundled Codex runtime
+        working-directory: app
+        run: npm run prepare:codex-runtime
+
       - name: Quality gates
         working-directory: app
         run: npm run verify
