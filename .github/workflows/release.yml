@@ -326,7 +326,7 @@ jobs:
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
-            cpio \
+            libarchive-tools \
             patchelf \
             rpm
 
@@ -422,10 +422,9 @@ jobs:
           dpkg-deb --extract release-assets/LocalAI-Cowork-x86_64.deb "${deb_root}"
           verify_codex_payload "${deb_root}"
           rpm_root="$(mktemp -d)"
-          (
-            cd "${rpm_root}"
-            rpm2cpio "${GITHUB_WORKSPACE}/release-assets/LocalAI-Cowork-x86_64.rpm" | cpio -idm --quiet
-          )
+          bsdtar --extract \
+            --file release-assets/LocalAI-Cowork-x86_64.rpm \
+            --directory "${rpm_root}"
           verify_codex_payload "${rpm_root}"
 
       - name: Upload Linux release assets
