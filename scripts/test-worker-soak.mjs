@@ -308,6 +308,106 @@ if (!syncedEntity?.tombstone || syncedEntity.revision !== 2
   throw new Error(`sync bootstrap snapshot is stale or incomplete: ${JSON.stringify(syncSnapshot)}`)
 }
 
+const syncedProjectId = randomUUID()
+const syncedThreadId = randomUUID()
+const syncedMessageId = randomUUID()
+const syncChange = (entityType, entityId, baseRevision, operation, payload) => ({
+  schema_version: 2,
+  operation_id: randomUUID(),
+  device_id: soakDeviceId,
+  entity_type: entityType,
+  entity_id: entityId,
+  base_revision: baseRevision,
+  operation,
+  payload,
+  client_timestamp: new Date().toISOString(),
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('thread', syncedThreadId, 0, 'upsert', {
+    title: 'Synced offline thread',
+    source: 'desktop',
+  })] },
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('message', syncedMessageId, 0, 'upsert', {
+    thread_id: syncedThreadId,
+    role: 'user',
+    content: 'Materialized after its project arrives',
+    timestamp: Date.now(),
+    source: 'desktop',
+  })] },
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('project', syncedProjectId, 0, 'upsert', {
+    title: 'Synced offline project',
+    instructions: 'Private files stay on the personal device.',
+    project_kind: 'private',
+    files_location: 'personal_device',
+    thread_ids: [syncedThreadId],
+  })] },
+})
+const materializedProjects = await request('/projects', { token })
+const materializedProject = materializedProjects.find((item) => item.id === syncedProjectId)
+if (materializedProject?.privacy !== 'private_local'
+    || materializedProject.name !== 'Synced offline project') {
+  throw new Error(`synced project was not safely materialized: ${JSON.stringify(materializedProject)}`)
+}
+const materializedThreads = await request(`/projects/${syncedProjectId}/threads`, { token })
+if (materializedThreads.length !== 1 || materializedThreads[0]?.id !== syncedThreadId) {
+  throw new Error(`out-of-order synced thread did not converge: ${JSON.stringify(materializedThreads)}`)
+}
+const materializedMessages = await request(`/threads/${syncedThreadId}/messages?limit=10`, { token })
+if (materializedMessages.length !== 1
+    || materializedMessages[0]?.id !== syncedMessageId
+    || materializedMessages[0]?.content?.content !== 'Materialized after its project arrives') {
+  throw new Error(`out-of-order synced message did not converge: ${JSON.stringify(materializedMessages)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('project', syncedProjectId, 1, 'upsert', {
+    title: 'Synced offline project',
+    instructions: 'Private files stay on the personal device.',
+    project_kind: 'private',
+    files_location: 'personal_device',
+    thread_ids: [],
+  })] },
+})
+const detachedThreads = await request(`/projects/${syncedProjectId}/threads`, { token })
+if (detachedThreads.length !== 0) {
+  throw new Error(`detached synced thread remained visible: ${JSON.stringify(detachedThreads)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('project', syncedProjectId, 2, 'upsert', {
+    title: 'Synced offline project',
+    instructions: 'Private files stay on the personal device.',
+    project_kind: 'private',
+    files_location: 'personal_device',
+    thread_ids: [syncedThreadId],
+  })] },
+})
+const restoredThreads = await request(`/projects/${syncedProjectId}/threads`, { token })
+if (restoredThreads.length !== 1 || restoredThreads[0]?.id !== syncedThreadId) {
+  throw new Error(`reattached synced thread was not restored: ${JSON.stringify(restoredThreads)}`)
+}
+await request('/sync/changes', {
+  method: 'POST', token, body: {
+    changes: [syncChange('message', syncedMessageId, 1, 'delete', null)],
+  },
+})
+const messagesAfterTombstone = await request(`/threads/${syncedThreadId}/messages?limit=10`, { token })
+if (messagesAfterTombstone.length !== 0) {
+  throw new Error(`synced message tombstone was not materialized: ${JSON.stringify(messagesAfterTombstone)}`)
+}
+
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
 console.log(`distinct_workers=${assignedWorkers.size}`)
@@ -323,3 +423,5 @@ console.log('metadata_sync_tombstone=ok')
 console.log('metadata_sync_cursor=ok')
 console.log('metadata_sync_sse_resume=ok')
 console.log('metadata_sync_bootstrap_snapshot=ok')
+console.log('metadata_sync_canonical_materialization=ok')
+console.log('metadata_sync_out_of_order_convergence=ok')

@@ -8,13 +8,13 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use cowork_contracts::{
-    ensure_compatible, PullSyncChangesResponse, PushSyncChangesRequest, PushSyncChangesResponse,
-    ServerSyncChange, SyncApplyResult, SyncApplyStatus, SyncChange, SyncOperation, SyncedEntity,
-    SyncedEntityPage, SCHEMA_VERSION,
+    ensure_compatible, ExecutorTarget, PullSyncChangesResponse, PushSyncChangesRequest,
+    PushSyncChangesResponse, ServerSyncChange, SyncApplyResult, SyncApplyStatus, SyncChange,
+    SyncOperation, SyncedEntity, SyncedEntityPage, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
-use sqlx::{postgres::PgRow, PgPool, Row};
+use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use crate::{auth::Principal, error::ApiError, governance, AppState};
@@ -442,6 +442,15 @@ async fn apply_change(
         .bind(tombstone)
         .fetch_one(&mut *tx)
         .await?;
+        materialize_canonical_entity(
+            &mut tx,
+            user_id,
+            &change.entity_type,
+            change.entity_id,
+            change.operation,
+            change.payload.as_ref(),
+        )
+        .await?;
         sqlx::query(
             r#"
             INSERT INTO sync_changes (
@@ -488,6 +497,600 @@ async fn apply_change(
     .await?;
     tx.commit().await?;
     Ok(result)
+}
+
+async fn materialize_canonical_entity(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    match entity_type {
+        "project" => {
+            materialize_project(tx, user_id, entity_id, operation, payload).await?;
+        }
+        "thread" => {
+            materialize_thread(tx, user_id, entity_id, operation, payload).await?;
+        }
+        "message" => {
+            materialize_message(tx, user_id, entity_id, operation, payload).await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn is_materialized(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+) -> Result<bool, ApiError> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM sync_materializations
+            WHERE user_id = $1 AND entity_type = $2 AND entity_id = $3
+        )
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn remember_materialization(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        INSERT INTO sync_materializations (user_id, entity_type, entity_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, entity_type, entity_id)
+        DO UPDATE SET updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn object_payload<'a>(
+    payload: Option<&'a Value>,
+    entity_type: &str,
+) -> Result<&'a serde_json::Map<String, Value>, ApiError> {
+    payload.and_then(Value::as_object).ok_or_else(|| {
+        ApiError::Unprocessable(format!("{entity_type} sync payload must be a JSON object"))
+    })
+}
+
+fn required_text(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+    label: &str,
+    maximum: usize,
+) -> Result<String, ApiError> {
+    let value = keys
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .unwrap_or_default()
+        .trim();
+    if value.is_empty() || value.len() > maximum {
+        return Err(ApiError::Unprocessable(format!(
+            "{label} must contain 1 to {maximum} characters"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn optional_text(
+    object: &serde_json::Map<String, Value>,
+    keys: &[&str],
+    maximum: usize,
+) -> Result<String, ApiError> {
+    let value = keys
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .unwrap_or_default();
+    if value.len() > maximum {
+        return Err(ApiError::Unprocessable(format!(
+            "metadata text must not exceed {maximum} characters"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+async fn materialize_project(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    project_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "project", project_id).await?;
+    let current =
+        sqlx::query("SELECT owner_user_id, privacy FROM projects WHERE id = $1 FOR UPDATE")
+            .bind(project_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced project ID collides with an independent server project".to_owned(),
+        ));
+    }
+    if let Some(row) = &current {
+        if row.try_get::<Uuid, _>("owner_user_id")? != user_id
+            || row.try_get::<&str, _>("privacy")? != "private_local"
+        {
+            return Err(ApiError::Conflict(
+                "synced projects may only materialize into their owner's private project"
+                    .to_owned(),
+            ));
+        }
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            sqlx::query(
+                r#"
+                UPDATE projects
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    deleted_at = now(), updated_at = now()
+                WHERE id = $1 AND owner_user_id = $2 AND privacy = 'private_local'
+                "#,
+            )
+            .bind(project_id)
+            .bind(user_id)
+            .execute(&mut **tx)
+            .await?;
+            reconcile_project_threads(tx, user_id, project_id).await?;
+        }
+        return Ok(());
+    }
+
+    let object = object_payload(payload, "project")?;
+    if object
+        .get("project_kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| !matches!(kind, "private" | "private_local"))
+    {
+        return Err(ApiError::Unprocessable(
+            "personal metadata sync cannot create team projects".to_owned(),
+        ));
+    }
+    let name = required_text(object, &["title", "name"], "project name", 200)?;
+    let description = optional_text(object, &["instructions", "description"], 200_000)?;
+    let policy = object
+        .get("policy")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !policy.is_object() {
+        return Err(ApiError::Unprocessable(
+            "project policy must be a JSON object".to_owned(),
+        ));
+    }
+    let preferred_target = object.get("preferred_executor_target").cloned();
+    if let Some(target) = &preferred_target {
+        serde_json::from_value::<ExecutorTarget>(target.clone()).map_err(|error| {
+            ApiError::Unprocessable(format!("invalid preferred executor target: {error}"))
+        })?;
+    }
+    if current.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE projects
+            SET revision = revision + 1,
+                etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                name = $2, description = $3, preferred_executor_target = $4,
+                policy = $5, deleted_at = NULL, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(project_id)
+        .bind(name)
+        .bind(description)
+        .bind(preferred_target)
+        .bind(policy)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        let etag = format!("W/\"{project_id}:1\"");
+        sqlx::query(
+            r#"
+            INSERT INTO projects (
+                id, revision, etag, owner_user_id, team_id, privacy, name,
+                description, preferred_executor_target, policy
+            ) VALUES ($1, 1, $2, $3, NULL, 'private_local', $4, $5, $6, $7)
+            "#,
+        )
+        .bind(project_id)
+        .bind(etag)
+        .bind(user_id)
+        .bind(name)
+        .bind(description)
+        .bind(preferred_target)
+        .bind(policy)
+        .execute(&mut **tx)
+        .await?;
+    }
+    remember_materialization(tx, user_id, "project", project_id).await?;
+    reconcile_project_threads(tx, user_id, project_id).await?;
+    Ok(())
+}
+
+async fn project_for_thread(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    thread_id: Uuid,
+) -> Result<Option<Uuid>, ApiError> {
+    let rows = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT entity_id FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'project' AND NOT tombstone
+          AND jsonb_typeof(payload -> 'thread_ids') = 'array'
+          AND (payload -> 'thread_ids') ? $2
+        ORDER BY entity_id
+        LIMIT 2
+        "#,
+    )
+    .bind(user_id)
+    .bind(thread_id.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.len() > 1 {
+        return Err(ApiError::Conflict(format!(
+            "thread {thread_id} is assigned to more than one synced project"
+        )));
+    }
+    Ok(rows.into_iter().next())
+}
+
+async fn reconcile_project_threads(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    project_id: Uuid,
+) -> Result<(), ApiError> {
+    let mut thread_ids = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT materialized.entity_id
+        FROM sync_materializations materialized
+        JOIN threads thread ON thread.id = materialized.entity_id
+        WHERE materialized.user_id = $1 AND materialized.entity_type = 'thread'
+          AND thread.project_id = $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let desired = sqlx::query_scalar::<_, Value>(
+        r#"
+        SELECT COALESCE(payload -> 'thread_ids', '[]'::jsonb) FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'project' AND entity_id = $2
+          AND NOT tombstone
+        "#,
+    )
+    .bind(user_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(Value::Array(ids)) = desired {
+        for value in ids {
+            let raw = value.as_str().ok_or_else(|| {
+                ApiError::Unprocessable("project thread_ids must contain UUID strings".to_owned())
+            })?;
+            let id = Uuid::parse_str(raw).map_err(|_| {
+                ApiError::Unprocessable("project thread_ids must contain UUID strings".to_owned())
+            })?;
+            if !thread_ids.contains(&id) {
+                thread_ids.push(id);
+            }
+        }
+    }
+    for thread_id in thread_ids {
+        let entity = sqlx::query(
+            r#"
+            SELECT operation, payload FROM (
+                SELECT CASE WHEN tombstone THEN 'delete' ELSE 'upsert' END AS operation,
+                       payload
+                FROM sync_entities
+                WHERE user_id = $1 AND entity_type = 'thread' AND entity_id = $2
+            ) current
+            "#,
+        )
+        .bind(user_id)
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(entity) = entity {
+            let operation = parse_operation(entity.try_get("operation")?)?;
+            let payload = entity.try_get::<Option<Value>, _>("payload")?;
+            materialize_thread(tx, user_id, thread_id, operation, payload.as_ref()).await?;
+        } else if is_materialized(tx, user_id, "thread", thread_id).await? {
+            soft_delete_thread(tx, user_id, thread_id).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn soft_delete_thread(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    thread_id: Uuid,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        UPDATE threads AS thread
+        SET revision = thread.revision + 1,
+            etag = 'W/"' || thread.id::text || ':' || (thread.revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        FROM projects project
+        WHERE thread.id = $1 AND thread.project_id = project.id
+          AND project.owner_user_id = $2 AND project.privacy = 'private_local'
+        "#,
+    )
+    .bind(thread_id)
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn materialize_thread(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    thread_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "thread", thread_id).await?;
+    let current = sqlx::query("SELECT id FROM threads WHERE id = $1 FOR UPDATE")
+        .bind(thread_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced thread ID collides with an independent server thread".to_owned(),
+        ));
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            soft_delete_thread(tx, user_id, thread_id).await?;
+        }
+        return Ok(());
+    }
+    let object = object_payload(payload, "thread")?;
+    let title = required_text(object, &["title"], "thread title", 200)?;
+    let Some(project_id) = project_for_thread(tx, user_id, thread_id).await? else {
+        if tracked {
+            soft_delete_thread(tx, user_id, thread_id).await?;
+        }
+        return Ok(());
+    };
+    let project_exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM projects
+            WHERE id = $1 AND owner_user_id = $2 AND privacy = 'private_local'
+              AND deleted_at IS NULL
+        )
+        "#,
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !project_exists {
+        return Ok(());
+    }
+    if current.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE threads
+            SET revision = revision + 1,
+                etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                project_id = $2, title = $3, deleted_at = NULL, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(thread_id)
+        .bind(project_id)
+        .bind(title)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        let etag = format!("W/\"{thread_id}:1\"");
+        sqlx::query(
+            r#"
+            INSERT INTO threads (
+                id, revision, etag, project_id, created_by, title
+            ) VALUES ($1, 1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(thread_id)
+        .bind(etag)
+        .bind(project_id)
+        .bind(user_id)
+        .bind(title)
+        .execute(&mut **tx)
+        .await?;
+    }
+    remember_materialization(tx, user_id, "thread", thread_id).await?;
+    let messages = sqlx::query(
+        r#"
+        SELECT entity_id, tombstone, payload FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'message'
+          AND payload ->> 'thread_id' = $2
+        ORDER BY entity_id
+        "#,
+    )
+    .bind(user_id)
+    .bind(thread_id.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    for message in messages {
+        let id = message.try_get("entity_id")?;
+        let operation = if message.try_get("tombstone")? {
+            SyncOperation::Delete
+        } else {
+            SyncOperation::Upsert
+        };
+        let payload = message.try_get::<Option<Value>, _>("payload")?;
+        materialize_message(tx, user_id, id, operation, payload.as_ref()).await?;
+    }
+    Ok(())
+}
+
+async fn touch_materialized_thread(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: Uuid,
+) -> Result<(), ApiError> {
+    sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn materialize_message(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    message_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "message", message_id).await?;
+    let current = sqlx::query("SELECT thread_id FROM messages WHERE id = $1 FOR UPDATE")
+        .bind(message_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced message ID collides with an independent server message".to_owned(),
+        ));
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            if let Some(row) = current {
+                let thread_id: Uuid = row.try_get("thread_id")?;
+                sqlx::query(
+                    r#"
+                    UPDATE messages
+                    SET revision = revision + 1,
+                        etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                        deleted_at = now(), updated_at = now()
+                    WHERE id = $1
+                    "#,
+                )
+                .bind(message_id)
+                .execute(&mut **tx)
+                .await?;
+                touch_materialized_thread(tx, thread_id).await?;
+            }
+        }
+        return Ok(());
+    }
+    let object = object_payload(payload, "message")?;
+    let thread_id = object
+        .get("thread_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| {
+            ApiError::Unprocessable("message thread_id must be a UUID string".to_owned())
+        })?;
+    let role = object
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("assistant");
+    if !matches!(role, "user" | "assistant" | "system" | "tool") {
+        return Err(ApiError::Unprocessable(
+            "message role is not supported".to_owned(),
+        ));
+    }
+    let thread_exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM threads thread
+            JOIN projects project ON project.id = thread.project_id
+            WHERE thread.id = $1 AND thread.deleted_at IS NULL
+              AND project.owner_user_id = $2 AND project.privacy = 'private_local'
+              AND project.deleted_at IS NULL
+        )
+        "#,
+    )
+    .bind(thread_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !thread_exists {
+        return Ok(());
+    }
+    let content = payload.cloned().unwrap_or_else(|| serde_json::json!({}));
+    let author_user_id = (role == "user").then_some(user_id);
+    let created_at = object
+        .get("timestamp")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or_else(Utc::now);
+    if current.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE messages
+            SET revision = revision + 1,
+                etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                thread_id = $2, author_user_id = $3, role = $4, content = $5,
+                run_id = NULL, deleted_at = NULL, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(author_user_id)
+        .bind(role)
+        .bind(content)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        let etag = format!("W/\"{message_id}:1\"");
+        sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id, revision, etag, thread_id, author_user_id, role, content,
+                run_id, created_at, updated_at
+            ) VALUES ($1, 1, $2, $3, $4, $5, $6, NULL, $7, $7)
+            "#,
+        )
+        .bind(message_id)
+        .bind(etag)
+        .bind(thread_id)
+        .bind(author_user_id)
+        .bind(role)
+        .bind(content)
+        .bind(created_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+    remember_materialization(tx, user_id, "message", message_id).await?;
+    touch_materialized_thread(tx, thread_id).await?;
+    Ok(())
 }
 
 fn ensure_replayed_operation_matches(
