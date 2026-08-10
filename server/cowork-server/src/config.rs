@@ -24,6 +24,7 @@ pub struct Config {
     pub database_max_connections: u32,
     pub worker_id: Uuid,
     pub worker_poll_interval: Duration,
+    pub maintenance_every_polls: u64,
     pub lease_duration: Duration,
     pub model_base_url: Option<String>,
     pub model_api_key: Option<String>,
@@ -183,6 +184,10 @@ impl Config {
         {
             bail!("input and output model prices must be configured together");
         }
+        let maintenance_every_polls = parse_or("COWORK_MAINTENANCE_EVERY_POLLS", 60_u64)?;
+        if maintenance_every_polls == 0 {
+            bail!("COWORK_MAINTENANCE_EVERY_POLLS must be greater than zero");
+        }
 
         Ok(Self {
             mode,
@@ -207,6 +212,7 @@ impl Config {
                 "COWORK_WORKER_POLL_MS",
                 1_000_u64,
             )?),
+            maintenance_every_polls,
             lease_duration: Duration::from_secs(parse_or("COWORK_LEASE_SECONDS", 90_u64)?),
             model_base_url: nonempty("COWORK_MODEL_BASE_URL"),
             model_api_key: optional_secret("COWORK_MODEL_API_KEY")?,

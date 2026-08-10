@@ -439,6 +439,7 @@ jobs:
           COWORK_SERVER_CAPABILITIES: shell,files
           COWORK_WEB_PUSH_ENABLED: 'false'
           COWORK_WORKER_POLL_MS: '10'
+          COWORK_MAINTENANCE_EVERY_POLLS: '1'
           COWORK_LEASE_SECONDS: '30'
           COWORK_TEST_POSTGRES_PASSWORD: worker-soak-ci-postgres
           COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
@@ -504,6 +505,15 @@ jobs:
             decode('02', 'hex'), decode('03', 'hex'), decode('04', 'hex'), decode('05', 'hex')
           FROM auth_sessions
           LIMIT 1;
+          SQL
+          seeded="$(docker exec "${postgres_container}" psql -U cowork -d cowork_worker_soak_ci -tAc \
+            "SELECT (SELECT count(*) FROM auth_sessions) || '|' || (SELECT count(*) FROM access_tokens) || '|' || (SELECT count(*) FROM auth_refresh_token_history) || '|' || (SELECT count(*) FROM push_subscriptions);")"
+          if [[ "${seeded}" != '1|1|1|1' ]]; then
+            echo "authentication retention fixture was not seeded correctly: ${seeded}" >&2
+            exit 1
+          fi
+          echo 'auth_session_retention_fixture=ok'
+          docker exec "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
           UPDATE auth_sessions
           SET expires_at = now() - interval '91 days'
           WHERE id = (SELECT id FROM auth_sessions ORDER BY created_at LIMIT 1);

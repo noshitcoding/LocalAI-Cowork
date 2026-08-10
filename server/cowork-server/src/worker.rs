@@ -111,7 +111,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
 
     let mut interval = tokio::time::interval(config.worker_poll_interval);
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut reap_counter = 0_u8;
+    let mut reap_counter = 0_u64;
     loop {
         interval.tick().await;
         reap_counter = reap_counter.wrapping_add(1);
@@ -148,7 +148,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
                 _ => {}
             }
         }
-        if reap_counter % 60 == 0 {
+        if reap_counter % config.maintenance_every_polls == 0 {
             match db::enforce_auth_session_retention(&pool, chrono::Utc::now(), 10_000).await {
                 Ok(count) if count > 0 => {
                     tracing::info!(count, "removed authentication sessions past retention")

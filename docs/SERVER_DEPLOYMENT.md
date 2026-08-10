@@ -474,6 +474,12 @@ on a separate host before relying on a backup.
   and input requests expire after seven days; private snapshots default to and
   cannot exceed 30 days. Accepted project versions remain until project/user
   deletion policy removes them.
+- Expired or revoked authentication sessions remain available for security
+  review for 90 days and are then removed with their access-token,
+  reauthentication and refresh-replay records. A device push subscription is
+  removed only if no other active session for that user and device remains.
+  `COWORK_MAINTENANCE_EVERY_POLLS` controls the maintenance cadence and must be
+  greater than zero; the Compose default is 60 worker polls.
 - Platform administrators can read aggregate local metrics at
   `/api/v1/operations/metrics` and download an audited JSON support bundle at
   `/api/v1/operations/support-bundle`. Both endpoints exclude prompts, files,
