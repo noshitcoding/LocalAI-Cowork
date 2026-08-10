@@ -112,6 +112,7 @@ jobs:
           cargo clippy --locked --package cowork-local-daemon --all-targets -- -D warnings
 
       - name: Personal Linux executor and GUI-stream acceptance
+        if: always()
         run: |
           cargo check --locked --package cowork-device-agent
           xvfb-run --auto-servernum env COWORK_REQUIRE_LINUX_DESKTOP_TEST=1 cargo test --locked --package cowork-device-agent --all-targets
