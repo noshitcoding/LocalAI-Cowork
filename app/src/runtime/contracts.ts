@@ -578,6 +578,14 @@ export const syncedEntitySchema = z.object({
 })
 export type SyncedEntity = z.infer<typeof syncedEntitySchema>
 
+export const syncedEntityPageSchema = z.object({
+  schema_version: z.number().int().positive(),
+  items: z.array(syncedEntitySchema),
+  next_after: z.string().uuid().nullable(),
+  watermark_cursor: z.number().int().nonnegative(),
+})
+export type SyncedEntityPage = z.infer<typeof syncedEntityPageSchema>
+
 export const syncApplyResultSchema = z.object({
   schema_version: z.number().int().positive(),
   operation_id: z.string().uuid(),

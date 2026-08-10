@@ -76,6 +76,7 @@ const responseSchemas = new Map([
   ['post /api/v1/threads/{thread_id}/messages', 'ThreadMessageRun'],
   ['get /api/v1/sync/changes', 'PullSyncChangesResponse'],
   ['post /api/v1/sync/changes', 'PushSyncChangesResponse'],
+  ['get /api/v1/sync/entities/{entity_type}', 'SyncedEntityPage'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
   ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
   ['post /api/v1/tasks', 'TaskDefinition'], ['get /api/v1/tasks/{task_id}', 'TaskDefinition'],
@@ -122,7 +123,10 @@ function buildOpenApi(routes, schemas) {
       ? { description: 'Successful response', content: { 'application/json': { schema: schemaRef(schemaName, arrayResponses.has(key)) } } }
       : { description: 'Successful response' }
     const parameters = [...route.path.matchAll(/{([^}]+)}/g)].map((match) => ({
-      name: match[1], in: 'path', required: true, schema: { type: 'string', format: 'uuid' },
+      name: match[1], in: 'path', required: true,
+      schema: match[1] === 'entity_type'
+        ? { type: 'string' }
+        : { type: 'string', format: 'uuid' },
     }))
     paths[route.path][route.method] = {
       operationId: operationId(route.method, route.path),

@@ -301,6 +301,12 @@ const streamedSync = await firstSyncEvent(token, 0)
 if (streamedSync.entity_id !== syncEntityId || streamedSync.cursor !== entityChanges[0].cursor) {
   throw new Error(`sync SSE did not resume from its durable cursor: ${JSON.stringify(streamedSync)}`)
 }
+const syncSnapshot = await request('/sync/entities/memory?limit=10', { token })
+const syncedEntity = syncSnapshot.items?.find((entity) => entity.entity_id === syncEntityId)
+if (!syncedEntity?.tombstone || syncedEntity.revision !== 2
+    || syncSnapshot.watermark_cursor < entityChanges[1].cursor) {
+  throw new Error(`sync bootstrap snapshot is stale or incomplete: ${JSON.stringify(syncSnapshot)}`)
+}
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -316,3 +322,4 @@ console.log('metadata_sync_conflict=ok')
 console.log('metadata_sync_tombstone=ok')
 console.log('metadata_sync_cursor=ok')
 console.log('metadata_sync_sse_resume=ok')
+console.log('metadata_sync_bootstrap_snapshot=ok')

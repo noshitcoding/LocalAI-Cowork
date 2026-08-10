@@ -1351,6 +1351,14 @@ pub struct SyncedEntity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncedEntityPage {
+    pub schema_version: u16,
+    pub items: Vec<SyncedEntity>,
+    pub next_after: Option<Uuid>,
+    pub watermark_cursor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncApplyResult {
     pub schema_version: u16,
     pub operation_id: Uuid,

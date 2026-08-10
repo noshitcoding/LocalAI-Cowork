@@ -10,7 +10,7 @@ use chrono::{DateTime, Duration, Utc};
 use cowork_contracts::{
     ensure_compatible, PullSyncChangesResponse, PushSyncChangesRequest, PushSyncChangesResponse,
     ServerSyncChange, SyncApplyResult, SyncApplyStatus, SyncChange, SyncOperation, SyncedEntity,
-    SCHEMA_VERSION,
+    SyncedEntityPage, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -39,6 +39,12 @@ const ALLOWED_ENTITY_TYPES: &[&str] = &[
 #[derive(Debug, Deserialize)]
 pub struct PullQuery {
     after: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EntityPageQuery {
+    after: Option<Uuid>,
     limit: Option<i64>,
 }
 
@@ -197,6 +203,56 @@ pub async fn change_events(
     ))
 }
 
+pub async fn list_entities(
+    State(state): State<AppState>,
+    axum::extract::Path(entity_type): axum::extract::Path<String>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<EntityPageQuery>,
+) -> Result<Json<SyncedEntityPage>, ApiError> {
+    session_device_id(&state.pool, &principal).await?;
+    validate_entity_type(&entity_type)?;
+    let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT * FROM sync_entities
+        WHERE user_id = $1 AND entity_type = $2
+          AND ($3::uuid IS NULL OR entity_id > $3)
+        ORDER BY entity_id
+        LIMIT $4
+        "#,
+    )
+    .bind(principal.user_id)
+    .bind(&entity_type)
+    .bind(query.after)
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+    let items = rows
+        .iter()
+        .map(row_to_synced_entity)
+        .collect::<Result<Vec<_>, _>>()?;
+    let watermark_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(max(cursor), 0)::bigint FROM sync_changes WHERE user_id = $1",
+    )
+    .bind(principal.user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let next_after = (items.len() == usize::try_from(limit).unwrap_or(usize::MAX))
+        .then(|| items.last().map(|item| item.entity_id))
+        .flatten();
+    Ok(Json(SyncedEntityPage {
+        schema_version: SCHEMA_VERSION,
+        items,
+        next_after,
+        watermark_cursor,
+    }))
+}
+
 async fn session_device_id(pool: &PgPool, principal: &Principal) -> Result<Uuid, ApiError> {
     let session_id = principal.session_id.ok_or_else(|| {
         ApiError::Unauthorized("metadata sync requires an authenticated device session".to_owned())
@@ -219,12 +275,7 @@ fn validate_change(change: &SyncChange, session_device_id: Uuid) -> Result<(), A
             "sync change device_id does not match the authenticated session".to_owned(),
         ));
     }
-    if !ALLOWED_ENTITY_TYPES.contains(&change.entity_type.as_str()) {
-        return Err(ApiError::Unprocessable(format!(
-            "unsupported sync entity type {}",
-            change.entity_type
-        )));
-    }
+    validate_entity_type(&change.entity_type)?;
     if change.base_revision < 0 {
         return Err(ApiError::Unprocessable(
             "base_revision must not be negative".to_owned(),
@@ -268,6 +319,16 @@ fn validate_change(change: &SyncChange, session_device_id: Uuid) -> Result<(), A
         ));
     }
     Ok(())
+}
+
+fn validate_entity_type(entity_type: &str) -> Result<(), ApiError> {
+    if ALLOWED_ENTITY_TYPES.contains(&entity_type) {
+        Ok(())
+    } else {
+        Err(ApiError::Unprocessable(format!(
+            "unsupported sync entity type {entity_type}"
+        )))
+    }
 }
 
 fn contains_cleartext_secret_field(value: &Value) -> bool {

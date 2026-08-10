@@ -269,6 +269,8 @@ describe('runtime routing', () => {
         })
         const payload = init?.method === 'POST'
           ? { schema_version: 2, results: [{ schema_version: 2, operation_id: operationId, status: 'applied', entity }] }
+          : String(input).includes('/sync/entities/')
+            ? { schema_version: 2, items: [entity], next_after: null, watermark_cursor: 7 }
           : {
               schema_version: 2,
               changes: [{
@@ -296,6 +298,9 @@ describe('runtime routing', () => {
       next_cursor: 7,
       changes: [{ entity_id: entityId, revision: 1 }],
     })
+    await expect(client.listSyncedEntities('memory', null, 50)).resolves.toMatchObject({
+      items: [{ entity_id: entityId, revision: 1 }], watermark_cursor: 7,
+    })
     expect(requests).toEqual([
       {
         url: 'https://cowork.example.test/api/v1/sync/changes',
@@ -304,6 +309,11 @@ describe('runtime routing', () => {
       },
       {
         url: 'https://cowork.example.test/api/v1/sync/changes?after=3&limit=50',
+        method: 'GET',
+        body: undefined,
+      },
+      {
+        url: 'https://cowork.example.test/api/v1/sync/entities/memory?limit=50',
         method: 'GET',
         body: undefined,
       },

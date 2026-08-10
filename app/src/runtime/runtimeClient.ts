@@ -24,6 +24,7 @@ import {
   runEventSchema,
   runRecordSchema,
   serverSyncChangeSchema,
+  syncedEntityPageSchema,
   pushSyncChangesResponseSchema,
   runInputRequestSchema,
   scheduleRecordSchema,
@@ -59,6 +60,7 @@ import {
   type RunInputRequest,
   type ScheduleRecord,
   type ServerSyncChange,
+  type SyncedEntityPage,
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
   type SyncChange,
@@ -215,6 +217,18 @@ export class RemoteRuntimeClient implements RuntimeClient {
     const controller = new AbortController()
     void this.#consumeSyncEvents(afterCursor, controller.signal, onEvent, onError)
     return () => controller.abort()
+  }
+
+  async listSyncedEntities(
+    entityType: string,
+    after?: string | null,
+    limit = 200,
+  ): Promise<SyncedEntityPage> {
+    const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(1_000, limit))) })
+    if (after) query.set('after', after)
+    return syncedEntityPageSchema.parse(await this.#request(
+      `/api/v1/sync/entities/${encodeURIComponent(entityType)}?${query.toString()}`,
+    ))
   }
 
   async listSupportGrants(): Promise<SupportGrantRecord[]> {
