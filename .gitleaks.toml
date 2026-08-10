@@ -3,16 +3,13 @@ title = "LocalAI Cowork secret scanning"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Generated graph data and vendored Python runtime are scanned at their source, not as duplicated/generated artifacts"
+[allowlist]
+description = "Generated artifacts and synthetic test values"
+regexTarget = "match"
 paths = [
   '''^graphify-out/''',
   '''^app/src-tauri/resources/python/''',
 ]
-
-[[allowlists]]
-description = "Synthetic values used by security and persistence tests"
-regexTarget = "match"
 regexes = [
   '''(?i)(sk-test|example\.test|must-not-reach-disk|top-secret-value|url-secret|provider-secret|environment-secret)''',
   '''58e5435f-c495-47fb-87c7-c21fde0ca2bc''',
