@@ -193,6 +193,10 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         )
         .route("/threads", post(organization::create_thread))
         .route(
+            "/threads/{thread_id}/messages",
+            post(routes::create_thread_message).get(routes::list_thread_messages),
+        )
+        .route(
             "/projects/{project_id}/threads",
             get(organization::list_project_threads),
         )

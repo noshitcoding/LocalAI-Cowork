@@ -6,8 +6,10 @@ import {
   desktopSessionSchema,
   desktopStreamTicketSchema,
   executorRecordSchema,
+  messageRecordSchema,
   terminalSessionTicketSchema,
   threadRecordSchema,
+  threadMessageRunSchema,
   listRunsResponseSchema,
   operationsSnapshotSchema,
   passkeyChallengeSchema,
@@ -32,6 +34,7 @@ import {
   type ApprovalRequest,
   type AuthSessionRecord,
   type CreateRunRequest,
+  type CreateThreadMessageRequest,
   type DesktopSession,
   type DesktopStreamTicket,
   type ExecutorTarget,
@@ -46,6 +49,7 @@ import {
   type QuotaStatus,
   type PasskeyRecord,
   type OperationsSnapshot,
+  type MessageRecord,
   type RunRecord,
   type RunInputRequest,
   type ScheduleRecord,
@@ -59,6 +63,7 @@ import {
   type ReauthenticationGrant,
   type TerminalSessionTicket,
   type ThreadRecord,
+  type ThreadMessageRun,
 } from './contracts'
 import { createPasskey, webauthnAvailableForOrigin } from './webauthn'
 
@@ -159,6 +164,22 @@ export class RemoteRuntimeClient implements RuntimeClient {
         forked_from_message_id: null,
       }),
     }))
+  }
+
+  async createThreadMessage(
+    threadId: string,
+    request: CreateThreadMessageRequest,
+  ): Promise<ThreadMessageRun> {
+    return threadMessageRunSchema.parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
+  }
+
+  async listThreadMessages(threadId: string, limit = 100): Promise<MessageRecord[]> {
+    return messageRecordSchema.array().parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?limit=${Math.max(1, Math.min(1_000, limit))}`,
+    ))
   }
 
   async listProjectThreads(projectId: string): Promise<ThreadRecord[]> {

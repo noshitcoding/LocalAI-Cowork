@@ -109,18 +109,21 @@ export default function RemoteRunComposer({ client, onCreated, compact = false }
     try {
       const title = prompt.trim().replaceAll(/\s+/g, ' ').slice(0, 100)
       const thread = await client.createThread(project.id, title)
-      const run = await client.createRun({
-        thread_id: thread.id,
-        project_id: project.id,
-        project_revision: project.revision,
-        project_privacy: project.privacy,
-        task: null,
-        executor_target: choice.target,
-        required_capabilities: required,
-        input: { prompt: prompt.trim() },
-        model_profile_id: null,
-        snapshot_id: null,
-        idempotency_key: crypto.randomUUID(),
+      const { run } = await client.createThreadMessage(thread.id, {
+        content: { text: prompt.trim() },
+        run: {
+          thread_id: thread.id,
+          project_id: project.id,
+          project_revision: project.revision,
+          project_privacy: project.privacy,
+          task: null,
+          executor_target: choice.target,
+          required_capabilities: required,
+          input: { prompt: prompt.trim() },
+          model_profile_id: null,
+          snapshot_id: null,
+          idempotency_key: crypto.randomUUID(),
+        },
       })
       setPrompt('')
       setOpen(false)

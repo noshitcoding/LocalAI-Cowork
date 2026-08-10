@@ -12,6 +12,7 @@ import RemoteTerminal from './RemoteTerminal'
 import RunArtifactPanel from './RunArtifactPanel'
 import RunInterventionPanel from './RunInterventionPanel'
 import RemoteRunComposer from './RemoteRunComposer'
+import RemoteThreadMessages from './RemoteThreadMessages'
 import RemoteScheduleManager from './RemoteScheduleManager'
 import RemoteSecuritySettings from './RemoteSecuritySettings'
 import RemoteGovernancePanel from './RemoteGovernancePanel'
@@ -54,6 +55,7 @@ export default function RemoteServerView() {
   const [pushEnabled, setPushEnabled] = useState(false)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [interventionReloadKey, setInterventionReloadKey] = useState(0)
+  const [messageReloadKey, setMessageReloadKey] = useState(0)
   const [ssoEnabled, setSsoEnabled] = useState(false)
 
   const client = useMemo(
@@ -117,6 +119,7 @@ export default function RemoteServerView() {
     return client.subscribeRunEvents(selectedRunId, 0, (event) => {
       setEvents((current) => [...current.filter((item) => item.event_id !== event.event_id), event].slice(-200))
       if (event.kind === 'artifact_created') setReloadKey((value) => value + 1)
+      if (event.kind === 'completed') setMessageReloadKey((value) => value + 1)
       if (['approval_requested', 'approval_resolved', 'input_requested', 'input_received'].includes(event.kind)) setInterventionReloadKey((value) => value + 1)
       if (event.kind === 'desktop_session_changed') void loadSessions()
       if (event.kind === 'state_changed' || event.kind === 'completed' || event.kind === 'failed') {
@@ -246,6 +249,7 @@ export default function RemoteServerView() {
                   {!['completed', 'failed', 'canceled', 'expired'].includes(selectedRun.state) ? <button className="ui-button ui-button--danger" type="button" onClick={() => { void client.cancelRun(selectedRun.spec.id).then(loadRuns).catch((cause) => setError(messageOf(cause))) }}><CircleStop size={15} /> Cancel run</button> : null}
                 </div>
               </section>
+              <RemoteThreadMessages client={client} threadId={selectedRun.spec.thread_id} reloadKey={messageReloadKey} />
               <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={loadRuns} />
               {desktopSession ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={desktopSession} onStop={stopDesktop} onSessionChanged={loadSessions} /> : null}
               {terminalOpen ? <RemoteTerminal client={client} runId={selectedRun.spec.id} onClose={() => setTerminalOpen(false)} /> : null}

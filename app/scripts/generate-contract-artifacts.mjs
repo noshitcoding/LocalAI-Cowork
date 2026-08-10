@@ -72,6 +72,8 @@ const responseSchemas = new Map([
   ['get /api/v1/version', 'VersionResponse'], ['get /api/v1/capabilities', 'CapabilityCatalog'],
   ['get /api/v1/runs', 'ListRunsResponse'], ['post /api/v1/runs', 'RunRecord'],
   ['get /api/v1/runs/{run_id}', 'RunRecord'], ['post /api/v1/runs/{run_id}/cancel', 'RunRecord'],
+  ['get /api/v1/threads/{thread_id}/messages', 'MessageRecord'],
+  ['post /api/v1/threads/{thread_id}/messages', 'ThreadMessageRun'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
   ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
   ['post /api/v1/tasks', 'TaskDefinition'], ['get /api/v1/tasks/{task_id}', 'TaskDefinition'],
@@ -95,6 +97,7 @@ const responseSchemas = new Map([
 ])
 const arrayResponses = new Set([
   'get /api/v1/projects', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/threads/{thread_id}/messages',
   'get /api/v1/auth/sessions',
   'get /api/v1/support-grants', 'get /api/v1/runs/{run_id}/artifacts',
   'get /api/v1/runs/{run_id}/approvals', 'get /api/v1/runs/{run_id}/input-requests',

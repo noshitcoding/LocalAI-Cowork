@@ -1058,6 +1058,44 @@ pub struct ThreadRecord {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageRecord {
+    pub schema_version: u16,
+    pub id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub thread_id: Uuid,
+    pub author_user_id: Option<Uuid>,
+    pub role: MessageRole,
+    pub content: Value,
+    pub run_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateThreadMessageRequest {
+    pub content: Value,
+    pub run: CreateRunRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMessageRun {
+    pub schema_version: u16,
+    pub message: MessageRecord,
+    pub run: RunRecord,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleRecord {
     pub schema_version: u16,

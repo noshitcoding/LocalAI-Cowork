@@ -87,6 +87,7 @@ const project = await request('/projects', {
 })
 
 const completed = []
+let retriedMessageRun = false
 for (let wave = 0; wave < waves; wave += 1) {
   const created = await Promise.all(Array.from({ length: runsPerWave }, async (_, index) => {
     const label = `wave-${wave}-run-${index}`
@@ -100,10 +101,9 @@ for (let wave = 0; wave < waves; wave += 1) {
         forked_from_message_id: null,
       },
     })
-    return request('/runs', {
-      method: 'POST',
-      token,
-      body: {
+    const body = {
+      content: { text: label },
+      run: {
         thread_id: thread.id,
         project_id: project.id,
         project_revision: project.revision,
@@ -116,9 +116,45 @@ for (let wave = 0; wave < waves; wave += 1) {
         snapshot_id: null,
         idempotency_key: `worker-soak-${randomUUID()}`,
       },
+    }
+    const pair = await request(`/threads/${thread.id}/messages`, {
+      method: 'POST',
+      token,
+      body,
     })
+    if (wave === 0 && index === 0) {
+      const retry = await request(`/threads/${thread.id}/messages`, { method: 'POST', token, body })
+      if (retry.message.id !== pair.message.id || retry.run.spec.id !== pair.run.spec.id) {
+        throw new Error('message/run idempotency retry returned a different durable pair')
+      }
+      retriedMessageRun = true
+    }
+    return { thread, label, pair }
   }))
-  completed.push(...await waitForWave(created.map((run) => run.spec.id), token))
+  const waveRuns = await waitForWave(created.map(({ pair }) => pair.run.spec.id), token)
+  const completedById = new Map(waveRuns.map((run) => [run.spec.id, run]))
+  const threadMessages = await Promise.all(created.map(({ thread }) => (
+    request(`/threads/${thread.id}/messages?limit=10`, { token })
+  )))
+  for (let index = 0; index < created.length; index += 1) {
+    const { label, pair } = created[index]
+    const messages = threadMessages[index]
+    const run = completedById.get(pair.run.spec.id)
+    if (!run) throw new Error(`completed run ${pair.run.spec.id} was not returned`)
+    if (messages.length !== 2 || messages[0].role !== 'user' || messages[1].role !== 'assistant') {
+      throw new Error(`thread ${pair.message.thread_id} did not contain one user/assistant pair: ${JSON.stringify(messages)}`)
+    }
+    if (messages.some((message) => message.run_id !== run.spec.id)) {
+      throw new Error(`thread ${pair.message.thread_id} contains a message linked to the wrong run`)
+    }
+    if (messages[0].content?.text !== label) {
+      throw new Error(`thread ${pair.message.thread_id} lost its submitted user content`)
+    }
+    if (messages[1].content?.sandbox?.run_id !== run.spec.id) {
+      throw new Error(`thread ${pair.message.thread_id} lost or crossed its assistant result`)
+    }
+  }
+  completed.push(...waveRuns)
 }
 
 const statsResponse = await fetch(`${runnerBase}/stats`)
@@ -154,6 +190,7 @@ const mismatchedResults = completed
 if (mismatchedResults.length) {
   throw new Error(`one or more completed runs received another run's result: ${JSON.stringify(mismatchedResults)}`)
 }
+if (!retriedMessageRun) throw new Error('message/run idempotency retry was not exercised')
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -161,3 +198,6 @@ console.log(`distinct_workers=${assignedWorkers.size}`)
 console.log(`runner_max_concurrency=${stats.max_active}`)
 console.log('exactly_once_dispatch=ok')
 console.log('cross_run_result_isolation=ok')
+console.log('atomic_message_run=ok')
+console.log('assistant_message_persistence=ok')
+console.log('message_run_idempotency=ok')

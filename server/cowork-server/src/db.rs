@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use cowork_contracts::{
     ensure_run_transition, Capability, ExecutorKind, ExecutorRecord, ExecutorRegistration,
-    ExecutorTarget, RunError, RunEvent, RunEventKind, RunLease, RunRecord, RunSpec, RunState,
-    SCHEMA_VERSION,
+    ExecutorTarget, MessageRecord, MessageRole, RunError, RunEvent, RunEventKind, RunLease,
+    RunRecord, RunSpec, RunState, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
@@ -24,22 +24,30 @@ pub async fn create_run(
     initial_state: RunState,
 ) -> Result<RunRecord, ApiError> {
     let mut tx = pool.begin().await?;
+    let (record, _) = create_run_tx(&mut tx, spec, initial_state).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+async fn create_run_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    spec: &RunSpec,
+    initial_state: RunState,
+) -> Result<(RunRecord, bool), ApiError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("quota:user:{}", spec.creator_user_id))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     if let Some(row) =
         sqlx::query("SELECT * FROM runs WHERE creator_user_id = $1 AND idempotency_key = $2")
             .bind(spec.creator_user_id)
             .bind(&spec.idempotency_key)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
     {
-        let record = row_to_run(&row)?;
-        tx.commit().await?;
-        return Ok(record);
+        return Ok((row_to_run(&row)?, false));
     }
-    governance::enforce_run_quota_tx(&mut tx, spec.creator_user_id, spec.project_id).await?;
+    governance::enforce_run_quota_tx(tx, spec.creator_user_id, spec.project_id).await?;
     let (target_kind, pool_id, device_id) = target_columns(&spec.executor_target);
     let spec_json = serde_json::to_value(spec)?;
     let state = state_name(initial_state);
@@ -68,29 +76,95 @@ pub async fn create_run(
     .bind(spec_json)
     .bind(spec.snapshot_id)
     .bind(spec.created_at)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
 
-    let record = if let Some(row) = inserted {
-        append_event_tx(
-            &mut tx,
-            spec.id,
-            RunEventKind::Created,
-            json!({"state": state}),
-        )
-        .await?;
-        row_to_run(&row)?
+    let (record, inserted) = if let Some(row) = inserted {
+        append_event_tx(tx, spec.id, RunEventKind::Created, json!({"state": state})).await?;
+        (row_to_run(&row)?, true)
     } else {
         let row =
             sqlx::query("SELECT * FROM runs WHERE creator_user_id = $1 AND idempotency_key = $2")
                 .bind(spec.creator_user_id)
                 .bind(&spec.idempotency_key)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
-        row_to_run(&row)?
+        (row_to_run(&row)?, false)
     };
+    Ok((record, inserted))
+}
+
+pub async fn create_thread_message_run(
+    pool: &PgPool,
+    spec: &RunSpec,
+    initial_state: RunState,
+    content: Value,
+) -> Result<(MessageRecord, RunRecord), ApiError> {
+    let mut tx = pool.begin().await?;
+    let (run, inserted) = create_run_tx(&mut tx, spec, initial_state).await?;
+    if run.spec.thread_id != spec.thread_id {
+        return Err(ApiError::Conflict(
+            "idempotency key belongs to a run in a different thread".to_owned(),
+        ));
+    }
+    let row = if inserted {
+        let message_id = Uuid::new_v4();
+        let etag = format!("W/\"{message_id}:1\"");
+        let row = sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id, etag, thread_id, author_user_id, role, content, run_id
+            ) VALUES ($1, $2, $3, $4, 'user', $5, $6)
+            RETURNING *
+            "#,
+        )
+        .bind(message_id)
+        .bind(etag)
+        .bind(spec.thread_id)
+        .bind(spec.creator_user_id)
+        .bind(content)
+        .bind(run.spec.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        touch_thread_tx(&mut tx, spec.thread_id).await?;
+        row
+    } else {
+        sqlx::query(
+            "SELECT * FROM messages WHERE run_id = $1 AND role = 'user' AND deleted_at IS NULL",
+        )
+        .bind(run.spec.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            ApiError::Conflict(
+                "idempotency key belongs to a run that was not created from a chat message"
+                    .to_owned(),
+            )
+        })?
+    };
+    let message = row_to_message(&row)?;
     tx.commit().await?;
-    Ok(record)
+    Ok((message, run))
+}
+
+pub async fn list_thread_messages(
+    pool: &PgPool,
+    thread_id: Uuid,
+    limit: i64,
+) -> Result<Vec<MessageRecord>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT * FROM messages
+        WHERE thread_id = $1 AND deleted_at IS NULL
+        ORDER BY created_at, id
+        LIMIT $2
+        "#,
+    )
+    .bind(thread_id)
+    .bind(limit.clamp(1, 1_000))
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(row_to_message).collect()
 }
 
 pub async fn get_run(pool: &PgPool, run_id: Uuid) -> Result<RunRecord, ApiError> {
@@ -773,13 +847,74 @@ async fn finish_leased_run(
             RunEventKind::Failed
         },
         result
+            .clone()
             .or_else(|| error.and_then(|value| serde_json::to_value(value).ok()))
             .unwrap_or(Value::Null),
     )
     .await?;
+    if state == RunState::Completed {
+        append_assistant_message_tx(&mut tx, run_id, result.unwrap_or(Value::Null)).await?;
+    }
     let record = row_to_run(&row)?;
     tx.commit().await?;
     Ok(record)
+}
+
+async fn append_assistant_message_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: Uuid,
+    content: Value,
+) -> Result<(), ApiError> {
+    let message_id = Uuid::new_v4();
+    let etag = format!("W/\"{message_id}:1\"");
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO messages (
+            id, etag, thread_id, author_user_id, role, content, run_id
+        )
+        SELECT $1, $2, user_message.thread_id, NULL, 'assistant', $3, $4
+        FROM messages user_message
+        WHERE user_message.run_id = $4
+          AND user_message.role = 'user'
+          AND user_message.deleted_at IS NULL
+        ON CONFLICT DO NOTHING
+        RETURNING thread_id
+        "#,
+    )
+    .bind(message_id)
+    .bind(etag)
+    .bind(content)
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = inserted {
+        touch_thread_tx(tx, row.try_get("thread_id")?).await?;
+    }
+    Ok(())
+}
+
+async fn touch_thread_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: Uuid,
+) -> Result<(), ApiError> {
+    let updated = sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut **tx)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::NotFound(format!(
+            "thread {thread_id} was not found"
+        )));
+    }
+    Ok(())
 }
 
 async fn create_run_result_version_tx(
@@ -1295,6 +1430,34 @@ fn row_to_run(row: &PgRow) -> Result<RunRecord, ApiError> {
             .map(serde_json::from_value)
             .transpose()?,
         updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn row_to_message(row: &PgRow) -> Result<MessageRecord, ApiError> {
+    let role = match row.try_get::<&str, _>("role")? {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "system" => MessageRole::System,
+        "tool" => MessageRole::Tool,
+        other => {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "unknown message role {other}"
+            )))
+        }
+    };
+    Ok(MessageRecord {
+        schema_version: SCHEMA_VERSION,
+        id: row.try_get("id")?,
+        revision: row.try_get("revision")?,
+        etag: row.try_get("etag")?,
+        thread_id: row.try_get("thread_id")?,
+        author_user_id: row.try_get("author_user_id")?,
+        role,
+        content: row.try_get("content")?,
+        run_id: row.try_get("run_id")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        deleted_at: row.try_get("deleted_at")?,
     })
 }
 

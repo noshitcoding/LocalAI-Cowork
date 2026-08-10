@@ -1,4 +1,4 @@
-import type { RunEvent, RunRecord } from '../runtime/contracts'
+import type { MessageRecord, RunEvent, RunRecord } from '../runtime/contracts'
 import { fromBase64, mobileSecureGet, mobileSecureSet, toBase64 } from './mobileSecure'
 
 const STORAGE_KEY = 'open-cowork-mobile-cache-v1'
@@ -19,6 +19,7 @@ export type MobileOfflineState = {
   schemaVersion: 1
   runs: RunRecord[]
   events: Record<string, RunEvent[]>
+  messages: Record<string, MessageRecord[]>
   outbox: MobileOutboxOperation[]
   updatedAt: string
 }
@@ -27,15 +28,16 @@ export const EMPTY_MOBILE_OFFLINE_STATE: MobileOfflineState = {
   schemaVersion: 1,
   runs: [],
   events: {},
+  messages: {},
   outbox: [],
   updatedAt: new Date(0).toISOString(),
 }
 
 export async function loadMobileOfflineState(): Promise<MobileOfflineState> {
   const encoded = localStorage.getItem(STORAGE_KEY)
-  if (!encoded) return { ...EMPTY_MOBILE_OFFLINE_STATE, events: {}, outbox: [] }
+  if (!encoded) return { ...EMPTY_MOBILE_OFFLINE_STATE, events: {}, messages: {}, outbox: [] }
   const key = await cacheKey(false)
-  if (!key) return { ...EMPTY_MOBILE_OFFLINE_STATE, events: {}, outbox: [] }
+  if (!key) return { ...EMPTY_MOBILE_OFFLINE_STATE, events: {}, messages: {}, outbox: [] }
   try {
     const packed = fromBase64(encoded)
     if (packed.length < 13) throw new Error('mobile cache is truncated')
@@ -48,7 +50,7 @@ export async function loadMobileOfflineState(): Promise<MobileOfflineState> {
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.runs) || !Array.isArray(parsed.outbox)) {
       throw new Error('mobile cache schema is invalid')
     }
-    return parsed
+    return { ...parsed, messages: parsed.messages ?? {} }
   } catch (error) {
     localStorage.removeItem(STORAGE_KEY)
     throw new Error(

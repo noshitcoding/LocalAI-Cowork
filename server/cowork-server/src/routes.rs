@@ -2,16 +2,17 @@ use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{sse::Event, sse::KeepAlive, IntoResponse, Sse},
     Json,
 };
 use chrono::Utc;
 use cowork_contracts::{
     ensure_compatible, AppendRunEventRequest, Capability, CapabilityDescriptor, CompleteRunRequest,
-    CreateExecutorCredentialRequest, CreateRunRequest, ExecutorCredentialSecret, ExecutorHeartbeat,
-    ExecutorKind, ExecutorRegistration, FailRunRequest, FrozenReference, LeaseHeartbeat,
-    ListRunsResponse, ProjectPrivacy, ProjectRole, RunRecord, RunSpec, RunState, API_VERSION,
+    CreateExecutorCredentialRequest, CreateRunRequest, CreateThreadMessageRequest,
+    ExecutorCredentialSecret, ExecutorHeartbeat, ExecutorKind, ExecutorRegistration,
+    FailRunRequest, FrozenReference, LeaseHeartbeat, ListRunsResponse, MessageRecord,
+    ProjectPrivacy, ProjectRole, RunRecord, RunSpec, RunState, ThreadMessageRun, API_VERSION,
     MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,67 @@ pub async fn create_run(
     Extension(principal): Extension<Principal>,
     Json(request): Json<CreateRunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let (spec, initial_state) = prepare_run(&state, &principal, request).await?;
+    let run = db::create_run(&state.pool, &spec, initial_state).await?;
+    Ok((StatusCode::CREATED, Json(run)))
+}
+
+pub async fn create_thread_message(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Json(request): Json<CreateThreadMessageRequest>,
+) -> Result<(StatusCode, Json<ThreadMessageRun>), ApiError> {
+    validate_message_content(&request.content)?;
+    if request.run.thread_id != thread_id {
+        return Err(ApiError::Unprocessable(
+            "run.thread_id must match the thread in the request path".to_owned(),
+        ));
+    }
+    let (spec, initial_state) = prepare_run(&state, &principal, request.run).await?;
+    let (message, run) =
+        db::create_thread_message_run(&state.pool, &spec, initial_state, request.content).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ThreadMessageRun {
+            schema_version: SCHEMA_VERSION,
+            message,
+            run,
+        }),
+    ))
+}
+
+pub async fn list_thread_messages(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Vec<MessageRecord>>, ApiError> {
+    let project_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT project_id FROM threads WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(thread_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("thread {thread_id} was not found")))?;
+    organization::ensure_thread_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        thread_id,
+        ProjectRole::Viewer,
+    )
+    .await?;
+    Ok(Json(
+        db::list_thread_messages(&state.pool, thread_id, query.limit.unwrap_or(100)).await?,
+    ))
+}
+
+async fn prepare_run(
+    state: &AppState,
+    principal: &Principal,
+    request: CreateRunRequest,
+) -> Result<(RunSpec, RunState), ApiError> {
     validate_create_run(&request)?;
     organization::ensure_run_context(
         &state.pool,
@@ -114,8 +176,7 @@ pub async fn create_run(
         idempotency_key: request.idempotency_key,
         created_at: now,
     };
-    let run = db::create_run(&state.pool, &spec, initial_state).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(run)))
+    Ok((spec, initial_state))
 }
 
 pub async fn list_runs(
@@ -631,6 +692,21 @@ fn validate_create_run(request: &CreateRunRequest) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn validate_message_content(content: &Value) -> Result<(), ApiError> {
+    const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+    if content.is_null() {
+        return Err(ApiError::Unprocessable(
+            "message content must not be null".to_owned(),
+        ));
+    }
+    if serde_json::to_vec(content)?.len() > MAX_MESSAGE_BYTES {
+        return Err(ApiError::Unprocessable(format!(
+            "message content must not exceed {MAX_MESSAGE_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
 pub fn server_capability_descriptors(capabilities: &[Capability]) -> Vec<CapabilityDescriptor> {
     capabilities
         .iter()
@@ -665,5 +741,12 @@ mod tests {
             idempotency_key: "".to_owned(),
         };
         assert!(validate_create_run(&request).is_err());
+    }
+
+    #[test]
+    fn rejects_null_and_oversized_message_content() {
+        assert!(validate_message_content(&Value::Null).is_err());
+        assert!(validate_message_content(&json!({"text": "a".repeat(256 * 1024)})).is_err());
+        assert!(validate_message_content(&json!({"text": "hello"})).is_ok());
     }
 }

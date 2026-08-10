@@ -126,4 +126,108 @@ describe('runtime routing', () => {
       { url: `https://cowork.example.test/api/v1/auth/sessions/${session.id}`, method: 'DELETE' },
     ])
   })
+
+  it('creates and lists the durable message/run pair through the thread API', async () => {
+    const threadId = '10000000-0000-4000-8000-000000000011'
+    const projectId = '10000000-0000-4000-8000-000000000012'
+    const runId = '10000000-0000-4000-8000-000000000013'
+    const userId = '10000000-0000-4000-8000-000000000014'
+    const messageId = '10000000-0000-4000-8000-000000000015'
+    const now = '2026-08-10T12:00:00Z'
+    const run = {
+      spec: {
+        schema_version: 2,
+        id: runId,
+        thread_id: threadId,
+        project_id: projectId,
+        project: { id: projectId, revision: 1 },
+        project_privacy: 'team_managed',
+        task: null,
+        creator_user_id: userId,
+        executor_target: { kind: 'server_linux', pool_id: null },
+        required_capabilities: [],
+        input: { prompt: 'hello' },
+        model_profile_id: null,
+        snapshot_id: null,
+        idempotency_key: 'message-run-test',
+        created_at: now,
+      },
+      state: 'queued',
+      revision: 1,
+      etag: `W/"${runId}:1"`,
+      assigned_executor_id: null,
+      lease_expires_at: null,
+      started_at: null,
+      finished_at: null,
+      result: null,
+      error: null,
+      updated_at: now,
+    } as const
+    const message = {
+      schema_version: 2,
+      id: messageId,
+      revision: 1,
+      etag: `W/"${messageId}:1"`,
+      thread_id: threadId,
+      author_user_id: userId,
+      role: 'user',
+      content: { text: 'hello' },
+      run_id: runId,
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    } as const
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const payload = init?.method === 'POST'
+          ? { schema_version: 2, message, run }
+          : [message]
+        return new Response(JSON.stringify(payload), {
+          status: init?.method === 'POST' ? 201 : 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const request = {
+      content: { text: 'hello' },
+      run: {
+        thread_id: threadId,
+        project_id: projectId,
+        project_revision: 1,
+        project_privacy: 'team_managed' as const,
+        task: null,
+        executor_target: { kind: 'server_linux' as const, pool_id: null },
+        required_capabilities: [],
+        input: { prompt: 'hello' },
+        model_profile_id: null,
+        snapshot_id: null,
+        idempotency_key: 'message-run-test',
+      },
+    }
+
+    await expect(client.createThreadMessage(threadId, request)).resolves.toMatchObject({
+      message: { id: messageId }, run: { spec: { id: runId } },
+    })
+    await expect(client.listThreadMessages(threadId, 10)).resolves.toEqual([message])
+    expect(requests).toEqual([
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}/messages`,
+        method: 'POST',
+        body: request,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}/messages?limit=10`,
+        method: 'GET',
+        body: undefined,
+      },
+    ])
+  })
 })

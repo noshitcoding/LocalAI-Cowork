@@ -22,6 +22,7 @@ import RemoteTerminal from '../components/RemoteTerminal'
 import RunArtifactPanel from '../components/RunArtifactPanel'
 import RunInterventionPanel from '../components/RunInterventionPanel'
 import RemoteRunComposer from '../components/RemoteRunComposer'
+import RemoteThreadMessages from '../components/RemoteThreadMessages'
 import RemoteScheduleManager from '../components/RemoteScheduleManager'
 import RemoteSecuritySettings from '../components/RemoteSecuritySettings'
 import RemoteGovernancePanel from '../components/RemoteGovernancePanel'
@@ -77,6 +78,7 @@ export default function MobileApp() {
   const [pushStatus, setPushStatus] = useState<'idle' | 'enabling' | 'enabled'>('idle')
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [interventionReloadKey, setInterventionReloadKey] = useState(0)
+  const [messageReloadKey, setMessageReloadKey] = useState(0)
   const [ssoEnabled, setSsoEnabled] = useState(false)
   const offlineRef = useRef(offline)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -207,6 +209,7 @@ export default function MobileApp() {
         void client.listDesktopSessions(selectedRunId).then(setSessions).catch(() => undefined)
       }
       if (['approval_requested', 'approval_resolved', 'input_requested', 'input_received'].includes(event.kind)) setInterventionReloadKey((value) => value + 1)
+      if (event.kind === 'completed') setMessageReloadKey((value) => value + 1)
       if (['state_changed', 'completed', 'failed'].includes(event.kind)) void refreshRuns()
     }, () => setOnline(false))
   }, [client, online, refreshRuns, selectedRunId])
@@ -407,6 +410,16 @@ export default function MobileApp() {
             <input ref={cameraInput} className="mobile-hidden-input" type="file" accept="image/*" capture="environment" onChange={(event) => { void uploadAttachment(event) }} />
           </div>
         </section>
+        <RemoteThreadMessages
+          client={online ? client : null}
+          threadId={selectedRun.spec.thread_id}
+          reloadKey={messageReloadKey}
+          initialMessages={offline.messages[selectedRun.spec.thread_id]}
+          onLoaded={(messages) => persist({
+            ...offlineRef.current,
+            messages: { ...offlineRef.current.messages, [selectedRun.spec.thread_id]: messages },
+          })}
+        />
         {online ? <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={refreshRuns} /> : null}
         {activeSession && online ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={activeSession} onSessionChanged={() => client.listDesktopSessions(selectedRun.spec.id).then(setSessions)} /> : null}
         {terminalOpen && online ? <RemoteTerminal client={client} runId={selectedRun.spec.id} onClose={() => setTerminalOpen(false)} /> : null}

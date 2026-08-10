@@ -1,0 +1,35 @@
+.remote-message-panel {
+  overflow: hidden;
+  border: 1px solid var(--border-color, #1f3043);
+  border-radius: 12px;
+  background: var(--bg-secondary, #0e1723);
+}
+.remote-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light, #1f3043);
+}
+.remote-message-header > div { display: flex; align-items: center; gap: 8px; }
+.remote-message-header h2 { margin: 0 0 3px; font-size: 13px; }
+.remote-message-header p { margin: 0; color: var(--text-secondary, #8fa1b6); font-size: 11px; }
+.remote-message-header > span {
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: var(--accent-soft, #12352f);
+  color: var(--accent, #53d3bd);
+  font-size: 10px;
+}
+.remote-message-panel ol { display: grid; gap: 1px; margin: 0; padding: 0; background: var(--border-light, #1f3043); list-style: none; }
+.remote-message-panel li { display: grid; gap: 7px; padding: 11px 12px; background: var(--bg-primary, #0b111b); }
+.remote-message-panel li.role-assistant { background: color-mix(in srgb, var(--accent, #53d3bd) 6%, var(--bg-primary, #0b111b)); }
+.remote-message-panel li > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.remote-message-panel li strong { color: var(--text-secondary, #aab9cb); font-size: 10px; text-transform: uppercase; }
+.remote-message-panel li time { color: var(--text-secondary, #8fa1b6); font-size: 9px; }
+.remote-message-panel pre { overflow: auto; margin: 0; color: inherit; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.remote-message-muted { margin: 0; padding: 12px; color: var(--text-secondary, #8fa1b6); font-size: 11px; }
+.remote-message-panel > .remote-inline-error { margin: 10px 12px; }
+
+.mobile-shell > .remote-message-panel { margin: 12px; }

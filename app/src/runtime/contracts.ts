@@ -268,6 +268,32 @@ export const threadRecordSchema = z.object({
 })
 export type ThreadRecord = z.infer<typeof threadRecordSchema>
 
+export const messageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
+export type MessageRole = z.infer<typeof messageRoleSchema>
+
+export const messageRecordSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  thread_id: z.string().uuid(),
+  author_user_id: z.string().uuid().nullable(),
+  role: messageRoleSchema,
+  content: z.unknown(),
+  run_id: z.string().uuid().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type MessageRecord = z.infer<typeof messageRecordSchema>
+
+export const threadMessageRunSchema = z.object({
+  schema_version: z.number().int(),
+  message: messageRecordSchema,
+  run: runRecordSchema,
+})
+export type ThreadMessageRun = z.infer<typeof threadMessageRunSchema>
+
 export const supportGrantRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),
@@ -541,6 +567,11 @@ export interface CreateRunRequest {
   model_profile_id?: string | null
   snapshot_id?: string | null
   idempotency_key: string
+}
+
+export interface CreateThreadMessageRequest {
+  content: unknown
+  run: CreateRunRequest
 }
 
 export function assertProtocolCompatible(version: VersionResponse): void {
