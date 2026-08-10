@@ -1,5 +1,8 @@
 !macro NSIS_HOOK_PREUNINSTALL
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "OpenCoworkLocalDaemon"
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /IM "cowork-local-daemon-*.exe"'
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /FI "IMAGENAME eq cowork-local-daemon-*.exe"'
+  Sleep 500
+  RMDir /r "$LOCALAPPDATA\OpenCowork\daemon\bin"
+  Sleep 500
   RMDir /r "$LOCALAPPDATA\OpenCowork\daemon\bin"
 !macroend
