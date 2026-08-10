@@ -1,0 +1,7 @@
+# `rsa` has no patched release for RUSTSEC-2023-0071. The crate remains in the
+# resolved graph only behind OIDC public-signature verification and the
+# explicitly ES256 WebPush implementation. FCM RSA signing uses OpenSSL. Keep
+# this exception aligned with the OpenVEX statement and remove it when upstream
+# publishes a fixed release.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

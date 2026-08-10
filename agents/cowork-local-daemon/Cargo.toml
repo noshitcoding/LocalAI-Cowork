@@ -28,7 +28,7 @@ futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 pdf-extract = "0.12"
 pdfium-render = { version = "0.8.36", default-features = false, features = ["pdfium_latest", "thread_safe", "image"] }
-quick-xml = "0.38"
+quick-xml = "0.41"
 rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true

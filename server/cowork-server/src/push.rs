@@ -11,7 +11,7 @@ use cowork_contracts::{
     PushConfiguration, PushSubscriptionRecord, PushSubscriptionRegistration,
     RegisterPushSubscriptionRequest, SCHEMA_VERSION,
 };
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use openssl::{hash::MessageDigest, pkey::PKey, sign::Signer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -112,6 +112,46 @@ struct GoogleJwtClaims<'a> {
 struct GoogleTokenResponse {
     access_token: String,
     expires_in: u64,
+}
+
+fn sign_google_assertion(config: &FcmConfig, issued_at: i64) -> Result<String, SendFailure> {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let claims = serde_json::to_vec(&GoogleJwtClaims {
+        iss: &config.client_email,
+        scope: GOOGLE_MESSAGING_SCOPE,
+        aud: &config.token_uri,
+        iat: issued_at,
+        exp: issued_at + 3_600,
+    })
+    .map_err(|error| SendFailure {
+        message: format!("FCM JWT claims could not be serialized: {error}"),
+        permanent: false,
+    })?;
+    let payload = URL_SAFE_NO_PAD.encode(claims);
+    let signing_input = format!("{header}.{payload}");
+    let key =
+        PKey::private_key_from_pem(config.private_key.as_bytes()).map_err(|error| SendFailure {
+            message: format!("invalid FCM service-account key: {error}"),
+            permanent: false,
+        })?;
+    let mut signer = Signer::new(MessageDigest::sha256(), &key).map_err(|error| SendFailure {
+        message: format!("FCM JWT signer initialization failed: {error}"),
+        permanent: false,
+    })?;
+    signer
+        .update(signing_input.as_bytes())
+        .map_err(|error| SendFailure {
+            message: format!("FCM JWT signing failed: {error}"),
+            permanent: false,
+        })?;
+    let signature = signer.sign_to_vec().map_err(|error| SendFailure {
+        message: format!("FCM JWT signing failed: {error}"),
+        permanent: false,
+    })?;
+    Ok(format!(
+        "{signing_input}.{}",
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
 }
 
 impl PushService {
@@ -241,26 +281,7 @@ impl PushService {
             }
         }
         let now = Utc::now().timestamp();
-        let assertion = encode(
-            &Header::new(Algorithm::RS256),
-            &GoogleJwtClaims {
-                iss: &config.client_email,
-                scope: GOOGLE_MESSAGING_SCOPE,
-                aud: &config.token_uri,
-                iat: now,
-                exp: now + 3_600,
-            },
-            &EncodingKey::from_rsa_pem(config.private_key.as_bytes()).map_err(|error| {
-                SendFailure {
-                    message: format!("invalid FCM service-account key: {error}"),
-                    permanent: false,
-                }
-            })?,
-        )
-        .map_err(|error| SendFailure {
-            message: format!("FCM JWT signing failed: {error}"),
-            permanent: false,
-        })?;
+        let assertion = sign_google_assertion(config, now)?;
         let response = self
             .http
             .post(&config.token_uri)
@@ -710,6 +731,7 @@ fn truncate_error(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl::{rsa::Rsa, sign::Verifier};
 
     #[test]
     fn push_payload_has_no_prompt_or_file_content() {
@@ -735,5 +757,38 @@ mod tests {
         assert!(validate_fcm_token(&"x".repeat(100)).is_ok());
         assert!(validate_fcm_token("short").is_err());
         assert!(validate_web_subscription("http://push.invalid", "x", "x").is_err());
+    }
+
+    #[test]
+    fn fcm_assertion_is_an_rs256_jwt_with_a_valid_openssl_signature() {
+        let rsa = Rsa::generate(2_048).unwrap();
+        let private_key = String::from_utf8(rsa.private_key_to_pem().unwrap()).unwrap();
+        let public_key =
+            PKey::from_rsa(Rsa::public_key_from_pem(&rsa.public_key_to_pem().unwrap()).unwrap())
+                .unwrap();
+        let config = FcmConfig {
+            project_id: "test-project".to_owned(),
+            client_email: "push@test-project.iam.gserviceaccount.com".to_owned(),
+            private_key,
+            token_uri: "https://oauth2.googleapis.com/token".to_owned(),
+        };
+        let assertion = sign_google_assertion(&config, 1_700_000_000).unwrap();
+        let segments = assertion.split('.').collect::<Vec<_>>();
+        assert_eq!(segments.len(), 3);
+        let header: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(segments[0]).unwrap()).unwrap();
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(segments[1]).unwrap()).unwrap();
+        assert_eq!(header, serde_json::json!({"alg":"RS256","typ":"JWT"}));
+        assert_eq!(claims["iss"], config.client_email);
+        assert_eq!(claims["iat"], 1_700_000_000_i64);
+        assert_eq!(claims["exp"], 1_700_003_600_i64);
+        let mut verifier = Verifier::new(MessageDigest::sha256(), &public_key).unwrap();
+        verifier
+            .update(format!("{}.{}", segments[0], segments[1]).as_bytes())
+            .unwrap();
+        assert!(verifier
+            .verify(&URL_SAFE_NO_PAD.decode(segments[2]).unwrap())
+            .unwrap());
     }
 }
