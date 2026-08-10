@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "scripts": {
+    "tauri": "tauri",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build"
