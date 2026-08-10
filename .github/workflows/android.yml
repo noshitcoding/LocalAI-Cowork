@@ -56,8 +56,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager \
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "${sdkmanager_path}" ]]; then
+            echo "Android sdkmanager is unavailable at ${sdkmanager_path}." >&2
+            exit 1
+          fi
+          set +o pipefail
+          yes | "${sdkmanager_path}" --licenses >/dev/null
+          set -o pipefail
+          "${sdkmanager_path}" \
             'platform-tools' \
             'platforms;android-35' \
             'build-tools;35.0.0' \
