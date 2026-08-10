@@ -4,8 +4,8 @@
   "version": "0.3.0",
   "identifier": "dev.opencowork.android",
   "build": {
-    "beforeDevCommand": "npm --prefix ../../../app run dev -- --mode android",
-    "beforeBuildCommand": "npm --prefix ../../../app run build -- --mode android",
+    "beforeDevCommand": "npm --prefix ../../app run dev -- --mode android",
+    "beforeBuildCommand": "npm --prefix ../../app run build -- --mode android",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../../../app/dist"
   },
