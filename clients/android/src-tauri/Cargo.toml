@@ -1,6 +1,6 @@
 [package]
 name = "open-cowork-android"
-version = "0.3.0"
+version = "0.3.1"
 description = "Thin Android remote-control shell for Open Cowork"
 edition = "2021"
 license = "Apache-2.0"
