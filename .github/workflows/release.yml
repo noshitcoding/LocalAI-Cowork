@@ -293,6 +293,14 @@ jobs:
           RELEASE_TAG: ${{ needs.gate.outputs.tag }}
         run: npm run supply-chain:sbom -- --output ..\release-assets --tag "$env:RELEASE_TAG"
 
+      - name: Preserve verified CrewAI manifest for release provenance
+        shell: pwsh
+        run: |
+          Copy-Item `
+            -LiteralPath app\src-tauri\python\crew_runtime\runtime-bundle-manifest.json `
+            -Destination release-assets\crew-runtime-bundle-manifest.json `
+            -Force
+
       - name: Upload Windows release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -575,6 +583,15 @@ jobs:
         run: |
           cp contracts/generated/v2/openapi.json release-assets/openapi-v2.json
           cp contracts/generated/v2/contracts.schema.json release-assets/contracts-v2.schema.json
+
+      - name: Restore verified CrewAI manifest for release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_asset="release-assets/crew-runtime-bundle-manifest.json"
+          test -s "${manifest_asset}"
+          cp "${manifest_asset}" app/src-tauri/python/crew_runtime/runtime-bundle-manifest.json
+          rm "${manifest_asset}"
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
