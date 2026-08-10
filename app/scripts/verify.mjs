@@ -69,6 +69,7 @@ runStep('Web platform boundary', node, [
   'test',
   '-c',
   join(root, 'playwright.web.config.ts'),
+  '--project=chromium',
   'e2e/web-runtime.spec.ts',
 ])
 runStep('Rust cargo check', 'cargo', ['check'], join(root, 'src-tauri'))
