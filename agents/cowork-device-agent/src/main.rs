@@ -1442,6 +1442,7 @@ async fn relay_local_artifact(
     Ok(())
 }
 
+#[cfg(windows)]
 fn supports_windows_office(config: &Config) -> bool {
     cfg!(windows)
         && config.kind == ExecutorKind::ManagedWindows
@@ -1669,6 +1670,7 @@ fn safe_run_path(run_root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(run_root.join(path))
 }
 
+#[cfg(any(windows, test))]
 fn normalized_extension(path: &Path) -> Result<String> {
     path.extension()
         .and_then(|value| value.to_str())
@@ -1678,6 +1680,7 @@ fn normalized_extension(path: &Path) -> Result<String> {
         .context("Office path must have a UTF-8 file extension")
 }
 
+#[cfg(any(windows, test))]
 fn is_active_office_extension(extension: &str) -> bool {
     matches!(
         extension.to_ascii_lowercase().as_str(),

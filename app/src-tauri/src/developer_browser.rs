@@ -18,7 +18,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
 const CDP_TIMEOUT: Duration = Duration::from_secs(12);
-const START_ATTEMPTS: usize = 50;
+// Cold Chromium startup on constrained executor and CI hosts can exceed five
+// seconds even though the process is healthy. Keep discovery bounded, but give
+// the DevTools endpoint the same startup envelope as other CDP operations.
+const START_ATTEMPTS: usize = 150;
 const START_DELAY: Duration = Duration::from_millis(100);
 #[cfg(not(feature = "tauri-shell"))]
 const DEFAULT_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
