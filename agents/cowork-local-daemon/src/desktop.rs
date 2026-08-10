@@ -398,7 +398,10 @@ pub fn send_keys_chord(keys: &[String]) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, send_keys_chord, send_keys_text};
+    #[cfg(windows)]
+    use super::execute;
+    use super::{send_keys_chord, send_keys_text};
+    #[cfg(windows)]
     use serde_json::json;
 
     #[test]
