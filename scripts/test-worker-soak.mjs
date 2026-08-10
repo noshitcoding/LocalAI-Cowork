@@ -196,11 +196,16 @@ async function exerciseBackgroundMetadataSync({ token, userId, executorId, crede
     })
     capture(daemon, 'daemon')
     await waitUntil('local daemon startup', () => daemonCall(socketPath, ipcToken, 'health'))
-    const localEntityId = randomUUID()
+    const localEntityId = 'default-ollama'
     await daemonCall(socketPath, ipcToken, 'entities.upsert', {
-      entity_type: 'memory',
+      entity_type: 'provider_profile',
       id: localEntityId,
-      payload: { content: 'Created offline before the background agent connected', scope: 'user' },
+      payload: {
+        name: 'Local Ollama',
+        provider: 'openai-compatible',
+        model: 'llama3.1:8b',
+        endpoint_binding: 'per_device',
+      },
       expected_revision: 0,
     })
     agent = spawn('target/debug/cowork-device-agent', [], {
@@ -221,15 +226,55 @@ async function exerciseBackgroundMetadataSync({ token, userId, executorId, crede
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     capture(agent, 'agent')
-    await waitUntil('daemon outbox drain', async () => {
-      const snapshot = await request('/sync/entities/memory?limit=1000', { token })
-      return snapshot.items.some((item) => item.entity_id === localEntityId)
+    const serverProfile = await waitUntil('daemon legacy-ID outbox drain', async () => {
+      const snapshot = await request('/sync/entities/provider_profile?limit=1000', { token })
+      return snapshot.items.find((item) => (
+        item.payload?._cowork_local_entity_id === localEntityId && !item.tombstone
+      ))
     })
     await waitUntil('daemon inbox apply', async () => {
       const entities = await daemonCall(socketPath, ipcToken, 'entities.list', {
         entity_type: 'skill', include_tombstones: true,
       })
       return entities.some((item) => item.id === serverEntityId)
+    })
+    const profileUpdate = await request('/sync/changes', {
+      method: 'POST',
+      token,
+      body: { changes: [syncChange(
+        'provider_profile',
+        serverProfile.entity_id,
+        serverProfile.revision,
+        'upsert',
+        { ...serverProfile.payload, name: 'Local Ollama renamed remotely' },
+      )] },
+    })
+    await waitUntil('legacy-ID remote update apply', async () => {
+      const entities = await daemonCall(socketPath, ipcToken, 'entities.list', {
+        entity_type: 'provider_profile', include_tombstones: true,
+      })
+      return entities.find((item) => (
+        item.id === localEntityId
+        && !item.tombstone
+        && item.payload?.name === 'Local Ollama renamed remotely'
+      ))
+    })
+    await request('/sync/changes', {
+      method: 'POST',
+      token,
+      body: { changes: [syncChange(
+        'provider_profile',
+        serverProfile.entity_id,
+        profileUpdate.results[0].entity.revision,
+        'delete',
+        null,
+      )] },
+    })
+    await waitUntil('legacy-ID tombstone apply', async () => {
+      const entities = await daemonCall(socketPath, ipcToken, 'entities.list', {
+        entity_type: 'provider_profile', include_tombstones: true,
+      })
+      return entities.some((item) => item.id === localEntityId && item.tombstone)
     })
     const peerId = `${apiBase.replace(/\/api\/v1$/, '')}#${executorId}`
     const state = await daemonCall(socketPath, ipcToken, 'sync.state', { peer_id: peerId })
@@ -743,7 +788,7 @@ await request('/sync/changes', {
   })] },
 })
 const roundTripTask = await request(`/tasks/${serverTask.id}`, { token })
-if (roundTripTask.revision !== serverTask.revision + 1
+if (roundTripTask.revision !== projectedTask.revision + 1
     || roundTripTask.name !== 'Edited offline after server creation'
     || !roundTripTask.released) {
   throw new Error(`server-created task did not round-trip through device sync: ${JSON.stringify(roundTripTask)}`)
@@ -760,7 +805,7 @@ await request('/sync/changes', {
 })
 const roundTripSchedule = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
   .find((item) => item.id === serverSchedule.id)
-if (!roundTripSchedule || roundTripSchedule.revision !== serverSchedule.revision + 1
+if (!roundTripSchedule || roundTripSchedule.revision !== projectedSchedule.revision + 1
     || roundTripSchedule.timezone !== 'UTC'
     || roundTripSchedule.input?.prompt !== 'Edited offline schedule metadata') {
   throw new Error(`server-created schedule did not round-trip through device sync: ${JSON.stringify(roundTripSchedule)}`)
@@ -1038,6 +1083,7 @@ console.log('metadata_sync_sse_resume=ok')
 console.log('metadata_sync_bootstrap_snapshot=ok')
 console.log('metadata_sync_canonical_materialization=ok')
 console.log('metadata_sync_out_of_order_convergence=ok')
+console.log('metadata_sync_legacy_id_roundtrip=ok')
 console.log('metadata_sync_reverse_projection=ok')
 console.log('metadata_sync_bidirectional_roundtrip=ok')
 console.log('metadata_sync_personal_executor_channel=ok')

@@ -205,7 +205,7 @@ async fn main() -> Result<()> {
         max_concurrent_runs: 1,
     };
 
-    loop {
+    let registered = loop {
         if let Some(daemon) = &config.local_daemon {
             if let Err(error) = daemon.verify_device(config.executor_id).await {
                 tracing::warn!(?error, "local daemon bridge is unavailable; retrying");
@@ -214,17 +214,21 @@ async fn main() -> Result<()> {
             }
         }
         match client.register(&registration).await {
-            Ok(()) => break,
+            Ok(record) => break record,
             Err(error) => {
                 tracing::warn!(?error, "executor registration failed; retrying");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
+    };
+    let sync_user_id = registered.registration.owner_user_id;
+    if config.kind == ExecutorKind::PersonalDevice && sync_user_id.is_none() {
+        bail!("personal device registration did not return its owner identity");
     }
     tracing::info!(executor_id = %config.executor_id, kind = ?config.kind, "executor registered");
 
     loop {
-        if let Err(error) = run_websocket(&client, &config).await {
+        if let Err(error) = run_websocket(&client, &config, sync_user_id).await {
             tracing::warn!(?error, "executor WebSocket disconnected; retrying");
         }
         tokio::time::sleep(config.poll_interval).await;
@@ -334,14 +338,16 @@ impl Config {
 }
 
 impl ControlPlaneClient {
-    async fn register(&self, registration: &ExecutorRegistration) -> Result<()> {
+    async fn register(
+        &self,
+        registration: &ExecutorRegistration,
+    ) -> Result<cowork_contracts::ExecutorRecord> {
         self.request::<ExecutorRegistration, cowork_contracts::ExecutorRecord>(
             Method::POST,
             &format!("/api/v1/agent/executors/{}/register", self.executor_id),
             Some(registration),
         )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn push_sync_changes(&self, changes: Vec<SyncChange>) -> Result<PushSyncChangesResponse> {
@@ -774,7 +780,11 @@ async fn decode_bytes(response: reqwest::Response) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
-async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<()> {
+async fn run_websocket(
+    client: &ControlPlaneClient,
+    config: &Config,
+    sync_user_id: Option<Uuid>,
+) -> Result<()> {
     let ws_url = websocket_url(&client.server_url, client.executor_id)?;
     let mut request = ws_url.into_client_request()?;
     request.headers_mut().insert(
@@ -797,7 +807,9 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
     let sync_task = if config.kind == ExecutorKind::PersonalDevice {
         config.local_daemon.clone().map(|daemon| {
             let client = client.clone();
-            tokio::spawn(async move { metadata_sync_loop(client, daemon).await })
+            let user_id =
+                sync_user_id.expect("personal device owner was validated at registration");
+            tokio::spawn(async move { metadata_sync_loop(client, daemon, user_id).await })
         })
     } else {
         None
@@ -1003,14 +1015,14 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
     outcome
 }
 
-async fn metadata_sync_loop(client: ControlPlaneClient, daemon: LocalDaemonClient) {
+async fn metadata_sync_loop(client: ControlPlaneClient, daemon: LocalDaemonClient, user_id: Uuid) {
     let mut interval = tokio::time::interval(Duration::from_secs(2));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
         if let Err(error) = tokio::time::timeout(
             Duration::from_secs(30),
-            synchronize_metadata_once(&client, &daemon),
+            synchronize_metadata_once(&client, &daemon, user_id),
         )
         .await
         .context("metadata sync cycle timed out")
@@ -1024,6 +1036,7 @@ async fn metadata_sync_loop(client: ControlPlaneClient, daemon: LocalDaemonClien
 async fn synchronize_metadata_once(
     client: &ControlPlaneClient,
     daemon: &LocalDaemonClient,
+    user_id: Uuid,
 ) -> Result<()> {
     let peer_id = format!("{}#{}", client.server_url, client.executor_id);
     for _ in 0..5 {
@@ -1046,7 +1059,7 @@ async fn synchronize_metadata_once(
         let changes = page
             .changes
             .iter()
-            .map(|change| local_change_for_server(client.executor_id, change))
+            .map(|change| local_change_for_server(user_id, client.executor_id, change))
             .collect::<Result<Vec<_>>>()?;
         let response = client.push_sync_changes(changes).await?;
         if response.results.len() != page.changes.len() {
@@ -1057,16 +1070,21 @@ async fn synchronize_metadata_once(
                 let entity = result
                     .entity
                     .context("metadata conflict response omitted the current server entity")?;
-                daemon
-                    .call(
-                        "sync.apply_remote",
-                        json!({
-                            "peer_id": peer_id,
-                            "remote_cursor": state.remote_cursor,
-                            "entity": entity,
-                        }),
-                    )
-                    .await?;
+                apply_remote_entity(
+                    daemon,
+                    &peer_id,
+                    state.remote_cursor,
+                    user_id,
+                    RemoteEntityInput {
+                        entity_type: &entity.entity_type,
+                        entity_id: entity.entity_id,
+                        revision: entity.revision,
+                        payload: entity.payload.as_ref(),
+                        tombstone: entity.tombstone,
+                        updated_at: entity.updated_at,
+                    },
+                )
+                .await?;
             }
             daemon
                 .call(
@@ -1090,23 +1108,21 @@ async fn synchronize_metadata_once(
             break;
         }
         for change in &response.changes {
-            daemon
-                .call(
-                    "sync.apply_remote",
-                    json!({
-                        "peer_id": peer_id,
-                        "remote_cursor": change.cursor,
-                        "entity": {
-                            "entity_type": change.entity_type,
-                            "entity_id": change.entity_id,
-                            "revision": change.revision,
-                            "payload": change.payload,
-                            "tombstone": change.operation == SyncOperation::Delete,
-                            "updated_at": change.created_at,
-                        },
-                    }),
-                )
-                .await?;
+            apply_remote_entity(
+                daemon,
+                &peer_id,
+                change.cursor,
+                user_id,
+                RemoteEntityInput {
+                    entity_type: &change.entity_type,
+                    entity_id: change.entity_id,
+                    revision: change.revision,
+                    payload: change.payload.as_ref(),
+                    tombstone: change.operation == SyncOperation::Delete,
+                    updated_at: change.created_at,
+                },
+            )
+            .await?;
         }
         if response.changes.len() < 100 {
             break;
@@ -1115,9 +1131,12 @@ async fn synchronize_metadata_once(
     Ok(())
 }
 
-fn local_change_for_server(device_id: Uuid, change: &LocalSyncChange) -> Result<SyncChange> {
-    let entity_id = Uuid::parse_str(&change.entity_id)
-        .with_context(|| format!("local {} ID is not a global UUID", change.entity_type))?;
+fn local_change_for_server(
+    user_id: Uuid,
+    device_id: Uuid,
+    change: &LocalSyncChange,
+) -> Result<SyncChange> {
+    let entity_id = stable_sync_entity_id(user_id, &change.entity_type, &change.entity_id);
     let operation = match change.operation.as_str() {
         "upsert" if !change.entity.tombstone => SyncOperation::Upsert,
         "delete" if change.entity.tombstone => SyncOperation::Delete,
@@ -1126,6 +1145,16 @@ fn local_change_for_server(device_id: Uuid, change: &LocalSyncChange) -> Result<
     let client_timestamp = chrono::DateTime::parse_from_rfc3339(&change.created_at)
         .map(|value| value.with_timezone(&chrono::Utc))
         .unwrap_or_else(|_| chrono::Utc::now());
+    let payload = if operation == SyncOperation::Upsert {
+        Some(sync_payload_for_server(
+            user_id,
+            &change.entity_type,
+            &change.entity_id,
+            &change.entity.payload,
+        )?)
+    } else {
+        None
+    };
     Ok(SyncChange {
         schema_version: SCHEMA_VERSION,
         operation_id: stable_sync_operation_id(device_id, change.cursor),
@@ -1134,9 +1163,144 @@ fn local_change_for_server(device_id: Uuid, change: &LocalSyncChange) -> Result<
         entity_id,
         base_revision: change.revision.saturating_sub(1),
         operation,
-        payload: (operation == SyncOperation::Upsert).then(|| change.entity.payload.clone()),
+        payload,
         client_timestamp,
     })
+}
+
+fn sync_payload_for_server(
+    user_id: Uuid,
+    entity_type: &str,
+    local_entity_id: &str,
+    payload: &Value,
+) -> Result<Value> {
+    let mut payload = payload
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("local {entity_type} payload must be a JSON object"))?;
+    if Uuid::parse_str(local_entity_id).is_err() {
+        payload.insert(
+            "_cowork_local_entity_id".to_owned(),
+            Value::String(local_entity_id.to_owned()),
+        );
+    }
+    if entity_type == "schedule" {
+        if let Some(local_profile_id) = payload
+            .get("model_profile_id")
+            .and_then(Value::as_str)
+            .filter(|value| Uuid::parse_str(value).is_err())
+            .map(str::to_owned)
+        {
+            payload.insert(
+                "_cowork_local_model_profile_id".to_owned(),
+                Value::String(local_profile_id.clone()),
+            );
+            payload.insert(
+                "model_profile_id".to_owned(),
+                Value::String(
+                    stable_sync_entity_id(user_id, "provider_profile", &local_profile_id)
+                        .to_string(),
+                ),
+            );
+        }
+    }
+    Ok(Value::Object(payload))
+}
+
+struct RemoteEntityInput<'a> {
+    entity_type: &'a str,
+    entity_id: Uuid,
+    revision: i64,
+    payload: Option<&'a Value>,
+    tombstone: bool,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn apply_remote_entity(
+    daemon: &LocalDaemonClient,
+    peer_id: &str,
+    remote_cursor: i64,
+    user_id: Uuid,
+    entity: RemoteEntityInput<'_>,
+) -> Result<()> {
+    let local_entity_id = local_entity_id_for_remote(
+        daemon,
+        user_id,
+        entity.entity_type,
+        entity.entity_id,
+        entity.payload,
+    )
+    .await?;
+    daemon
+        .call(
+            "sync.apply_remote",
+            json!({
+                "peer_id": peer_id,
+                "remote_cursor": remote_cursor,
+                "entity": {
+                    "entity_type": entity.entity_type,
+                    "entity_id": local_entity_id,
+                    "revision": entity.revision,
+                    "payload": entity.payload,
+                    "tombstone": entity.tombstone,
+                    "updated_at": entity.updated_at,
+                },
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn local_entity_id_for_remote(
+    daemon: &LocalDaemonClient,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+    payload: Option<&Value>,
+) -> Result<String> {
+    if let Some(local_id) = payload
+        .and_then(|value| value.get("_cowork_local_entity_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(local_id.to_owned());
+    }
+    let local_entities = daemon
+        .call(
+            "entities.list",
+            json!({"entity_type": entity_type, "include_tombstones": true}),
+        )
+        .await?;
+    if let Some(items) = local_entities.as_array() {
+        for item in items {
+            let Some(local_id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if stable_sync_entity_id(user_id, entity_type, local_id) == entity_id {
+                return Ok(local_id.to_owned());
+            }
+        }
+    }
+    Ok(entity_id.to_string())
+}
+
+fn stable_sync_entity_id(user_id: Uuid, entity_type: &str, local_entity_id: &str) -> Uuid {
+    if let Ok(id) = Uuid::parse_str(local_entity_id) {
+        return id;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"open-cowork-global-entity-id-v1\0");
+    hasher.update(user_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(entity_type.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(local_entity_id.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 fn stable_sync_operation_id(device_id: Uuid, cursor: i64) -> Uuid {
@@ -2411,6 +2575,7 @@ mod tests {
 
     #[test]
     fn metadata_outbox_operations_are_stable_and_revision_based() {
+        let user_id = Uuid::new_v4();
         let device_id = Uuid::new_v4();
         assert_eq!(
             stable_sync_operation_id(device_id, 42),
@@ -2433,11 +2598,65 @@ mod tests {
             },
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-        let outgoing = local_change_for_server(device_id, &change).unwrap();
+        let outgoing = local_change_for_server(user_id, device_id, &change).unwrap();
         assert_eq!(outgoing.entity_id, entity_id);
         assert_eq!(outgoing.base_revision, 2);
         assert_eq!(outgoing.operation, SyncOperation::Upsert);
         assert_eq!(outgoing.payload, Some(json!({"content": "durable"})));
+    }
+
+    #[test]
+    fn metadata_sync_maps_legacy_ids_per_user_and_preserves_local_identity() {
+        let user_id = Uuid::new_v4();
+        let other_user_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let change = LocalSyncChange {
+            cursor: 9,
+            entity_type: "provider_profile".to_owned(),
+            entity_id: "default-ollama".to_owned(),
+            revision: 1,
+            operation: "upsert".to_owned(),
+            entity: LocalSyncEntity {
+                payload: json!({"name": "Local Ollama", "model": "llama3.1:8b"}),
+                tombstone: false,
+            },
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let outgoing = local_change_for_server(user_id, device_id, &change).unwrap();
+        assert_eq!(
+            outgoing.entity_id,
+            stable_sync_entity_id(user_id, "provider_profile", "default-ollama")
+        );
+        assert_ne!(
+            outgoing.entity_id,
+            stable_sync_entity_id(other_user_id, "provider_profile", "default-ollama")
+        );
+        assert_eq!(
+            outgoing.payload.unwrap()["_cowork_local_entity_id"],
+            "default-ollama"
+        );
+    }
+
+    #[test]
+    fn schedule_metadata_maps_a_legacy_provider_reference() {
+        let user_id = Uuid::new_v4();
+        let payload = sync_payload_for_server(
+            user_id,
+            "schedule",
+            &Uuid::new_v4().to_string(),
+            &json!({"model_profile_id": "default-openai-compatible"}),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["_cowork_local_model_profile_id"],
+            "default-openai-compatible"
+        );
+        assert_eq!(
+            payload["model_profile_id"],
+            stable_sync_entity_id(user_id, "provider_profile", "default-openai-compatible")
+                .to_string()
+        );
     }
 
     #[tokio::test]
