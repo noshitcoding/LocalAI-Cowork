@@ -2000,13 +2000,7 @@ mod daemon_browser_tests {
             .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for _ in 0..4 {
-                let Ok(Ok((mut stream, _))) =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
-                        .await
-                else {
-                    return;
-                };
+            while let Ok((mut stream, _)) = listener.accept().await {
                 let mut request = vec![0_u8; 4096];
                 let _ = stream.read(&mut request).await;
                 let body = "<!doctype html><title>Daemon browser</title><p id='value'></p><script>setTimeout(()=>{const input=document.createElement('input');input.id='name';input.addEventListener('input',e=>document.querySelector('#value').textContent=e.target.value);document.body.appendChild(input)},250)</script>";
