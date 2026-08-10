@@ -1333,6 +1333,63 @@ pub struct SyncChange {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SyncApplyStatus {
+    Applied,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncedEntity {
+    pub schema_version: u16,
+    pub entity_type: String,
+    pub entity_id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub payload: Option<Value>,
+    pub tombstone: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncApplyResult {
+    pub schema_version: u16,
+    pub operation_id: Uuid,
+    pub status: SyncApplyStatus,
+    pub entity: Option<SyncedEntity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushSyncChangesRequest {
+    pub changes: Vec<SyncChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushSyncChangesResponse {
+    pub schema_version: u16,
+    pub results: Vec<SyncApplyResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSyncChange {
+    pub schema_version: u16,
+    pub cursor: i64,
+    pub entity_type: String,
+    pub entity_id: Uuid,
+    pub revision: i64,
+    pub operation: SyncOperation,
+    pub payload: Option<Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullSyncChangesResponse {
+    pub schema_version: u16,
+    pub changes: Vec<ServerSyncChange>,
+    pub next_cursor: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApprovalState {
     Pending,
     Approved,

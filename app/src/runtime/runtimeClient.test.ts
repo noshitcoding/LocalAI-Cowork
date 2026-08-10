@@ -230,4 +230,83 @@ describe('runtime routing', () => {
       },
     ])
   })
+
+  it('pushes idempotent metadata changes and advances the inbox cursor', async () => {
+    const operationId = '10000000-0000-4000-8000-000000000021'
+    const deviceId = '10000000-0000-4000-8000-000000000022'
+    const entityId = '10000000-0000-4000-8000-000000000023'
+    const timestamp = '2026-08-10T12:00:00Z'
+    const change = {
+      schema_version: 2,
+      operation_id: operationId,
+      device_id: deviceId,
+      entity_type: 'memory',
+      entity_id: entityId,
+      base_revision: 0,
+      operation: 'upsert' as const,
+      payload: { text: 'durable memory' },
+      client_timestamp: timestamp,
+    }
+    const entity = {
+      schema_version: 2,
+      entity_type: 'memory',
+      entity_id: entityId,
+      revision: 1,
+      etag: `W/"${entityId}:1"`,
+      payload: change.payload,
+      tombstone: false,
+      updated_at: timestamp,
+    }
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const payload = init?.method === 'POST'
+          ? { schema_version: 2, results: [{ schema_version: 2, operation_id: operationId, status: 'applied', entity }] }
+          : {
+              schema_version: 2,
+              changes: [{
+                schema_version: 2,
+                cursor: 7,
+                entity_type: 'memory',
+                entity_id: entityId,
+                revision: 1,
+                operation: 'upsert',
+                payload: change.payload,
+                created_at: timestamp,
+              }],
+              next_cursor: 7,
+            }
+        return new Response(JSON.stringify(payload), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.pushSyncChanges([change])).resolves.toMatchObject({
+      results: [{ operation_id: operationId, status: 'applied', entity: { revision: 1 } }],
+    })
+    await expect(client.pullSyncChanges(3, 50)).resolves.toMatchObject({
+      next_cursor: 7,
+      changes: [{ entity_id: entityId, revision: 1 }],
+    })
+    expect(requests).toEqual([
+      {
+        url: 'https://cowork.example.test/api/v1/sync/changes',
+        method: 'POST',
+        body: { changes: [change] },
+      },
+      {
+        url: 'https://cowork.example.test/api/v1/sync/changes?after=3&limit=50',
+        method: 'GET',
+        body: undefined,
+      },
+    ])
+  })
 })

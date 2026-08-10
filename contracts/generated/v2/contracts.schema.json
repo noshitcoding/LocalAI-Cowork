@@ -2016,6 +2016,91 @@
       "title": "ProjectVersion",
       "type": "object"
     },
+    "PullSyncChangesResponse": {
+      "$id": "https://schemas.open-cowork.invalid/v2/PullSyncChangesResponse.schema.json",
+      "additionalProperties": false,
+      "properties": {
+        "changes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                "type": "string"
+              },
+              "cursor": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "entity_id": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "entity_type": {
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "upsert",
+                  "delete"
+                ],
+                "type": "string"
+              },
+              "payload": {
+                "anyOf": [
+                  {},
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revision": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "schema_version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "schema_version",
+              "cursor",
+              "entity_type",
+              "entity_id",
+              "revision",
+              "operation",
+              "payload",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema_version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "changes",
+        "next_cursor"
+      ],
+      "title": "PullSyncChangesResponse",
+      "type": "object"
+    },
     "PushConfiguration": {
       "$id": "https://schemas.open-cowork.invalid/v2/PushConfiguration.schema.json",
       "additionalProperties": false,
@@ -2100,6 +2185,115 @@
         "last_success_at"
       ],
       "title": "PushSubscriptionRecord",
+      "type": "object"
+    },
+    "PushSyncChangesResponse": {
+      "$id": "https://schemas.open-cowork.invalid/v2/PushSyncChangesResponse.schema.json",
+      "additionalProperties": false,
+      "properties": {
+        "results": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "entity": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "entity_id": {
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                        "type": "string"
+                      },
+                      "entity_type": {
+                        "type": "string"
+                      },
+                      "etag": {
+                        "type": "string"
+                      },
+                      "payload": {
+                        "anyOf": [
+                          {},
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "revision": {
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991,
+                        "type": "integer"
+                      },
+                      "schema_version": {
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991,
+                        "type": "integer"
+                      },
+                      "tombstone": {
+                        "type": "boolean"
+                      },
+                      "updated_at": {
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "schema_version",
+                      "entity_type",
+                      "entity_id",
+                      "revision",
+                      "etag",
+                      "payload",
+                      "tombstone",
+                      "updated_at"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "operation_id": {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              "schema_version": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "status": {
+                "enum": [
+                  "applied",
+                  "conflict"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_version",
+              "operation_id",
+              "status",
+              "entity"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "results"
+      ],
+      "title": "PushSyncChangesResponse",
       "type": "object"
     },
     "QuotaLimitsRecord": {
@@ -3510,6 +3704,67 @@
       "title": "ScheduleRecord",
       "type": "object"
     },
+    "ServerSyncChange": {
+      "$id": "https://schemas.open-cowork.invalid/v2/ServerSyncChange.schema.json",
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string"
+        },
+        "cursor": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "entity_id": {
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string"
+        },
+        "entity_type": {
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "upsert",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "payload": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "schema_version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "cursor",
+        "entity_type",
+        "entity_id",
+        "revision",
+        "operation",
+        "payload",
+        "created_at"
+      ],
+      "title": "ServerSyncChange",
+      "type": "object"
+    },
     "SnapshotChunk": {
       "$id": "https://schemas.open-cowork.invalid/v2/SnapshotChunk.schema.json",
       "additionalProperties": false,
@@ -3915,14 +4170,98 @@
       "title": "SupportGrantRecord",
       "type": "object"
     },
-    "SyncChange": {
-      "$defs": {
-        "__schema0": {
+    "SyncApplyResult": {
+      "$id": "https://schemas.open-cowork.invalid/v2/SyncApplyResult.schema.json",
+      "additionalProperties": false,
+      "properties": {
+        "entity": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "entity_id": {
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                  "type": "string"
+                },
+                "entity_type": {
+                  "type": "string"
+                },
+                "etag": {
+                  "type": "string"
+                },
+                "payload": {
+                  "anyOf": [
+                    {},
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "revision": {
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991,
+                  "type": "integer"
+                },
+                "schema_version": {
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991,
+                  "type": "integer"
+                },
+                "tombstone": {
+                  "type": "boolean"
+                },
+                "updated_at": {
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "schema_version",
+                "entity_type",
+                "entity_id",
+                "revision",
+                "etag",
+                "payload",
+                "tombstone",
+                "updated_at"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_id": {
           "format": "uuid",
           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
           "type": "string"
+        },
+        "schema_version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "applied",
+            "conflict"
+          ],
+          "type": "string"
         }
       },
+      "required": [
+        "schema_version",
+        "operation_id",
+        "status",
+        "entity"
+      ],
+      "title": "SyncApplyResult",
+      "type": "object"
+    },
+    "SyncChange": {
       "$id": "https://schemas.open-cowork.invalid/v2/SyncChange.schema.json",
       "additionalProperties": false,
       "properties": {
@@ -3937,10 +4276,14 @@
           "type": "string"
         },
         "device_id": {
-          "$ref": "#/$defs/__schema0"
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string"
         },
         "entity_id": {
-          "$ref": "#/$defs/__schema0"
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string"
         },
         "entity_type": {
           "type": "string"
@@ -3953,7 +4296,9 @@
           "type": "string"
         },
         "operation_id": {
-          "$ref": "#/$defs/__schema0"
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string"
         },
         "payload": {
           "anyOf": [
@@ -3981,6 +4326,70 @@
         "client_timestamp"
       ],
       "title": "SyncChange",
+      "type": "object"
+    },
+    "SyncOperation": {
+      "$id": "https://schemas.open-cowork.invalid/v2/SyncOperation.schema.json",
+      "enum": [
+        "upsert",
+        "delete"
+      ],
+      "title": "SyncOperation",
+      "type": "string"
+    },
+    "SyncedEntity": {
+      "$id": "https://schemas.open-cowork.invalid/v2/SyncedEntity.schema.json",
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string"
+        },
+        "entity_type": {
+          "type": "string"
+        },
+        "etag": {
+          "type": "string"
+        },
+        "payload": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "schema_version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "tombstone": {
+          "type": "boolean"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "entity_type",
+        "entity_id",
+        "revision",
+        "etag",
+        "payload",
+        "tombstone",
+        "updated_at"
+      ],
+      "title": "SyncedEntity",
       "type": "object"
     },
     "TaskDefinition": {

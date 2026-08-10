@@ -74,6 +74,8 @@ const responseSchemas = new Map([
   ['get /api/v1/runs/{run_id}', 'RunRecord'], ['post /api/v1/runs/{run_id}/cancel', 'RunRecord'],
   ['get /api/v1/threads/{thread_id}/messages', 'MessageRecord'],
   ['post /api/v1/threads/{thread_id}/messages', 'ThreadMessageRun'],
+  ['get /api/v1/sync/changes', 'PullSyncChangesResponse'],
+  ['post /api/v1/sync/changes', 'PushSyncChangesResponse'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
   ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
   ['post /api/v1/tasks', 'TaskDefinition'], ['get /api/v1/tasks/{task_id}', 'TaskDefinition'],

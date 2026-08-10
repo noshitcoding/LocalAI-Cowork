@@ -12,6 +12,7 @@ import {
   threadMessageRunSchema,
   listRunsResponseSchema,
   operationsSnapshotSchema,
+  pullSyncChangesResponseSchema,
   passkeyChallengeSchema,
   passkeyRecordSchema,
   projectRecordSchema,
@@ -22,6 +23,7 @@ import {
   pushSubscriptionRecordSchema,
   runEventSchema,
   runRecordSchema,
+  pushSyncChangesResponseSchema,
   runInputRequestSchema,
   scheduleRecordSchema,
   supportGrantRecordSchema,
@@ -49,12 +51,15 @@ import {
   type QuotaStatus,
   type PasskeyRecord,
   type OperationsSnapshot,
+  type PullSyncChangesResponse,
   type MessageRecord,
   type RunRecord,
+  type PushSyncChangesResponse,
   type RunInputRequest,
   type ScheduleRecord,
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
+  type SyncChange,
   type TaskDefinition,
   type TotpRecoveryCodes,
   type TotpSetup,
@@ -185,6 +190,18 @@ export class RemoteRuntimeClient implements RuntimeClient {
   async listProjectThreads(projectId: string): Promise<ThreadRecord[]> {
     return threadRecordSchema.array().parse(await this.#request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/threads`,
+    ))
+  }
+
+  async pushSyncChanges(changes: SyncChange[]): Promise<PushSyncChangesResponse> {
+    return pushSyncChangesResponseSchema.parse(await this.#request('/api/v1/sync/changes', {
+      method: 'POST', body: JSON.stringify({ changes }),
+    }))
+  }
+
+  async pullSyncChanges(after = 0, limit = 200): Promise<PullSyncChangesResponse> {
+    return pullSyncChangesResponseSchema.parse(await this.#request(
+      `/api/v1/sync/changes?after=${Math.max(0, Math.trunc(after))}&limit=${Math.max(1, Math.min(1_000, Math.trunc(limit)))}`,
     ))
   }
 

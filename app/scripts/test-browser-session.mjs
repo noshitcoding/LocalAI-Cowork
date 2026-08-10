@@ -180,6 +180,42 @@ try {
     },
   })
   if (outsider.response.status !== 201) throw new Error(`outsider registration returned ${outsider.response.status}`)
+  const outsiderSyncEntityId = randomUUID()
+  const outsiderSync = {
+    schema_version: 2,
+    operation_id: randomUUID(),
+    device_id: outsiderDeviceId,
+    entity_type: 'memory',
+    entity_id: outsiderSyncEntityId,
+    base_revision: 0,
+    operation: 'upsert',
+    payload: { text: 'outsider-only metadata' },
+    client_timestamp: new Date().toISOString(),
+  }
+  const outsiderSyncPush = await api('/sync/changes', {
+    method: 'POST', token: outsider.body.access_token, body: { changes: [outsiderSync] },
+  })
+  if (!outsiderSyncPush.response.ok || outsiderSyncPush.body.results?.[0]?.status !== 'applied') {
+    throw new Error(`outsider sync push returned ${outsiderSyncPush.response.status}`)
+  }
+  const outsiderSyncPull = await api('/sync/changes?after=0&limit=10', {
+    token: outsider.body.access_token,
+  })
+  const adminSyncPull = await api('/sync/changes?after=0&limit=10', {
+    token: tokenBody.access_token,
+  })
+  if (!outsiderSyncPull.body.changes?.some((change) => change.entity_id === outsiderSyncEntityId)
+    || adminSyncPull.body.changes?.some((change) => change.entity_id === outsiderSyncEntityId)) {
+    throw new Error('metadata sync crossed the user ownership boundary')
+  }
+  const mismatchedDeviceSync = await api('/sync/changes', {
+    method: 'POST',
+    token: outsider.body.access_token,
+    body: { changes: [{ ...outsiderSync, operation_id: randomUUID(), device_id: randomUUID() }] },
+  })
+  if (mismatchedDeviceSync.response.status !== 401) {
+    throw new Error(`mismatched sync device returned ${mismatchedDeviceSync.response.status}`)
+  }
   const beforeRevoke = await api('/auth/sessions', { token: tokenBody.access_token })
   if (!beforeRevoke.response.ok) throw new Error(`session listing returned ${beforeRevoke.response.status}`)
   const current = beforeRevoke.body.find((session) => session.current)
@@ -257,6 +293,7 @@ try {
   console.log('refresh_token_hidden_from_javascript=ok')
   console.log('secure_httponly_samesite_cookie=ok')
   console.log('cross_user_session_isolation=ok')
+  console.log('metadata_sync_user_isolation=ok')
   console.log('device_session_revocation=ok')
   console.log(`reload_rotations=${refreshRotations}`)
   console.log('refresh_reuse_family_revocation=ok')

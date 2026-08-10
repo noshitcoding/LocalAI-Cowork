@@ -550,6 +550,67 @@ export const versionResponseSchema = z.object({
 })
 export type VersionResponse = z.infer<typeof versionResponseSchema>
 
+export const syncOperationSchema = z.enum(['upsert', 'delete'])
+export type SyncOperation = z.infer<typeof syncOperationSchema>
+
+export const syncChangeSchema = z.object({
+  schema_version: z.number().int().positive(),
+  operation_id: z.string().uuid(),
+  device_id: z.string().uuid(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  base_revision: z.number().int().nonnegative(),
+  operation: syncOperationSchema,
+  payload: z.unknown().nullable(),
+  client_timestamp: z.string().datetime({ offset: true }),
+})
+export type SyncChange = z.infer<typeof syncChangeSchema>
+
+export const syncedEntitySchema = z.object({
+  schema_version: z.number().int().positive(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  payload: z.unknown().nullable(),
+  tombstone: z.boolean(),
+  updated_at: z.string().datetime({ offset: true }),
+})
+export type SyncedEntity = z.infer<typeof syncedEntitySchema>
+
+export const syncApplyResultSchema = z.object({
+  schema_version: z.number().int().positive(),
+  operation_id: z.string().uuid(),
+  status: z.enum(['applied', 'conflict']),
+  entity: syncedEntitySchema.nullable(),
+})
+export type SyncApplyResult = z.infer<typeof syncApplyResultSchema>
+
+export const pushSyncChangesResponseSchema = z.object({
+  schema_version: z.number().int().positive(),
+  results: z.array(syncApplyResultSchema),
+})
+export type PushSyncChangesResponse = z.infer<typeof pushSyncChangesResponseSchema>
+
+export const serverSyncChangeSchema = z.object({
+  schema_version: z.number().int().positive(),
+  cursor: z.number().int().positive(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  operation: syncOperationSchema,
+  payload: z.unknown().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type ServerSyncChange = z.infer<typeof serverSyncChangeSchema>
+
+export const pullSyncChangesResponseSchema = z.object({
+  schema_version: z.number().int().positive(),
+  changes: z.array(serverSyncChangeSchema),
+  next_cursor: z.number().int().nonnegative(),
+})
+export type PullSyncChangesResponse = z.infer<typeof pullSyncChangesResponseSchema>
+
 export const listRunsResponseSchema = z.object({
   items: z.array(runRecordSchema),
   next_cursor: z.string().nullable().optional(),

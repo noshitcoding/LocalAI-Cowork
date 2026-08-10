@@ -155,7 +155,7 @@ async fn prepare_run(
     .await?;
     let now = Utc::now();
     let run_id = Uuid::new_v4();
-    let initial_state = initial_run_state(&state, &request).await?;
+    let initial_state = initial_run_state(state, &request).await?;
     let spec = RunSpec {
         schema_version: SCHEMA_VERSION,
         id: run_id,

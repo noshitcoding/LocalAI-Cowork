@@ -318,7 +318,19 @@ pub async fn enforce_storage_quota_tx(
     .flatten();
     let Some(limit) = limit else { return Ok(()) };
     let used = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(sum(total_bytes), 0)::bigint FROM snapshot_manifests WHERE key_scope_type = $1 AND key_scope_id = $2 AND status IN ('uploading','ready') AND (expires_at IS NULL OR expires_at > now())",
+        r#"
+        SELECT
+          COALESCE((
+            SELECT sum(total_bytes) FROM snapshot_manifests
+            WHERE key_scope_type = $1 AND key_scope_id = $2
+              AND status IN ('uploading','ready')
+              AND (expires_at IS NULL OR expires_at > now())
+          ), 0)::bigint
+          + CASE WHEN $1 = 'user' THEN COALESCE((
+              SELECT sum(pg_column_size(payload)) FROM sync_entities
+              WHERE user_id = $2 AND tombstone = FALSE
+            ), 0)::bigint ELSE 0 END
+        "#,
     )
     .bind(scope_type)
     .bind(scope_id)
@@ -494,9 +506,24 @@ async fn quota_status(
     let usage_row = sqlx::query("SELECT tokens, cost_micros, updated_at FROM quota_usage WHERE scope_type = $1 AND scope_id = $2 AND period_start = $3")
         .bind(scope_name).bind(scope_id).bind(period_start).fetch_optional(pool).await?;
     let storage_bytes = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(sum(total_bytes), 0)::bigint FROM snapshot_manifests WHERE key_scope_type = $1 AND key_scope_id = $2 AND status IN ('uploading','ready') AND (expires_at IS NULL OR expires_at > now())",
+        r#"
+        SELECT
+          COALESCE((
+            SELECT sum(total_bytes) FROM snapshot_manifests
+            WHERE key_scope_type = $1 AND key_scope_id = $2
+              AND status IN ('uploading','ready')
+              AND (expires_at IS NULL OR expires_at > now())
+          ), 0)::bigint
+          + CASE WHEN $1 = 'user' THEN COALESCE((
+              SELECT sum(pg_column_size(payload)) FROM sync_entities
+              WHERE user_id = $2 AND tombstone = FALSE
+            ), 0)::bigint ELSE 0 END
+        "#,
     )
-    .bind(scope_name).bind(scope_id).fetch_one(pool).await?;
+    .bind(scope_name)
+    .bind(scope_id)
+    .fetch_one(pool)
+    .await?;
     let running_runs = match scope {
         QuotaScopeType::User => sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM runs WHERE creator_user_id = $1 AND state NOT IN ('completed','failed','canceled','expired')",

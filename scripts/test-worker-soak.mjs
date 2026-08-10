@@ -61,6 +61,7 @@ async function waitForWave(ids, token) {
   throw new Error(`wave timed out: ${records.map((run) => `${run.spec.id}:${run.state}`).join(', ')}`)
 }
 
+const soakDeviceId = randomUUID()
 const session = await request('/auth/bootstrap', {
   method: 'POST',
   token: bootstrapToken,
@@ -68,7 +69,7 @@ const session = await request('/auth/bootstrap', {
     email: 'worker-soak@opencowork.invalid',
     display_name: 'Worker Soak',
     password: 'Worker-Soak-Password-42!',
-    device_id: randomUUID(),
+    device_id: soakDeviceId,
   },
 })
 const token = session.access_token
@@ -192,6 +193,72 @@ if (mismatchedResults.length) {
 }
 if (!retriedMessageRun) throw new Error('message/run idempotency retry was not exercised')
 
+const syncEntityId = randomUUID()
+const syncTimestamp = new Date().toISOString()
+const syncUpsert = {
+  schema_version: 2,
+  operation_id: randomUUID(),
+  device_id: soakDeviceId,
+  entity_type: 'memory',
+  entity_id: syncEntityId,
+  base_revision: 0,
+  operation: 'upsert',
+  payload: { text: 'worker soak metadata' },
+  client_timestamp: syncTimestamp,
+}
+const firstSync = await request('/sync/changes', {
+  method: 'POST', token, body: { changes: [syncUpsert] },
+})
+const replayedSync = await request('/sync/changes', {
+  method: 'POST', token, body: { changes: [syncUpsert] },
+})
+if (JSON.stringify(firstSync) !== JSON.stringify(replayedSync)
+    || firstSync.results?.[0]?.status !== 'applied'
+    || firstSync.results?.[0]?.entity?.revision !== 1) {
+  throw new Error(`sync operation replay was not idempotent: ${JSON.stringify({ firstSync, replayedSync })}`)
+}
+const conflictSync = await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: {
+    changes: [{
+      ...syncUpsert,
+      operation_id: randomUUID(),
+      payload: { text: 'stale writer' },
+    }],
+  },
+})
+if (conflictSync.results?.[0]?.status !== 'conflict'
+    || conflictSync.results?.[0]?.entity?.revision !== 1) {
+  throw new Error(`stale sync writer did not receive the current entity: ${JSON.stringify(conflictSync)}`)
+}
+const deleteSync = await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: {
+    changes: [{
+      ...syncUpsert,
+      operation_id: randomUUID(),
+      base_revision: 1,
+      operation: 'delete',
+      payload: null,
+    }],
+  },
+})
+if (deleteSync.results?.[0]?.status !== 'applied'
+    || deleteSync.results?.[0]?.entity?.revision !== 2
+    || deleteSync.results?.[0]?.entity?.tombstone !== true) {
+  throw new Error(`sync tombstone was not persisted: ${JSON.stringify(deleteSync)}`)
+}
+const pulledSync = await request('/sync/changes?after=0&limit=10', { token })
+const entityChanges = pulledSync.changes?.filter((change) => change.entity_id === syncEntityId) ?? []
+if (entityChanges.length !== 2
+    || entityChanges[0]?.operation !== 'upsert'
+    || entityChanges[1]?.operation !== 'delete'
+    || pulledSync.next_cursor < entityChanges[1].cursor) {
+  throw new Error(`sync cursor feed is incomplete or unordered: ${JSON.stringify(pulledSync)}`)
+}
+
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
 console.log(`distinct_workers=${assignedWorkers.size}`)
@@ -201,3 +268,7 @@ console.log('cross_run_result_isolation=ok')
 console.log('atomic_message_run=ok')
 console.log('assistant_message_persistence=ok')
 console.log('message_run_idempotency=ok')
+console.log('metadata_sync_idempotency=ok')
+console.log('metadata_sync_conflict=ok')
+console.log('metadata_sync_tombstone=ok')
+console.log('metadata_sync_cursor=ok')

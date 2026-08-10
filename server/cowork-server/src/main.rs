@@ -13,6 +13,7 @@ mod passkey;
 mod push;
 mod routes;
 mod storage;
+mod sync;
 mod terminal;
 mod worker;
 mod workflow;
@@ -174,6 +175,10 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         )
         .route("/version", get(routes::version))
         .route("/capabilities", get(routes::capabilities))
+        .route(
+            "/sync/changes",
+            post(sync::push_changes).get(sync::pull_changes),
+        )
         .route(
             "/teams",
             post(organization::create_team).get(organization::list_teams),
