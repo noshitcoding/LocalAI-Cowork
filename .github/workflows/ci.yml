@@ -218,6 +218,27 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  single-port-gateway:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Validate production Compose model
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+
+      - name: Nginx-compatible TLS to Caddy acceptance
+        run: node scripts/test-gateway-e2e.mjs
+
   security:
     runs-on: ubuntu-latest
 
