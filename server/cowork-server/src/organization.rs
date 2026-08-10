@@ -355,6 +355,38 @@ pub async fn delete_project(
     .bind(project_id)
     .fetch_all(&mut *tx)
     .await?;
+    let mut task_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM task_definitions WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id, revision FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    task_ids.dedup();
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE schedules
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            enabled = FALSE, next_run_at = NULL,
+            blocked_reason = 'project deleted', deleted_at = now(), updated_at = now()
+        WHERE project_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE task_definitions SET released = FALSE, deleted_at = now() WHERE project_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         r#"
         UPDATE messages AS message
@@ -400,6 +432,13 @@ pub async fn delete_project(
         }
         for thread_id in thread_ids {
             sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "thread", thread_id).await?;
+        }
+        for schedule_id in schedule_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id)
+                .await?;
+        }
+        for task_id in task_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "task", task_id).await?;
         }
         sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "project", project_id).await?;
     }
@@ -605,6 +644,25 @@ pub async fn delete_thread(
     .bind(thread_id)
     .fetch_all(&mut *tx)
     .await?;
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE thread_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(thread_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE schedules
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            enabled = FALSE, next_run_at = NULL,
+            blocked_reason = 'thread deleted', deleted_at = now(), updated_at = now()
+        WHERE thread_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         r#"
         UPDATE messages
@@ -632,6 +690,10 @@ pub async fn delete_thread(
     if private {
         for message_id in message_ids {
             sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "message", message_id)
+                .await?;
+        }
+        for schedule_id in schedule_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id)
                 .await?;
         }
         sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "thread", thread_id).await?;

@@ -745,6 +745,81 @@ async fn materialize_project(
     }
     if operation == SyncOperation::Delete {
         if tracked {
+            let thread_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM threads WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(project_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            let message_ids = sqlx::query_scalar::<_, Uuid>(
+                r#"
+                SELECT message.id FROM messages message
+                JOIN threads thread ON thread.id = message.thread_id
+                WHERE thread.project_id = $1 AND message.deleted_at IS NULL
+                ORDER BY message.id FOR UPDATE OF message
+                "#,
+            )
+            .bind(project_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            let mut task_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM task_definitions WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id, revision FOR UPDATE",
+            )
+            .bind(project_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            task_ids.dedup();
+            let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM schedules WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(project_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE messages AS message
+                SET revision = message.revision + 1,
+                    etag = 'W/"' || message.id::text || ':' || (message.revision + 1)::text || '"',
+                    deleted_at = now(), updated_at = now()
+                FROM threads thread
+                WHERE message.thread_id = thread.id AND thread.project_id = $1
+                  AND message.deleted_at IS NULL
+                "#,
+            )
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE schedules
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    enabled = FALSE, next_run_at = NULL,
+                    blocked_reason = 'project deleted', deleted_at = now(), updated_at = now()
+                WHERE project_id = $1 AND deleted_at IS NULL
+                "#,
+            )
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "UPDATE task_definitions SET released = FALSE, deleted_at = now() WHERE project_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE threads
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    deleted_at = now(), updated_at = now()
+                WHERE project_id = $1 AND deleted_at IS NULL
+                "#,
+            )
+            .bind(project_id)
+            .execute(&mut **tx)
+            .await?;
             sqlx::query(
                 r#"
                 UPDATE projects
@@ -758,7 +833,18 @@ async fn materialize_project(
             .bind(user_id)
             .execute(&mut **tx)
             .await?;
-            reconcile_project_threads(tx, user_id, project_id).await?;
+            for message_id in message_ids {
+                publish_server_tombstone_tx(tx, user_id, "message", message_id).await?;
+            }
+            for thread_id in thread_ids {
+                publish_server_tombstone_tx(tx, user_id, "thread", thread_id).await?;
+            }
+            for schedule_id in schedule_ids {
+                publish_server_tombstone_tx(tx, user_id, "schedule", schedule_id).await?;
+            }
+            for task_id in task_ids {
+                publish_server_tombstone_tx(tx, user_id, "task", task_id).await?;
+            }
         }
         return Ok(());
     }
@@ -935,6 +1021,41 @@ async fn soft_delete_thread(
 ) -> Result<(), ApiError> {
     sqlx::query(
         r#"
+        UPDATE messages AS message
+        SET revision = message.revision + 1,
+            etag = 'W/"' || message.id::text || ':' || (message.revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        FROM threads thread
+        JOIN projects project ON project.id = thread.project_id
+        WHERE message.thread_id = thread.id AND thread.id = $1
+          AND project.owner_user_id = $2 AND project.privacy = 'private_local'
+          AND message.deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE schedules AS schedule
+        SET revision = schedule.revision + 1,
+            etag = 'W/"' || schedule.id::text || ':' || (schedule.revision + 1)::text || '"',
+            enabled = FALSE, next_run_at = NULL,
+            blocked_reason = 'thread unavailable', deleted_at = now(), updated_at = now()
+        FROM threads thread
+        JOIN projects project ON project.id = thread.project_id
+        WHERE schedule.thread_id = thread.id AND thread.id = $1
+          AND project.owner_user_id = $2 AND project.privacy = 'private_local'
+          AND schedule.deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"
         UPDATE threads AS thread
         SET revision = thread.revision + 1,
             etag = 'W/"' || thread.id::text || ':' || (thread.revision + 1)::text || '"',
@@ -970,7 +1091,25 @@ async fn materialize_thread(
     }
     if operation == SyncOperation::Delete {
         if tracked {
+            let message_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM messages WHERE thread_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(thread_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM schedules WHERE thread_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(thread_id)
+            .fetch_all(&mut **tx)
+            .await?;
             soft_delete_thread(tx, user_id, thread_id).await?;
+            for message_id in message_ids {
+                publish_server_tombstone_tx(tx, user_id, "message", message_id).await?;
+            }
+            for schedule_id in schedule_ids {
+                publish_server_tombstone_tx(tx, user_id, "schedule", schedule_id).await?;
+            }
         }
         return Ok(());
     }

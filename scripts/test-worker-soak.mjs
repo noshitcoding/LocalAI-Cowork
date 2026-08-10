@@ -849,7 +849,9 @@ await request('/sync/changes', {
   })] },
 })
 const roundTripTask = await request(`/tasks/${serverTask.id}`, { token })
-if (roundTripTask.revision !== projectedTask.revision + 1
+const projectedTaskCanonicalRevision = projectedTask.payload?.canonical_revision
+if (!Number.isInteger(projectedTaskCanonicalRevision)
+    || roundTripTask.revision !== projectedTaskCanonicalRevision + 1
     || roundTripTask.name !== 'Edited offline after server creation'
     || !roundTripTask.released) {
   throw new Error(`server-created task did not round-trip through device sync: ${JSON.stringify(roundTripTask)}`)
@@ -867,7 +869,9 @@ await request('/sync/changes', {
 })
 const roundTripProfile = (await request('/provider-profiles', { token }))
   .find((item) => item.id === serverProfile.id)
-if (!roundTripProfile || roundTripProfile.revision !== serverProfile.revision + 1
+const projectedProfileCanonicalRevision = projectedProfile.payload?.canonical_revision
+if (!roundTripProfile || !Number.isInteger(projectedProfileCanonicalRevision)
+    || roundTripProfile.revision !== projectedProfileCanonicalRevision + 1
     || roundTripProfile.model_defaults?.model !== 'server-model-v2'
     || roundTripProfile.model_defaults?.base_url !== 'https://models.example.test/v1'
     || roundTripProfile.model_defaults?.endpoint_binding !== 'server') {
@@ -885,7 +889,9 @@ await request('/sync/changes', {
 })
 const roundTripSchedule = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
   .find((item) => item.id === serverSchedule.id)
-if (!roundTripSchedule || roundTripSchedule.revision !== projectedSchedule.revision + 1
+const projectedScheduleCanonicalRevision = projectedSchedule.payload?.canonical_revision
+if (!roundTripSchedule || !Number.isInteger(projectedScheduleCanonicalRevision)
+    || roundTripSchedule.revision !== projectedScheduleCanonicalRevision + 1
     || roundTripSchedule.timezone !== 'UTC'
     || roundTripSchedule.input?.prompt !== 'Edited offline schedule metadata') {
   throw new Error(`server-created schedule did not round-trip through device sync: ${JSON.stringify(roundTripSchedule)}`)
@@ -1002,6 +1008,34 @@ const disposableThread = await request('/threads', {
     forked_from_message_id: null,
   },
 })
+const disposableThreadTask = await request('/tasks', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: syncedProjectId,
+    name: 'Task retained after its thread is deleted',
+    instructions: 'The schedule is thread-bound, while this task remains reusable.',
+    required_capabilities: [],
+    default_target: { kind: 'server_linux', pool_id: null },
+    config: { sync_metadata: { task_kind: 'work', thread_id: disposableThread.id } },
+    release: true,
+  },
+})
+const disposableThreadSchedule = await request('/schedules', {
+  method: 'POST',
+  token,
+  body: {
+    task_id: disposableThreadTask.id,
+    project_id: syncedProjectId,
+    thread_id: disposableThread.id,
+    cron: '0 12 * * *',
+    timezone: 'UTC',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: {},
+    model_profile_id: null,
+    enabled: false,
+  },
+})
 const disposableMessageRun = await request(`/threads/${disposableThread.id}/messages`, {
   method: 'POST',
   token,
@@ -1032,6 +1066,14 @@ const threadsAfterCanonicalDelete = await request(`/projects/${syncedProjectId}/
 if (threadsAfterCanonicalDelete.some((item) => item.id === disposableThread.id)) {
   throw new Error(`canonically deleted thread remained visible: ${JSON.stringify(threadsAfterCanonicalDelete)}`)
 }
+const schedulesAfterThreadDelete = await request(`/schedules?project_id=${syncedProjectId}`, { token })
+if (schedulesAfterThreadDelete.some((item) => item.id === disposableThreadSchedule.id)) {
+  throw new Error(`thread-bound schedule survived its thread deletion: ${JSON.stringify(schedulesAfterThreadDelete)}`)
+}
+const retainedThreadTask = await request(`/tasks/${disposableThreadTask.id}`, { token })
+if (retainedThreadTask.id !== disposableThreadTask.id) {
+  throw new Error(`reusable task disappeared with its thread: ${JSON.stringify(retainedThreadTask)}`)
+}
 const canonicalCrudProjection = await request(
   `/sync/changes?after=${beforeCanonicalCrud.next_cursor}&limit=1000`,
   { token },
@@ -1050,8 +1092,11 @@ const projectedThreadDelete = canonicalCrudProjection.changes.find((change) => (
 const projectedMessageDelete = canonicalCrudProjection.changes.find((change) => (
   change.entity_id === disposableMessageRun.message.id && change.operation === 'delete'
 ))
+const projectedThreadScheduleDelete = canonicalCrudProjection.changes.find((change) => (
+  change.entity_id === disposableThreadSchedule.id && change.operation === 'delete'
+))
 if (!projectedThreadUpdate || !projectedProjectUpdate
-    || !projectedThreadDelete || !projectedMessageDelete) {
+    || !projectedThreadDelete || !projectedMessageDelete || !projectedThreadScheduleDelete) {
   throw new Error(`canonical CRUD changes were not fully projected: ${JSON.stringify(canonicalCrudProjection)}`)
 }
 const disposableProject = await request('/projects', {
@@ -1088,6 +1133,44 @@ await expectRequestStatus(`/projects/${disposableProject.id}`, 409, {
     policy: {},
   },
 })
+const disposableProjectThread = await request('/threads', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: disposableProject.id,
+    title: 'Thread deleted with its project',
+    forked_from_thread_id: null,
+    forked_from_message_id: null,
+  },
+})
+const disposableProjectTask = await request('/tasks', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: disposableProject.id,
+    name: 'Task deleted with its project',
+    instructions: 'Exercise the full project metadata cascade.',
+    required_capabilities: [],
+    default_target: { kind: 'server_linux', pool_id: null },
+    config: { sync_metadata: { task_kind: 'work', thread_id: disposableProjectThread.id } },
+    release: true,
+  },
+})
+const disposableProjectSchedule = await request('/schedules', {
+  method: 'POST',
+  token,
+  body: {
+    task_id: disposableProjectTask.id,
+    project_id: disposableProject.id,
+    thread_id: disposableProjectThread.id,
+    cron: '0 13 * * *',
+    timezone: 'UTC',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: {},
+    model_profile_id: null,
+    enabled: false,
+  },
+})
 const beforeProjectDelete = await request('/sync/changes?after=0&limit=1000', { token })
 await request(`/projects/${disposableProject.id}?expected_revision=${updatedDisposableProject.revision}`, {
   method: 'DELETE', token,
@@ -1096,9 +1179,13 @@ const projectDeleteProjection = await request(
   `/sync/changes?after=${beforeProjectDelete.next_cursor}&limit=100`,
   { token },
 )
-if (!projectDeleteProjection.changes.some((change) => (
-  change.entity_id === disposableProject.id && change.operation === 'delete'
-))) {
+const projectCascadeIds = new Set(projectDeleteProjection.changes
+  .filter((change) => change.operation === 'delete')
+  .map((change) => change.entity_id))
+if (!projectCascadeIds.has(disposableProject.id)
+    || !projectCascadeIds.has(disposableProjectThread.id)
+    || !projectCascadeIds.has(disposableProjectTask.id)
+    || !projectCascadeIds.has(disposableProjectSchedule.id)) {
   throw new Error(`canonical project deletion did not reach the device feed: ${JSON.stringify(projectDeleteProjection)}`)
 }
 const syncAgentId = randomUUID()
