@@ -12,9 +12,13 @@ const certificate = process.env.COWORK_TEST_TLS_CERT
 const privateKey = process.env.COWORK_TEST_TLS_KEY
 const email = process.env.COWORK_TEST_EMAIL
 const password = process.env.COWORK_TEST_PASSWORD
+const refreshRotations = Number.parseInt(process.env.COWORK_TEST_REFRESH_ROTATIONS ?? '25', 10)
 
 if (!certificate || !privateKey || !email || !password) {
   throw new Error('browser-session E2E requires TLS certificate, key, email, and password')
+}
+if (!Number.isInteger(refreshRotations) || refreshRotations < 2 || refreshRotations > 250) {
+  throw new Error('COWORK_TEST_REFRESH_ROTATIONS must be an integer from 2 through 250')
 }
 
 const contentTypes = new Map([
@@ -137,11 +141,17 @@ try {
     throw new Error('authentication token leaked into localStorage')
   }
 
-  await page.reload({ waitUntil: 'networkidle' })
-  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
-  cookies = await context.cookies(webOrigin)
-  const rotated = cookies.find((cookie) => cookie.name === '__Host-cowork_refresh')
-  if (!rotated || rotated.value === first.value) throw new Error('page reload did not rotate the refresh cookie')
+  const refreshValues = new Set([first.value])
+  for (let index = 0; index < refreshRotations; index++) {
+    await page.reload({ waitUntil: 'networkidle' })
+    await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
+    cookies = await context.cookies(webOrigin)
+    const rotated = cookies.find((cookie) => cookie.name === '__Host-cowork_refresh')
+    if (!rotated || refreshValues.has(rotated.value)) {
+      throw new Error(`refresh rotation ${index + 1} did not issue a unique cookie`)
+    }
+    refreshValues.add(rotated.value)
+  }
   if (consoleErrors.length) throw new Error(`browser emitted runtime errors before replay test: ${consoleErrors.join(' | ')}`)
 
   const staleStatus = await rawRefresh(`__Host-cowork_refresh=${first.value}`)
@@ -172,7 +182,7 @@ try {
   console.log('canonical_same_origin=ok')
   console.log('refresh_token_hidden_from_javascript=ok')
   console.log('secure_httponly_samesite_cookie=ok')
-  console.log('reload_rotation=ok')
+  console.log(`reload_rotations=${refreshRotations}`)
   console.log('refresh_reuse_family_revocation=ok')
   console.log('logout_cookie_clear=ok')
 } finally {

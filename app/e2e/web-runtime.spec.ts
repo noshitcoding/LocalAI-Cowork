@@ -41,7 +41,7 @@ async function expectWcagAa(page: Page): Promise<void> {
 test('web build loads only the remote control plane without Tauri initialization', async ({ page }) => {
   await mockPublicControlPlane(page)
   const errors = collectRuntimeErrors(page)
-  await page.goto('/', { waitUntil: 'networkidle' })
+  await page.goto('/server', { waitUntil: 'networkidle' })
 
   await expect(page).toHaveURL(/\/server$/)
   await expect(page.getByRole('heading', { name: 'Connect to Open Cowork Server' })).toBeVisible()

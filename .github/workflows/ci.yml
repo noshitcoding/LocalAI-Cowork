@@ -270,6 +270,113 @@ jobs:
         working-directory: app
         run: npx playwright test -c playwright.web.config.ts e2e/web-runtime.spec.ts
 
+  browser-session-soak:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_browser_session_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: browser-session-ci-postgres
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_browser_session_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Install browser acceptance dependencies
+        working-directory: app
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build server and isolated web client
+        run: |
+          cargo build --locked --package cowork-server
+          npm --prefix app run build -- --mode web
+
+      - name: Rotate and revoke a sustained browser session
+        shell: bash
+        env:
+          COWORK_MODE: api
+          COWORK_LISTEN_ADDR: 127.0.0.1:18097
+          COWORK_BOOTSTRAP_TOKEN: browser-session-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000051
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_TEST_POSTGRES_PASSWORD: browser-session-ci-postgres
+          COWORK_TEST_API_URL: http://127.0.0.1:18097
+          COWORK_TEST_WEB_ORIGIN: https://127.0.0.1:18447
+          COWORK_TEST_WEB_DIST: ${{ github.workspace }}/app/dist
+          COWORK_TEST_EMAIL: browser-session-ci@opencowork.invalid
+          COWORK_TEST_PASSWORD: Browser-Session-CI-Password-42!
+          COWORK_TEST_REFRESH_ROTATIONS: '25'
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_POSTGRES_PASSWORD}@127.0.0.1:15432/cowork_browser_session_ci"
+          test_root="$(mktemp -d)"
+          export COWORK_TEST_TLS_CERT="${test_root}/localhost.crt"
+          export COWORK_TEST_TLS_KEY="${test_root}/localhost.key"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "${COWORK_TEST_TLS_KEY}" -out "${COWORK_TEST_TLS_CERT}" \
+            -subj '/CN=127.0.0.1' -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' \
+            -config /dev/null 2>/dev/null
+          ./target/debug/cowork-server >"${test_root}/server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 150); do
+            if curl --fail --silent http://127.0.0.1:18097/readyz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "${ready}" -ne 1 ]]; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            -X POST http://127.0.0.1:18097/api/v1/auth/bootstrap \
+            -H "Authorization: Bearer ${COWORK_BOOTSTRAP_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"browser-session-ci@opencowork.invalid","display_name":"Browser Session CI","password":"Browser-Session-CI-Password-42!","device_id":"00000000-0000-4000-8000-000000000052"}' \
+            >/dev/null
+          if ! node app/scripts/test-browser-session.mjs; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+
   security:
     runs-on: ubuntu-latest
 
