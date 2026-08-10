@@ -407,6 +407,72 @@ const messagesAfterTombstone = await request(`/threads/${syncedThreadId}/message
 if (messagesAfterTombstone.length !== 0) {
   throw new Error(`synced message tombstone was not materialized: ${JSON.stringify(messagesAfterTombstone)}`)
 }
+const beforeServerProjection = await request('/sync/changes?after=0&limit=1000', { token })
+const serverThread = await request('/threads', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: syncedProjectId,
+    title: 'Created from the web control plane',
+    forked_from_thread_id: null,
+    forked_from_message_id: null,
+  },
+})
+const latestPrivateProject = (await request('/projects', { token }))
+  .find((item) => item.id === syncedProjectId)
+if (!latestPrivateProject) throw new Error('materialized private project disappeared before reverse projection')
+const serverMessageRun = await request(`/threads/${serverThread.id}/messages`, {
+  method: 'POST',
+  token,
+  body: {
+    content: { text: 'Server-originated message for the desktop inbox' },
+    run: {
+      thread_id: serverThread.id,
+      project_id: syncedProjectId,
+      project_revision: latestPrivateProject.revision,
+      project_privacy: 'private_local',
+      task: null,
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: [],
+      input: sandboxInput('server-originated-private-message'),
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `server-projection-${randomUUID()}`,
+    },
+  },
+})
+if (serverMessageRun.run.state !== 'waiting_for_snapshot') {
+  throw new Error(`private server run did not wait for its explicit snapshot: ${JSON.stringify(serverMessageRun.run)}`)
+}
+const serverProjection = await request(
+  `/sync/changes?after=${beforeServerProjection.next_cursor}&limit=100`,
+  { token },
+)
+const projectedIds = new Set(serverProjection.changes.map((change) => change.entity_id))
+if (!projectedIds.has(syncedProjectId)
+    || !projectedIds.has(serverThread.id)
+    || !projectedIds.has(serverMessageRun.message.id)) {
+  throw new Error(`canonical server changes did not reach the device feed: ${JSON.stringify(serverProjection)}`)
+}
+const serverThreadSnapshot = await request('/sync/entities/thread?limit=1000', { token })
+const projectedThread = serverThreadSnapshot.items.find((item) => item.entity_id === serverThread.id)
+if (!projectedThread || projectedThread.tombstone) {
+  throw new Error(`server-created thread is missing from the sync snapshot: ${JSON.stringify(serverThreadSnapshot)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('thread', serverThread.id, projectedThread.revision, 'upsert', {
+    ...projectedThread.payload,
+    title: 'Renamed offline after server creation',
+  })] },
+})
+const roundTripThreads = await request(`/projects/${syncedProjectId}/threads`, { token })
+if (!roundTripThreads.some((item) => (
+  item.id === serverThread.id && item.title === 'Renamed offline after server creation'
+))) {
+  throw new Error(`server-created thread did not round-trip through device sync: ${JSON.stringify(roundTripThreads)}`)
+}
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -425,3 +491,5 @@ console.log('metadata_sync_sse_resume=ok')
 console.log('metadata_sync_bootstrap_snapshot=ok')
 console.log('metadata_sync_canonical_materialization=ok')
 console.log('metadata_sync_out_of_order_convergence=ok')
+console.log('metadata_sync_reverse_projection=ok')
+console.log('metadata_sync_bidirectional_roundtrip=ok')

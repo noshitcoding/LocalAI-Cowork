@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{error::ApiError, governance};
+use crate::{error::ApiError, governance, sync};
 
 const TERMINAL_STATES: &[&str] = &["completed", "failed", "canceled", "expired"];
 
@@ -127,6 +127,7 @@ pub async fn create_thread_message_run(
         .fetch_one(&mut *tx)
         .await?;
         touch_thread_tx(&mut tx, spec.thread_id).await?;
+        sync::publish_canonical_message_tx(&mut tx, message_id).await?;
         row
     } else {
         sqlx::query(
@@ -889,6 +890,7 @@ async fn append_assistant_message_tx(
     .await?;
     if let Some(row) = inserted {
         touch_thread_tx(tx, row.try_get("thread_id")?).await?;
+        sync::publish_canonical_message_tx(tx, message_id).await?;
     }
     Ok(())
 }

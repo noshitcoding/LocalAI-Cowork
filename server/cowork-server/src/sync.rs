@@ -1093,6 +1093,236 @@ async fn materialize_message(
     Ok(())
 }
 
+pub(crate) async fn publish_canonical_project_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    project_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, owner_user_id, privacy, name, description,
+               preferred_executor_target, policy, created_at, updated_at
+        FROM projects WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else { return Ok(false) };
+    if row.try_get::<&str, _>("privacy")? != "private_local" {
+        return Ok(false);
+    }
+    let user_id: Uuid = row.try_get("owner_user_id")?;
+    let thread_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM threads WHERE project_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(project_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let payload = serde_json::json!({
+        "title": row.try_get::<String, _>("name")?,
+        "instructions": row.try_get::<String, _>("description")?,
+        "thread_ids": thread_ids,
+        "project_kind": "private",
+        "files_location": "personal_device",
+        "preferred_executor_target": row.try_get::<Option<Value>, _>("preferred_executor_target")?,
+        "policy": row.try_get::<Value, _>("policy")?,
+        "created_at": row.try_get::<DateTime<Utc>, _>("created_at")?,
+        "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
+        "source": "server",
+    });
+    publish_server_entity_tx(tx, user_id, "project", project_id, payload).await?;
+    remember_materialization(tx, user_id, "project", project_id).await?;
+    Ok(true)
+}
+
+pub(crate) async fn publish_canonical_thread_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query(
+        r#"
+        SELECT thread.id, thread.project_id, thread.title, thread.created_at,
+               thread.updated_at, project.owner_user_id, project.privacy
+        FROM threads thread
+        JOIN projects project ON project.id = thread.project_id
+        WHERE thread.id = $1 AND thread.deleted_at IS NULL AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else { return Ok(false) };
+    if row.try_get::<&str, _>("privacy")? != "private_local" {
+        return Ok(false);
+    }
+    let project_id: Uuid = row.try_get("project_id")?;
+    publish_canonical_project_tx(tx, project_id).await?;
+    let user_id: Uuid = row.try_get("owner_user_id")?;
+    let payload = serde_json::json!({
+        "title": row.try_get::<String, _>("title")?,
+        "provider_settings": {},
+        "runner": "model",
+        "crew_id": null,
+        "created_at": row.try_get::<DateTime<Utc>, _>("created_at")?,
+        "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
+        "source": "server",
+    });
+    publish_server_entity_tx(tx, user_id, "thread", thread_id, payload).await?;
+    remember_materialization(tx, user_id, "thread", thread_id).await?;
+    Ok(true)
+}
+
+pub(crate) async fn publish_canonical_message_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    message_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query(
+        r#"
+        SELECT message.id, message.thread_id, message.role, message.content,
+               message.run_id, message.created_at, project.owner_user_id, project.privacy
+        FROM messages message
+        JOIN threads thread ON thread.id = message.thread_id
+        JOIN projects project ON project.id = thread.project_id
+        WHERE message.id = $1 AND message.deleted_at IS NULL
+          AND thread.deleted_at IS NULL AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(message_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else { return Ok(false) };
+    if row.try_get::<&str, _>("privacy")? != "private_local" {
+        return Ok(false);
+    }
+    let thread_id: Uuid = row.try_get("thread_id")?;
+    publish_canonical_thread_tx(tx, thread_id).await?;
+    let user_id: Uuid = row.try_get("owner_user_id")?;
+    let content: Value = row.try_get("content")?;
+    let (text, truncated) = bounded_message_text(&content, 200_000);
+    let payload = serde_json::json!({
+        "thread_id": thread_id,
+        "role": row.try_get::<String, _>("role")?,
+        "content": text,
+        "content_truncated": truncated,
+        "timestamp": row.try_get::<DateTime<Utc>, _>("created_at")?.timestamp_millis(),
+        "attachment_descriptors": [],
+        "durable_run_id": row.try_get::<Option<Uuid>, _>("run_id")?,
+        "source": "server",
+    });
+    publish_server_entity_tx(tx, user_id, "message", message_id, payload).await?;
+    remember_materialization(tx, user_id, "message", message_id).await?;
+    Ok(true)
+}
+
+async fn publish_server_entity_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    entity_type: &str,
+    entity_id: Uuid,
+    payload: Value,
+) -> Result<(), ApiError> {
+    validate_entity_type(entity_type)?;
+    let payload_bytes = serde_json::to_vec(&payload)?.len();
+    if payload_bytes > MAX_SYNC_PAYLOAD_BYTES {
+        return Err(ApiError::Unprocessable(format!(
+            "projected sync payload must not exceed {MAX_SYNC_PAYLOAD_BYTES} bytes"
+        )));
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("sync:entity:{user_id}:{entity_type}:{entity_id}"))
+        .execute(&mut **tx)
+        .await?;
+    let current = sqlx::query(
+        "SELECT revision, payload, tombstone FROM sync_entities WHERE user_id = $1 AND entity_type = $2 AND entity_id = $3 FOR UPDATE",
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = &current {
+        let current_payload: Option<Value> = row.try_get("payload")?;
+        if !row.try_get::<bool, _>("tombstone")? && current_payload.as_ref() == Some(&payload) {
+            return Ok(());
+        }
+    }
+    let current_revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision"))
+        .transpose()?
+        .unwrap_or(0);
+    let current_bytes = current
+        .as_ref()
+        .and_then(|row| row.try_get::<Option<Value>, _>("payload").ok().flatten())
+        .map(|value| serde_json::to_vec(&value).map(|bytes| bytes.len()))
+        .transpose()?
+        .unwrap_or(0);
+    governance::enforce_storage_quota_tx(
+        tx,
+        "user",
+        user_id,
+        u64::try_from(payload_bytes.saturating_sub(current_bytes))
+            .map_err(|error| ApiError::Internal(error.into()))?,
+    )
+    .await?;
+    let revision = current_revision + 1;
+    let etag = format!("W/\"{entity_id}:{revision}\"");
+    sqlx::query(
+        r#"
+        INSERT INTO sync_entities (
+            user_id, entity_type, entity_id, revision, etag, payload, tombstone
+        ) VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+        ON CONFLICT (user_id, entity_type, entity_id) DO UPDATE
+        SET revision = EXCLUDED.revision, etag = EXCLUDED.etag,
+            payload = EXCLUDED.payload, tombstone = FALSE, updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(revision)
+    .bind(etag)
+    .bind(payload.clone())
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO sync_changes (
+            user_id, entity_type, entity_id, revision, operation, payload
+        ) VALUES ($1, $2, $3, $4, 'upsert', $5)
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(entity_id)
+    .bind(revision)
+    .bind(payload)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn bounded_message_text(content: &Value, maximum_bytes: usize) -> (String, bool) {
+    let mut text = match content {
+        Value::String(value) => value.clone(),
+        Value::Object(object) => ["text", "response", "output", "message"]
+            .iter()
+            .find_map(|key| object.get(*key).and_then(Value::as_str))
+            .map(str::to_owned)
+            .unwrap_or_else(|| content.to_string()),
+        _ => content.to_string(),
+    };
+    if text.len() <= maximum_bytes {
+        return (text, false);
+    }
+    let mut boundary = maximum_bytes;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    (text, true)
+}
+
 fn ensure_replayed_operation_matches(
     row: &PgRow,
     user_id: Uuid,
@@ -1205,5 +1435,17 @@ mod tests {
         assert!(validate_change(&safe, Uuid::nil()).is_ok());
         safe.payload = Some(serde_json::json!({"api_key": "must-not-sync"}));
         assert!(validate_change(&safe, Uuid::nil()).is_err());
+    }
+
+    #[test]
+    fn bounds_projected_message_text_on_utf8_boundaries() {
+        assert_eq!(
+            bounded_message_text(&serde_json::json!({"text": "hello"}), 5),
+            ("hello".to_owned(), false)
+        );
+        assert_eq!(
+            bounded_message_text(&Value::String("a€b".to_owned()), 3),
+            ("a".to_owned(), true)
+        );
     }
 }

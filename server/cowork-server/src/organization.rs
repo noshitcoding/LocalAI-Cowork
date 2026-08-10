@@ -14,7 +14,7 @@ use serde_json::Value;
 use sqlx::{postgres::PgRow, PgPool, Row};
 use uuid::Uuid;
 
-use crate::{auth::Principal, db, error::ApiError, governance, AppState};
+use crate::{auth::Principal, db, error::ApiError, governance, sync, AppState};
 
 pub async fn create_team(
     State(state): State<AppState>,
@@ -118,6 +118,7 @@ pub async fn create_project(
     let id = Uuid::new_v4();
     let now = Utc::now();
     let etag = format!("W/\"{id}:1\"");
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO projects (
@@ -142,9 +143,12 @@ pub async fn create_project(
     )
     .bind(request.policy)
     .bind(now)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_project(&row)?)))
+    sync::publish_canonical_project_tx(&mut tx, id).await?;
+    let project = row_to_project(&row)?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(project)))
 }
 
 pub async fn list_projects(
@@ -303,6 +307,7 @@ pub async fn create_thread(
     }
     let id = Uuid::new_v4();
     let etag = format!("W/\"{id}:1\"");
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO threads (
@@ -319,9 +324,12 @@ pub async fn create_thread(
     .bind(request.forked_from_thread_id)
     .bind(request.forked_from_message_id)
     .bind(title)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_thread(&row)?)))
+    sync::publish_canonical_thread_tx(&mut tx, id).await?;
+    let thread = row_to_thread(&row)?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(thread)))
 }
 
 pub async fn list_project_threads(
