@@ -1,0 +1,17 @@
+# Optional third overlay for temporary STS-style credentials.
+services:
+  api:
+    environment:
+      COWORK_S3_SESSION_TOKEN_FILE: /run/secrets/s3_session_token
+    secrets:
+      - s3_session_token
+
+  worker:
+    environment:
+      COWORK_S3_SESSION_TOKEN_FILE: /run/secrets/s3_session_token
+    secrets:
+      - s3_session_token
+
+secrets:
+  s3_session_token:
+    file: ${COWORK_S3_SESSION_TOKEN_PATH:?set COWORK_S3_SESSION_TOKEN_PATH}

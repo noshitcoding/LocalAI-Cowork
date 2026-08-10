@@ -59,7 +59,6 @@ import { MarkdownChatText } from './MarkdownChatText'
 import CoworkContextRail from './CoworkContextRail'
 import ChatDropdown from './ChatDropdown'
 import { writeAuditEvent } from '../utils/audit'
-import { persistInvoke } from '../stores/chatStore'
 import {
   buildClaudeSystemAddendum,
   isToolDeniedByRules,
@@ -84,6 +83,13 @@ import {
 } from '../utils/chatProvider'
 import { getModelGuidance } from '../utils/modelGuidance'
 import { tr } from '../i18n'
+import { createDurableCodexRun, createDurableLocalRun } from '../runtime/localDaemonExecution'
+import {
+  attachDurableLocalRun,
+  cancelLatestDurableRun,
+  respondToLatestDurableInput,
+  resolveLatestDurableApproval,
+} from '../runtime/localDaemonChat'
 
 const TerminalDock = lazy(() => import('./TerminalDock'))
 const CrewLiveMonitor = lazy(() => import('./CrewLiveMonitor'))
@@ -829,6 +835,7 @@ export default function CoworkView() {
   const loadCodex = useCodexStore((s) => s.load)
   const loadCodexModels = useCodexStore((s) => s.loadModels)
   const mcpServer = useConfigStore((s) => s.mcpServer)
+  const mcpServers = useConfigStore((s) => s.mcpServers)
   const activeProvider = useEngineStore((s) => s.activeProvider)
   const engineSendMessage = useEngineStore((s) => s.sendMessage)
   const engineAbort = useEngineStore((s) => s.abort)
@@ -864,6 +871,7 @@ export default function CoworkView() {
     addThread,
     reloadThreadMessages,
     setActiveThread,
+    renameThread,
     setThreadProviderSettings,
     setThreadRunner,
     addMessage,
@@ -1133,17 +1141,8 @@ export default function CoworkView() {
     if (!content.trim()) return
 
     const newTitle = content.length > 50 ? content.slice(0, 50) + '...' : content
-    const updatedThreads = useChatStore.getState().threads.map(t =>
-      t.id === activeThreadId ? { ...t, title: newTitle, updatedAt: Date.now() } : t
-    )
-    useChatStore.setState({ threads: updatedThreads })
-
-    void persistInvoke('db_save_thread', {
-      id: activeThreadId,
-      title: newTitle,
-      createdAt: new Date(activeThread.createdAt).toISOString()
-    }, 'db_save_thread update title')
-  }, [activeThreadId, activeThread]) // Execute when thread or message count changes
+    renameThread(activeThreadId, newTitle)
+  }, [activeThreadId, activeThread, renameThread]) // Execute when thread or message count changes
 
   const enabledPluginSkills = useMemo<EnabledPluginSkill[]>(() => {
     return plugins
@@ -2075,7 +2074,7 @@ export default function CoworkView() {
           return
         }
         if (activeThread) {
-          void safeInvokeVoid('db_save_thread', { id: activeThread.id, title: slash.args.trim(), createdAt: new Date(activeThread.createdAt).toISOString() })
+          renameThread(activeThread.id, slash.args.trim())
           appendAssistantMessage(`Thread umbenannt: ${slash.args.trim()}`)
         }
         return
@@ -2925,6 +2924,89 @@ export default function CoworkView() {
       })
       assistantMessageId = createdAssistantMessageId
 
+      if (hasTauriRuntime() && (providerState.provider === 'openai-compatible' || providerState.provider === 'codex')) {
+        const cwd = taskProjectRunContext?.preferredCwd || getEffectiveWorkspaceCwd(
+          mergedForSend.next,
+          workingFolder,
+          workingPathKind,
+          workspaceDefaultPath,
+        )
+        const toolPolicy = enginePermissionMode === 'strict' || enginePermissionMode === 'plan'
+          ? 'read_only' as const
+          : 'autonomous' as const
+        try {
+          const durable = providerState.provider === 'codex'
+            ? await createDurableCodexRun({
+                clientThreadId: threadId,
+                clientProjectId: activeProject?.id ?? `standalone:${cwd || 'no-workspace'}`,
+                clientTaskId: activeWorkTask?.id ?? null,
+                assistantMessageId: createdAssistantMessageId,
+                userMessageId,
+                prompt: promptWithAttachments,
+                systemPrompt: globalInstruction || undefined,
+                history: chatHistoryMessages
+                  .filter((message) => message.id !== userMessageId && message.role !== 'system')
+                  .map((message) => ({
+                    role: message.role as 'user' | 'assistant',
+                    content: typeof message.content === 'string' ? message.content : '',
+                  })),
+                workspacePath: cwd,
+                projectRevision: activeProject?.updatedAt ?? 1,
+                taskRevision: activeWorkTask?.updatedAt ?? 1,
+                toolPolicy,
+                profileId: selectedCodexProfile?.id ?? '',
+                model: providerState.model || undefined,
+                reasoningEffort: providerState.reasoningEffort,
+                timeoutMs: providerState.timeoutMs,
+                source: 'chat',
+              })
+            : await createDurableLocalRun({
+            clientThreadId: threadId,
+            clientProjectId: activeProject?.id ?? `standalone:${cwd || 'no-workspace'}`,
+            clientTaskId: activeWorkTask?.id ?? null,
+            assistantMessageId: createdAssistantMessageId,
+            userMessageId,
+            prompt: promptWithAttachments,
+            systemPrompt: globalInstruction || undefined,
+            history: chatHistoryMessages
+              .filter((message) => message.id !== userMessageId && message.role !== 'system')
+              .map((message) => ({
+                role: message.role as 'user' | 'assistant',
+                content: typeof message.content === 'string' ? message.content : '',
+              })),
+            workspacePath: cwd || null,
+            projectRevision: activeProject?.updatedAt ?? 1,
+            taskRevision: activeWorkTask?.updatedAt ?? 1,
+            toolPolicy,
+            provider: providerState,
+            mcpServers: policyFlags.allowMcpToolCalls
+              ? (mcpServers.length > 0 ? mcpServers : [mcpServer])
+              : [],
+            source: 'chat',
+          })
+          const { client, run } = durable
+          setContextEvidenceRun({ runId: run.spec.id, threadId })
+          addLog({
+            level: 'info',
+            area: 'runtime',
+            message: 'Durable local run created',
+            details: { runId: run.spec.id, threadId, deviceId: run.assigned_executor_id },
+          })
+          await attachDurableLocalRun(client, run)
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause)
+          setError(message)
+          updateMessage(threadId, createdAssistantMessageId, {
+            content: `Persistent local run failed: ${message}`,
+            streaming: false,
+          }, { persist: true })
+        } finally {
+          setActiveAiThread(null)
+          setBusy(false)
+        }
+        return
+      }
+
       const updateLiveToolCall = (patch: LiveToolCallPatch) => {
         liveToolCalls = upsertLiveToolCall(liveToolCalls, patch)
         updateMessage(threadId, createdAssistantMessageId, {
@@ -3310,7 +3392,12 @@ export default function CoworkView() {
     await submitPrompt(inputValue, attachments)
   }
 
-  const handleStop = () => {
+  const handleStop = async () => {
+    if (activeThreadId && await cancelLatestDurableRun(activeThreadId)) {
+      setBusy(false)
+      setError(null)
+      return
+    }
     engineAbort()
     if (activeThreadId) {
       const streamingMessage = [...activeMessages].reverse().find(
@@ -3369,6 +3456,19 @@ export default function CoworkView() {
   const handleAskUserSubmit = async () => {
     const answer = buildStructuredAskUserAnswer()
     if (!answer.trim() && attachments.length === 0 && activeProjectAttachments.length === 0 && !(includeProjectLinks && activeProjectLinks.length > 0)) return
+    if (activeThreadId && await respondToLatestDurableInput(activeThreadId, { answer })) {
+      addMessage(activeThreadId, {
+        role: 'user',
+        content: answer,
+        timestamp: Date.now(),
+      })
+      setInputValue('')
+      setAskUserFreeText('')
+      setSelectedAskUserOptionIds([])
+      setDismissedAskUserQuestion(askUserQuestion)
+      setBusy(true)
+      return
+    }
     setInputValue(answer)
     setDismissedAskUserQuestion(askUserQuestion)
     await submitPrompt(answer, attachments)
@@ -3382,7 +3482,7 @@ export default function CoworkView() {
     })
   }
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (approvalSteps.length === 0 || !activeThreadId) return
     setBusy(true)
     addMessage(activeThreadId, {
@@ -3390,18 +3490,22 @@ export default function CoworkView() {
       content: `Plan freigegeben: ${approvalSteps.join(' | ')}`,
       timestamp: Date.now(),
     })
-    resolveEngineApproval({ allowed: true })
+    if (!await resolveLatestDurableApproval(activeThreadId, true)) {
+      resolveEngineApproval({ allowed: true })
+    }
     clearApproval()
   }
 
-  const handleReject = () => {
+  const handleReject = async () => {
     if (!activeThreadId) return
     addMessage(activeThreadId, {
       role: 'system',
       content: 'Plan rejected. Adjust the request or check the approval.',
       timestamp: Date.now(),
     })
-    resolveEngineApproval({ allowed: false, reason: 'Declined by user in CoworkView.' })
+    if (!await resolveLatestDurableApproval(activeThreadId, false)) {
+      resolveEngineApproval({ allowed: false, reason: 'Declined by user in CoworkView.' })
+    }
     clearApproval()
   }
 

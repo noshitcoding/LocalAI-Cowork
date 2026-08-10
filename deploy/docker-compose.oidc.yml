@@ -1,0 +1,13 @@
+services:
+  api:
+    environment:
+      COWORK_OIDC_ISSUER: ${COWORK_OIDC_ISSUER:?set COWORK_OIDC_ISSUER}
+      COWORK_OIDC_CLIENT_ID: ${COWORK_OIDC_CLIENT_ID:?set COWORK_OIDC_CLIENT_ID}
+      COWORK_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      COWORK_OIDC_AUTO_PROVISION: ${COWORK_OIDC_AUTO_PROVISION:-false}
+    secrets:
+      - oidc_client_secret
+
+secrets:
+  oidc_client_secret:
+    file: ${COWORK_OIDC_CLIENT_SECRET_PATH:-./secrets/oidc_client_secret.txt}

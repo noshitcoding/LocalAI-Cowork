@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-08-09T21:12:00Z",
-  "version": 5,
+  "timestamp": "2026-08-10T19:02:41Z",
+  "version": 8,
   "statements": [
     {
       "vulnerability": {
@@ -11,7 +11,15 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.3.0",
+          "@id": "pkg:cargo/app@0.3.1",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib@0.18.5"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/open-cowork-android@0.3.1",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -74,6 +82,24 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "The advisory requires ChromaDB's FastAPI collection-creation endpoint or a remote Chroma client loading attacker-controlled collection embedding configuration. LocalAI Cowork neither starts a ChromaDB HTTP server nor configures a remote Chroma endpoint, and its CrewAI runtime does not enable Crew memory, knowledge sources, knowledge, or an embedder. ChromaDB is therefore not initialized on an executable path. Reassess this statement before enabling any Chroma server, remote Chroma client, or CrewAI memory/knowledge feature."
+    },
+    {
+      "vulnerability": {
+        "name": "RUSTSEC-2023-0071"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/cowork-server@0.3.1",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/rsa@0.9.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The Marvin advisory concerns RSA private-key operations. The server no longer performs FCM service-account signing through the RustCrypto rsa graph; it signs RS256 assertions with OpenSSL. The remaining rsa dependency is transitive through openidconnect, where Open Cowork only verifies provider signatures, and web-push-native, where Open Cowork explicitly constructs an ES256 VAPID key. No maintained path imports or invokes an rsa private key. Reassess this statement whenever OIDC client authentication, WebPush algorithms, or the affected dependency graph changes, and remove the exception as soon as upstream publishes a fixed release."
     }
   ]
 }

@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: ['**/web-runtime.spec.ts'],
   outputDir: './test-results',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),

@@ -12,13 +12,14 @@ const indexHtmlPath = join(distDir, 'index.html')
 // the CDP developer browser, the GitHub workbench, the settings provider dashboard,
 // the validated command registry, safe Markdown chat rendering, model guidance,
 // the native sandbox review surface, the security-required React Router 7 upgrade,
-// and the Codex account/setup plus unified API-profile controls.
+// the Codex account/setup plus unified API-profile controls, the distributed
+// runtime clients, and the lazily loaded noVNC remote-desktop viewer.
 // Keep the CSS allowance deliberately tight.
 // Keep headroom tight so the check still catches accidental bundle growth.
 const budgets = {
-  initialGzipBytes: 312 * 1024,
-  cssGzipBytes: 38 * 1024,
-  totalJsGzipBytes: 500 * 1024,
+  initialGzipBytes: 307 * 1024,
+  cssGzipBytes: 41 * 1024,
+  totalJsGzipBytes: 600 * 1024,
   largestJsChunkGzipBytes: 120 * 1024,
 }
 
