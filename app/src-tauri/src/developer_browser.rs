@@ -2107,6 +2107,26 @@ mod daemon_browser_tests {
         local_browser_stop(&state).await.unwrap();
         server.abort();
         let _ = server.await;
-        fs::remove_dir_all(&workspace).unwrap();
+        let mut cleanup_error = None;
+        for _ in 0..40 {
+            match fs::remove_dir_all(&workspace) {
+                Ok(()) => {
+                    cleanup_error = None;
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    cleanup_error = None;
+                    break;
+                }
+                Err(error) => {
+                    cleanup_error = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+        assert!(
+            !workspace.exists(),
+            "browser profile cleanup did not settle: {cleanup_error:?}"
+        );
     }
 }
