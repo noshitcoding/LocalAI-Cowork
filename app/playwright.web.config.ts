@@ -10,11 +10,15 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report-web' }]],
   use: {
     baseURL: 'http://127.0.0.1:4187',
-    browserName: 'chromium',
     locale: 'en-US',
     reducedMotion: 'reduce',
     trace: 'retain-on-failure',
   },
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'firefox', use: { browserName: 'firefox' } },
+    { name: 'webkit', use: { browserName: 'webkit' } },
+  ],
   webServer: {
     command: 'npm exec -- vite preview --host 127.0.0.1 --port 4187 --strictPort',
     url: 'http://127.0.0.1:4187',
