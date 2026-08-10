@@ -377,6 +377,109 @@ jobs:
             exit 1
           fi
 
+  multi-worker-soak:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_worker_soak_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: worker-soak-ci-postgres
+        ports:
+          - 15434:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_worker_soak_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Build control plane worker
+        run: cargo build --locked --package cowork-server
+
+      - name: Compete across four worker processes
+        shell: bash
+        env:
+          COWORK_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000061
+          COWORK_LISTEN_ADDR: 127.0.0.1:18099
+          COWORK_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_RUNNER_SIGNING_KEY: worker-soak-runner-signing-key-00000000
+          COWORK_SERVER_CAPABILITIES: shell,files
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_WORKER_POLL_MS: '10'
+          COWORK_LEASE_SECONDS: '30'
+          COWORK_TEST_POSTGRES_PASSWORD: worker-soak-ci-postgres
+          COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
+          COWORK_TEST_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_TEST_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_TEST_SOAK_WAVES: '5'
+          COWORK_TEST_RUNS_PER_WAVE: '16'
+          COWORK_TEST_WORKER_COUNT: '4'
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_POSTGRES_PASSWORD}@127.0.0.1:15434/cowork_worker_soak_ci"
+          test_root="$(mktemp -d)"
+          pids=()
+          cleanup() {
+            for pid in "${pids[@]}"; do kill "${pid}" 2>/dev/null || true; done
+            for pid in "${pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
+          }
+          trap cleanup EXIT
+
+          node scripts/fake-soak-runner.mjs >"${test_root}/runner.log" 2>&1 &
+          pids+=("$!")
+          COWORK_MODE=api ./target/debug/cowork-server >"${test_root}/api.log" 2>&1 &
+          pids+=("$!")
+          for _ in $(seq 1 150); do
+            curl --fail --silent http://127.0.0.1:18098/healthz >/dev/null \
+              && curl --fail --silent http://127.0.0.1:18099/readyz >/dev/null \
+              && break
+            sleep 0.2
+          done
+          curl --fail --silent http://127.0.0.1:18098/healthz >/dev/null
+          curl --fail --silent http://127.0.0.1:18099/readyz >/dev/null
+
+          worker_ids=(
+            00000000-0000-4000-8000-000000000071
+            00000000-0000-4000-8000-000000000072
+            00000000-0000-4000-8000-000000000073
+            00000000-0000-4000-8000-000000000074
+          )
+          for index in "${!worker_ids[@]}"; do
+            COWORK_MODE=worker COWORK_WORKER_ID="${worker_ids[$index]}" \
+              ./target/debug/cowork-server >"${test_root}/worker-${index}.log" 2>&1 &
+            pids+=("$!")
+          done
+          sleep 1
+          for pid in "${pids[@]}"; do kill -0 "${pid}"; done
+          if ! node scripts/test-worker-soak.mjs; then
+            for log in "${test_root}"/*.log; do echo "==> ${log}"; cat "${log}"; done
+            exit 1
+          fi
+
   security:
     runs-on: ubuntu-latest
 
