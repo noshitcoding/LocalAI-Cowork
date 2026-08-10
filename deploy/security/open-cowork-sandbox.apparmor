@@ -1,0 +1,33 @@
+#include <tunables/global>
+abi <abi/3.0>,
+
+# Open Cowork sandboxes already run as UID 10001, with a read-only rootfs,
+# no Linux capabilities, no host paths and no-new-privileges. This profile is
+# an additional host-kernel boundary shared by core and GUI job containers.
+profile open-cowork-sandbox flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  # Linux kernel crypto sockets are unnecessary and have had container escape
+  # impact; keep this aligned with the current Moby default profile.
+  deny network alg,
+  capability,
+  file,
+  umount,
+
+  deny mount,
+  deny pivot_root,
+  ptrace (trace,tracedby,read,readby) peer=open-cowork-sandbox,
+  deny /proc/kcore rwklx,
+  deny /proc/sysrq-trigger rwklx,
+  deny /proc/sys/** wklx,
+  deny /sys/kernel/security/** rwklx,
+  deny /sys/firmware/** rwklx,
+  deny /var/run/docker.sock rwklx,
+  deny /run/docker.sock rwklx,
+
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (send,receive) peer=open-cowork-sandbox,
+}

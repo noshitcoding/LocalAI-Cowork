@@ -18,7 +18,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
 const CDP_TIMEOUT: Duration = Duration::from_secs(12);
-const START_ATTEMPTS: usize = 50;
+// Cold Chromium startup on constrained executor and CI hosts can exceed five
+// seconds even though the process is healthy. Keep discovery bounded, but give
+// the DevTools endpoint the same startup envelope as other CDP operations.
+const START_ATTEMPTS: usize = 300;
 const START_DELAY: Duration = Duration::from_millis(100);
 #[cfg(not(feature = "tauri-shell"))]
 const DEFAULT_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -323,6 +326,8 @@ fn spawn_browser(
     if !visible {
         command.arg("--headless=new");
     }
+    #[cfg(target_os = "linux")]
+    command.arg("--disable-dev-shm-usage");
     command
         .arg(format!("--remote-debugging-port={port}"))
         .arg(format!("--user-data-dir={}", profile_dir.display()))
@@ -347,7 +352,11 @@ fn spawn_browser(
         .map_err(|error| format!("could not start Chromium developer browser: {error}"))
 }
 
-async fn discover_page_target(port: u16, browser_name: &str) -> Result<BrowserTarget, String> {
+async fn discover_page_target(
+    port: u16,
+    browser_name: &str,
+    child: &mut Child,
+) -> Result<BrowserTarget, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -355,6 +364,14 @@ async fn discover_page_target(port: u16, browser_name: &str) -> Result<BrowserTa
     let endpoint = format!("http://127.0.0.1:{port}/json/list");
 
     for _ in 0..START_ATTEMPTS {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("could not inspect Chromium startup: {error}"))?
+        {
+            return Err(format!(
+                "Chromium exited before its DevTools endpoint became ready ({status})"
+            ));
+        }
         if let Ok(response) = client.get(&endpoint).send().await {
             if let Ok(targets) = response.json::<Vec<Value>>().await {
                 if let Some(target) = targets.iter().find(|target| {
@@ -974,7 +991,7 @@ async fn ensure_browser_started(
     })?;
     let port = reserve_debugger_port()?;
     let mut child = spawn_browser(&executable, &profile_dir, port, visible)?;
-    let target = match discover_page_target(port, &browser_name).await {
+    let target = match discover_page_target(port, &browser_name, &mut child).await {
         Ok(target) => target,
         Err(error) => {
             let _ = child.kill();
@@ -1997,13 +2014,7 @@ mod daemon_browser_tests {
             .unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for _ in 0..4 {
-                let Ok(Ok((mut stream, _))) =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
-                        .await
-                else {
-                    return;
-                };
+            while let Ok((mut stream, _)) = listener.accept().await {
                 let mut request = vec![0_u8; 4096];
                 let _ = stream.read(&mut request).await;
                 let body = "<!doctype html><title>Daemon browser</title><p id='value'></p><script>setTimeout(()=>{const input=document.createElement('input');input.id='name';input.addEventListener('input',e=>document.querySelector('#value').textContent=e.target.value);document.body.appendChild(input)},250)</script>";
@@ -2104,6 +2115,26 @@ mod daemon_browser_tests {
         local_browser_stop(&state).await.unwrap();
         server.abort();
         let _ = server.await;
-        fs::remove_dir_all(&workspace).unwrap();
+        let mut cleanup_error = None;
+        for _ in 0..40 {
+            match fs::remove_dir_all(&workspace) {
+                Ok(()) => {
+                    cleanup_error = None;
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    cleanup_error = None;
+                    break;
+                }
+                Err(error) => {
+                    cleanup_error = Some(error);
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+        assert!(
+            !workspace.exists(),
+            "browser profile cleanup did not settle: {cleanup_error:?}"
+        );
     }
 }

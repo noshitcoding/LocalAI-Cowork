@@ -18,6 +18,8 @@ mod file_safety;
 mod file_watch;
 mod github_integration;
 mod insights;
+mod local_daemon_bridge;
+mod local_daemon_manager;
 mod mcp;
 mod memory_engine;
 mod native_windows_sandbox;
@@ -15633,6 +15635,14 @@ pub fn run() {
                 .path()
                 .resource_dir()
                 .expect("failed to resolve app resource dir");
+            match local_daemon_manager::provision_and_start(&resource_dir, &app_data_dir) {
+                Ok(warnings) => {
+                    for warning in warnings {
+                        log::warn!("Local daemon provisioning warning: {warning}");
+                    }
+                }
+                Err(error) => log::error!("Local daemon provisioning failed: {error}"),
+            }
             let codex_runtime = Arc::new(codex_runtime::CodexRuntimeManager::new(
                 resource_dir,
                 app_data_dir.clone(),
@@ -15985,6 +15995,7 @@ pub fn run() {
             crew_provider_health_check,
             crew_provider_models_list,
             openai_compatible_chat_completion,
+            local_daemon_bridge::local_daemon_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

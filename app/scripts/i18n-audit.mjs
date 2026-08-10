@@ -89,6 +89,9 @@ function isAllowedGermanMatch(file, line) {
   if (normalized === 'src-tauri/src/scheduler.rs') {
     return /\.replace\('\u00e4'|\.replace\('\u00f6'|\.replace\('\u00fc'/.test(line)
   }
+  if (normalized === 'src-tauri/src/local_daemon_manager.rs') {
+    return /autostart|X-GNOME-Autostart/.test(line)
+  }
   if (normalized === 'src/utils/attachmentPromptContext.ts') {
     return /'wenn'|'bitte'|'durch'|alle\\s\+datei|dateiliste|allen\\s\+dateien/.test(line)
   }

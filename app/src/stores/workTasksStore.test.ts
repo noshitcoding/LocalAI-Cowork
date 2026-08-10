@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useWorkTasksStore } from './workTasksStore'
+import { useWorkTasksStore, workTaskMetadataForDaemon } from './workTasksStore'
 import { hasTauriRuntime, safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
 
 vi.mock('../utils/safeInvoke', () => ({
@@ -104,6 +104,36 @@ describe('workTasksStore', () => {
     expect(safeInvokeVoidMock).toHaveBeenLastCalledWith('work_task_upsert', {
       request: expect.objectContaining({ id, status: 'running' }),
     })
+  })
+
+  it('syncs the reusable task definition without local paths or run output', () => {
+    const id = useWorkTasksStore.getState().addTask({
+      title: 'Scheduled report',
+      prompt: 'Create the current report',
+      expectedOutput: 'DOCX and PDF',
+      workDir: 'C:/private/customer-workspace',
+      runner: 'model',
+      model: 'qwen3',
+      scheduleExpr: 'daily 09:00',
+      scheduleEnabled: true,
+    })
+    useWorkTasksStore.getState().updateTask(id, {
+      status: 'completed',
+      output: 'private result',
+      error: 'private error',
+    })
+
+    const payload = workTaskMetadataForDaemon(useWorkTasksStore.getState().tasks[0])
+    expect(payload).toMatchObject({
+      task_kind: 'work',
+      description: 'Create the current report',
+      expected_output: 'DOCX and PDF',
+      schedule_expression: 'daily 09:00',
+    })
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('customer-workspace')
+    expect(serialized).not.toContain('private result')
+    expect(serialized).not.toContain('private error')
   })
 
   it('persists empty prompt edits so SQLite does not keep stale task text', () => {

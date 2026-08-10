@@ -464,6 +464,102 @@ function normalizeServer(server: McpServerConfig): McpServerConfig {
   }
 }
 
+export function providerProfileMetadataForDaemon(profile: LlmProfile): Record<string, unknown> {
+  return {
+    name: profile.name,
+    provider: 'openai-compatible',
+    preset: profile.preset ?? 'custom',
+    auth_mode: profile.authMode ?? 'bearer',
+    model: profile.model,
+    timeout_ms: profile.timeoutMs,
+    verify_tls_certificates: profile.verifyTlsCertificates,
+    context_window: profile.contextWindow,
+    temperature: profile.temperature,
+    endpoint_binding: 'per_device',
+    source: 'desktop',
+  }
+}
+
+export function secretMetadataForProviderProfile(profile: LlmProfile): Record<string, unknown> {
+  return {
+    owner_type: 'provider_profile',
+    owner_id: profile.id,
+    secret_kind: 'api_key',
+    configured_on_source_device: profile.hasApiKey === true,
+    value_included: false,
+    source: 'desktop',
+  }
+}
+
+function profilePreset(value: unknown): ApiProfilePreset {
+  return value === 'ollama' || value === 'openrouter' || value === 'openai' || value === 'custom'
+    ? value
+    : 'custom'
+}
+
+export function providerProfileFromDaemonMetadata(
+  id: string,
+  payload: Record<string, unknown>,
+  current?: LlmProfile,
+): LlmProfile | null {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : ''
+  if (!id.trim() || !name) return null
+  const preset = profilePreset(payload.preset)
+  const numeric = (value: unknown, fallback: number): number => (
+    typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  )
+  return {
+    id,
+    name,
+    provider: 'openai-compatible',
+    preset,
+    authMode: payload.auth_mode === 'none' ? 'none' : 'bearer',
+    baseUrl: current?.baseUrl ?? '',
+    model: typeof payload.model === 'string' ? payload.model : '',
+    apiKey: '',
+    hasApiKey: current?.hasApiKey === true,
+    timeoutMs: Math.max(1_000, numeric(payload.timeout_ms, current?.timeoutMs ?? 600_000)),
+    verifyTlsCertificates: payload.verify_tls_certificates !== false,
+    contextWindow: payload.context_window === null
+      ? null
+      : Math.max(512, numeric(payload.context_window, current?.contextWindow ?? 128_000)),
+    temperature: typeof payload.temperature === 'number' && Number.isFinite(payload.temperature)
+      ? payload.temperature
+      : null,
+  }
+}
+
+export function mcpMetadataForDaemon(server: McpServerConfig): Record<string, unknown> {
+  const executableHint = server.command.trim().split(/[\\/]/).filter(Boolean).pop() ?? ''
+  return {
+    name: server.name,
+    transport: 'stdio',
+    executable_hint: executableHint,
+    environment_keys: Object.keys(server.env ?? {}).sort(),
+    device_binding_required: true,
+    source: 'desktop',
+  }
+}
+
+export function mcpServerFromDaemonMetadata(
+  id: string,
+  payload: Record<string, unknown>,
+  current?: McpServerConfig,
+): McpServerConfig | null {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : ''
+  if (!id.trim() || !name) return null
+  const environmentKeys = Array.isArray(payload.environment_keys)
+    ? payload.environment_keys.filter((key): key is string => typeof key === 'string' && key.trim().length > 0)
+    : []
+  return {
+    id,
+    name,
+    command: current?.command ?? (typeof payload.executable_hint === 'string' ? payload.executable_hint : ''),
+    args: current?.args ?? '',
+    env: current?.env ?? Object.fromEntries(environmentKeys.map((key) => [key, ''])),
+  }
+}
+
 function isLegacyFilesystemServer(server: McpServerConfig): boolean {
   const command = server.command.trim().toLowerCase()
   const args = server.args.trim().toLowerCase()
@@ -608,6 +704,12 @@ export const useConfigStore = create<ConfigState>()(
             profile.id === id ? { ...profile, apiKey: '', hasApiKey: Boolean(apiKey) } : profile
           )),
         }))
+        const profile = useConfigStore.getState().llmProfiles.find((item) => item.id === id)
+        if (profile) {
+          void import('../runtime/localDaemonEntities')
+            .then(({ mirrorProviderDeviceBinding }) => mirrorProviderDeviceBinding(profile))
+            .catch((error) => console.warn('[configStore] Daemon provider credential binding failed', error))
+        }
       },
       deleteLlmProfile: async (id) => {
         if (useConfigStore.getState().defaultLlmProfileIds.api === id) return

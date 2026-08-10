@@ -16,6 +16,8 @@ app/src-tauri/target/
 app/src-tauri/gen/schemas/
 clients/android/src-tauri/target/
 clients/android/src-tauri/gen/schemas/
+clients/android/plugins/*/android/.tauri/
+clients/android/plugins/*/permissions/
 
 # Generated Python runtime artifacts
 app/src-tauri/python/crew_runtime/wheels/
@@ -108,7 +110,8 @@ PERMISSION_FIX_SUMMARY.md
 app/ui-audit-current/
 app/smoke-screenshots/
 app/open-cowork-*-smoke.png
-app/src-tauri/resources/daemon/
+app/src-tauri/resources/daemon/*
+!app/src-tauri/resources/daemon/.gitkeep
 .github/copilot-instructions.md
 .github/instructions/
 .github/skills/

@@ -1,5 +1,10 @@
 ﻿import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useChatStore, getActiveThread } from './chatStore'
+import {
+  getActiveThread,
+  messageMetadataForDaemon,
+  threadMetadataForDaemon,
+  useChatStore,
+} from './chatStore'
 
 const invokeMock = vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => undefined)
 
@@ -175,6 +180,47 @@ describe('chatStore', () => {
       model: 'anthropic/claude-sonnet-4',
       profileId: 'default-openrouter',
     })
+  })
+
+  it('renames a thread through the revision-friendly store operation', () => {
+    const id = useChatStore.getState().addThread('Old title')
+    useChatStore.getState().renameThread(id, '  New title  ')
+    expect(useChatStore.getState().threads[0]?.title).toBe('New title')
+  })
+
+  it('keeps device paths and permission roots outside synchronized chat metadata', () => {
+    const id = useChatStore.getState().addThread('Private chat', undefined, {
+      mode: 'strict',
+      allowedDirectories: ['C:/secret/workspace'],
+    })
+    const messageId = useChatStore.getState().addMessage(id, {
+      role: 'user',
+      content: 'Review the attached file.',
+      timestamp: 42,
+      attachments: [{
+        path: 'C:/secret/workspace/customer-list.xlsx',
+        kind: 'file',
+        mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }],
+    })
+    const thread = useChatStore.getState().threads[0]
+    const message = thread.messages.find((entry) => entry.id === messageId)!
+    const threadPayload = threadMetadataForDaemon(thread)
+    const messagePayload = messageMetadataForDaemon(id, message)
+
+    expect(threadPayload).not.toHaveProperty('permissionConfig')
+    expect(JSON.stringify(threadPayload)).not.toContain('secret/workspace')
+    expect(messagePayload).toMatchObject({
+      thread_id: id,
+      role: 'user',
+      attachment_descriptors: [{
+        kind: 'file',
+        label: 'customer-list.xlsx',
+        availability: 'personal_device',
+      }],
+    })
+    expect(JSON.stringify(messagePayload)).not.toContain('C:/secret')
+    expect(JSON.stringify(messagePayload)).not.toContain('dataUrl')
   })
 
   it('switches a chat between model and crew runners and persists the selection', () => {

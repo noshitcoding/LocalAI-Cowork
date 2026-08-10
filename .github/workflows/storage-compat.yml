@@ -1,0 +1,138 @@
+name: storage-compatibility
+
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      external_provider:
+        description: Optional credentialed provider test
+        required: true
+        default: none
+        type: choice
+        options: [none, aws_s3, cloudflare_r2, other_s3]
+      external_addressing_style:
+        description: Addressing style for the external provider
+        required: true
+        default: virtual_hosted
+        type: choice
+        options: [virtual_hosted, path]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-compatibility-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  minio-versions:
+    name: MinIO ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: current-container-line
+            image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+          - name: n-minus-one-baseline
+            image: quay.io/minio/minio:RELEASE.2024-06-26T01-06-18Z@sha256:337d6f0e90b1992759b832ede340a170cc8ca5cd5db097898b15a3ed121351f7
+    env:
+      S3_ACCESS_KEY: coworkcompat
+      S3_SECRET_KEY: cowork-compat-secret-42
+      S3_BUCKET: cowork-compat
+      MC_IMAGE: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Start pinned provider version
+        env:
+          MINIO_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --detach --rm --name cowork-s3-compat \
+            --publish 127.0.0.1:19020:9000 \
+            --env "MINIO_ROOT_USER=${S3_ACCESS_KEY}" \
+            --env "MINIO_ROOT_PASSWORD=${S3_SECRET_KEY}" \
+            "${MINIO_IMAGE}" server /data
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:19020/minio/health/ready >/dev/null; then
+              exit 0
+            fi
+            echo "Waiting for provider readiness (${attempt}/60)"
+            sleep 1
+          done
+          docker logs cowork-s3-compat
+          exit 1
+
+      - name: Create isolated compatibility bucket
+        run: |
+          set -euo pipefail
+          docker run --rm --network host \
+            --env S3_ACCESS_KEY --env S3_SECRET_KEY --env S3_BUCKET \
+            --entrypoint /bin/sh "${MC_IMAGE}" -ec '
+              mc alias set compat http://127.0.0.1:19020 "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+              mc mb --ignore-existing "compat/$S3_BUCKET"
+              mc anonymous set none "compat/$S3_BUCKET"
+            '
+
+      - name: Encrypted put/get/delete acceptance
+        env:
+          COWORK_S3_TEST_ENDPOINT: http://127.0.0.1:19020
+          COWORK_S3_TEST_REGION: us-east-1
+          COWORK_S3_TEST_BUCKET: ${{ env.S3_BUCKET }}
+          COWORK_S3_TEST_ADDRESSING_STYLE: path
+          COWORK_S3_TEST_ACCESS_KEY: ${{ env.S3_ACCESS_KEY }}
+          COWORK_S3_TEST_SECRET_KEY: ${{ env.S3_SECRET_KEY }}
+        run: cargo test --locked -p cowork-server storage::tests::external_s3_provider_acceptance -- --ignored --exact
+
+      - name: Stop compatibility provider
+        if: always()
+        run: docker stop cowork-s3-compat || true
+
+  external-provider:
+    name: External ${{ inputs.external_provider }}
+    if: github.event_name == 'workflow_dispatch' && inputs.external_provider != 'none'
+    runs-on: ubuntu-22.04
+    environment: storage-compatibility
+    env:
+      COWORK_S3_TEST_ENDPOINT: ${{ secrets.COWORK_S3_COMPAT_ENDPOINT }}
+      COWORK_S3_TEST_REGION: ${{ secrets.COWORK_S3_COMPAT_REGION }}
+      COWORK_S3_TEST_BUCKET: ${{ secrets.COWORK_S3_COMPAT_BUCKET }}
+      COWORK_S3_TEST_ADDRESSING_STYLE: ${{ inputs.external_addressing_style }}
+      COWORK_S3_TEST_ACCESS_KEY: ${{ secrets.COWORK_S3_COMPAT_ACCESS_KEY }}
+      COWORK_S3_TEST_SECRET_KEY: ${{ secrets.COWORK_S3_COMPAT_SECRET_KEY }}
+      COWORK_S3_TEST_SESSION_TOKEN: ${{ secrets.COWORK_S3_COMPAT_SESSION_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Validate protected compatibility configuration
+        run: |
+          set -euo pipefail
+          for name in COWORK_S3_TEST_ENDPOINT COWORK_S3_TEST_REGION COWORK_S3_TEST_BUCKET COWORK_S3_TEST_ACCESS_KEY COWORK_S3_TEST_SECRET_KEY; do
+            if [[ -z "${!name}" ]]; then
+              echo "Required storage-compatibility environment secret is missing: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Encrypted provider acceptance
+        run: cargo test --locked -p cowork-server storage::tests::external_s3_provider_acceptance -- --ignored --exact

@@ -69,6 +69,8 @@ try {
         (Join-Path $installRoot "codex\runtime-bundle-manifest.json"),
         (Join-Path $installRoot "codex\LICENSE"),
         (Join-Path $installRoot "codex\vendor\x86_64-pc-windows-msvc\bin\codex.exe"),
+        (Join-Path $installRoot "daemon\windows-x64\manifest.json"),
+        (Join-Path $installRoot "daemon\windows-x64\cowork-local-daemon.exe"),
         (Join-Path $installRoot "python\windows.zip"),
         (Join-Path $installRoot "python\crew_runtime\wheels.zip"),
         (Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"),
@@ -123,6 +125,23 @@ try {
     $codexVersion = & (Join-Path $codexRoot $codexManifest.binary) --version
     if ($LASTEXITCODE -ne 0 -or ($codexVersion | Out-String) -notmatch '0\.147\.0') {
         throw "Installed Codex executable failed its version probe."
+    }
+
+    $daemonRoot = Join-Path $installRoot "daemon\windows-x64"
+    $daemonManifestPath = Join-Path $daemonRoot "manifest.json"
+    $daemonManifest = Get-Content -LiteralPath $daemonManifestPath -Raw | ConvertFrom-Json
+    if (
+        $daemonManifest.schemaVersion -ne 1 -or
+        $daemonManifest.target -ne "windows-x64" -or
+        $daemonManifest.binary -ne "cowork-local-daemon.exe" -or
+        $daemonManifest.version -ne $ExpectedVersion -or
+        [string]$daemonManifest.sha256 -notmatch '^[a-f0-9]{64}$'
+    ) {
+        throw "Installed local daemon manifest is incompatible."
+    }
+    $packagedDaemon = Join-Path $daemonRoot $daemonManifest.binary
+    if ((Get-Sha256 -Path $packagedDaemon) -ne [string]$daemonManifest.sha256) {
+        throw "Installed local daemon SHA-256 does not match its manifest."
     }
 
     $manifestPath = Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"
@@ -184,6 +203,45 @@ try {
             -WindowStyle Hidden `
             -PassThru
 
+        $daemonSuffix = ([string]$daemonManifest.sha256).Substring(0, 16)
+        $provisionedDaemon = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\bin\cowork-local-daemon-$daemonSuffix.exe"
+        $daemonTokenPath = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\ipc-token.txt"
+        $daemonDevicePath = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\device-id.txt"
+        $daemonDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $daemonDeadline) {
+            if (
+                (Test-Path -LiteralPath $provisionedDaemon -PathType Leaf) -and
+                (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf) -and
+                (Test-Path -LiteralPath $daemonDevicePath -PathType Leaf)
+            ) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        if (
+            -not (Test-Path -LiteralPath $provisionedDaemon -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $daemonDevicePath -PathType Leaf)
+        ) {
+            throw "Installed app did not provision its local daemon binary and credentials."
+        }
+        if ((Get-Sha256 -Path $provisionedDaemon) -ne [string]$daemonManifest.sha256) {
+            throw "Provisioned local daemon failed its integrity check."
+        }
+        $daemonToken = (Get-Content -LiteralPath $daemonTokenPath -Raw).Trim()
+        $daemonDevice = (Get-Content -LiteralPath $daemonDevicePath -Raw).Trim()
+        $parsedDaemonDevice = [Guid]::Empty
+        if ($daemonToken.Length -lt 64 -or -not [Guid]::TryParse($daemonDevice, [ref]$parsedDaemonDevice)) {
+            throw "Installed app provisioned invalid daemon credentials."
+        }
+        $loginCommand = (Get-ItemProperty `
+            -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "OpenCoworkLocalDaemon" `
+            -ErrorAction Stop).OpenCoworkLocalDaemon
+        if ($loginCommand -ne ('"' + $provisionedDaemon + '"')) {
+            throw "Installed app did not register the versioned local daemon for user login."
+        }
+
         while ((Get-Date) -lt $deadline) {
             if (Test-Path -LiteralPath $runtimePython -PathType Leaf) {
                 $previousLocalModelCostMap = $env:LITELLM_LOCAL_MODEL_COST_MAP
@@ -223,12 +281,13 @@ try {
 
     $successMessage = (
         "Installer runtime smoke passed for Local AI Cowork {0} " +
-        "(Codex {1}, Python {2}, CrewAI {3}, automatic bootstrap verified: {4})."
+        "(Codex {1}, daemon {2}, Python {3}, CrewAI {4}, automatic bootstrap verified: {5})."
     )
     Write-Host (
         $successMessage -f
         $ExpectedVersion,
         $codexManifest.version,
+        $daemonManifest.version,
         $manifest.python.version,
         $manifest.smoke.crewaiVersion,
         (-not $SkipRuntimeBootstrap)
@@ -249,6 +308,16 @@ finally {
                 -PassThru
             if ($uninstall.ExitCode -ne 0) {
                 throw "Silent test uninstall failed with exit code $($uninstall.ExitCode)."
+            }
+            $daemonRunValue = Get-ItemProperty `
+                -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+                -Name "OpenCoworkLocalDaemon" `
+                -ErrorAction SilentlyContinue
+            if ($daemonRunValue) {
+                throw "Uninstaller left the local daemon login registration behind."
+            }
+            if (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\bin")) {
+                throw "Uninstaller left versioned local daemon binaries behind."
             }
         }
     }

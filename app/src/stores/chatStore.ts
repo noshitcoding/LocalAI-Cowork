@@ -1,7 +1,7 @@
 ﻿import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/chatMessages'
-import type { ChatAttachment } from '../utils/chatAttachments'
+import { getAttachmentDisplayName, type ChatAttachment } from '../utils/chatAttachments'
 import { normalizeChatProviderSelection, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
 import { useProjectStore } from './projectStore'
@@ -19,6 +19,10 @@ export type ChatMessage = {
   liveToolCalls?: LiveToolCall[]
   crewLive?: CrewLiveState
   streaming?: boolean
+  durableRunId?: string
+  durableRunState?: string
+  durableRequestId?: string
+  durableRequestKind?: 'approval' | 'input'
 }
 
 export type LiveToolCallStatus = 'requested' | 'running' | 'completed' | 'failed' | 'approval' | 'waiting_input'
@@ -125,14 +129,16 @@ type ChatState = {
   ensureThreadLoaded: (id: string) => Promise<void>
   reloadThreadMessages: (id: string) => Promise<void>
   setActiveThread: (id: string | null) => Promise<void>
+  renameThread: (threadId: string, title: string) => void
   setThreadProviderSettings: (threadId: string, providerSettings?: ChatProviderSelection) => void
   setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => void
   setThreadRunner: (threadId: string, runner: 'crew' | 'model', crewId?: string | null) => void
   addMessage: (threadId: string, message: Omit<ChatMessage, 'id'>) => string
+  addMessageWithId: (threadId: string, message: ChatMessage) => string
   updateMessage: (
     threadId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'debugContent' | 'thinkingContent' | 'verboseContent' | 'liveToolCalls' | 'crewLive' | 'streaming'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'debugContent' | 'thinkingContent' | 'verboseContent' | 'liveToolCalls' | 'crewLive' | 'streaming' | 'durableRunId' | 'durableRunState' | 'durableRequestId' | 'durableRequestKind'>>,
     options?: { persist?: boolean },
   ) => void
   setPendingApproval: (steps: string[]) => void
@@ -217,6 +223,72 @@ function parsePermissionConfig(raw: string | null | undefined): PermissionConfig
 async function loadThreadMessagesFromDb(threadId: string): Promise<ChatMessage[]> {
   const dbMsgs = await invoke<DbMessage[]>('db_list_messages', { threadId })
   return (Array.isArray(dbMsgs) ? dbMsgs : []).map((message) => hydrateStoredMessage(message))
+}
+
+export function threadMetadataForDaemon(thread: ChatThread): Record<string, unknown> {
+  return {
+    title: thread.title,
+    provider_settings: normalizeChatProviderSelection(thread.providerSettings),
+    runner: thread.runner === 'crew' ? 'crew' : 'model',
+    crew_id: thread.runner === 'crew' ? thread.crewId ?? null : null,
+    created_at: new Date(thread.createdAt).toISOString(),
+    updated_at: new Date(thread.updatedAt).toISOString(),
+    source: 'desktop',
+  }
+}
+
+export function messageMetadataForDaemon(
+  threadId: string,
+  message: ChatMessage,
+): Record<string, unknown> {
+  return {
+    thread_id: threadId,
+    role: message.role,
+    content: typeof message.content === 'string' ? message.content : '',
+    timestamp: message.timestamp,
+    attachment_descriptors: (message.attachments ?? []).map((attachment) => ({
+      kind: attachment.kind,
+      label: getAttachmentDisplayName(attachment),
+      media_type: attachment.mediaType ?? null,
+      availability: 'personal_device',
+    })),
+    visible_in_chat: message.visibleInChat,
+    durable_run_id: message.durableRunId,
+    durable_run_state: message.durableRunState,
+    durable_request_id: message.durableRequestId,
+    durable_request_kind: message.durableRequestKind,
+    source: 'desktop',
+  }
+}
+
+function mirrorThreadToDaemon(thread: ChatThread): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('thread', thread.id, threadMetadataForDaemon(thread))
+    ))
+    .catch((error) => console.warn('[chatStore] Daemon thread mirror failed', error))
+}
+
+function mirrorMessageToDaemon(threadId: string, message: ChatMessage): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('message', message.id, messageMetadataForDaemon(threadId, message))
+    ))
+    .catch((error) => console.warn('[chatStore] Daemon message mirror failed', error))
+}
+
+function tombstoneChatEntity(entityType: 'thread' | 'message', id: string): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ tombstoneDurableLocalEntity }) => tombstoneDurableLocalEntity(entityType, id))
+    .catch((error) => console.warn(`[chatStore] Daemon ${entityType} tombstone failed`, error))
+}
+
+function tombstoneThreadSnapshot(thread: ChatThread): void {
+  thread.messages.forEach((message) => tombstoneChatEntity('message', message.id))
+  tombstoneChatEntity('thread', thread.id)
 }
 
 function persistMessageUpdate(threadId: string, message: ChatMessage): void {
@@ -342,10 +414,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .sort((a, b) => b.updatedAt - a.updatedAt)
         // Keep the newest one, delete the rest
         const keepId = sortedEmptyThreads[0]?.id
-        const deleteIds = sortedEmptyThreads.slice(1).map(t => t.id)
+        const deletedThreads = sortedEmptyThreads.slice(1)
+        const deleteIds = deletedThreads.map(t => t.id)
         // Delete from the database
-        for (const id of deleteIds) {
-          void persistInvoke('db_delete_thread', { id }, 'db_delete_thread cleanup')
+        for (const thread of deletedThreads) {
+          void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
+          tombstoneThreadSnapshot(thread)
         }
         
         return {
@@ -403,6 +477,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(systemMsg),
       timestamp: systemMsg.timestamp,
     }, 'db_save_message system')
+    mirrorThreadToDaemon(thread)
+    mirrorMessageToDaemon(id, systemMsg)
     
     // Bereinige leere Threads nach dem Createn eines neuen
     set((state) => {
@@ -422,10 +498,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         .sort((a, b) => b.updatedAt - a.updatedAt)
         // Keep the newest one, delete the rest
       const keepId = sortedEmptyThreads[0]?.id
-      const deleteIds = sortedEmptyThreads.slice(1).map(t => t.id)
+      const deletedThreads = sortedEmptyThreads.slice(1)
+      const deleteIds = deletedThreads.map(t => t.id)
         // Delete from the database
-      for (const deleteId of deleteIds) {
-        void persistInvoke('db_delete_thread', { id: deleteId }, 'db_delete_thread cleanup')
+      for (const thread of deletedThreads) {
+        void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
+        tombstoneThreadSnapshot(thread)
       }
       
       return {
@@ -490,6 +568,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(systemMsg),
       timestamp: systemMsg.timestamp,
     }, 'db_save_message restored task chat system')
+    mirrorThreadToDaemon(thread)
+    mirrorMessageToDaemon(normalizedId, systemMsg)
 
     return { id: normalizedId, created: true }
   },
@@ -575,6 +655,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     await get().ensureThreadLoaded(id)
   },
 
+  renameThread: (threadId, title) => {
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle) return
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === threadId
+          ? { ...thread, title: normalizedTitle, updatedAt: Date.now() }
+          : thread
+      )),
+    }))
+    void persistInvoke('db_update_thread_title', {
+      id: threadId,
+      title: normalizedTitle,
+    }, 'db_update_thread_title')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
+  },
+
   setThreadProviderSettings: (threadId, providerSettings) => {
     const normalized = normalizeChatProviderSelection(providerSettings)
     set((state) => ({
@@ -588,6 +686,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       id: threadId,
       providerSettingsJson: serializeThreadProviderSettings(normalized),
     }, 'db_update_thread_provider_settings')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
   },
 
   setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => {
@@ -619,6 +719,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       runner,
       crewId: normalizedCrewId,
     }, 'db_update_thread_runner')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
   },
 
   addMessage: (threadId, message) => {
@@ -643,7 +745,38 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(full),
       timestamp: message.timestamp,
     }, 'db_save_message addMessage')
+    mirrorMessageToDaemon(threadId, full)
+    const updatedThread = get().threads.find((thread) => thread.id === threadId)
+    if (updatedThread) mirrorThreadToDaemon(updatedThread)
     return msgId
+  },
+
+  addMessageWithId: (threadId, message) => {
+    const existing = get().threads
+      .find((thread) => thread.id === threadId)
+      ?.messages.some((candidate) => candidate.id === message.id)
+    if (existing) return message.id
+    const full: ChatMessage = {
+      ...message,
+      content: typeof message.content === 'string' ? message.content : '',
+      attachments: Array.isArray(message.attachments) ? message.attachments : undefined,
+    }
+    set((state) => ({
+      threads: state.threads.map((thread) => thread.id === threadId
+        ? { ...thread, messages: [...thread.messages, full], updatedAt: Date.now() }
+        : thread),
+    }))
+    void persistInvoke('db_save_message', {
+      id: full.id,
+      threadId,
+      role: full.role,
+      content: serializeChatMessageForStorage(full),
+      timestamp: full.timestamp,
+    }, 'db_save_message addMessageWithId')
+    mirrorMessageToDaemon(threadId, full)
+    const updatedThread = get().threads.find((thread) => thread.id === threadId)
+    if (updatedThread) mirrorThreadToDaemon(updatedThread)
+    return full.id
   },
 
   updateMessage: (threadId, messageId, patch, options) => {
@@ -670,6 +803,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     if (messageToPersist) {
       flushMessagePersist(threadId, messageToPersist)
+      mirrorMessageToDaemon(threadId, messageToPersist)
+      const thread = get().threads.find((entry) => entry.id === threadId)
+      if (thread) mirrorThreadToDaemon(thread)
     } else {
       const currentMessage = get().threads
         .find((thread) => thread.id === threadId)
@@ -686,6 +822,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setError: (error) => set({ error }),
 
   deleteThread: (id) => {
+    const deletedThread = get().threads.find((thread) => thread.id === id)
     loadedThreadMessages.delete(id)
     databaseBackedThreadIds.delete(id)
     loadingThreadMessages.delete(id)
@@ -695,6 +832,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }))
     useProjectStore.getState().detachThreadFromAll(id)
     void persistInvoke('db_delete_thread', { id }, 'db_delete_thread')
+    if (deletedThread) tombstoneThreadSnapshot(deletedThread)
+    else tombstoneChatEntity('thread', id)
   },
 
   removeLastMessagePairs: (threadId, pairCount) => {
@@ -755,6 +894,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     if (removedIds.length > 0) {
       void persistInvoke('db_delete_messages', { ids: removedIds }, 'db_delete_messages rewind')
+      removedIds.forEach((messageId) => tombstoneChatEntity('message', messageId))
+      const thread = get().threads.find((entry) => entry.id === threadId)
+      if (thread) mirrorThreadToDaemon(thread)
     }
 
     return { pairsRemoved, messagesRemoved }

@@ -1,0 +1,26 @@
+{
+	admin off
+	auto_https off
+}
+
+import /etc/caddy/web-headers.caddy
+
+:8080 {
+	encode zstd gzip
+	import security_headers
+
+	@control_plane path /api/* /healthz /readyz
+	handle @control_plane {
+		reverse_proxy api:8080 {
+			transport http {
+				read_timeout 24h
+				write_timeout 24h
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy web:8080
+	}
+}

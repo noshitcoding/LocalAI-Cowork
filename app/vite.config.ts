@@ -28,6 +28,7 @@ export default defineConfig({
       '@tauri-apps/plugin-dialog',
       '@tauri-apps/plugin-notification',
       '@tauri-apps/plugin-opener',
+      '@novnc/novnc',
       'class-variance-authority',
       'clsx',
       'i18next',
@@ -76,6 +77,11 @@ export default defineConfig({
               name: 'tauri',
               test: (id) => id.replaceAll('\\', '/').includes('@tauri-apps'),
               priority: 110,
+            },
+            {
+              name: 'remote-desktop',
+              test: (id) => id.replaceAll('\\', '/').includes('@novnc/novnc'),
+              priority: 115,
             },
             {
               name: 'terminal-vendor',

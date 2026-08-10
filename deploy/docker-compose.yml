@@ -1,0 +1,347 @@
+name: open-cowork
+
+services:
+  gateway:
+    image: caddy:2.10.0-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    ports:
+      - "${COWORK_BIND_ADDRESS:-127.0.0.1}:${COWORK_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./security/web-headers.caddy:/etc/caddy/web-headers.caddy:ro
+    networks:
+      - edge
+      - control
+    read_only: true
+    tmpfs:
+      - /config
+      - /data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  web:
+    image: ${COWORK_WEB_IMAGE:-ghcr.io/noshitcoding/open-cowork-web}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: app/Dockerfile.web
+    restart: unless-stopped
+    networks:
+      - control
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  api:
+    image: ${COWORK_SERVER_IMAGE:-ghcr.io/noshitcoding/open-cowork-server}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      COWORK_MODE: api
+      COWORK_LISTEN_ADDR: 0.0.0.0:8080
+      COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      DATABASE_URL_FILE: /run/secrets/database_url
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
+      COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
+      COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}
+      COWORK_MODEL_INPUT_COST_MICROS_PER_MILLION: ${COWORK_MODEL_INPUT_COST_MICROS_PER_MILLION:-}
+      COWORK_MODEL_OUTPUT_COST_MICROS_PER_MILLION: ${COWORK_MODEL_OUTPUT_COST_MICROS_PER_MILLION:-}
+      COWORK_RUNNER_URL: http://runner:8090
+      COWORK_RUNNER_SIGNING_KEY_FILE: /run/secrets/runner_signing_key
+      COWORK_S3_ENDPOINT: ${COWORK_S3_ENDPOINT:-http://minio:9000}
+      COWORK_S3_REGION: ${COWORK_S3_REGION:-us-east-1}
+      COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:-cowork-blobs}
+      COWORK_S3_ADDRESSING_STYLE: ${COWORK_S3_ADDRESSING_STYLE:-path}
+      COWORK_S3_ACCESS_KEY_FILE: /run/secrets/minio_root_user
+      COWORK_S3_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      COWORK_STORAGE_MASTER_KEY_FILE: /run/secrets/storage_master_key
+      COWORK_WEB_PUSH_ENABLED: ${COWORK_WEB_PUSH_ENABLED:-true}
+      COWORK_WEB_PUSH_SUBJECT: ${COWORK_WEB_PUSH_SUBJECT:-mailto:admin@localhost.invalid}
+      COWORK_PUBLIC_ORIGIN: ${COWORK_PUBLIC_ORIGIN:-}
+      COWORK_WEBAUTHN_RP_ID: ${COWORK_WEBAUTHN_RP_ID:-}
+      RUST_LOG: ${COWORK_LOG_LEVEL:-cowork_server=info,tower_http=info}
+    secrets:
+      - bootstrap_token
+      - database_url
+      - minio_root_user
+      - minio_root_password
+      - storage_master_key
+      - runner_signing_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      runner:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - control
+      - egress
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  worker:
+    image: ${COWORK_SERVER_IMAGE:-ghcr.io/noshitcoding/open-cowork-server}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      COWORK_MODE: worker
+      COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      DATABASE_URL_FILE: /run/secrets/database_url
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
+      COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
+      COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}
+      COWORK_MODEL_INPUT_COST_MICROS_PER_MILLION: ${COWORK_MODEL_INPUT_COST_MICROS_PER_MILLION:-}
+      COWORK_MODEL_OUTPUT_COST_MICROS_PER_MILLION: ${COWORK_MODEL_OUTPUT_COST_MICROS_PER_MILLION:-}
+      COWORK_LEASE_SECONDS: ${COWORK_LEASE_SECONDS:-90}
+      COWORK_MAINTENANCE_EVERY_POLLS: ${COWORK_MAINTENANCE_EVERY_POLLS:-60}
+      COWORK_RUNNER_URL: http://runner:8090
+      COWORK_RUNNER_SIGNING_KEY_FILE: /run/secrets/runner_signing_key
+      COWORK_S3_ENDPOINT: ${COWORK_S3_ENDPOINT:-http://minio:9000}
+      COWORK_S3_REGION: ${COWORK_S3_REGION:-us-east-1}
+      COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:-cowork-blobs}
+      COWORK_S3_ADDRESSING_STYLE: ${COWORK_S3_ADDRESSING_STYLE:-path}
+      COWORK_S3_ACCESS_KEY_FILE: /run/secrets/minio_root_user
+      COWORK_S3_SECRET_KEY_FILE: /run/secrets/minio_root_password
+      COWORK_STORAGE_MASTER_KEY_FILE: /run/secrets/storage_master_key
+      RUST_LOG: ${COWORK_LOG_LEVEL:-cowork_server=info}
+    secrets:
+      - bootstrap_token
+      - database_url
+      - runner_signing_key
+      - minio_root_user
+      - minio_root_password
+      - storage_master_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      runner:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - control
+      - egress
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  runner:
+    image: ${COWORK_RUNNER_IMAGE:-ghcr.io/noshitcoding/open-cowork-runner}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: server/cowork-runner/Dockerfile
+    restart: unless-stopped
+    environment:
+      COWORK_RUNNER_LISTEN_ADDR: 0.0.0.0:8090
+      COWORK_RUNNER_SIGNING_KEY_FILE: /run/secrets/runner_signing_key
+      COWORK_RUNNER_CORE_IMAGE: ${COWORK_SANDBOX_CORE_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-core}:${COWORK_VERSION:-0.3.0}
+      COWORK_RUNNER_GUI_IMAGE: ${COWORK_SANDBOX_GUI_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-gui}:${COWORK_VERSION:-0.3.0}
+      COWORK_SANDBOX_EGRESS_NETWORK: open-cowork-sandbox-egress
+      COWORK_SANDBOX_HTTP_PROXY: http://egress-proxy:3128
+      COWORK_SANDBOX_SECCOMP_PROFILE: ${COWORK_SANDBOX_SECCOMP_PROFILE:-builtin}
+      COWORK_SANDBOX_APPARMOR_PROFILE: ${COWORK_SANDBOX_APPARMOR_PROFILE:-open-cowork-sandbox}
+      COWORK_SANDBOX_REQUIRE_APPARMOR: ${COWORK_SANDBOX_REQUIRE_APPARMOR:-true}
+      RUST_LOG: ${COWORK_LOG_LEVEL:-cowork_runner=info,tower_http=info}
+    secrets:
+      - runner_signing_key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      sandbox-core:
+        condition: service_completed_successfully
+      sandbox-gui:
+        condition: service_completed_successfully
+      egress-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - control
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  egress-proxy:
+    image: ${COWORK_EGRESS_PROXY_IMAGE:-ghcr.io/noshitcoding/open-cowork-egress-proxy}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: deploy/egress-proxy/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run:uid=13,gid=13,mode=0755
+      - /var/log/squid:uid=13,gid=13,mode=0755
+      - /var/spool/squid:uid=13,gid=13,mode=0755
+    healthcheck:
+      test: ["CMD", "squidclient", "-h", "127.0.0.1", "-p", "3128", "mgr:info"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - sandbox-egress
+      - egress
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  sandbox-core:
+    image: ${COWORK_SANDBOX_CORE_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-core}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: deploy/sandboxes/core/Dockerfile
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  sandbox-gui:
+    image: ${COWORK_SANDBOX_GUI_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-gui}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: deploy/sandboxes/gui/Dockerfile
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cowork
+      POSTGRES_USER: cowork
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cowork -d cowork"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - control
+    security_opt:
+      - no-new-privileges:true
+
+  minio:
+    image: ${COWORK_MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e}
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    volumes:
+      - object-data:/data
+    networks:
+      - control
+    security_opt:
+      - no-new-privileges:true
+
+  minio-init:
+    image: ${COWORK_MINIO_CLIENT_IMAGE:-quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z@sha256:aead63c77f9db9107f1696fb08ecb0faeda23729cde94b0f663edf4fe09728e3}
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+      COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:-cowork-blobs}
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mc alias set local http://minio:9000 "$$(cat $$MINIO_ROOT_USER_FILE)" "$$(cat $$MINIO_ROOT_PASSWORD_FILE)"; do sleep 2; done
+        mc mb --ignore-existing "local/$$COWORK_S3_BUCKET"
+        mc anonymous set none "local/$$COWORK_S3_BUCKET"
+    networks:
+      - control
+
+volumes:
+  postgres-data:
+  object-data:
+
+networks:
+  edge:
+  egress:
+  control:
+    internal: true
+  sandbox-egress:
+    name: open-cowork-sandbox-egress
+    internal: true
+
+secrets:
+  bootstrap_token:
+    file: ${COWORK_BOOTSTRAP_TOKEN_PATH:-./secrets/bootstrap_token.txt}
+  database_url:
+    file: ${COWORK_DATABASE_URL_PATH:-./secrets/database_url.txt}
+  postgres_password:
+    file: ${COWORK_POSTGRES_PASSWORD_PATH:-./secrets/postgres_password.txt}
+  minio_root_user:
+    file: ${COWORK_MINIO_ROOT_USER_PATH:-./secrets/minio_root_user.txt}
+  minio_root_password:
+    file: ${COWORK_MINIO_ROOT_PASSWORD_PATH:-./secrets/minio_root_password.txt}
+  runner_signing_key:
+    file: ${COWORK_RUNNER_SIGNING_KEY_PATH:-./secrets/runner_signing_key.txt}
+  storage_master_key:
+    file: ${COWORK_STORAGE_MASTER_KEY_PATH:-./secrets/storage_master_key.txt}

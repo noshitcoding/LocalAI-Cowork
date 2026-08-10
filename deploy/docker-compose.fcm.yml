@@ -1,0 +1,10 @@
+services:
+  api:
+    environment:
+      COWORK_FCM_SERVICE_ACCOUNT_FILE: /run/secrets/fcm_service_account
+    secrets:
+      - fcm_service_account
+
+secrets:
+  fcm_service_account:
+    file: ${COWORK_FCM_SERVICE_ACCOUNT_PATH:?Set COWORK_FCM_SERVICE_ACCOUNT_PATH to the service-account JSON file}

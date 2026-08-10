@@ -14,6 +14,7 @@ import {
   PanelLeft,
   PanelRight,
   Search,
+  Server,
   Settings2,
   Sparkles,
   Sun,
@@ -43,6 +44,7 @@ const PRODUCT_ROUTE_ICONS = {
   features: Blocks,
   browser: Globe2,
   github: GitPullRequest,
+  server: Server,
   settings: Settings2,
 } as const
 

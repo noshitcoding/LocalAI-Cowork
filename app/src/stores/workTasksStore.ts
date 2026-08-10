@@ -259,11 +259,48 @@ function toBackendRequest(task: WorkTask): BackendWorkTask {
   }
 }
 
+export function workTaskMetadataForDaemon(task: WorkTask): Record<string, unknown> {
+  return {
+    task_kind: 'work',
+    title: task.title,
+    description: task.prompt,
+    expected_output: task.expectedOutput,
+    thread_id: task.threadId,
+    runner: task.runner,
+    crew_id: task.runner === 'crew' ? task.crewId : null,
+    model: task.runner === 'model' ? task.model : '',
+    backend_selection: task.runner === 'model'
+      ? normalizeChatProviderSelection(task.backendSelection)
+      : undefined,
+    schedule_expression: task.scheduleExpr,
+    schedule_enabled: task.scheduleEnabled,
+    created_at: toIso(task.createdAt),
+    source: 'desktop',
+  }
+}
+
+function mirrorWorkTaskToDaemon(task: WorkTask): void {
+  if (!hasTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('task', task.id, workTaskMetadataForDaemon(task))
+    ))
+    .catch((error) => console.warn('[workTasksStore] Daemon task mirror failed', error))
+}
+
+function tombstoneWorkTaskInDaemon(id: string): void {
+  if (!hasTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ tombstoneDurableLocalEntity }) => tombstoneDurableLocalEntity('task', id))
+    .catch((error) => console.warn('[workTasksStore] Daemon task tombstone failed', error))
+}
+
 function persistWorkTask(task: WorkTask): void {
   if (!task.id.trim()) return
   void safeInvokeVoid('work_task_upsert', {
     request: toBackendRequest(task),
   })
+  mirrorWorkTaskToDaemon(task)
 }
 
 function parseLegacyStorage(): WorkTask[] {
@@ -410,6 +447,7 @@ export const useWorkTasksStore = create<WorkTasksState>()(
           tasks: state.tasks.filter((task) => task.id !== id),
         }))
         void safeInvokeVoid('work_task_delete', { id })
+        tombstoneWorkTaskInDaemon(id)
       },
 
       upsertMany: (incoming) => {

@@ -1,11 +1,14 @@
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
 
+const IS_ANDROID_SHELL = import.meta.env.VITE_COWORK_ANDROID === 'true'
+
 export type CredentialScope =
   | 'connector'
   | 'crew'
   | 'engine'
   | 'llm_profile'
   | 'mcp_env'
+  | 'remote_server'
 
 export type CredentialLocator = {
   scope: CredentialScope
@@ -59,6 +62,16 @@ export async function setCredential(locator: CredentialLocator, value: string): 
       return
     }
 
+    if (IS_ANDROID_SHELL) {
+      const { mobileSecureDelete, mobileSecureSet } = await import('../mobile/mobileSecure')
+      if (value) {
+        await mobileSecureSet('credentials', locatorKey(locator), value)
+      } else {
+        await mobileSecureDelete('credentials', locatorKey(locator))
+      }
+      return
+    }
+
     await safeInvoke<void>('credential_set', {
       request: { ...locator, value },
     })
@@ -70,6 +83,11 @@ export async function getCredential(locator: CredentialLocator): Promise<string 
   if (!hasTauriRuntime()) {
     return volatileCredentials.get(locatorKey(locator)) ?? null
   }
+  if (IS_ANDROID_SHELL) {
+    const { mobileSecureGet } = await import('../mobile/mobileSecure')
+    return mobileSecureGet('credentials', locatorKey(locator))
+  }
+
   const response = await safeInvoke<CredentialReadResponse>('credential_get', {
     request: locator,
   })
@@ -79,6 +97,10 @@ export async function getCredential(locator: CredentialLocator): Promise<string 
 export async function hasCredential(locator: CredentialLocator): Promise<boolean> {
   await waitForPendingWrite(locator)
   if (!hasTauriRuntime()) return volatileCredentials.has(locatorKey(locator))
+  if (IS_ANDROID_SHELL) {
+    const { mobileSecureGet } = await import('../mobile/mobileSecure')
+    return (await mobileSecureGet('credentials', locatorKey(locator))) !== null
+  }
   const response = await safeInvoke<CredentialExistsResponse>('credential_exists', { request: locator })
   return response.exists
 }
@@ -87,6 +109,11 @@ export async function deleteCredential(locator: CredentialLocator): Promise<void
   await enqueue(locator, async () => {
     if (!hasTauriRuntime()) {
       volatileCredentials.delete(locatorKey(locator))
+      return
+    }
+    if (IS_ANDROID_SHELL) {
+      const { mobileSecureDelete } = await import('../mobile/mobileSecure')
+      await mobileSecureDelete('credentials', locatorKey(locator))
       return
     }
     await safeInvoke<void>('credential_delete', { request: locator })
@@ -104,6 +131,15 @@ export async function copyCredentialIfMissing(
     const value = volatileCredentials.get(locatorKey(source))
     if (value === undefined) return false
     volatileCredentials.set(destinationKey, value)
+    return true
+  }
+  if (IS_ANDROID_SHELL) {
+    const { mobileSecureGet, mobileSecureSet } = await import('../mobile/mobileSecure')
+    const destinationKey = locatorKey(destination)
+    if (await mobileSecureGet('credentials', destinationKey)) return false
+    const value = await mobileSecureGet('credentials', locatorKey(source))
+    if (value === null) return false
+    await mobileSecureSet('credentials', destinationKey, value)
     return true
   }
   const response = await safeInvoke<CredentialCopyResponse>('credential_copy', {

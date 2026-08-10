@@ -38,6 +38,9 @@ function entropy(value) {
 function allowedSecretMatch(rule, match, file) {
   if (PLACEHOLDER.test(match[0])) return true
   if (rule === 'private-key' && /(?:^|\/)resources\/python\/.*\/test\/certdata\//.test(file)) return true
+  if (rule === 'credential-in-url') {
+    return /:[^@]*(?:\$(?:\{)?[A-Za-z_][A-Za-z0-9_]*\}?|PASSWORD)@/.test(match[0])
+  }
   if (rule === 'openai-style-key') {
     const body = match[0].replace(/^sk-(?:proj-|svcacct-)?/, '')
     return body.length < 32 || entropy(body) < 3.25
@@ -73,11 +76,14 @@ function lineNumber(text, offset) {
 }
 
 function allowedPrivacyMatch(rule, match, file) {
-  if (rule === 'private-ipv4' && /(?:^|\/)network_safety\.rs$/.test(file)) {
+  if (rule === 'private-ipv4' && (
+    /(?:^|\/)network_safety\.rs$/.test(file)
+    || file === 'deploy/egress-proxy/squid.conf'
+  )) {
     return true
   }
   if (rule === 'windows-user-path') {
-    return /^(?:example|user|username|runneradmin|wdagtutilityaccount)$/i.test(match[1] ?? '')
+    return /^(?:example|me|user|username|runneradmin|wdagtutilityaccount)$/i.test(match[1] ?? '')
   }
   if (rule === 'email-address') {
     if ((match[0] ?? '').toLowerCase() === 'git@github.com') return true
@@ -86,6 +92,7 @@ function allowedPrivacyMatch(rule, match, file) {
     return domain === 'example.com'
       || domain === 'example.test'
       || domain.endsWith('.example.com')
+      || domain.endsWith('.invalid')
       || domain === 'users.noreply.github.com'
       || ['png', 'jpg', 'jpeg', 'svg', 'webp', 'json'].includes(topLevel)
   }

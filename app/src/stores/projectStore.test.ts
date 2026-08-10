@@ -3,6 +3,7 @@ import {
   getEnabledProjectAttachments,
   getEnabledProjectLinks,
   getProjectForThread,
+  projectMetadataForDaemon,
   useProjectStore,
 } from './projectStore'
 
@@ -51,6 +52,25 @@ describe('projectStore', () => {
     expect(getEnabledProjectLinks(project).map((resource) => resource.path)).toEqual([
       'https://example.com/spec',
     ])
+  })
+
+  it('keeps local project paths outside synchronized metadata', () => {
+    const id = useProjectStore.getState().addProject('Private workspace', 'Local only files.')
+    useProjectStore.getState().addResources(id, [
+      { path: 'C:/secret/customer-data', kind: 'folder' },
+    ])
+    useProjectStore.getState().attachThread(id, 'thread-1')
+
+    const payload = projectMetadataForDaemon(useProjectStore.getState().projects[0])
+    expect(payload).toMatchObject({
+      title: 'Private workspace',
+      instructions: 'Local only files.',
+      thread_ids: ['thread-1'],
+      project_kind: 'private',
+      files_location: 'personal_device',
+    })
+    expect(JSON.stringify(payload)).not.toContain('customer-data')
+    expect(payload).not.toHaveProperty('resources')
   })
 
   it('stores per-resource access, rejects overlapping writable roots, and reassigns the primary root', () => {

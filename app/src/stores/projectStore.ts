@@ -264,6 +264,36 @@ function persistProject(project: Project): void {
       updatedAt: toIso(project.updatedAt),
     },
   })
+  mirrorProjectToDaemon(project)
+}
+
+export function projectMetadataForDaemon(project: Project): Record<string, unknown> {
+  return {
+    title: project.title,
+    instructions: project.instructions,
+    thread_ids: [...project.threadIds],
+    project_kind: 'private',
+    files_location: 'personal_device',
+    created_at: toIso(project.createdAt),
+    updated_at: toIso(project.updatedAt),
+    source: 'desktop',
+  }
+}
+
+function mirrorProjectToDaemon(project: Project): void {
+  if (!hasTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('project', project.id, projectMetadataForDaemon(project))
+    ))
+    .catch((error) => console.warn('[projectStore] Daemon project mirror failed', error))
+}
+
+function tombstoneProjectInDaemon(projectId: string): void {
+  if (!hasTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ tombstoneDurableLocalEntity }) => tombstoneDurableLocalEntity('project', projectId))
+    .catch((error) => console.warn('[projectStore] Daemon project tombstone failed', error))
 }
 
 function persistResource(projectId: string, resource: ProjectResource): void {
@@ -357,7 +387,7 @@ function getLegacyFallbackProjects(): { projects: Project[]; activeProjectId: st
   return parseLegacyStorage() ?? { projects: [], activeProjectId: null }
 }
 
-export const useProjectStore = create<ProjectState>()((set) => ({
+export const useProjectStore = create<ProjectState>()((set, get) => ({
   projects: [],
   activeProjectId: null,
 
@@ -451,6 +481,7 @@ export const useProjectStore = create<ProjectState>()((set) => ({
       projectId,
       deleteThreads: Boolean(options?.deleteThreads),
     })
+    tombstoneProjectInDaemon(projectId)
     return deletedThreadIds
   },
 
@@ -571,15 +602,17 @@ export const useProjectStore = create<ProjectState>()((set) => ({
     const normalizedThreadId = threadId.trim()
     if (!normalizedThreadId) return
 
+    const changedProjectIds: string[] = []
     set((state) => ({
       projects: state.projects.map((project) => {
         const threadIds = project.threadIds.filter((id) => id !== normalizedThreadId)
         if (project.id !== projectId) {
-          return threadIds.length === project.threadIds.length
-            ? project
-            : { ...project, threadIds, updatedAt: Date.now() }
+          if (threadIds.length === project.threadIds.length) return project
+          changedProjectIds.push(project.id)
+          return { ...project, threadIds, updatedAt: Date.now() }
         }
 
+        changedProjectIds.push(project.id)
         return {
           ...project,
           threadIds: [normalizedThreadId, ...threadIds],
@@ -589,11 +622,15 @@ export const useProjectStore = create<ProjectState>()((set) => ({
       activeProjectId: projectId,
     }))
     void safeInvokeVoid('project_attach_thread', { projectId, threadId: normalizedThreadId })
+    changedProjectIds.forEach((id) => {
+      const project = get().projects.find((entry) => entry.id === id)
+      if (project) mirrorProjectToDaemon(project)
+    })
   },
 
-  detachThread: (projectId, threadId) =>
+  detachThread: (projectId, threadId) => {
+    let detached = false
     set((state) => {
-      let detached = false
       const projects = state.projects.map((project) => {
         if (project.id !== projectId) return project
         const threadIds = project.threadIds.filter((id) => id !== threadId)
@@ -602,11 +639,16 @@ export const useProjectStore = create<ProjectState>()((set) => ({
       })
       if (detached) void safeInvokeVoid('project_detach_thread', { projectId, threadId })
       return { projects }
-    }),
+    })
+    if (detached) {
+      const project = get().projects.find((entry) => entry.id === projectId)
+      if (project) mirrorProjectToDaemon(project)
+    }
+  },
 
-  detachThreadFromAll: (threadId) =>
+  detachThreadFromAll: (threadId) => {
+    const affectedProjectIds: string[] = []
     set((state) => {
-      const affectedProjectIds: string[] = []
       const projects = state.projects.map((project) => {
         if (!project.threadIds.includes(threadId)) return project
         affectedProjectIds.push(project.id)
@@ -620,7 +662,12 @@ export const useProjectStore = create<ProjectState>()((set) => ({
         void safeInvokeVoid('project_detach_thread', { projectId, threadId })
       })
       return { projects }
-    }),
+    })
+    affectedProjectIds.forEach((projectId) => {
+      const project = get().projects.find((entry) => entry.id === projectId)
+      if (project) mirrorProjectToDaemon(project)
+    })
+  },
 }))
 
 export function getProjectForThread(projects: Project[], threadId: string | null | undefined): Project | null {
