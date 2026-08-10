@@ -249,7 +249,17 @@ export default function RemoteServerView() {
                   {!['completed', 'failed', 'canceled', 'expired'].includes(selectedRun.state) ? <button className="ui-button ui-button--danger" type="button" onClick={() => { void client.cancelRun(selectedRun.spec.id).then(loadRuns).catch((cause) => setError(messageOf(cause))) }}><CircleStop size={15} /> Cancel run</button> : null}
                 </div>
               </section>
-              <RemoteThreadMessages client={client} threadId={selectedRun.spec.thread_id} reloadKey={messageReloadKey} />
+              <RemoteThreadMessages
+                client={client}
+                threadId={selectedRun.spec.thread_id}
+                reloadKey={messageReloadKey}
+                replyContext={selectedRun}
+                onRunCreated={(run) => {
+                  setRuns((current) => [run, ...current.filter((item) => item.spec.id !== run.spec.id)])
+                  setSelectedRunId(run.spec.id)
+                  setMessageReloadKey((value) => value + 1)
+                }}
+              />
               <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={loadRuns} />
               {desktopSession ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={desktopSession} onStop={stopDesktop} onSessionChanged={loadSessions} /> : null}
               {terminalOpen ? <RemoteTerminal client={client} runId={selectedRun.spec.id} onClose={() => setTerminalOpen(false)} /> : null}

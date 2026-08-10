@@ -8,6 +8,10 @@ type RemoteRunComposerProps = {
   client: RemoteRuntimeClient
   onCreated: (run: RunRecord) => void | Promise<void>
   compact?: boolean
+  threadId?: string
+  threadProjectId?: string
+  initialTarget?: ExecutorTarget
+  initialCapabilities?: string[]
 }
 
 type TargetChoice = { key: string; label: string; target: ExecutorTarget; capabilities: Set<string> }
@@ -55,14 +59,22 @@ function targetChoices(catalog: CapabilityCatalog): TargetChoice[] {
   return choices
 }
 
-export default function RemoteRunComposer({ client, onCreated, compact = false }: RemoteRunComposerProps) {
+export default function RemoteRunComposer({
+  client,
+  onCreated,
+  compact = false,
+  threadId,
+  threadProjectId,
+  initialTarget,
+  initialCapabilities = [],
+}: RemoteRunComposerProps) {
   const [open, setOpen] = useState(false)
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null)
   const [projectId, setProjectId] = useState('')
-  const [target, setTarget] = useState('server:')
+  const [target, setTarget] = useState(() => initialTarget ? targetKey(initialTarget) : 'server:')
   const [prompt, setPrompt] = useState('')
-  const [capabilities, setCapabilities] = useState('')
+  const [capabilities, setCapabilities] = useState(() => initialCapabilities.join(', '))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -71,11 +83,11 @@ export default function RemoteRunComposer({ client, onCreated, compact = false }
       const [nextProjects, nextCatalog] = await Promise.all([client.listProjects(), client.capabilities()])
       setProjects(nextProjects)
       setCatalog(nextCatalog)
-      setProjectId((current) => current || nextProjects[0]?.id || '')
+      setProjectId((current) => threadProjectId || current || nextProjects[0]?.id || '')
     } catch (cause) {
       setError(messageOf(cause))
     }
-  }, [client])
+  }, [client, threadProjectId])
 
   useEffect(() => { if (open) void load() }, [load, open])
   const required = useMemo(
@@ -89,30 +101,32 @@ export default function RemoteRunComposer({ client, onCreated, compact = false }
   )
 
   useEffect(() => {
-    const project = projects.find((item) => item.id === projectId)
-    const preferred = project?.preferred_executor_target
+    const project = projects.find((item) => item.id === (threadProjectId || projectId))
+    const preferred = threadId && initialTarget ? initialTarget : project?.preferred_executor_target
     const preferredKey = preferred ? targetKey(preferred) : null
     if (preferredKey && compatibleChoices.some((choice) => choice.key === preferredKey)) {
       setTarget(preferredKey)
     } else if (!compatibleChoices.some((choice) => choice.key === target)) {
       setTarget(compatibleChoices[0]?.key ?? '')
     }
-  }, [compatibleChoices, projectId, projects, target])
+  }, [compatibleChoices, initialTarget, projectId, projects, target, threadId, threadProjectId])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const project = projects.find((item) => item.id === projectId)
+    const project = projects.find((item) => item.id === (threadProjectId || projectId))
     const choice = compatibleChoices.find((item) => item.key === target)
     if (!project || !choice || !prompt.trim()) return
     setBusy(true)
     setError(null)
     try {
-      const title = prompt.trim().replaceAll(/\s+/g, ' ').slice(0, 100)
-      const thread = await client.createThread(project.id, title)
-      const { run } = await client.createThreadMessage(thread.id, {
+      const activeThreadId = threadId ?? (await client.createThread(
+        project.id,
+        prompt.trim().replaceAll(/\s+/g, ' ').slice(0, 100),
+      )).id
+      const { run } = await client.createThreadMessage(activeThreadId, {
         content: { text: prompt.trim() },
         run: {
-          thread_id: thread.id,
+          thread_id: activeThreadId,
           project_id: project.id,
           project_revision: project.revision,
           project_privacy: project.privacy,
@@ -135,12 +149,12 @@ export default function RemoteRunComposer({ client, onCreated, compact = false }
     }
   }
 
-  if (!open) return <button className={compact ? '' : 'ui-button ui-button--primary ui-button--sm'} type="button" onClick={() => setOpen(true)}><Plus size={14} /> New run</button>
+  if (!open) return <button className={compact ? '' : 'ui-button ui-button--primary ui-button--sm'} type="button" onClick={() => setOpen(true)}><Plus size={14} /> {threadId ? 'Continue thread' : 'New run'}</button>
   return (
     <section className={`remote-run-composer${compact ? ' compact' : ''}`}>
-      <header><div><Play size={15} /><strong>Start server run</strong></div><button type="button" aria-label="Close run form" onClick={() => setOpen(false)}><X size={15} /></button></header>
+      <header><div><Play size={15} /><strong>{threadId ? 'Continue thread' : 'Start server run'}</strong></div><button type="button" aria-label="Close run form" onClick={() => setOpen(false)}><X size={15} /></button></header>
       <form onSubmit={submit}>
-        <label>Project<select value={projectId} onChange={(event) => setProjectId(event.target.value)} required><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.privacy.replaceAll('_', ' ')}</option>)}</select></label>
+        <label>Project<select value={projectId} onChange={(event) => setProjectId(event.target.value)} disabled={Boolean(threadId)} required><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.privacy.replaceAll('_', ' ')}</option>)}</select></label>
         <label>Run on<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="" disabled>No compatible executor</option>{compatibleChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}</select></label>
         <label>Required capabilities<input value={capabilities} onChange={(event) => setCapabilities(event.target.value)} placeholder="Optional, comma-separated: browser.headless, office.microsoft" /></label>
         {required.length > 0 && compatibleChoices.length === 0 ? <p className="remote-inline-error">No online executor satisfies every required capability.</p> : null}

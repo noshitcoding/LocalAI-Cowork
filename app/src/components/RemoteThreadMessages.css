@@ -31,5 +31,19 @@
 .remote-message-panel pre { overflow: auto; margin: 0; color: inherit; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .remote-message-muted { margin: 0; padding: 12px; color: var(--text-secondary, #8fa1b6); font-size: 11px; }
 .remote-message-panel > .remote-inline-error { margin: 10px 12px; }
+.remote-message-reply { padding: 10px 12px; border-top: 1px solid var(--border-light, #1f3043); }
+.remote-message-reply > .remote-run-composer > button,
+.remote-message-reply > .remote-run-composer form > button { min-height: 38px; }
+.remote-message-reply .remote-run-composer form select,
+.remote-message-reply .remote-run-composer form input,
+.remote-message-reply .remote-run-composer form textarea {
+  min-height: 40px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color, #2a3a4f);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-primary, #111a27);
+  color: inherit;
+}
 
 .mobile-shell > .remote-message-panel { margin: 12px; }

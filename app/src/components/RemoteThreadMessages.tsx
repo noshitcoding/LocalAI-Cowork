@@ -1,8 +1,9 @@
 import { MessageSquareText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
-import type { MessageRecord } from '../runtime/contracts'
+import type { MessageRecord, RunRecord } from '../runtime/contracts'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
+import RemoteRunComposer from './RemoteRunComposer'
 import './RemoteThreadMessages.css'
 
 type RemoteThreadMessagesProps = {
@@ -11,6 +12,8 @@ type RemoteThreadMessagesProps = {
   reloadKey?: number
   initialMessages?: MessageRecord[]
   onLoaded?: (messages: MessageRecord[]) => void
+  replyContext?: RunRecord
+  onRunCreated?: (run: RunRecord) => void | Promise<void>
 }
 
 function messageOf(error: unknown): string {
@@ -34,6 +37,8 @@ export default function RemoteThreadMessages({
   reloadKey = 0,
   initialMessages,
   onLoaded,
+  replyContext,
+  onRunCreated,
 }: RemoteThreadMessagesProps) {
   const [messages, setMessages] = useState(initialMessages ?? [])
   const [loading, setLoading] = useState(false)
@@ -79,6 +84,19 @@ export default function RemoteThreadMessages({
         ))}
       </ol>
       {error ? <div className="remote-inline-error" role="alert">{error}</div> : null}
+      {client && replyContext && onRunCreated ? (
+        <div className="remote-message-reply">
+          <RemoteRunComposer
+            compact
+            client={client}
+            threadId={threadId}
+            threadProjectId={replyContext.spec.project_id}
+            initialTarget={replyContext.spec.executor_target}
+            initialCapabilities={replyContext.spec.required_capabilities}
+            onCreated={onRunCreated}
+          />
+        </div>
+      ) : null}
     </section>
   )
 }

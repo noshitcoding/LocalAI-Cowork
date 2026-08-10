@@ -415,10 +415,19 @@ export default function MobileApp() {
           threadId={selectedRun.spec.thread_id}
           reloadKey={messageReloadKey}
           initialMessages={offline.messages[selectedRun.spec.thread_id]}
+          replyContext={online ? selectedRun : undefined}
           onLoaded={(messages) => persist({
             ...offlineRef.current,
             messages: { ...offlineRef.current.messages, [selectedRun.spec.thread_id]: messages },
           })}
+          onRunCreated={(run) => {
+            persist({
+              ...offlineRef.current,
+              runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)],
+            })
+            setSelectedRunId(run.spec.id)
+            setMessageReloadKey((value) => value + 1)
+          }}
         />
         {online ? <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={refreshRuns} /> : null}
         {activeSession && online ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={activeSession} onSessionChanged={() => client.listDesktopSessions(selectedRun.spec.id).then(setSessions)} /> : null}
