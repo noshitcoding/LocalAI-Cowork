@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { createConnection } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const apiBase = process.env.COWORK_TEST_API_URL ?? 'http://127.0.0.1:18099/api/v1'
 const runnerBase = process.env.COWORK_TEST_RUNNER_URL ?? 'http://127.0.0.1:18098'
@@ -97,6 +102,133 @@ async function firstSyncEvent(token, after = 0) {
   } finally {
     clearTimeout(timeout)
     controller.abort()
+  }
+}
+
+async function waitUntil(label, probe, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError
+  while (Date.now() < deadline) {
+    try {
+      const value = await probe()
+      if (value) return value
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`${label} timed out${lastError ? `: ${lastError}` : ''}`)
+}
+
+function daemonCall(socketPath, token, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const id = randomUUID()
+    const socket = createConnection(socketPath)
+    let buffer = ''
+    socket.setEncoding('utf8')
+    socket.setTimeout(5_000)
+    socket.on('connect', () => socket.write(`${JSON.stringify({ id, token, method, params })}\n`))
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      const boundary = buffer.indexOf('\n')
+      if (boundary < 0) return
+      socket.end()
+      try {
+        const response = JSON.parse(buffer.slice(0, boundary))
+        if (response.id !== id) throw new Error('daemon IPC response ID mismatch')
+        if (response.error) throw new Error(`${response.error.code}: ${response.error.message}`)
+        resolve(response.result)
+      } catch (error) {
+        reject(error)
+      }
+    })
+    socket.on('timeout', () => socket.destroy(new Error('daemon IPC timed out')))
+    socket.on('error', reject)
+  })
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGTERM')
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(resolve, 3_000)),
+  ])
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+}
+
+async function exerciseBackgroundMetadataSync({ token, userId, executorId, credentialToken, serverEntityId }) {
+  const root = await mkdtemp(join(tmpdir(), 'cowork-metadata-sync-'))
+  const socketPath = join(root, 'daemon.sock')
+  const ipcToken = `sync-ipc-${randomUUID()}`
+  const logs = { daemon: '', agent: '' }
+  let daemon
+  let agent
+  const capture = (child, name) => {
+    child.stdout.on('data', (chunk) => { logs[name] = `${logs[name]}${chunk}`.slice(-20_000) })
+    child.stderr.on('data', (chunk) => { logs[name] = `${logs[name]}${chunk}`.slice(-20_000) })
+  }
+  try {
+    daemon = spawn('target/debug/cowork-local-daemon', [], {
+      env: {
+        ...process.env,
+        COWORK_DAEMON_DATA_DIR: join(root, 'daemon-data'),
+        COWORK_DAEMON_IPC_ENDPOINT: socketPath,
+        COWORK_DAEMON_IPC_TOKEN: ipcToken,
+        COWORK_DAEMON_DEVICE_ID: executorId,
+        COWORK_DAEMON_USER_ID: userId,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    capture(daemon, 'daemon')
+    await waitUntil('local daemon startup', () => daemonCall(socketPath, ipcToken, 'health'))
+    const localEntityId = randomUUID()
+    await daemonCall(socketPath, ipcToken, 'entities.upsert', {
+      entity_type: 'memory',
+      id: localEntityId,
+      payload: { content: 'Created offline before the background agent connected', scope: 'user' },
+      expected_revision: 0,
+    })
+    agent = spawn('target/debug/cowork-device-agent', [], {
+      env: {
+        ...process.env,
+        COWORK_SERVER_URL: apiBase.replace(/\/api\/v1$/, ''),
+        COWORK_AGENT_TOKEN: credentialToken,
+        COWORK_EXECUTOR_ID: executorId,
+        COWORK_AGENT_KIND: 'personal_device',
+        COWORK_EXECUTOR_NAME: 'Metadata sync soak device',
+        COWORK_AGENT_CAPABILITIES: 'files',
+        COWORK_PERSONAL_REMOTE_CONTROL: 'off',
+        COWORK_LOCAL_DAEMON_IPC_ENDPOINT: socketPath,
+        COWORK_LOCAL_DAEMON_IPC_TOKEN: ipcToken,
+        COWORK_AGENT_WORKSPACE_ROOT: join(root, 'workspaces'),
+        COWORK_AGENT_POLL_MS: '100',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    capture(agent, 'agent')
+    await waitUntil('daemon outbox drain', async () => {
+      const snapshot = await request('/sync/entities/memory?limit=1000', { token })
+      return snapshot.items.some((item) => item.entity_id === localEntityId)
+    })
+    await waitUntil('daemon inbox apply', async () => {
+      const entities = await daemonCall(socketPath, ipcToken, 'entities.list', {
+        entity_type: 'skill', include_tombstones: true,
+      })
+      return entities.some((item) => item.id === serverEntityId)
+    })
+    const peerId = `${apiBase.replace(/\/api\/v1$/, '')}#${executorId}`
+    const state = await daemonCall(socketPath, ipcToken, 'sync.state', { peer_id: peerId })
+    const conflicts = await daemonCall(socketPath, ipcToken, 'sync.conflicts', { peer_id: peerId })
+    if (state.local_cursor < 1 || state.remote_cursor < 1 || conflicts.length !== 0) {
+      throw new Error(`background sync cursors/conflicts are invalid: ${JSON.stringify({ state, conflicts })}`)
+    }
+  } catch (error) {
+    throw new Error(`${error}\ndaemon log:\n${logs.daemon}\nagent log:\n${logs.agent}`)
+  } finally {
+    await stopChild(agent)
+    await stopChild(daemon)
+    await rm(root, { recursive: true, force: true })
   }
 }
 
@@ -528,6 +660,13 @@ const agentSnapshot = await request(
 if (!agentSnapshot.items.some((item) => item.entity_id === agentEntityId)) {
   throw new Error(`personal executor push was not materialized: ${JSON.stringify(agentSnapshot)}`)
 }
+await exerciseBackgroundMetadataSync({
+  token,
+  userId: session.user_id,
+  executorId: syncAgentId,
+  credentialToken: syncAgentCredential.token,
+  serverEntityId: agentEntityId,
+})
 
 console.log(`waves=${waves}`)
 console.log(`completed_runs=${completed.length}`)
@@ -549,3 +688,4 @@ console.log('metadata_sync_out_of_order_convergence=ok')
 console.log('metadata_sync_reverse_projection=ok')
 console.log('metadata_sync_bidirectional_roundtrip=ok')
 console.log('metadata_sync_personal_executor_channel=ok')
+console.log('metadata_sync_background_daemon_pump=ok')

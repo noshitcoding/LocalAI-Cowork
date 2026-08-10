@@ -429,8 +429,8 @@ jobs:
         with:
           workspaces: .
 
-      - name: Build control plane worker
-        run: cargo build --locked --package cowork-server
+      - name: Build control plane and personal sync bridge
+        run: cargo build --locked --package cowork-server --package cowork-local-daemon --package cowork-device-agent
 
       - name: Compete across four worker processes
         shell: bash

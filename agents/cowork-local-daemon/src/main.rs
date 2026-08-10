@@ -57,6 +57,7 @@ mod mcp;
 #[path = "../../../app/src-tauri/src/network_safety.rs"]
 mod network_safety;
 mod office;
+mod sync_ipc;
 
 const MAX_IPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -4071,6 +4072,11 @@ async fn dispatch(daemon: &Daemon, request: IpcRequest) -> IpcResponse {
         "entities.list" => list_entities(daemon, request.params).await,
         "entities.delete" => delete_entity(daemon, request.params).await,
         "entities.changes" => list_entity_changes(daemon, request.params).await,
+        "sync.state" => sync_ipc::state(daemon, request.params).await,
+        "sync.ack_local" => sync_ipc::acknowledge_local(daemon, request.params).await,
+        "sync.apply_remote" => sync_ipc::apply_remote(daemon, request.params).await,
+        "sync.conflicts" => sync_ipc::list_conflicts(daemon, request.params).await,
+        "sync.conflicts.resolve" => sync_ipc::resolve_conflict(daemon, request.params).await,
         _ => Err(anyhow::anyhow!("unknown IPC method {}", request.method)),
     };
     match result {

@@ -11,9 +11,10 @@ use cowork_contracts::{
     CapabilityDescriptor, CompleteRunRequest, CreateApprovalRequest, CreateCheckpointRequest,
     CreateInputRequest, ExecutorClientMessage, ExecutorHeartbeat, ExecutorKind,
     ExecutorRegistration, ExecutorServerMessage, FailRunRequest, InputRequestState,
-    PersonalDeviceRemoteControlMode, RunError, RunEvent, RunEventKind, RunInputRequest, RunLease,
+    PersonalDeviceRemoteControlMode, PullSyncChangesResponse, PushSyncChangesRequest,
+    PushSyncChangesResponse, RunError, RunEvent, RunEventKind, RunInputRequest, RunLease,
     RunRecord, RunState, SnapshotManifest, SnapshotUploadChunk, SnapshotUploadFile,
-    SnapshotUploadSession, SCHEMA_VERSION,
+    SnapshotUploadSession, SyncApplyStatus, SyncChange, SyncOperation, SCHEMA_VERSION,
 };
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
@@ -103,6 +104,34 @@ struct LocalDaemonResponse {
 struct LocalDaemonError {
     code: String,
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalSyncState {
+    local_cursor: i64,
+    remote_cursor: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalSyncChanges {
+    changes: Vec<LocalSyncChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalSyncChange {
+    cursor: i64,
+    entity_type: String,
+    entity_id: String,
+    revision: i64,
+    operation: String,
+    entity: LocalSyncEntity,
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalSyncEntity {
+    payload: Value,
+    tombstone: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,6 +342,28 @@ impl ControlPlaneClient {
         )
         .await?;
         Ok(())
+    }
+
+    async fn push_sync_changes(&self, changes: Vec<SyncChange>) -> Result<PushSyncChangesResponse> {
+        self.request(
+            Method::POST,
+            &format!("/api/v1/agent/executors/{}/sync/changes", self.executor_id),
+            Some(&PushSyncChangesRequest { changes }),
+        )
+        .await
+    }
+
+    async fn pull_sync_changes(&self, after: i64) -> Result<PullSyncChangesResponse> {
+        self.request::<(), _>(
+            Method::GET,
+            &format!(
+                "/api/v1/agent/executors/{}/sync/changes?after={}&limit=100",
+                self.executor_id,
+                after.max(0)
+            ),
+            None,
+        )
+        .await
     }
 
     async fn request<B, R>(&self, method: Method, path: &str, body: Option<&B>) -> Result<R>
@@ -743,6 +794,14 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
         std::sync::Arc::new(Mutex::new(HashMap::<(Uuid, bool), bool>::new()));
     let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let sync_task = if config.kind == ExecutorKind::PersonalDevice {
+        config.local_daemon.clone().map(|daemon| {
+            let client = client.clone();
+            tokio::spawn(async move { metadata_sync_loop(client, daemon).await })
+        })
+    } else {
+        None
+    };
 
     let outcome = async {
         loop {
@@ -938,7 +997,159 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
     for task in desktop_tasks {
         task.abort();
     }
+    if let Some(task) = sync_task {
+        task.abort();
+    }
     outcome
+}
+
+async fn metadata_sync_loop(client: ControlPlaneClient, daemon: LocalDaemonClient) {
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        if let Err(error) = tokio::time::timeout(
+            Duration::from_secs(30),
+            synchronize_metadata_once(&client, &daemon),
+        )
+        .await
+        .context("metadata sync cycle timed out")
+        .and_then(|result| result)
+        {
+            tracing::warn!(?error, "background metadata sync cycle failed");
+        }
+    }
+}
+
+async fn synchronize_metadata_once(
+    client: &ControlPlaneClient,
+    daemon: &LocalDaemonClient,
+) -> Result<()> {
+    let peer_id = format!("{}#{}", client.server_url, client.executor_id);
+    for _ in 0..5 {
+        let state: LocalSyncState = serde_json::from_value(
+            daemon
+                .call("sync.state", json!({"peer_id": peer_id}))
+                .await?,
+        )?;
+        let page: LocalSyncChanges = serde_json::from_value(
+            daemon
+                .call(
+                    "entities.changes",
+                    json!({"after": state.local_cursor, "limit": 100}),
+                )
+                .await?,
+        )?;
+        if page.changes.is_empty() {
+            break;
+        }
+        let changes = page
+            .changes
+            .iter()
+            .map(|change| local_change_for_server(client.executor_id, change))
+            .collect::<Result<Vec<_>>>()?;
+        let response = client.push_sync_changes(changes).await?;
+        if response.results.len() != page.changes.len() {
+            bail!("metadata sync response length does not match its request");
+        }
+        for (local, result) in page.changes.iter().zip(response.results) {
+            if result.status == SyncApplyStatus::Conflict {
+                let entity = result
+                    .entity
+                    .context("metadata conflict response omitted the current server entity")?;
+                daemon
+                    .call(
+                        "sync.apply_remote",
+                        json!({
+                            "peer_id": peer_id,
+                            "remote_cursor": state.remote_cursor,
+                            "entity": entity,
+                        }),
+                    )
+                    .await?;
+            }
+            daemon
+                .call(
+                    "sync.ack_local",
+                    json!({"peer_id": peer_id, "cursor": local.cursor}),
+                )
+                .await?;
+        }
+        if page.changes.len() < 100 {
+            break;
+        }
+    }
+    for _ in 0..5 {
+        let state: LocalSyncState = serde_json::from_value(
+            daemon
+                .call("sync.state", json!({"peer_id": peer_id}))
+                .await?,
+        )?;
+        let response = client.pull_sync_changes(state.remote_cursor).await?;
+        if response.changes.is_empty() {
+            break;
+        }
+        for change in &response.changes {
+            daemon
+                .call(
+                    "sync.apply_remote",
+                    json!({
+                        "peer_id": peer_id,
+                        "remote_cursor": change.cursor,
+                        "entity": {
+                            "entity_type": change.entity_type,
+                            "entity_id": change.entity_id,
+                            "revision": change.revision,
+                            "payload": change.payload,
+                            "tombstone": change.operation == SyncOperation::Delete,
+                            "updated_at": change.created_at,
+                        },
+                    }),
+                )
+                .await?;
+        }
+        if response.changes.len() < 100 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn local_change_for_server(device_id: Uuid, change: &LocalSyncChange) -> Result<SyncChange> {
+    let entity_id = Uuid::parse_str(&change.entity_id)
+        .with_context(|| format!("local {} ID is not a global UUID", change.entity_type))?;
+    let operation = match change.operation.as_str() {
+        "upsert" if !change.entity.tombstone => SyncOperation::Upsert,
+        "delete" if change.entity.tombstone => SyncOperation::Delete,
+        other => bail!("invalid local sync operation {other}"),
+    };
+    let client_timestamp = chrono::DateTime::parse_from_rfc3339(&change.created_at)
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|_| chrono::Utc::now());
+    Ok(SyncChange {
+        schema_version: SCHEMA_VERSION,
+        operation_id: stable_sync_operation_id(device_id, change.cursor),
+        device_id,
+        entity_type: change.entity_type.clone(),
+        entity_id,
+        base_revision: change.revision.saturating_sub(1),
+        operation,
+        payload: (operation == SyncOperation::Upsert).then(|| change.entity.payload.clone()),
+        client_timestamp,
+    })
+}
+
+fn stable_sync_operation_id(device_id: Uuid, cursor: i64) -> Uuid {
+    let mut hasher = Sha256::new();
+    hasher.update(b"open-cowork-device-sync-operation-v1\0");
+    hasher.update(device_id.as_bytes());
+    hasher.update(cursor.to_be_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 
 async fn authorize_desktop_stream(
@@ -2196,6 +2407,37 @@ mod tests {
             personal_remote_control_mode_name(PersonalDeviceRemoteControlMode::ConfirmEachSession),
             "confirm_each_session"
         );
+    }
+
+    #[test]
+    fn metadata_outbox_operations_are_stable_and_revision_based() {
+        let device_id = Uuid::new_v4();
+        assert_eq!(
+            stable_sync_operation_id(device_id, 42),
+            stable_sync_operation_id(device_id, 42)
+        );
+        assert_ne!(
+            stable_sync_operation_id(device_id, 42),
+            stable_sync_operation_id(device_id, 43)
+        );
+        let entity_id = Uuid::new_v4();
+        let change = LocalSyncChange {
+            cursor: 42,
+            entity_type: "memory".to_owned(),
+            entity_id: entity_id.to_string(),
+            revision: 3,
+            operation: "upsert".to_owned(),
+            entity: LocalSyncEntity {
+                payload: json!({"content": "durable"}),
+                tombstone: false,
+            },
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let outgoing = local_change_for_server(device_id, &change).unwrap();
+        assert_eq!(outgoing.entity_id, entity_id);
+        assert_eq!(outgoing.base_revision, 2);
+        assert_eq!(outgoing.operation, SyncOperation::Upsert);
+        assert_eq!(outgoing.payload, Some(json!({"content": "durable"})));
     }
 
     #[tokio::test]
