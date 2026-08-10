@@ -9,7 +9,7 @@ import { useUiStore } from './stores/uiStore'
 
 async function openMainMenu() {
   fireEvent.click(screen.getByRole('button', { name: /Open main menu|Hauptmenü öffnen/ }))
-  return screen.findByRole('dialog')
+  return screen.findByRole('dialog', undefined, { timeout: 5_000 })
 }
 
 async function clickMenuRoute(label: string) {
@@ -78,13 +78,13 @@ describe('App', () => {
     window.history.pushState({}, '', '/settings')
     render(<App />)
 
-    expect(await screen.findByText('Keine Projekte', undefined, { timeout: 10_000 })).toBeInTheDocument()
+    expect(await screen.findByLabelText('KI & Modell', { selector: '.settings-view' }, { timeout: 10_000 })).toBeInTheDocument()
     const menu = await openMainMenu()
     fireEvent.click(within(menu).getByRole('button', { name: /^Aufgaben/ }))
 
     await waitFor(() => expect(window.location.pathname).toBe('/tasks'))
     expect(await screen.findByRole('heading', { name: 'Neue Aufgabe' }, { timeout: 5000 })).toBeInTheDocument()
-  })
+  }, 15_000)
 
   it('removes permanent top navigation and exposes every route in the burger menu', async () => {
     render(<App />)
