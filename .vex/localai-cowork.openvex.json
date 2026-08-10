@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-08-10T13:00:00Z",
-  "version": 6,
+  "timestamp": "2026-08-10T13:27:00Z",
+  "version": 7,
   "statements": [
     {
       "vulnerability": {
@@ -12,6 +12,14 @@
       "products": [
         {
           "@id": "pkg:cargo/app@0.3.0",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib@0.18.5"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/open-cowork-android@0.3.0",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
