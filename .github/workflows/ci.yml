@@ -5,6 +5,15 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      soak_profile:
+        description: Acceptance duration for browser sessions and competing workers
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - extended
   push:
     branches: [main]
   pull_request:
@@ -336,7 +345,7 @@ jobs:
           COWORK_TEST_WEB_DIST: ${{ github.workspace }}/app/dist
           COWORK_TEST_EMAIL: browser-session-ci@opencowork.invalid
           COWORK_TEST_PASSWORD: Browser-Session-CI-Password-42!
-          COWORK_TEST_REFRESH_ROTATIONS: '25'
+          COWORK_TEST_REFRESH_ROTATIONS: ${{ inputs.soak_profile == 'extended' && '250' || '25' }}
         run: |
           set -euo pipefail
           export DATABASE_URL="postgres://cowork:${COWORK_TEST_POSTGRES_PASSWORD}@127.0.0.1:15432/cowork_browser_session_ci"
@@ -435,8 +444,8 @@ jobs:
           COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
           COWORK_TEST_RUNNER_URL: http://127.0.0.1:18098
           COWORK_TEST_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
-          COWORK_TEST_SOAK_WAVES: '5'
-          COWORK_TEST_RUNS_PER_WAVE: '16'
+          COWORK_TEST_SOAK_WAVES: ${{ inputs.soak_profile == 'extended' && '20' || '5' }}
+          COWORK_TEST_RUNS_PER_WAVE: ${{ inputs.soak_profile == 'extended' && '25' || '16' }}
           COWORK_TEST_WORKER_COUNT: '4'
         run: |
           set -euo pipefail
