@@ -4,6 +4,7 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -99,11 +100,22 @@ jobs:
         with:
           workspaces: .
 
+      - name: Install interactive Linux desktop acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends xvfb xauth xdotool imagemagick xclip x11-utils
+
       - name: Linux local daemon gates
         run: |
           cargo check --locked --package cowork-local-daemon
           cargo test --locked --package cowork-local-daemon --all-targets
           cargo clippy --locked --package cowork-local-daemon --all-targets -- -D warnings
+
+      - name: Personal Linux executor and GUI-stream acceptance
+        run: |
+          cargo check --locked --package cowork-device-agent
+          xvfb-run --auto-servernum env COWORK_REQUIRE_LINUX_DESKTOP_TEST=1 cargo test --locked --package cowork-device-agent --all-targets
+          cargo clippy --locked --package cowork-device-agent --all-targets -- -D warnings
 
   security:
     runs-on: ubuntu-latest

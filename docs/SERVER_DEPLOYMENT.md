@@ -355,14 +355,17 @@ encrypted by the daemon for that run and removed at terminal state; when they
 are omitted, the daemon uses its own local model configuration.
 
 Advertise only capabilities that the device and its daemon can actually serve,
-for example `model.ollama,files,shell,git,web,mcp,browser.headless`. In addition
+for example `model.ollama,files,shell,git,web,mcp,browser.headless`. Add
+`desktop.windows` on an interactive Windows device or `desktop.linux` on an
+interactive Linux device. In addition
 to the canonical HTTPS server URL, executor ID, credential file, bridge settings
 and optional local model settings, configure exactly one remote-control policy:
 
 - `COWORK_PERSONAL_REMOTE_CONTROL=off` rejects screen viewing and input control.
 - `COWORK_PERSONAL_REMOTE_CONTROL=confirm_each_session` is the default. Windows
-  displays a native local confirmation before the first view or control stream;
-  escalating a view-only session to input control requires its own confirmation.
+  displays a native local confirmation and Linux uses Zenity, KDialog, or
+  XMessage before the first view or control stream; escalating a view-only
+  session to input control requires its own confirmation.
 - `COWORK_PERSONAL_REMOTE_CONTROL=unattended` permits authenticated remote
   viewing and control without a local dialog.
 
@@ -373,9 +376,10 @@ local setting, so a server request cannot bypass `off` or the confirmation
 dialog. Desktop, Web and Android expose the owner-controlled server ceiling in
 the **Devices** panel and show the stricter mode currently advertised by the
 local agent. Executor credentials may refresh that status but cannot relax the
-server ceiling. Personal GUI streaming currently requires Windows and the
-`desktop.windows` capability; local agent tools continue to work independently
-of the remote-view policy.
+server ceiling. Linux streaming requires an interactive X11 `DISPLAY`,
+`xdotool`, ImageMagick `import`, and `xclip` or `xsel`. Wayland-only sessions
+must expose a compatible XWayland desktop to the agent. Local agent tools
+continue to work independently of the remote-view policy.
 
 ## 7. Managed Windows executor
 

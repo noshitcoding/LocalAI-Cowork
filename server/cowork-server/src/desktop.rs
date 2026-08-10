@@ -40,6 +40,35 @@ use crate::{
 
 type HmacSha256 = Hmac<Sha256>;
 
+fn external_desktop_platform(
+    registration: &ExecutorRegistration,
+    managed_windows: bool,
+) -> Option<&'static str> {
+    let has_capability = |name: &str| {
+        registration
+            .capabilities
+            .iter()
+            .any(|capability| capability.name.0 == name)
+    };
+    let operating_system = registration.labels.get("os").map(String::as_str);
+    if managed_windows {
+        return (operating_system == Some("windows") && has_capability("desktop.windows"))
+            .then_some("windows");
+    }
+    match operating_system {
+        Some("windows") if has_capability("desktop.windows") => Some("windows"),
+        Some("linux") if has_capability("desktop.linux") => Some("linux"),
+        Some(_) => None,
+        None if has_capability("desktop.windows") && !has_capability("desktop.linux") => {
+            Some("windows")
+        }
+        None if has_capability("desktop.linux") && !has_capability("desktop.windows") => {
+            Some("linux")
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 pub struct RunnerControl {
     http: Client,
@@ -232,6 +261,7 @@ pub async fn start_session(
             "remote desktop access is disabled on the personal device".to_owned(),
         ));
     }
+    let mut external_platform = None;
     if managed_windows || personal_device {
         if executor_id.is_nil() {
             return Err(ApiError::Conflict(
@@ -243,18 +273,27 @@ pub async fn start_session(
         } else {
             "personal_device"
         };
-        let valid_executor = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM executors WHERE id = $1 AND kind = $2 AND registration->'capabilities' @> '[{\"name\":\"desktop.windows\"}]'::jsonb)",
+        let registration = sqlx::query_scalar::<_, Value>(
+            "SELECT registration FROM executors WHERE id = $1 AND kind = $2",
         )
         .bind(executor_id)
         .bind(expected_kind)
-        .fetch_one(&state.pool)
+        .fetch_optional(&state.pool)
         .await?;
-        if !valid_executor {
+        let registration: ExecutorRegistration = registration
+            .ok_or_else(|| {
+                ApiError::Conflict("the assigned external executor is unavailable".to_owned())
+            })
+            .and_then(|value| {
+                serde_json::from_value(value).map_err(|error| ApiError::Internal(error.into()))
+            })?;
+        let platform = external_desktop_platform(&registration, managed_windows);
+        let Some(platform) = platform else {
             return Err(ApiError::Conflict(
-                "the assigned executor does not provide desktop.windows".to_owned(),
+                "the assigned executor does not provide a platform-consistent desktop.windows or desktop.linux capability".to_owned(),
             ));
-        }
+        };
+        external_platform = Some(platform.to_owned());
     }
     let session_id = Uuid::new_v4();
     let dimensions = DesktopDimensions {
@@ -280,6 +319,7 @@ pub async fn start_session(
             .bind(json!({
                 "transport": "executor_reverse_ws",
                 "personal_device": personal_device,
+                "platform": external_platform.as_deref(),
                 "remote_control_mode": personal_mode,
             }))
             .execute(&mut *tx)
@@ -291,7 +331,7 @@ pub async fn start_session(
             json!({
                 "session_id": session_id,
                 "state": "agent_controlled",
-                "platform": "windows",
+                "platform": external_platform.as_deref(),
                 "personal_device": personal_device,
                 "local_confirmation_required": personal_mode == Some(PersonalDeviceRemoteControlMode::ConfirmEachSession),
             }),
@@ -1043,4 +1083,79 @@ async fn finish_session_rows(
         tx.commit().await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use cowork_contracts::{
+        Capability, CapabilityDescriptor, ExecutorKind, ExecutorRegistration,
+        PersonalDeviceRemoteControlMode, SCHEMA_VERSION,
+    };
+    use uuid::Uuid;
+
+    use super::external_desktop_platform;
+
+    fn registration(os: &str, names: &[&str]) -> ExecutorRegistration {
+        ExecutorRegistration {
+            schema_version: SCHEMA_VERSION,
+            executor_id: Uuid::new_v4(),
+            kind: ExecutorKind::PersonalDevice,
+            pool_id: None,
+            owner_user_id: None,
+            display_name: "test device".to_owned(),
+            protocol_version: SCHEMA_VERSION,
+            capabilities: names
+                .iter()
+                .map(|name| CapabilityDescriptor {
+                    schema_version: SCHEMA_VERSION,
+                    name: Capability::from(*name),
+                    version: "test".to_owned(),
+                    attributes: BTreeMap::new(),
+                })
+                .collect(),
+            labels: BTreeMap::from([("os".to_owned(), os.to_owned())]),
+            personal_device_remote_control: Some(
+                PersonalDeviceRemoteControlMode::ConfirmEachSession,
+            ),
+            max_concurrent_runs: 1,
+        }
+    }
+
+    #[test]
+    fn external_desktop_platform_accepts_matching_personal_linux_and_windows_devices() {
+        assert_eq!(
+            external_desktop_platform(&registration("linux", &["desktop.linux"]), false),
+            Some("linux")
+        );
+        assert_eq!(
+            external_desktop_platform(&registration("windows", &["desktop.windows"]), false),
+            Some("windows")
+        );
+        assert_eq!(
+            external_desktop_platform(&registration("linux", &["desktop.windows"]), false),
+            None
+        );
+        assert_eq!(
+            external_desktop_platform(&registration("macos", &["desktop.windows"]), false),
+            None
+        );
+    }
+
+    #[test]
+    fn managed_pool_never_accepts_linux_desktop_capability() {
+        assert_eq!(
+            external_desktop_platform(&registration("linux", &["desktop.linux"]), true),
+            None
+        );
+        assert_eq!(
+            external_desktop_platform(&registration("windows", &["desktop.windows"]), true),
+            Some("windows")
+        );
+        assert_eq!(
+            external_desktop_platform(&registration("linux", &["desktop.windows"]), true),
+            None
+        );
+    }
 }

@@ -227,17 +227,34 @@ impl Config {
         } else {
             ""
         };
-        let capabilities = value_or("COWORK_AGENT_CAPABILITIES", default_capability)
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|name| CapabilityDescriptor {
-                schema_version: SCHEMA_VERSION,
-                name: Capability::from(name),
-                version: env!("CARGO_PKG_VERSION").to_owned(),
-                attributes: BTreeMap::new(),
-            })
-            .collect();
+        let capabilities: Vec<CapabilityDescriptor> =
+            value_or("COWORK_AGENT_CAPABILITIES", default_capability)
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|name| CapabilityDescriptor {
+                    schema_version: SCHEMA_VERSION,
+                    name: Capability::from(name),
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                    attributes: BTreeMap::new(),
+                })
+                .collect();
+        let advertises_windows_desktop = capabilities
+            .iter()
+            .any(|capability| capability.name.0 == "desktop.windows");
+        let advertises_linux_desktop = capabilities
+            .iter()
+            .any(|capability| capability.name.0 == "desktop.linux");
+        if advertises_windows_desktop && !cfg!(windows) {
+            bail!("desktop.windows can only be advertised by a Windows executor");
+        }
+        if advertises_linux_desktop && !cfg!(target_os = "linux") {
+            bail!("desktop.linux can only be advertised by a Linux executor");
+        }
+        if (advertises_windows_desktop || advertises_linux_desktop) && !windows_desktop::available()
+        {
+            bail!("the advertised desktop capability is unavailable in the current interactive session");
+        }
         let personal_device_remote_control = if kind == ExecutorKind::PersonalDevice {
             Some(parse_personal_remote_control_mode(&value_or(
                 "COWORK_PERSONAL_REMOTE_CONTROL",
@@ -829,9 +846,18 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
                                     let leased = active_lease
                                         .as_ref()
                                         .is_some_and(|lease| lease.run.spec.id == run_id);
-                                    let capable = cfg!(windows)
-                                        && config.capabilities.iter().any(|capability| {
-                                            capability.name.0 == "desktop.windows"
+                                    let desktop_capability = if cfg!(windows) {
+                                        Some("desktop.windows")
+                                    } else if cfg!(target_os = "linux") {
+                                        Some("desktop.linux")
+                                    } else {
+                                        None
+                                    };
+                                    let capable = windows_desktop::available()
+                                        && desktop_capability.is_some_and(|required| {
+                                            config.capabilities.iter().any(|capability| {
+                                                capability.name.0 == required
+                                            })
                                         });
                                     if !leased || !capable {
                                         tracing::warn!(
@@ -876,7 +902,7 @@ async fn run_websocket(client: &ControlPlaneClient, config: &Config) -> Result<(
                                                 %run_id,
                                                 %session_id,
                                                 %stream_id,
-                                                "Windows desktop stream failed"
+                                                "personal or managed desktop stream failed"
                                             );
                                         }
                                     }));
@@ -974,7 +1000,7 @@ async fn open_desktop_stream(
     );
     let (socket, _) = connect_async(request)
         .await
-        .context("failed to open reverse Windows desktop WebSocket")?;
+        .context("failed to open reverse desktop WebSocket")?;
     windows_desktop::serve(socket, control).await
 }
 

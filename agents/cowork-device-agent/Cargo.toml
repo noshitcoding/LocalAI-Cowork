@@ -15,7 +15,7 @@ dotenvy = "0.15"
 futures-util = "0.3"
 hex = "0.4"
 ignore = "0.4"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
