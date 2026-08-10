@@ -38,9 +38,9 @@ describe('durable local execution', () => {
     expect(project).not.toBe(first)
   })
 
-  it('binds the workspace and submits the selected model secret outside run input', async () => {
+  it('binds hosted-provider credentials natively without exposing them to the frontend', async () => {
     const bindProjectWorkspace = vi.fn(async () => undefined)
-    const upsertProviderBinding = vi.fn(async () => ({ profile_id: 'profile-vllm', bound: true }))
+    const upsertProviderBindingFromCredentials = vi.fn(async () => ({ profile_id: 'profile-vllm', bound: true }))
     const upsertMcpBinding = vi.fn(async () => ({ server_id: 'docs', bound: true }))
     const createConfiguredRun = vi.fn(async (request: unknown, _modelConfig: unknown) => ({
       spec: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
@@ -54,7 +54,7 @@ describe('durable local execution', () => {
         daemon_version: '0.3.0',
       })),
       bindProjectWorkspace,
-      upsertProviderBinding,
+      upsertProviderBindingFromCredentials,
       upsertMcpBinding,
       createConfiguredRun,
     } as unknown as LocalDaemonRuntimeClient
@@ -89,14 +89,11 @@ describe('durable local execution', () => {
     }, client)
 
     expect(bindProjectWorkspace).toHaveBeenCalledWith(expect.any(String), 'C:\\work\\report')
-    expect(upsertProviderBinding).toHaveBeenCalledWith(
+    expect(upsertProviderBindingFromCredentials).toHaveBeenCalledWith(
       'profile-vllm',
       'http://127.0.0.1:8000/v1',
-      'vault-secret',
     )
-    expect(getCredential).toHaveBeenCalledWith({
-      scope: 'llm_profile', ownerId: 'profile-vllm', field: 'api_key',
-    })
+    expect(getCredential).not.toHaveBeenCalled()
     expect(upsertMcpBinding).toHaveBeenCalledWith('docs', {
       name: 'docs',
       command: 'docs-mcp',
@@ -106,13 +103,17 @@ describe('durable local execution', () => {
     const [request, modelConfig] = createConfiguredRun.mock.calls[0]
     const runRequest = request as { input: unknown; required_capabilities: string[] }
     expect(runRequest.input).not.toHaveProperty('api_key')
+    expect(runRequest.input).toMatchObject({
+      client_provider_profile_id: 'profile-vllm',
+      resolve_current_provider_binding: true,
+    })
     expect(JSON.stringify(runRequest.input)).not.toContain('mcp-secret')
     expect(runRequest.required_capabilities).toEqual(expect.arrayContaining([
       'model.vllm', 'files', 'shell', 'tool.mcp.invoke',
     ]))
     expect(modelConfig).toMatchObject({
       base_url: 'http://127.0.0.1:8000/v1',
-      api_key: 'vault-secret',
+      api_key: null,
       model: 'local-model',
       mcp_servers: [{
         name: 'docs',
@@ -120,6 +121,59 @@ describe('durable local execution', () => {
         args: ['--stdio', 'C:\\work\\report'],
         env: { MCP_TOKEN: 'mcp-secret' },
       }],
+    })
+  })
+
+  it('starts persistent Ollama runs without reading an API credential', async () => {
+    const upsertProviderBindingFromCredentials = vi.fn(async () => ({ profile_id: 'default-ollama', bound: true }))
+    const createConfiguredRun = vi.fn(async (request: unknown, _modelConfig: unknown) => ({
+      spec: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      state: 'queued',
+      request,
+    }) as unknown as RunRecord)
+    const client = {
+      health: vi.fn(async () => ({
+        status: 'ok', schema_version: 2,
+        device_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        daemon_version: '0.3.0',
+      })),
+      bindProjectWorkspace: vi.fn(async () => undefined),
+      upsertProviderBindingFromCredentials,
+      upsertMcpBinding: vi.fn(async () => ({ server_id: 'unused', bound: true })),
+      createConfiguredRun,
+    } as unknown as LocalDaemonRuntimeClient
+
+    await createDurableLocalRun({
+      clientThreadId: 'ollama-thread',
+      clientProjectId: 'ollama-project',
+      assistantMessageId: 'ollama-assistant',
+      prompt: 'test',
+      provider: {
+        provider: 'openai-compatible',
+        backend: 'openai-compatible',
+        label: 'Ollama',
+        endpoint: 'http://127.0.0.1:11434/v1',
+        model: 'qwen3:latest',
+        apiKey: '',
+        timeoutMs: 120_000,
+        verifyTlsCertificates: true,
+        contextWindow: 32_000,
+        selectableModels: ['qwen3:latest'],
+        profileId: 'default-ollama',
+        preset: 'ollama',
+      },
+      source: 'chat',
+    }, client)
+
+    expect(getCredential).not.toHaveBeenCalled()
+    expect(upsertProviderBindingFromCredentials).toHaveBeenCalledWith(
+      'default-ollama',
+      'http://127.0.0.1:11434/v1',
+    )
+    expect(createConfiguredRun.mock.calls[0][1]).toMatchObject({
+      base_url: 'http://127.0.0.1:11434/v1',
+      api_key: null,
+      model: 'qwen3:latest',
     })
   })
 
@@ -144,7 +198,7 @@ describe('durable local execution', () => {
         daemon_version: '0.3.0',
       })),
       bindProjectWorkspace: vi.fn(async () => undefined),
-      upsertProviderBinding: vi.fn(async () => ({ profile_id: 'profile-local', bound: true })),
+      upsertProviderBindingFromCredentials: vi.fn(async () => ({ profile_id: 'profile-local', bound: true })),
       upsertMcpBinding,
       upsertSchedule,
     } as unknown as LocalDaemonRuntimeClient

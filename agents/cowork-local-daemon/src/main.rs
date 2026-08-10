@@ -4084,14 +4084,11 @@ async fn dispatch(daemon: &Daemon, request: IpcRequest) -> IpcResponse {
 }
 
 async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
-    let model_config = params
+    let mut model_config = params
         .get("model_config")
         .cloned()
         .map(serde_json::from_value::<PersistedModelConfig>)
         .transpose()?;
-    if let Some(config) = &model_config {
-        config.validate()?;
-    }
     let request: CreateRunRequest = serde_json::from_value(params)?;
     if request.executor_target
         != (ExecutorTarget::PersonalDevice {
@@ -4099,6 +4096,35 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
         })
     {
         bail!("the local daemon only accepts its own personal_device target");
+    }
+    let mut database = daemon.database.lock().await;
+    if request
+        .input
+        .get("resolve_current_provider_binding")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let profile_id = request
+            .input
+            .get("client_provider_profile_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("run requires a provider profile ID")?;
+        validate_provider_profile_id(profile_id)?;
+        let binding =
+            load_provider_binding(&database, profile_id, &daemon.config.model_secret_key)?
+                .with_context(|| {
+                    format!("run is waiting for the per-device provider binding ({profile_id})")
+                })?;
+        let config = model_config
+            .as_mut()
+            .context("run requires a model configuration")?;
+        config.base_url = binding.base_url;
+        config.api_key = binding.api_key;
+    }
+    if let Some(config) = &model_config {
+        config.validate()?;
     }
     let now = Utc::now();
     let spec = RunSpec {
@@ -4121,7 +4147,6 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
         idempotency_key: request.idempotency_key,
         created_at: now,
     };
-    let mut database = daemon.database.lock().await;
     if let Some(existing) = database
         .query_row(
             "SELECT record_json FROM daemon_runs WHERE idempotency_key = ?1",
@@ -5687,6 +5712,66 @@ mod tests {
             shutdown,
             browser: Arc::new(developer_browser::DeveloperBrowserState::default()),
         }
+    }
+
+    #[tokio::test]
+    async fn immediate_runs_resolve_encrypted_provider_bindings() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        let binding = ProviderDeviceBinding {
+            base_url: "https://current.example.test/v1".to_owned(),
+            api_key: Some("current-native-secret".to_owned()),
+        };
+        let encrypted =
+            encrypt_secret_payload(&serde_json::to_vec(&binding).unwrap(), &[31; 32]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO daemon_provider_bindings (profile_id, encrypted_binding, updated_at) VALUES (?1, ?2, ?3)",
+                params!["profile-current", encrypted, Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        let device_id = Uuid::new_v4();
+        let daemon = daemon_for_test(connection, device_id);
+        let run: RunRecord = serde_json::from_value(
+            create_run(
+                &daemon,
+                json!({
+                    "thread_id": Uuid::new_v4(),
+                    "project_id": Uuid::new_v4(),
+                    "project_revision": 1,
+                    "project_privacy": "private_local",
+                    "task": null,
+                    "executor_target": {"kind":"personal_device","device_id":device_id},
+                    "required_capabilities": ["model.external"],
+                    "input": {
+                        "prompt": "test",
+                        "client_provider_profile_id": "profile-current",
+                        "resolve_current_provider_binding": true
+                    },
+                    "model_profile_id": null,
+                    "snapshot_id": null,
+                    "idempotency_key": format!("immediate-binding-{}", Uuid::new_v4()),
+                    "model_config": {
+                        "base_url": "https://stale.example.test/v1",
+                        "api_key": null,
+                        "model": "test-model",
+                        "timeout_ms": 30000,
+                        "max_steps": 8,
+                        "verify_tls_certificates": true
+                    }
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+
+        let resolved = load_run_model_config(&daemon, run.spec.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.base_url, "https://current.example.test/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("current-native-secret"));
     }
 
     #[tokio::test]

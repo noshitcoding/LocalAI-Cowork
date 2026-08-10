@@ -62,6 +62,15 @@ const invokeMock = vi.fn(async (command: string, args?: unknown): Promise<unknow
       environment_keys: Object.keys((call.params?.env ?? {}) as Record<string, string>),
     }
   }
+  if (call.method === 'provider_bindings.upsert_from_credentials') {
+    operationOrder.push('provider-binding')
+    return {
+      profile_id: call.params?.profile_id,
+      bound: true,
+      base_url: call.params?.base_url,
+      has_api_key: true,
+    }
+  }
   throw new Error(`Unexpected daemon method ${call.method}`)
 })
 
@@ -73,6 +82,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 import {
   mirrorDurableLocalEntity,
   mirrorMcpDeviceBinding,
+  mirrorProviderDeviceBinding,
   tombstoneDurableLocalEntity,
 } from './localDaemonEntities'
 
@@ -120,5 +130,31 @@ describe('durable local entity write queue', () => {
       },
     })
     expect(operationOrder).toEqual(['mcp-binding'])
+  })
+
+  it('mirrors provider bindings through the native credential resolver', async () => {
+    await mirrorProviderDeviceBinding({
+      id: 'profile-openai',
+      name: 'OpenAI',
+      provider: 'openai-compatible',
+      preset: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-test',
+      apiKey: '',
+      timeoutMs: 120_000,
+      verifyTlsCertificates: true,
+      contextWindow: 128_000,
+      temperature: 0.2,
+      hasApiKey: true,
+    })
+
+    expect(invokeMock).toHaveBeenCalledWith('local_daemon_call', {
+      method: 'provider_bindings.upsert_from_credentials',
+      params: {
+        profile_id: 'profile-openai',
+        base_url: 'https://api.openai.com/v1',
+      },
+    })
+    expect(operationOrder).toEqual(['provider-binding'])
   })
 })
