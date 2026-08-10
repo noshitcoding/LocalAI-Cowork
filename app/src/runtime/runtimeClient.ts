@@ -312,12 +312,16 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return response.blob()
   }
 
-  async listTasks(): Promise<TaskDefinition[]> {
-    return taskDefinitionSchema.array().parse(await this.#request('/api/v1/tasks'))
+  async listTasks(projectId: string): Promise<TaskDefinition[]> {
+    return taskDefinitionSchema.array().parse(await this.#request(
+      `/api/v1/tasks?project_id=${encodeURIComponent(projectId)}`,
+    ))
   }
 
-  async listSchedules(): Promise<ScheduleRecord[]> {
-    return scheduleRecordSchema.array().parse(await this.#request('/api/v1/schedules'))
+  async listSchedules(projectId: string): Promise<ScheduleRecord[]> {
+    return scheduleRecordSchema.array().parse(await this.#request(
+      `/api/v1/schedules?project_id=${encodeURIComponent(projectId)}`,
+    ))
   }
 
   async listAuthSessions(): Promise<AuthSessionRecord[]> {

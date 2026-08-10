@@ -8,7 +8,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use cowork_contracts::{
-    ensure_compatible, ExecutorTarget, PullSyncChangesResponse, PushSyncChangesRequest,
+    ensure_compatible, Capability, ExecutorTarget, PullSyncChangesResponse, PushSyncChangesRequest,
     PushSyncChangesResponse, ServerSyncChange, SyncApplyResult, SyncApplyStatus, SyncChange,
     SyncOperation, SyncedEntity, SyncedEntityPage, SCHEMA_VERSION,
 };
@@ -613,6 +613,12 @@ async fn materialize_canonical_entity(
         "message" => {
             materialize_message(tx, user_id, entity_id, operation, payload).await?;
         }
+        "task" => {
+            materialize_task(tx, user_id, entity_id, operation, payload).await?;
+        }
+        "schedule" => {
+            materialize_schedule(tx, user_id, entity_id, operation, payload).await?;
+        }
         _ => {}
     }
     Ok(())
@@ -1044,6 +1050,581 @@ async fn materialize_thread(
         let payload = message.try_get::<Option<Value>, _>("payload")?;
         materialize_message(tx, user_id, id, operation, payload.as_ref()).await?;
     }
+    reconcile_thread_tasks(tx, user_id, thread_id).await?;
+    reconcile_schedules_for_reference(tx, user_id, "thread_id", thread_id).await?;
+    Ok(())
+}
+
+async fn reconcile_thread_tasks(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    thread_id: Uuid,
+) -> Result<(), ApiError> {
+    let tasks = sqlx::query(
+        r#"
+        SELECT entity_id, tombstone, payload FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'task'
+          AND payload ->> 'thread_id' = $2
+        ORDER BY entity_id
+        "#,
+    )
+    .bind(user_id)
+    .bind(thread_id.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    for task in tasks {
+        let task_id = task.try_get("entity_id")?;
+        let operation = if task.try_get("tombstone")? {
+            SyncOperation::Delete
+        } else {
+            SyncOperation::Upsert
+        };
+        let payload = task.try_get::<Option<Value>, _>("payload")?;
+        materialize_task(tx, user_id, task_id, operation, payload.as_ref()).await?;
+    }
+    Ok(())
+}
+
+async fn private_task_project(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    object: &serde_json::Map<String, Value>,
+) -> Result<Option<Uuid>, ApiError> {
+    let explicit_project_id = object
+        .get("project_id")
+        .and_then(Value::as_str)
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::Unprocessable("task project_id must be a UUID string".to_owned()))?;
+    let thread_id = object
+        .get("thread_id")
+        .and_then(Value::as_str)
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::Unprocessable("task thread_id must be a UUID string".to_owned()))?;
+    let thread_project_id = if let Some(thread_id) = thread_id {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT thread.project_id FROM threads thread
+            JOIN projects project ON project.id = thread.project_id
+            WHERE thread.id = $1 AND thread.deleted_at IS NULL
+              AND project.owner_user_id = $2 AND project.privacy = 'private_local'
+              AND project.deleted_at IS NULL
+            "#,
+        )
+        .bind(thread_id)
+        .bind(user_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        None
+    };
+    if explicit_project_id.is_some()
+        && thread_project_id.is_some()
+        && explicit_project_id != thread_project_id
+    {
+        return Err(ApiError::Conflict(
+            "task project_id and thread_id refer to different projects".to_owned(),
+        ));
+    }
+    let Some(project_id) = explicit_project_id.or(thread_project_id) else {
+        return Ok(None);
+    };
+    let allowed = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM projects
+            WHERE id = $1 AND owner_user_id = $2 AND privacy = 'private_local'
+              AND deleted_at IS NULL
+        )
+        "#,
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(allowed.then_some(project_id))
+}
+
+fn task_projection_config(object: &serde_json::Map<String, Value>) -> Result<Value, ApiError> {
+    let task_kind = object
+        .get("task_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("work");
+    if !matches!(task_kind, "work" | "plan") {
+        return Err(ApiError::Unprocessable(
+            "task_kind must be work or plan".to_owned(),
+        ));
+    }
+    let runner = object
+        .get("runner")
+        .and_then(Value::as_str)
+        .unwrap_or("model");
+    if !matches!(runner, "model" | "crew") {
+        return Err(ApiError::Unprocessable(
+            "task runner must be model or crew".to_owned(),
+        ));
+    }
+    Ok(serde_json::json!({
+        "sync_metadata": {
+            "task_kind": task_kind,
+            "expected_output": object.get("expected_output").cloned().unwrap_or(Value::Null),
+            "thread_id": object.get("thread_id").cloned().unwrap_or(Value::Null),
+            "runner": runner,
+            "crew_id": object.get("crew_id").cloned().unwrap_or(Value::Null),
+            "model": object.get("model").cloned().unwrap_or(Value::Null),
+            "backend_selection": object.get("backend_selection").cloned().unwrap_or(Value::Null),
+            "schedule_expression": object.get("schedule_expression").cloned().unwrap_or(Value::Null),
+            "schedule_enabled": object.get("schedule_enabled").cloned().unwrap_or(Value::Bool(false)),
+            "status": object.get("status").cloned().unwrap_or(Value::Null),
+            "note": object.get("note").cloned().unwrap_or(Value::Null)
+        }
+    }))
+}
+
+async fn materialize_task(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    task_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "task", task_id).await?;
+    let current = sqlx::query(
+        "SELECT * FROM task_definitions WHERE id = $1 ORDER BY revision DESC LIMIT 1 FOR UPDATE",
+    )
+    .bind(task_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced task ID collides with an independent server task".to_owned(),
+        ));
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            sqlx::query(
+                "UPDATE task_definitions SET released = FALSE, deleted_at = COALESCE(deleted_at, now()) WHERE id = $1",
+            )
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query(
+                "UPDATE schedules SET enabled = FALSE, next_run_at = NULL, blocked_reason = 'task deleted', updated_at = now() WHERE task_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        return Ok(());
+    }
+    let object = object_payload(payload, "task")?;
+    let Some(project_id) = private_task_project(tx, user_id, object).await? else {
+        return Ok(());
+    };
+    let name = required_text(object, &["title", "name"], "task name", 200)?;
+    let instructions = required_text(
+        object,
+        &["description", "instructions"],
+        "task instructions",
+        1_000_000,
+    )?;
+    let required_capabilities = object
+        .get("required_capabilities")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    serde_json::from_value::<Vec<Capability>>(required_capabilities.clone()).map_err(|error| {
+        ApiError::Unprocessable(format!("invalid task required_capabilities: {error}"))
+    })?;
+    let default_target = object.get("default_executor_target").cloned();
+    if let Some(target) = &default_target {
+        serde_json::from_value::<ExecutorTarget>(target.clone()).map_err(|error| {
+            ApiError::Unprocessable(format!("invalid task default_executor_target: {error}"))
+        })?;
+    }
+    let config = task_projection_config(object)?;
+    if let Some(row) = &current {
+        let unchanged = row.try_get::<Uuid, _>("project_id")? == project_id
+            && row.try_get::<String, _>("name")? == name
+            && row.try_get::<String, _>("instructions")? == instructions
+            && row.try_get::<Value, _>("required_capabilities")? == required_capabilities
+            && row.try_get::<Option<Value>, _>("default_executor_target")? == default_target
+            && row.try_get::<Value, _>("config")? == config
+            && row
+                .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
+                .is_none();
+        if unchanged {
+            remember_materialization(tx, user_id, "task", task_id).await?;
+            reconcile_schedules_for_reference(tx, user_id, "task_id", task_id).await?;
+            return Ok(());
+        }
+    }
+    let revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision"))
+        .transpose()?
+        .unwrap_or(0)
+        + 1;
+    sqlx::query("UPDATE task_definitions SET released = FALSE WHERE id = $1 AND released")
+        .bind(task_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO task_definitions (
+            id, revision, etag, project_id, name, instructions,
+            required_capabilities, default_executor_target, config,
+            released, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10)
+        "#,
+    )
+    .bind(task_id)
+    .bind(revision)
+    .bind(format!("W/\"{task_id}:{revision}\""))
+    .bind(project_id)
+    .bind(name)
+    .bind(instructions)
+    .bind(required_capabilities)
+    .bind(default_target)
+    .bind(config)
+    .bind(user_id)
+    .execute(&mut **tx)
+    .await?;
+    remember_materialization(tx, user_id, "task", task_id).await?;
+    reconcile_schedules_for_reference(tx, user_id, "task_id", task_id).await?;
+    Ok(())
+}
+
+async fn reconcile_schedules_for_reference(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    reference_key: &str,
+    reference_id: Uuid,
+) -> Result<(), ApiError> {
+    if !matches!(reference_key, "task_id" | "thread_id" | "project_id") {
+        return Err(ApiError::Internal(anyhow::anyhow!(
+            "unsupported schedule reference key {reference_key}"
+        )));
+    }
+    let schedules = sqlx::query(
+        r#"
+        SELECT entity_id, tombstone, payload FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'schedule'
+          AND payload ->> $2 = $3
+        ORDER BY entity_id
+        "#,
+    )
+    .bind(user_id)
+    .bind(reference_key)
+    .bind(reference_id.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    for schedule in schedules {
+        let schedule_id = schedule.try_get("entity_id")?;
+        let operation = if schedule.try_get("tombstone")? {
+            SyncOperation::Delete
+        } else {
+            SyncOperation::Upsert
+        };
+        let payload = schedule.try_get::<Option<Value>, _>("payload")?;
+        materialize_schedule(tx, user_id, schedule_id, operation, payload.as_ref()).await?;
+    }
+    Ok(())
+}
+
+fn required_uuid(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<Uuid, ApiError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::Unprocessable(format!("{label} must be a UUID string")))
+        .and_then(|value| {
+            Uuid::parse_str(value)
+                .map_err(|_| ApiError::Unprocessable(format!("{label} must be a UUID string")))
+        })
+}
+
+async fn validate_synced_schedule_target(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    project_id: Uuid,
+    target: &ExecutorTarget,
+) -> Result<(), ApiError> {
+    let allowed = match target {
+        ExecutorTarget::ServerLinux { pool_id: None } => true,
+        ExecutorTarget::ServerLinux {
+            pool_id: Some(pool_id),
+        } => {
+            sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM executor_pools pool
+                    JOIN executor_pool_project_grants grant_row ON grant_row.pool_id = pool.id
+                    WHERE pool.id = $1 AND grant_row.project_id = $2
+                      AND pool.kind = 'server_linux' AND pool.deleted_at IS NULL
+                )
+                "#,
+            )
+            .bind(pool_id)
+            .bind(project_id)
+            .fetch_one(&mut **tx)
+            .await?
+        }
+        ExecutorTarget::ManagedWindowsPool { pool_id } => {
+            sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM executor_pools pool
+                    JOIN executor_pool_project_grants grant_row ON grant_row.pool_id = pool.id
+                    WHERE pool.id = $1 AND grant_row.project_id = $2
+                      AND pool.kind = 'managed_windows' AND pool.deleted_at IS NULL
+                )
+                "#,
+            )
+            .bind(pool_id)
+            .bind(project_id)
+            .fetch_one(&mut **tx)
+            .await?
+        }
+        ExecutorTarget::PersonalDevice { device_id } => {
+            sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1 FROM executors
+                    WHERE id = $1 AND owner_user_id = $2 AND kind = 'personal_device'
+                )
+                "#,
+            )
+            .bind(device_id)
+            .bind(user_id)
+            .fetch_one(&mut **tx)
+            .await?
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized(
+            "schedule executor target is not available to this private project".to_owned(),
+        ))
+    }
+}
+
+async fn materialize_schedule(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    schedule_id: Uuid,
+    operation: SyncOperation,
+    payload: Option<&Value>,
+) -> Result<(), ApiError> {
+    let tracked = is_materialized(tx, user_id, "schedule", schedule_id).await?;
+    let current = sqlx::query("SELECT * FROM schedules WHERE id = $1 FOR UPDATE")
+        .bind(schedule_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if current.is_some() && !tracked {
+        return Err(ApiError::Conflict(
+            "synced schedule ID collides with an independent server schedule".to_owned(),
+        ));
+    }
+    if operation == SyncOperation::Delete {
+        if tracked {
+            sqlx::query(
+                r#"
+                UPDATE schedules
+                SET revision = revision + 1,
+                    etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+                    enabled = FALSE, next_run_at = NULL, deleted_at = now(), updated_at = now()
+                WHERE id = $1 AND deleted_at IS NULL
+                "#,
+            )
+            .bind(schedule_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        return Ok(());
+    }
+    let object = object_payload(payload, "schedule")?;
+    let task_id = required_uuid(object, "task_id", "schedule task_id")?;
+    let project_id = required_uuid(object, "project_id", "schedule project_id")?;
+    let thread_id = required_uuid(object, "thread_id", "schedule thread_id")?;
+    let project_allowed = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM projects
+            WHERE id = $1 AND owner_user_id = $2 AND privacy = 'private_local'
+              AND deleted_at IS NULL
+        )
+        "#,
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !project_allowed {
+        return Ok(());
+    }
+    let task_allowed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM task_definitions WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL)",
+    )
+    .bind(task_id)
+    .bind(project_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let thread_allowed = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL)",
+    )
+    .bind(thread_id)
+    .bind(project_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !task_allowed || !thread_allowed {
+        return Ok(());
+    }
+    let cron = crate::workflow::normalized_cron(&required_text(
+        object,
+        &["cron", "cron_expression"],
+        "schedule cron",
+        500,
+    )?)?;
+    let timezone = crate::workflow::validated_timezone(&required_text(
+        object,
+        &["timezone"],
+        "schedule timezone",
+        200,
+    )?)?;
+    let target_value = object.get("executor_target").cloned().ok_or_else(|| {
+        ApiError::Unprocessable("schedule executor_target is required".to_owned())
+    })?;
+    let target: ExecutorTarget = serde_json::from_value(target_value.clone()).map_err(|error| {
+        ApiError::Unprocessable(format!("invalid schedule executor_target: {error}"))
+    })?;
+    validate_synced_schedule_target(tx, user_id, project_id, &target).await?;
+    let input = object
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let requested_profile_id = object
+        .get("model_profile_id")
+        .and_then(Value::as_str)
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| {
+            ApiError::Unprocessable("schedule model_profile_id must be a UUID string".to_owned())
+        })?;
+    let model_profile_id = if let Some(profile_id) = requested_profile_id {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM provider_profiles WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL)",
+        )
+        .bind(profile_id)
+        .bind(user_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        exists.then_some(profile_id)
+    } else {
+        None
+    };
+    let enabled = object
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let target_json = serde_json::to_value(&target)?;
+    if let Some(row) = &current {
+        let unchanged = row.try_get::<Uuid, _>("task_id")? == task_id
+            && row.try_get::<Uuid, _>("project_id")? == project_id
+            && row.try_get::<Uuid, _>("thread_id")? == thread_id
+            && row.try_get::<String, _>("cron_expression")? == cron
+            && row.try_get::<String, _>("timezone")? == timezone.name()
+            && row.try_get::<Value, _>("executor_target")? == target_json
+            && row.try_get::<Value, _>("input")? == input
+            && row.try_get::<Option<Uuid>, _>("model_profile_id")? == model_profile_id
+            && row.try_get::<bool, _>("enabled")? == enabled
+            && row
+                .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
+                .is_none();
+        if unchanged {
+            remember_materialization(tx, user_id, "schedule", schedule_id).await?;
+            return Ok(());
+        }
+    }
+    let revision = current
+        .as_ref()
+        .map(|row| row.try_get::<i64, _>("revision"))
+        .transpose()?
+        .unwrap_or(0)
+        + 1;
+    let next_run_at = if enabled {
+        Some(crate::workflow::next_occurrence_normalized(
+            &cron,
+            timezone,
+            Utc::now(),
+        )?)
+    } else {
+        None
+    };
+    let blocked_reason = requested_profile_id
+        .filter(|_| model_profile_id.is_none())
+        .map(|_| "waiting for model profile metadata");
+    if current.is_some() {
+        sqlx::query(
+            r#"
+            UPDATE schedules
+            SET revision = $2, etag = $3, task_id = $4, project_id = $5,
+                thread_id = $6, cron_expression = $7, timezone = $8,
+                executor_target = $9, input = $10, model_profile_id = $11,
+                enabled = $12, next_run_at = $13, blocked_reason = $14,
+                deleted_at = NULL, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(schedule_id)
+        .bind(revision)
+        .bind(format!("W/\"{schedule_id}:{revision}\""))
+        .bind(task_id)
+        .bind(project_id)
+        .bind(thread_id)
+        .bind(cron)
+        .bind(timezone.name())
+        .bind(target_json)
+        .bind(input)
+        .bind(model_profile_id)
+        .bind(enabled)
+        .bind(next_run_at)
+        .bind(blocked_reason)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"
+            INSERT INTO schedules (
+                id, revision, etag, task_id, project_id, thread_id,
+                cron_expression, timezone, executor_target, input,
+                model_profile_id, enabled, next_run_at, blocked_reason, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            "#,
+        )
+        .bind(schedule_id)
+        .bind(revision)
+        .bind(format!("W/\"{schedule_id}:{revision}\""))
+        .bind(task_id)
+        .bind(project_id)
+        .bind(thread_id)
+        .bind(cron)
+        .bind(timezone.name())
+        .bind(target_json)
+        .bind(input)
+        .bind(model_profile_id)
+        .bind(enabled)
+        .bind(next_run_at)
+        .bind(blocked_reason)
+        .bind(user_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    remember_materialization(tx, user_id, "schedule", schedule_id).await?;
     Ok(())
 }
 
@@ -1307,6 +1888,120 @@ pub(crate) async fn publish_canonical_message_tx(
     });
     publish_server_entity_tx(tx, user_id, "message", message_id, payload).await?;
     remember_materialization(tx, user_id, "message", message_id).await?;
+    Ok(true)
+}
+
+pub(crate) async fn publish_canonical_task_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    task_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query(
+        r#"
+        SELECT task.*, project.owner_user_id, project.privacy
+        FROM task_definitions task
+        JOIN projects project ON project.id = task.project_id
+        WHERE task.id = $1 AND task.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        ORDER BY task.revision DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    if row.try_get::<&str, _>("privacy")? != "private_local" {
+        return Ok(false);
+    }
+    let user_id: Uuid = row.try_get("owner_user_id")?;
+    let config: Value = row.try_get("config")?;
+    let metadata = config.get("sync_metadata").and_then(Value::as_object);
+    let metadata_value = |key: &str| {
+        metadata
+            .and_then(|object| object.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let task_kind = metadata
+        .and_then(|object| object.get("task_kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("work");
+    let runner = metadata
+        .and_then(|object| object.get("runner"))
+        .and_then(Value::as_str)
+        .unwrap_or("model");
+    let payload = serde_json::json!({
+        "task_kind": task_kind,
+        "title": row.try_get::<String, _>("name")?,
+        "description": row.try_get::<String, _>("instructions")?,
+        "expected_output": metadata_value("expected_output"),
+        "project_id": row.try_get::<Uuid, _>("project_id")?,
+        "thread_id": metadata_value("thread_id"),
+        "runner": runner,
+        "crew_id": metadata_value("crew_id"),
+        "model": metadata_value("model"),
+        "backend_selection": metadata_value("backend_selection"),
+        "schedule_expression": metadata_value("schedule_expression"),
+        "schedule_enabled": metadata_value("schedule_enabled"),
+        "status": metadata_value("status"),
+        "note": metadata_value("note"),
+        "required_capabilities": row.try_get::<Value, _>("required_capabilities")?,
+        "default_executor_target": row.try_get::<Option<Value>, _>("default_executor_target")?,
+        "released": row.try_get::<bool, _>("released")?,
+        "canonical_revision": row.try_get::<i64, _>("revision")?,
+        "created_at": row.try_get::<DateTime<Utc>, _>("created_at")?,
+        "source": "server"
+    });
+    publish_server_entity_tx(tx, user_id, "task", task_id, payload).await?;
+    remember_materialization(tx, user_id, "task", task_id).await?;
+    Ok(true)
+}
+
+pub(crate) async fn publish_canonical_schedule_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    schedule_id: Uuid,
+) -> Result<bool, ApiError> {
+    let row = sqlx::query(
+        r#"
+        SELECT schedule.*, project.owner_user_id, project.privacy
+        FROM schedules schedule
+        JOIN projects project ON project.id = schedule.project_id
+        WHERE schedule.id = $1 AND schedule.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(schedule_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    if row.try_get::<&str, _>("privacy")? != "private_local" {
+        return Ok(false);
+    }
+    let user_id: Uuid = row.try_get("owner_user_id")?;
+    let payload = serde_json::json!({
+        "task_id": row.try_get::<Uuid, _>("task_id")?,
+        "project_id": row.try_get::<Uuid, _>("project_id")?,
+        "thread_id": row.try_get::<Uuid, _>("thread_id")?,
+        "cron": row.try_get::<String, _>("cron_expression")?,
+        "timezone": row.try_get::<String, _>("timezone")?,
+        "executor_target": row.try_get::<Value, _>("executor_target")?,
+        "input": row.try_get::<Value, _>("input")?,
+        "model_profile_id": row.try_get::<Option<Uuid>, _>("model_profile_id")?,
+        "enabled": row.try_get::<bool, _>("enabled")?,
+        "next_run_at": row.try_get::<Option<DateTime<Utc>>, _>("next_run_at")?,
+        "last_triggered_at": row.try_get::<Option<DateTime<Utc>>, _>("last_triggered_at")?,
+        "blocked_reason": row.try_get::<Option<String>, _>("blocked_reason")?,
+        "canonical_revision": row.try_get::<i64, _>("revision")?,
+        "created_at": row.try_get::<DateTime<Utc>, _>("created_at")?,
+        "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
+        "source": "server"
+    });
+    publish_server_entity_tx(tx, user_id, "schedule", schedule_id, payload).await?;
+    remember_materialization(tx, user_id, "schedule", schedule_id).await?;
     Ok(true)
 }
 

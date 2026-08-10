@@ -220,7 +220,10 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
             "/tasks",
             post(workflow::create_task).get(workflow::list_tasks),
         )
-        .route("/tasks/{task_id}", get(workflow::get_task))
+        .route(
+            "/tasks/{task_id}",
+            get(workflow::get_task).delete(workflow::delete_task),
+        )
         .route(
             "/tasks/{task_id}/versions",
             post(workflow::create_task_version),

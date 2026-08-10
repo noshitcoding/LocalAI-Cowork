@@ -51,9 +51,15 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
 
   const load = useCallback(async () => {
     try {
-      const [nextTasks, nextProjects, nextSchedules, nextCatalog] = await Promise.all([
-        client.listTasks(), client.listProjects(), client.listSchedules(), client.capabilities(),
+      const [nextProjects, nextCatalog] = await Promise.all([
+        client.listProjects(), client.capabilities(),
       ])
+      const [taskGroups, scheduleGroups] = await Promise.all([
+        Promise.all(nextProjects.map((project) => client.listTasks(project.id))),
+        Promise.all(nextProjects.map((project) => client.listSchedules(project.id))),
+      ])
+      const nextTasks = taskGroups.flat()
+      const nextSchedules = scheduleGroups.flat()
       const released = nextTasks.filter((task) => task.released && !task.deleted_at)
       setTasks(released)
       setProjects(nextProjects)

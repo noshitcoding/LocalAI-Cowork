@@ -26,7 +26,7 @@ use crate::{
     auth::{ExecutorPrincipal, Principal},
     db,
     error::ApiError,
-    organization, AppState,
+    organization, sync, AppState,
 };
 
 const DEFAULT_WAIT_DAYS: i64 = 7;
@@ -40,6 +40,11 @@ pub struct ProjectQuery {
 #[derive(Debug, Deserialize)]
 pub struct TaskVersionQuery {
     revision: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteTaskQuery {
+    expected_revision: i64,
 }
 
 pub async fn create_task(
@@ -62,6 +67,7 @@ pub async fn create_task(
     let id = Uuid::new_v4();
     let revision = 1_i64;
     let etag = version_etag(id, revision);
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO task_definitions (
@@ -88,9 +94,12 @@ pub async fn create_task(
     .bind(request.config)
     .bind(request.release)
     .bind(principal.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_task(&row)?)))
+    let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(task)))
 }
 
 pub async fn list_tasks(
@@ -220,6 +229,7 @@ pub async fn create_task_version(
     .fetch_one(&mut *tx)
     .await?;
     let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, task_id).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(task)))
 }
@@ -259,8 +269,97 @@ pub async fn release_task_version(
     .fetch_one(&mut *tx)
     .await?;
     let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, task_id).await?;
     tx.commit().await?;
     Ok(Json(task))
+}
+
+pub async fn delete_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<DeleteTaskQuery>,
+) -> Result<StatusCode, ApiError> {
+    if query.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let current = sqlx::query(
+        r#"
+        SELECT task.project_id, task.revision, project.owner_user_id, project.privacy
+        FROM task_definitions task
+        JOIN projects project ON project.id = task.project_id
+        WHERE task.id = $1 AND task.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        ORDER BY task.revision DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("task {task_id} was not found")))?;
+    let project_id: Uuid = current.try_get("project_id")?;
+    organization::ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    if current.try_get::<i64, _>("revision")? != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "task revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let private = current.try_get::<&str, _>("privacy")? == "private_local";
+    let owner_user_id: Uuid = current.try_get("owner_user_id")?;
+    let mut tx = state.pool.begin().await?;
+    let locked_revision = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT revision FROM task_definitions
+        WHERE id = $1 AND deleted_at IS NULL
+        ORDER BY revision DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("task {task_id} was not found")))?;
+    if locked_revision != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "task revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE task_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(task_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE task_definitions SET released = FALSE, deleted_at = now() WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE schedules SET enabled = FALSE, next_run_at = NULL, blocked_reason = 'task deleted', updated_at = now() WHERE task_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
+    if private {
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "task", task_id).await?;
+        for schedule_id in schedule_ids {
+            sync::publish_canonical_schedule_tx(&mut tx, schedule_id).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn create_schedule(
@@ -294,6 +393,7 @@ pub async fn create_schedule(
         None
     };
     let id = Uuid::new_v4();
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO schedules (
@@ -317,9 +417,12 @@ pub async fn create_schedule(
     .bind(request.enabled)
     .bind(next_run_at)
     .bind(principal.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_schedule(&row)?)))
+    let schedule = row_to_schedule(&row)?;
+    sync::publish_canonical_schedule_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(schedule)))
 }
 
 pub async fn list_schedules(
@@ -381,6 +484,7 @@ pub async fn update_schedule(
         None
     };
     let next_revision = request.expected_revision + 1;
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         UPDATE schedules SET revision = revision + 1, etag = $3,
@@ -401,12 +505,15 @@ pub async fn update_schedule(
     .bind(request.model_profile_id)
     .bind(request.enabled)
     .bind(next_run_at)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| {
         ApiError::Conflict("schedule revision changed; reload before updating".to_owned())
     })?;
-    Ok(Json(row_to_schedule(&row)?))
+    let schedule = row_to_schedule(&row)?;
+    sync::publish_canonical_schedule_tx(&mut tx, schedule_id).await?;
+    tx.commit().await?;
+    Ok(Json(schedule))
 }
 
 pub async fn delete_schedule(
@@ -414,11 +521,19 @@ pub async fn delete_schedule(
     Path(schedule_id): Path<Uuid>,
     Extension(principal): Extension<Principal>,
 ) -> Result<StatusCode, ApiError> {
-    let row = sqlx::query("SELECT project_id FROM schedules WHERE id = $1 AND deleted_at IS NULL")
-        .bind(schedule_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("schedule {schedule_id} was not found")))?;
+    let row = sqlx::query(
+        r#"
+        SELECT schedule.project_id, project.owner_user_id, project.privacy
+        FROM schedules schedule
+        JOIN projects project ON project.id = schedule.project_id
+        WHERE schedule.id = $1 AND schedule.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(schedule_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("schedule {schedule_id} was not found")))?;
     let project_id: Uuid = row.try_get("project_id")?;
     organization::ensure_project_role(
         &state.pool,
@@ -427,12 +542,19 @@ pub async fn delete_schedule(
         ProjectRole::Runner,
     )
     .await?;
+    let owner_user_id: Uuid = row.try_get("owner_user_id")?;
+    let private = row.try_get::<&str, _>("privacy")? == "private_local";
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE schedules SET revision = revision + 1, enabled = FALSE, next_run_at = NULL, deleted_at = now(), updated_at = now() WHERE id = $1",
     )
     .bind(schedule_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+    if private {
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id).await?;
+    }
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -917,6 +1039,7 @@ pub async fn trigger_due_schedules(
                 .bind(now)
                 .execute(&mut *tx)
                 .await?;
+                sync::publish_canonical_schedule_tx(&mut tx, schedule.id).await?;
                 tx.commit().await?;
                 triggered += 1;
             }
@@ -932,6 +1055,7 @@ pub async fn trigger_due_schedules(
                 .bind(reason)
                 .execute(&mut *tx)
                 .await?;
+                sync::publish_canonical_schedule_tx(&mut tx, schedule.id).await?;
                 tx.commit().await?;
             }
         }
@@ -1564,7 +1688,7 @@ fn validated_expiry(value: Option<DateTime<Utc>>) -> Result<DateTime<Utc>, ApiEr
     Ok(expires_at)
 }
 
-fn normalized_cron(expression: &str) -> Result<String, ApiError> {
+pub(crate) fn normalized_cron(expression: &str) -> Result<String, ApiError> {
     let expression = expression.trim();
     let fields = expression.split_whitespace().count();
     let normalized = match fields {
@@ -1581,7 +1705,7 @@ fn normalized_cron(expression: &str) -> Result<String, ApiError> {
     Ok(normalized)
 }
 
-fn validated_timezone(value: &str) -> Result<Tz, ApiError> {
+pub(crate) fn validated_timezone(value: &str) -> Result<Tz, ApiError> {
     value
         .parse::<Tz>()
         .map_err(|_| ApiError::Unprocessable(format!("{value} is not a recognized IANA timezone")))
@@ -1596,7 +1720,7 @@ fn next_occurrence(
     next_occurrence_normalized(&cron, validated_timezone(timezone)?, after)
 }
 
-fn next_occurrence_normalized(
+pub(crate) fn next_occurrence_normalized(
     expression: &str,
     timezone: Tz,
     after: DateTime<Utc>,

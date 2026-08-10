@@ -9706,6 +9706,39 @@
       }
     },
     "/api/v1/tasks/{task_id}": {
+      "delete": {
+        "operationId": "deleteTasksTaskId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "protected"
+        ]
+      },
       "get": {
         "operationId": "getTasksTaskId",
         "parameters": [

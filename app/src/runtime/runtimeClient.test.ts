@@ -408,6 +408,29 @@ describe('runtime routing', () => {
     ])
   })
 
+  it('scopes task and schedule listings to the selected project', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000030'
+    const urls: string[] = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input) => {
+        urls.push(String(input))
+        return new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listTasks(projectId)).resolves.toEqual([])
+    await expect(client.listSchedules(projectId)).resolves.toEqual([])
+    expect(urls).toEqual([
+      `https://cowork.example.test/api/v1/tasks?project_id=${projectId}`,
+      `https://cowork.example.test/api/v1/schedules?project_id=${projectId}`,
+    ])
+  })
+
   it('resumes sync SSE from the last durable cursor', async () => {
     const entityId = '10000000-0000-4000-8000-000000000031'
     const event = {

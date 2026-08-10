@@ -457,6 +457,8 @@ if (!syncedEntity?.tombstone || syncedEntity.revision !== 2
 const syncedProjectId = randomUUID()
 const syncedThreadId = randomUUID()
 const syncedMessageId = randomUUID()
+const syncedTaskId = randomUUID()
+const syncedScheduleId = randomUUID()
 const syncChange = (entityType, entityId, baseRevision, operation, payload) => ({
   schema_version: 2,
   operation_id: randomUUID(),
@@ -479,11 +481,43 @@ await request('/sync/changes', {
 await request('/sync/changes', {
   method: 'POST',
   token,
+  body: { changes: [syncChange('schedule', syncedScheduleId, 0, 'upsert', {
+    task_id: syncedTaskId,
+    project_id: syncedProjectId,
+    thread_id: syncedThreadId,
+    cron: '0 9 * * *',
+    timezone: 'Europe/Berlin',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: { prompt: 'Offline schedule metadata' },
+    model_profile_id: null,
+    enabled: false,
+    source: 'desktop',
+  })] },
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
   body: { changes: [syncChange('message', syncedMessageId, 0, 'upsert', {
     thread_id: syncedThreadId,
     role: 'user',
     content: 'Materialized after its project arrives',
     timestamp: Date.now(),
+    source: 'desktop',
+  })] },
+})
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('task', syncedTaskId, 0, 'upsert', {
+    task_kind: 'work',
+    title: 'Synced offline task',
+    description: 'Materialize this task after its private thread arrives.',
+    expected_output: 'A durable task version',
+    thread_id: syncedThreadId,
+    runner: 'model',
+    model: 'device-local-model',
+    schedule_expression: '',
+    schedule_enabled: false,
     source: 'desktop',
   })] },
 })
@@ -513,6 +547,18 @@ if (materializedMessages.length !== 1
     || materializedMessages[0]?.id !== syncedMessageId
     || materializedMessages[0]?.content?.content !== 'Materialized after its project arrives') {
   throw new Error(`out-of-order synced message did not converge: ${JSON.stringify(materializedMessages)}`)
+}
+const materializedTasks = await request(`/tasks?project_id=${syncedProjectId}`, { token })
+const materializedTask = materializedTasks.find((item) => item.id === syncedTaskId)
+if (!materializedTask || materializedTask.revision !== 1 || !materializedTask.released
+    || materializedTask.name !== 'Synced offline task') {
+  throw new Error(`out-of-order synced task did not converge: ${JSON.stringify(materializedTasks)}`)
+}
+const materializedSchedules = await request(`/schedules?project_id=${syncedProjectId}`, { token })
+const materializedSchedule = materializedSchedules.find((item) => item.id === syncedScheduleId)
+if (!materializedSchedule || materializedSchedule.revision !== 1 || materializedSchedule.enabled
+    || materializedSchedule.timezone !== 'Europe/Berlin') {
+  throw new Error(`out-of-order synced schedule did not converge: ${JSON.stringify(materializedSchedules)}`)
 }
 await request('/sync/changes', {
   method: 'POST',
@@ -553,6 +599,24 @@ const messagesAfterTombstone = await request(`/threads/${syncedThreadId}/message
 if (messagesAfterTombstone.length !== 0) {
   throw new Error(`synced message tombstone was not materialized: ${JSON.stringify(messagesAfterTombstone)}`)
 }
+await request('/sync/changes', {
+  method: 'POST', token, body: {
+    changes: [syncChange('schedule', syncedScheduleId, 1, 'delete', null)],
+  },
+})
+const schedulesAfterDeviceTombstone = await request(`/schedules?project_id=${syncedProjectId}`, { token })
+if (schedulesAfterDeviceTombstone.some((item) => item.id === syncedScheduleId)) {
+  throw new Error(`synced schedule tombstone was not materialized: ${JSON.stringify(schedulesAfterDeviceTombstone)}`)
+}
+await request('/sync/changes', {
+  method: 'POST', token, body: {
+    changes: [syncChange('task', syncedTaskId, 1, 'delete', null)],
+  },
+})
+const tasksAfterDeviceTombstone = await request(`/tasks?project_id=${syncedProjectId}`, { token })
+if (tasksAfterDeviceTombstone.some((item) => item.id === syncedTaskId)) {
+  throw new Error(`synced task tombstone was not materialized: ${JSON.stringify(tasksAfterDeviceTombstone)}`)
+}
 const beforeServerProjection = await request('/sync/changes?after=0&limit=1000', { token })
 const serverThread = await request('/threads', {
   method: 'POST',
@@ -562,6 +626,41 @@ const serverThread = await request('/threads', {
     title: 'Created from the web control plane',
     forked_from_thread_id: null,
     forked_from_message_id: null,
+  },
+})
+const serverTask = await request('/tasks', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: syncedProjectId,
+    name: 'Created from the web control plane',
+    instructions: 'Round-trip this canonical task through a personal device.',
+    required_capabilities: [],
+    default_target: { kind: 'server_linux', pool_id: null },
+    config: {
+      sync_metadata: {
+        task_kind: 'work',
+        expected_output: 'A server-created task result',
+        thread_id: serverThread.id,
+        runner: 'model',
+      },
+    },
+    release: true,
+  },
+})
+const serverSchedule = await request('/schedules', {
+  method: 'POST',
+  token,
+  body: {
+    task_id: serverTask.id,
+    project_id: syncedProjectId,
+    thread_id: serverThread.id,
+    cron: '0 10 * * *',
+    timezone: 'Europe/Berlin',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: { prompt: 'Server-created schedule metadata' },
+    model_profile_id: null,
+    enabled: false,
   },
 })
 const latestPrivateProject = (await request('/projects', { token }))
@@ -597,6 +696,8 @@ const serverProjection = await request(
 const projectedIds = new Set(serverProjection.changes.map((change) => change.entity_id))
 if (!projectedIds.has(syncedProjectId)
     || !projectedIds.has(serverThread.id)
+    || !projectedIds.has(serverTask.id)
+    || !projectedIds.has(serverSchedule.id)
     || !projectedIds.has(serverMessageRun.message.id)) {
   throw new Error(`canonical server changes did not reach the device feed: ${JSON.stringify(serverProjection)}`)
 }
@@ -604,6 +705,18 @@ const serverThreadSnapshot = await request('/sync/entities/thread?limit=1000', {
 const projectedThread = serverThreadSnapshot.items.find((item) => item.entity_id === serverThread.id)
 if (!projectedThread || projectedThread.tombstone) {
   throw new Error(`server-created thread is missing from the sync snapshot: ${JSON.stringify(serverThreadSnapshot)}`)
+}
+const serverTaskSnapshot = await request('/sync/entities/task?limit=1000', { token })
+const projectedTask = serverTaskSnapshot.items.find((item) => item.entity_id === serverTask.id)
+if (!projectedTask || projectedTask.tombstone || projectedTask.payload?.project_id !== syncedProjectId) {
+  throw new Error(`server-created task is missing from the sync snapshot: ${JSON.stringify(serverTaskSnapshot)}`)
+}
+const serverScheduleSnapshot = await request('/sync/entities/schedule?limit=1000', { token })
+const projectedSchedule = serverScheduleSnapshot.items
+  .find((item) => item.entity_id === serverSchedule.id)
+if (!projectedSchedule || projectedSchedule.tombstone
+    || projectedSchedule.payload?.project_id !== syncedProjectId) {
+  throw new Error(`server-created schedule is missing from the sync snapshot: ${JSON.stringify(serverScheduleSnapshot)}`)
 }
 await request('/sync/changes', {
   method: 'POST',
@@ -619,6 +732,83 @@ const roundTripThread = roundTripThreads.find((item) => (
 ))
 if (!roundTripThread) {
   throw new Error(`server-created thread did not round-trip through device sync: ${JSON.stringify(roundTripThreads)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('task', serverTask.id, projectedTask.revision, 'upsert', {
+    ...projectedTask.payload,
+    title: 'Edited offline after server creation',
+    description: 'The personal device created the next canonical task version.',
+  })] },
+})
+const roundTripTask = await request(`/tasks/${serverTask.id}`, { token })
+if (roundTripTask.revision !== serverTask.revision + 1
+    || roundTripTask.name !== 'Edited offline after server creation'
+    || !roundTripTask.released) {
+  throw new Error(`server-created task did not round-trip through device sync: ${JSON.stringify(roundTripTask)}`)
+}
+await request('/sync/changes', {
+  method: 'POST',
+  token,
+  body: { changes: [syncChange('schedule', serverSchedule.id, projectedSchedule.revision, 'upsert', {
+    ...projectedSchedule.payload,
+    cron: '0 11 * * *',
+    timezone: 'UTC',
+    input: { prompt: 'Edited offline schedule metadata' },
+  })] },
+})
+const roundTripSchedule = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
+  .find((item) => item.id === serverSchedule.id)
+if (!roundTripSchedule || roundTripSchedule.revision !== serverSchedule.revision + 1
+    || roundTripSchedule.timezone !== 'UTC'
+    || roundTripSchedule.input?.prompt !== 'Edited offline schedule metadata') {
+  throw new Error(`server-created schedule did not round-trip through device sync: ${JSON.stringify(roundTripSchedule)}`)
+}
+await expectRequestStatus(`/schedules/${serverSchedule.id}`, 409, {
+  method: 'PUT', token, body: {
+    expected_revision: serverSchedule.revision,
+    cron: serverSchedule.cron,
+    timezone: serverSchedule.timezone,
+    executor_target: serverSchedule.executor_target,
+    input: serverSchedule.input,
+    model_profile_id: serverSchedule.model_profile_id,
+    enabled: serverSchedule.enabled,
+  },
+})
+const updatedServerSchedule = await request(`/schedules/${serverSchedule.id}`, {
+  method: 'PUT', token, body: {
+    expected_revision: roundTripSchedule.revision,
+    cron: roundTripSchedule.cron,
+    timezone: roundTripSchedule.timezone,
+    executor_target: roundTripSchedule.executor_target,
+    input: { prompt: 'Updated through canonical schedule API' },
+    model_profile_id: roundTripSchedule.model_profile_id,
+    enabled: roundTripSchedule.enabled,
+  },
+})
+if (updatedServerSchedule.revision !== roundTripSchedule.revision + 1
+    || updatedServerSchedule.input?.prompt !== 'Updated through canonical schedule API') {
+  throw new Error(`canonical schedule update lost its optimistic revision: ${JSON.stringify(updatedServerSchedule)}`)
+}
+await request(`/schedules/${serverSchedule.id}`, { method: 'DELETE', token })
+const scheduleSnapshotAfterCanonicalDelete = await request('/sync/entities/schedule?limit=1000', { token })
+const deletedProjectedSchedule = scheduleSnapshotAfterCanonicalDelete.items
+  .find((item) => item.entity_id === serverSchedule.id)
+if (!deletedProjectedSchedule?.tombstone) {
+  throw new Error(`server schedule deletion did not reach the device snapshot: ${JSON.stringify(scheduleSnapshotAfterCanonicalDelete)}`)
+}
+await expectRequestStatus(`/tasks/${serverTask.id}?expected_revision=${serverTask.revision}`, 409, {
+  method: 'DELETE', token,
+})
+await request(`/tasks/${serverTask.id}?expected_revision=${roundTripTask.revision}`, {
+  method: 'DELETE', token,
+})
+const taskSnapshotAfterCanonicalDelete = await request('/sync/entities/task?limit=1000', { token })
+const deletedProjectedTask = taskSnapshotAfterCanonicalDelete.items
+  .find((item) => item.entity_id === serverTask.id)
+if (!deletedProjectedTask?.tombstone) {
+  throw new Error(`server task deletion did not reach the device snapshot: ${JSON.stringify(taskSnapshotAfterCanonicalDelete)}`)
 }
 const beforeCanonicalCrud = await request('/sync/changes?after=0&limit=1000', { token })
 const updatedServerThread = await request(`/threads/${serverThread.id}`, {
@@ -689,7 +879,9 @@ const disposableMessageRun = await request(`/threads/${disposableThread.id}/mess
     },
   },
 })
-const disposableThreadBeforeDelete = await request(`/threads/${disposableThread.id}`, { token })
+const disposableThreadBeforeDelete = (await request(`/projects/${syncedProjectId}/threads`, { token }))
+  .find((item) => item.id === disposableThread.id)
+if (!disposableThreadBeforeDelete) throw new Error('disposable thread disappeared before canonical delete')
 await request(`/threads/${disposableThread.id}?expected_revision=${disposableThreadBeforeDelete.revision}`, {
   method: 'DELETE', token,
 })
