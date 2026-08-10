@@ -131,7 +131,7 @@ try {
     $daemonManifestPath = Join-Path $daemonRoot "manifest.json"
     $daemonManifest = Get-Content -LiteralPath $daemonManifestPath -Raw | ConvertFrom-Json
     if (
-        $daemonManifest.schemaVersion -ne 1 -or
+        $daemonManifest.schemaVersion -ne 2 -or
         $daemonManifest.target -ne "windows-x64" -or
         $daemonManifest.binary -ne "cowork-local-daemon.exe" -or
         $daemonManifest.version -ne $ExpectedVersion -or
@@ -142,6 +142,19 @@ try {
     $packagedDaemon = Join-Path $daemonRoot $daemonManifest.binary
     if ((Get-Sha256 -Path $packagedDaemon) -ne [string]$daemonManifest.sha256) {
         throw "Installed local daemon SHA-256 does not match its manifest."
+    }
+    $daemonFiles = @($daemonManifest.files)
+    $pdfiumManifest = @($daemonFiles | Where-Object { $_.name -eq "pdfium.dll" })
+    if (
+        $daemonFiles.Count -ne 1 -or
+        $pdfiumManifest.Count -ne 1 -or
+        [string]$pdfiumManifest[0].sha256 -notmatch '^[a-f0-9]{64}$'
+    ) {
+        throw "Installed local daemon sidecar manifest is incompatible."
+    }
+    $packagedPdfium = Join-Path $daemonRoot $pdfiumManifest[0].name
+    if ((Get-Sha256 -Path $packagedPdfium) -ne [string]$pdfiumManifest[0].sha256) {
+        throw "Installed pdfium.dll SHA-256 does not match its manifest."
     }
 
     $manifestPath = Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"
