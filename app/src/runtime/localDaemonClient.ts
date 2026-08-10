@@ -97,6 +97,36 @@ export type LocalDaemonSyncChange = {
   created_at: string
 }
 
+export type LocalDaemonSyncState = {
+  peer_id: string
+  local_cursor: number
+  remote_cursor: number
+  open_conflicts: number
+}
+
+export type LocalDaemonRemoteEntity = {
+  entity_type: string
+  entity_id: string
+  revision: number
+  payload?: Record<string, unknown> | null
+  tombstone: boolean
+  updated_at: string
+}
+
+export type LocalDaemonSyncConflict = {
+  id: string
+  peer_id: string
+  entity_type: string
+  entity_id: string
+  local_entity: LocalDaemonEntity | null
+  remote_entity: LocalDaemonRemoteEntity
+  created_at: string
+  resolved_at: string | null
+  resolution: 'use_remote' | 'keep_local' | null
+}
+
+export type LocalDaemonSyncResolution = 'use_remote' | 'keep_local'
+
 /**
  * RuntimeClient adapter for the per-user Rust daemon.
  *
@@ -306,6 +336,34 @@ export class LocalDaemonRuntimeClient implements RuntimeClient {
       after: Math.max(0, Math.trunc(after)),
       limit: Math.max(1, Math.min(1000, Math.trunc(limit))),
     }) as { changes: LocalDaemonSyncChange[]; next_cursor: number }
+  }
+
+  async syncState(peerId: string): Promise<LocalDaemonSyncState> {
+    return await this.#bridge.call('sync.state', {
+      peer_id: peerId,
+    }) as LocalDaemonSyncState
+  }
+
+  async listSyncConflicts(
+    peerId: string,
+    includeResolved = false,
+  ): Promise<LocalDaemonSyncConflict[]> {
+    return await this.#bridge.call('sync.conflicts', {
+      peer_id: peerId,
+      include_resolved: includeResolved,
+    }) as LocalDaemonSyncConflict[]
+  }
+
+  async resolveSyncConflict(
+    peerId: string,
+    conflictId: string,
+    resolution: LocalDaemonSyncResolution,
+  ): Promise<{ id: string; resolution: LocalDaemonSyncResolution; resolved_at: string }> {
+    return await this.#bridge.call('sync.conflicts.resolve', {
+      peer_id: peerId,
+      conflict_id: conflictId,
+      resolution,
+    }) as { id: string; resolution: LocalDaemonSyncResolution; resolved_at: string }
   }
 
   async getRun(runId: string): Promise<RunRecord> {

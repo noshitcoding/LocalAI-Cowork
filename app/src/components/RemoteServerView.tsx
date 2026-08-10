@@ -17,6 +17,7 @@ import RemoteScheduleManager from './RemoteScheduleManager'
 import RemoteSecuritySettings from './RemoteSecuritySettings'
 import RemoteGovernancePanel from './RemoteGovernancePanel'
 import RemoteDeviceSettings from './RemoteDeviceSettings'
+import LocalSyncConflicts from './LocalSyncConflicts'
 
 const IS_WEB_APP = import.meta.env.MODE === 'web' || import.meta.env.VITE_COWORK_WEB === 'true'
 
@@ -219,6 +220,7 @@ export default function RemoteServerView() {
           <RemoteSecuritySettings client={client} />
           <RemoteGovernancePanel client={client} currentUserId={account.userId ?? ''} />
           <RemoteDeviceSettings client={client} />
+          <LocalSyncConflicts serverUrl={account.serverUrl} />
           <button className="ui-button ui-button--secondary ui-button--sm" type="button" disabled={pushEnabled} onClick={() => { void enableWebPush(client, remoteDeviceId()).then((result) => { if (result !== 'enabled') throw new Error(`WebPush ${result.replaceAll('_', ' ')}`); setPushEnabled(true) }).catch((cause) => setError(messageOf(cause))) }}><Bell size={14} /> {pushEnabled ? 'Notifications on' : 'Enable notifications'}</button>
           <button className="ui-button ui-button--secondary ui-button--sm" type="button" onClick={() => { void loadRuns() }} disabled={loadingRuns}><RefreshCw size={14} /> Refresh</button>
           <button className="ui-button ui-button--ghost ui-button--sm" type="button" onClick={() => { void account.logout() }}><LogOut size={14} /> Sign out</button>
