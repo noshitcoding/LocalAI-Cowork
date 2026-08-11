@@ -166,12 +166,8 @@ async fn prepare_run(
     }
     request.input =
         sync::freeze_runtime_context_for_run(&state.pool, principal.user_id, request.input).await?;
+    mcp_bindings::ensure_crew_mcp_selection(&request.input)?;
     if mcp_bindings::run_selects_mcp(&request.input) {
-        if request.input.get("task_runner").and_then(Value::as_str) == Some("crew") {
-            return Err(ApiError::Unprocessable(
-                "executor-bound MCP is not yet available to Crew runs".to_owned(),
-            ));
-        }
         if matches!(
             &request.executor_target,
             cowork_contracts::ExecutorTarget::ServerLinux { .. }

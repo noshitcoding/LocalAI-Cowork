@@ -127,6 +127,50 @@ class CrewRuntimeToolTests(unittest.TestCase):
         built_agent = crew_runtime.build_agent(self.request, self.agent)
         self.assertEqual(set(tools), {tool.name for tool in built_agent.tools})
 
+    def test_executor_bound_mcp_is_agent_scoped_and_redacts_secrets(self) -> None:
+        self.agent["mcpServerNames"] = ["Allowed MCP", "Missing MCP", "Blocked MCP"]
+        access = self.request["governance"]["agentAccess"][0]
+        access["allowedMcpServerNames"] = ["Allowed MCP", "Missing MCP"]
+        access["blockedMcpServerNames"] = ["Blocked MCP"]
+        self.request["executorMcpBindings"] = [{
+            "name": "Allowed MCP",
+            "command": "/opt/cowork/bin/fake-mcp",
+            "args": ["--stdio"],
+            "environment": {
+                "MCP_TOKEN": "executor-secret-value",
+                "MCP_QUOTED_TOKEN": 'quote"secret',
+            },
+        }]
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({
+                "success": True,
+                "result": {
+                    "content": 'authorized=executor-secret-value quoted=quote"secret'
+                },
+                "error": None,
+            }),
+            stderr="",
+        )
+
+        with mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run:
+            tools = self._tools()
+            result = tools["mcp_tool"]._run("Allowed MCP", "lookup", {"query": "hello"})
+
+        self.assertIn("authorized=[REDACTED]", result)
+        self.assertNotIn("executor-secret-value", result)
+        self.assertNotIn('quote"secret', result)
+        sent = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(sent["server"]["environment"]["MCP_TOKEN"], "executor-secret-value")
+        self.assertEqual(sent["tool_name"], "lookup")
+        self.assertEqual(
+            crew_tools.unavailable_runtime_tools(self.request, self.agent),
+            ["mcp:Missing MCP"],
+        )
+        denied = tools["mcp_tool"]._run("Blocked MCP", "lookup", {})
+        self.assertIn("not allowed", denied)
+
     def test_file_tools_edit_read_glob_and_grep_inside_workspace(self) -> None:
         tools = self._tools()
 

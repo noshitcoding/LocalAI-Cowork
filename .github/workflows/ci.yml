@@ -279,7 +279,8 @@ jobs:
             --cap-drop ALL \
             --security-opt no-new-privileges:true \
             open-cowork-sandbox-crew:ci \
-            python3 /opt/cowork/crew-runtime/main.py status > crew-runtime-status.json
+            sh -c 'test -r /opt/cowork/mcp-tool.py && python3 /opt/cowork/crew-runtime/main.py status' \
+            > crew-runtime-status.json
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -477,7 +478,7 @@ jobs:
           COWORK_LISTEN_ADDR: 127.0.0.1:18101
           COWORK_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
           COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000081
-          COWORK_SERVER_CAPABILITIES: model.external,tool.mcp.invoke
+          COWORK_SERVER_CAPABILITIES: model.external,tool.mcp.invoke,crew.python
           COWORK_WEB_PUSH_ENABLED: 'false'
           COWORK_S3_ENDPOINT: http://127.0.0.1:19999
           COWORK_S3_BUCKET: cowork-server-mcp-ci

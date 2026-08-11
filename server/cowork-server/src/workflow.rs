@@ -1372,10 +1372,8 @@ async fn prepare_scheduled_run(
     let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
         .await
         .map_err(block)?;
+    mcp_bindings::ensure_crew_mcp_selection(&input).map_err(block)?;
     if mcp_bindings::run_selects_mcp(&input) {
-        if input.get("task_runner").and_then(Value::as_str) == Some("crew") {
-            return Err(ScheduleBlock("crew_mcp_binding_not_supported".to_owned()));
-        }
         if matches!(
             &schedule.executor_target,
             ExecutorTarget::ServerLinux { .. }

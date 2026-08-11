@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -415,7 +416,20 @@ async fn execute_crew_run(
         .get("crew_definition")
         .cloned()
         .context("the Crew run has no frozen crew_definition")?;
-    let request = prepare_crew_request(definition, &lease.run.spec, &model)?;
+    let mcp_bindings = mcp_bindings::resolve_server_bindings_for_run(
+        pool,
+        runtime.object_store.as_ref(),
+        lease.run.spec.project_id,
+        &lease.run.spec.input,
+    )
+    .await?;
+    let mut request = prepare_crew_request(definition, &lease.run.spec, &model)?;
+    let mut secret_redactions = model.api_key.clone().into_iter().collect::<Vec<_>>();
+    secret_redactions.extend(inject_crew_mcp_context(
+        &mut request,
+        &mcp_bindings,
+        lease.run.spec.creator_user_id,
+    )?);
     let timeout_seconds = model
         .timeout
         .as_secs()
@@ -469,7 +483,7 @@ async fn execute_crew_run(
     .await?;
 
     let result = send_runner_job(runtime, &spec).await?;
-    let stderr = redact_secret(&result.stderr, model.api_key.as_deref());
+    let stderr = redact_secrets(&result.stderr, &secret_redactions);
     if result.timed_out {
         bail!("Crew runtime exceeded its configured timeout");
     }
@@ -486,7 +500,7 @@ async fn execute_crew_run(
     for line in result.stdout.lines().filter(|line| !line.trim().is_empty()) {
         let mut value: Value =
             serde_json::from_str(line).context("Crew runtime returned invalid JSON")?;
-        redact_secret_value(&mut value, model.api_key.as_deref());
+        redact_secret_values(&mut value, &secret_redactions);
         if value.get("localAiCoworkEvent").is_some() {
             if emitted_events < 1_000 && serde_json::to_vec(&value)?.len() <= 1024 * 1024 {
                 db::append_leased_event(
@@ -581,13 +595,6 @@ async fn execute_crew_run(
     Ok(json!({"content":content,"crew_response":response}))
 }
 
-fn redact_secret(value: &str, secret: Option<&str>) -> String {
-    match secret.filter(|secret| !secret.is_empty()) {
-        Some(secret) => value.replace(secret, "[REDACTED]"),
-        None => value.to_owned(),
-    }
-}
-
 fn redact_secrets(value: &str, secrets: &[String]) -> String {
     let mut secrets = secrets
         .iter()
@@ -619,24 +626,121 @@ fn crew_usage(response: &Value) -> Option<CrewUsage> {
     })
 }
 
-fn redact_secret_value(value: &mut Value, secret: Option<&str>) {
-    let Some(secret) = secret.filter(|secret| !secret.is_empty()) else {
-        return;
-    };
+fn redact_secret_values(value: &mut Value, secrets: &[String]) {
     match value {
-        Value::String(text) => *text = text.replace(secret, "[REDACTED]"),
+        Value::String(text) => *text = redact_secrets(text, secrets),
         Value::Array(values) => {
             for value in values {
-                redact_secret_value(value, Some(secret));
+                redact_secret_values(value, secrets);
             }
         }
         Value::Object(object) => {
             for value in object.values_mut() {
-                redact_secret_value(value, Some(secret));
+                redact_secret_values(value, secrets);
             }
         }
         _ => {}
     }
+}
+
+fn inject_crew_mcp_context(
+    request: &mut Value,
+    bindings: &[ResolvedServerMcpBinding],
+    creator_user_id: Uuid,
+) -> Result<Vec<String>> {
+    let agents = request
+        .get("agents")
+        .and_then(Value::as_array)
+        .context("the prepared Crew request must contain agents")?;
+    let mut requested_names = BTreeSet::new();
+    let mut agent_access = Vec::with_capacity(agents.len());
+    for agent in agents {
+        let agent = agent
+            .as_object()
+            .context("prepared Crew agents must be objects")?;
+        let agent_id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("prepared Crew agents require an id")?;
+        let mut allowed_names = BTreeSet::new();
+        if let Some(values) = agent.get("mcpServerNames") {
+            for value in values
+                .as_array()
+                .context("prepared Crew agent mcpServerNames must be an array")?
+            {
+                let name = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("prepared Crew agent MCP names must be strings")?;
+                allowed_names.insert(name.to_owned());
+                requested_names.insert(name.to_owned());
+            }
+        }
+        agent_access.push(json!({
+            "agentId":agent_id,
+            "allowedTools":[],
+            "blockedTools":[],
+            "allowedMcpServerNames":allowed_names,
+            "blockedMcpServerNames":[],
+            "delegationAllowed":false,
+            "gatewayHints":[],
+        }));
+    }
+
+    let by_name = bindings
+        .iter()
+        .map(|binding| (binding.name.as_str(), binding))
+        .collect::<BTreeMap<_, _>>();
+    let resolved_names = by_name
+        .keys()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    if requested_names != resolved_names {
+        bail!("resolved Crew MCP bindings do not match the prepared agent allowlists");
+    }
+
+    let mut executor_bindings = Vec::with_capacity(requested_names.len());
+    let mut secrets = Vec::new();
+    for name in &requested_names {
+        let binding = by_name
+            .get(name.as_str())
+            .with_context(|| format!("Crew MCP binding {name:?} was not resolved"))?;
+        secrets.extend(
+            binding
+                .environment
+                .values()
+                .filter(|value| !value.is_empty())
+                .cloned(),
+        );
+        executor_bindings.push(json!({
+            "name":binding.name,
+            "command":binding.command,
+            "args":binding.args,
+            "environment":binding.environment,
+        }));
+    }
+    let request = request
+        .as_object_mut()
+        .context("the prepared Crew request must be an object")?;
+    request.insert(
+        "executorMcpBindings".to_owned(),
+        Value::Array(executor_bindings),
+    );
+    request.insert(
+        "governance".to_owned(),
+        json!({
+            "subject":format!("server-run:{creator_user_id}"),
+            "subjectRoles":["runner"],
+            "policyStrict":true,
+            "denyRules":[],
+            "pendingApprovalTypes":[],
+            "agentAccess":agent_access,
+        }),
+    );
+    Ok(secrets)
 }
 
 struct ServerRuntimeHost<'a> {
@@ -1565,10 +1669,51 @@ mod tests {
             "message":"provider rejected secret-value",
             "nested":[{"detail":"secret-value"}],
         });
-        redact_secret_value(&mut value, Some("secret-value"));
+        redact_secret_values(&mut value, &["secret-value".to_owned()]);
         assert_eq!(value["message"], "provider rejected [REDACTED]");
         assert_eq!(value["nested"][0]["detail"], "[REDACTED]");
         assert!(!value.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn crew_mcp_context_is_agent_scoped_and_returns_secret_redactions() {
+        let creator_user_id = Uuid::new_v4();
+        let mut request = json!({
+            "agents":[
+                {"id":"researcher","mcpServerNames":["Docs"]},
+                {"id":"reviewer","mcpServerNames":[]}
+            ]
+        });
+        let bindings = vec![ResolvedServerMcpBinding {
+            name: "Docs".to_owned(),
+            command: "/opt/cowork/bin/docs-mcp".to_owned(),
+            args: vec!["--stdio".to_owned()],
+            environment: BTreeMap::from([("DOCS_TOKEN".to_owned(), "crew-secret".to_owned())]),
+        }];
+
+        let secrets = inject_crew_mcp_context(&mut request, &bindings, creator_user_id).unwrap();
+
+        assert_eq!(secrets, vec!["crew-secret"]);
+        assert_eq!(
+            request["executorMcpBindings"][0]["command"],
+            "/opt/cowork/bin/docs-mcp"
+        );
+        assert_eq!(
+            request["governance"]["subject"],
+            format!("server-run:{creator_user_id}")
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][0]["allowedMcpServerNames"],
+            json!(["Docs"])
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][1]["allowedMcpServerNames"],
+            json!([])
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][0]["allowedTools"],
+            json!([])
+        );
     }
 
     #[test]

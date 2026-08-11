@@ -24,6 +24,7 @@ RUN python3 -m pip install --no-cache-dir --requirement /opt/cowork/crew-runtime
 
 COPY app/src-tauri/python/crew_runtime/main.py /opt/cowork/crew-runtime/main.py
 COPY app/src-tauri/python/crew_runtime/crew_tools.py /opt/cowork/crew-runtime/crew_tools.py
+COPY deploy/sandboxes/core/mcp-tool.py /opt/cowork/mcp-tool.py
 RUN python3 /opt/cowork/crew-runtime/main.py status > /tmp/crew-runtime-status.json \
     && python3 -c "import json; status=json.load(open('/tmp/crew-runtime-status.json', encoding='utf-8')); assert status['runtimeCompatible'] and status['crewaiVersion'] == '1.15.8' and status['runtimeSchemaVersion'] == 2, status" \
     && rm /tmp/crew-runtime-status.json

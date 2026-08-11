@@ -1102,6 +1102,174 @@ class OfficeWorkflowTool(BaseTool):
         return _safe_result("office_workflow", execute)
 
 
+class McpToolInput(BaseModel):
+    server_name: str = Field(description="Exact executor-bound MCP server name")
+    tool_name: str = Field(description="Tool name exposed by the selected MCP server")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP tool arguments")
+
+
+def _executor_mcp_bindings(request: dict) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for value in request.get("executorMcpBindings") or []:
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or "").strip()
+        command = value.get("command")
+        args = value.get("args", [])
+        environment = value.get("environment", {})
+        if (
+            name
+            and isinstance(command, str)
+            and command.strip()
+            and isinstance(args, list)
+            and all(isinstance(argument, str) for argument in args)
+            and isinstance(environment, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in environment.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "command": command,
+                "args": args,
+                "environment": environment,
+            }
+    return bindings
+
+
+def _allowed_mcp_server_names(request: dict, agent: dict) -> list[str]:
+    requested = [
+        str(value).strip()
+        for value in agent.get("mcpServerNames") or []
+        if str(value).strip()
+    ]
+    access = _agent_access(request, str(agent.get("id") or "").strip())
+    allowed = {
+        str(value).strip()
+        for value in access.get("allowedMcpServerNames") or []
+        if str(value).strip()
+    }
+    blocked = {
+        str(value).strip()
+        for value in access.get("blockedMcpServerNames") or []
+        if str(value).strip()
+    }
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in requested:
+        if name in allowed and name not in blocked and name not in seen:
+            result.append(name)
+            seen.add(name)
+    return result
+
+
+def _redact_mcp_binding_values(value: str, binding: dict[str, Any]) -> str:
+    redacted = value
+    environment = binding.get("environment") or {}
+    secrets = sorted(
+        (secret for secret in environment.values() if isinstance(secret, str) and secret),
+        key=len,
+        reverse=True,
+    )
+    for secret in secrets:
+        redacted = redacted.replace(secret, "[REDACTED]")
+        escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+        if escaped != secret:
+            redacted = redacted.replace(escaped, "[REDACTED]")
+    return redacted
+
+
+def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _redact_mcp_binding_values(value, binding)
+    if isinstance(value, list):
+        return [_redact_mcp_binding_payload(item, binding) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_mcp_binding_payload(item, binding)
+            for key, item in value.items()
+        }
+    return value
+
+
+class McpTool(BaseTool):
+    name: str = "mcp_tool"
+    description: str = "Call a tool on an executor-bound MCP stdio server."
+    args_schema: type[BaseModel] = McpToolInput
+    _bindings: dict[str, dict[str, Any]] = PrivateAttr()
+    _allowed_names: set[str] = PrivateAttr()
+    _root: Path = PrivateAttr()
+
+    def __init__(
+        self,
+        roots: list[tuple[Path, str]],
+        bindings: dict[str, dict[str, Any]],
+        allowed_names: list[str],
+    ) -> None:
+        names = [name for name in allowed_names if name in bindings]
+        super().__init__(
+            description=(
+                "Call a tool on an encrypted executor-bound MCP stdio server. "
+                f"Allowed servers: {', '.join(names)}"
+            )
+        )
+        self._bindings = {name: bindings[name] for name in names}
+        self._allowed_names = set(names)
+        self._root = _primary_workspace_root(roots)
+
+    def _run(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            name = str(server_name or "").strip()
+            tool = str(tool_name or "").strip()
+            if name not in self._allowed_names or name not in self._bindings:
+                raise PermissionError(f"MCP server is not allowed for this agent: {name}")
+            if not tool or len(tool) > 1024 or any(
+                ord(character) < 32 or ord(character) == 127 for character in tool
+            ):
+                raise ValueError("MCP tool name is missing or invalid")
+            normalized_arguments = {} if arguments is None else arguments
+            if not isinstance(normalized_arguments, dict):
+                raise ValueError("MCP tool arguments must be an object")
+            payload = {
+                "server": self._bindings[name],
+                "tool_name": tool,
+                "arguments": normalized_arguments,
+                "timeout_seconds": 120,
+            }
+            tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
+            completed = subprocess.run(
+                [sys.executable, tool_path],
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=150,
+                check=False,
+            )
+            stdout = _redact_mcp_binding_values(completed.stdout, self._bindings[name])
+            stderr = _redact_mcp_binding_values(completed.stderr, self._bindings[name])
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"MCP adapter exited with {completed.returncode}: {stderr.strip() or stdout.strip()}"
+                )
+            response = _redact_mcp_binding_payload(
+                json.loads(completed.stdout),
+                self._bindings[name],
+            )
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"MCP call failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("mcp_tool", execute)
+
+
 TOOL_FACTORIES = {
     "read_file": lambda roots, deny_rules: ReadFileTool(roots, deny_rules),
     "edit_file": lambda roots, deny_rules: EditFileTool(roots, deny_rules),
@@ -1138,6 +1306,10 @@ def build_runtime_tools(request: dict, agent: dict) -> list[BaseTool]:
             continue
         result.append(factory(roots, deny_rules))
         seen.add(tool_id)
+    bindings = _executor_mcp_bindings(request)
+    allowed_mcp_names = _allowed_mcp_server_names(request, agent)
+    if any(name in bindings for name in allowed_mcp_names):
+        result.append(McpTool(roots, bindings, allowed_mcp_names))
     return result
 
 
@@ -1146,4 +1318,15 @@ def unavailable_runtime_tools(request: dict, agent: dict) -> list[str]:
     requested = {_canonical_tool_id(value) for value in agent.get("tools") or [] if str(value).strip()}
     access = _agent_access(request, agent_id)
     allowed = {_canonical_tool_id(value) for value in access.get("allowedTools") or []}
-    return sorted(tool_id for tool_id in requested & allowed if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task"})
+    unavailable = {
+        tool_id
+        for tool_id in requested & allowed
+        if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task", "mcp"}
+    }
+    bindings = _executor_mcp_bindings(request)
+    unavailable.update(
+        f"mcp:{name}"
+        for name in _allowed_mcp_server_names(request, agent)
+        if name not in bindings
+    )
+    return sorted(unavailable)

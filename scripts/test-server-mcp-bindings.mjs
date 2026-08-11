@@ -196,6 +196,91 @@ if (updated.revision !== 2 || updated.executable_hint !== 'filesystem-mcp-v2'
   throw new Error(`updated MCP binding metadata is invalid: ${JSON.stringify(updated)}`)
 }
 
+function crewInput(mcpServerName) {
+  return {
+    task_runner: 'crew',
+    crew_id: 'ci-mcp-crew',
+    mcp_metadata_ids: [primaryEntityId],
+    task_config: {
+      crew_definition: {
+        id: 'ci-mcp-crew',
+        name: 'CI MCP Crew',
+        agents: [{
+          id: 'researcher',
+          name: 'Researcher',
+          role: 'Researcher',
+          goal: 'Exercise the selected MCP server',
+          backstory: 'Acceptance-test agent',
+          tools: [],
+          mcpServerNames: [mcpServerName],
+          enabled: true,
+        }],
+        tasks: [{
+          id: 'research',
+          name: 'Research',
+          description: 'Use the executor-bound MCP server.',
+          expectedOutput: 'A short result.',
+          agentId: 'researcher',
+          dependencies: [],
+        }],
+      },
+    },
+  }
+}
+
+async function createCrewMessage(title, input) {
+  const crewThread = await api('/threads', {
+    method: 'POST',
+    token,
+    body: {
+      project_id: project.id,
+      title,
+      forked_from_thread_id: null,
+      forked_from_message_id: null,
+    },
+  })
+  const body = {
+    content: { text: title },
+    run: {
+      thread_id: crewThread.id,
+      project_id: project.id,
+      project_revision: project.revision,
+      project_privacy: 'team_managed',
+      task: null,
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: ['crew.python'],
+      input,
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `crew-mcp-${randomUUID()}`,
+    },
+  }
+  return { crewThread, body }
+}
+
+const acceptedCrew = await createCrewMessage(
+  'Bound Crew MCP acceptance',
+  crewInput('CI filesystem MCP'),
+)
+const acceptedPair = await api(`/threads/${acceptedCrew.crewThread.id}/messages`, {
+  method: 'POST', token, body: acceptedCrew.body,
+})
+if (acceptedPair.run.spec.input.crew_definition?.agents?.[0]?.mcpServerNames?.[0]
+      !== 'CI filesystem MCP'
+    || acceptedPair.run.spec.input.frozen_runtime_context?.mcp_metadata?.[0]?.definition?.name
+      !== 'CI filesystem MCP'
+    || !acceptedPair.run.spec.required_capabilities.includes('tool.mcp.invoke')) {
+  throw new Error(`Crew MCP run was not frozen safely: ${JSON.stringify(acceptedPair.run)}`)
+}
+
+const rejectedCrew = await createCrewMessage(
+  'Unselected Crew MCP rejection',
+  crewInput('Unselected MCP'),
+)
+await expectStatus(`/threads/${rejectedCrew.crewThread.id}/messages`, 422, {
+  method: 'POST', token, body: rejectedCrew.body,
+})
+
 const renamedMetadata = await api('/sync/changes', {
   method: 'POST',
   token,
@@ -299,3 +384,4 @@ console.log('mcp_binding_safe_metadata=ok')
 console.log('mcp_binding_revision_conflicts=ok')
 console.log('mcp_binding_name_identity=ok')
 console.log('mcp_binding_missing_run_rejection=ok')
+console.log('mcp_binding_crew_selection=ok')

@@ -175,9 +175,14 @@ arguments. The one-shot MCP client uses filtered egress, invokes the command
 without a shell, applies a 120-second protocol timeout and redacts every bound
 environment value from stdout/stderr before model or event persistence.
 
-This binding currently supports MCP stdio for the normal Rust agent on the
-Linux server executor. Crew, managed-Windows and streamable-HTTP MCP adapters
-remain separate compatibility work and must not be advertised as available.
+MCP stdio bindings are available to both the normal Rust agent and the pinned
+Crew adapter on the Linux server executor. For Crew Runs, the selected frozen
+metadata names must exactly equal the union of `mcpServerNames` on enabled
+agents. The worker injects only those bindings, gives each agent only its own
+allowlist, and recursively redacts provider and MCP environment secrets again
+before any Crew event or response is persisted. Managed-Windows and
+streamable-HTTP MCP adapters remain separate compatibility work and must not be
+advertised as available.
 
 Runs may also select synchronized skills and memory records by ID. The API
 resolves those records in the run creator's namespace, keeps only the supported

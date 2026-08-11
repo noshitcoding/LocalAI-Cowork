@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -29,6 +29,7 @@ const MAX_ENVIRONMENT: usize = 64;
 const MAX_ENVIRONMENT_KEY_BYTES: usize = 256;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 64 * 1024;
 const MAX_ENCODED_BINDING_BYTES: usize = 512 * 1024;
+const MAX_CREW_MCP_SERVERS: usize = 64;
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteBindingQuery {
@@ -308,6 +309,90 @@ pub(crate) fn run_selects_mcp(input: &Value) -> bool {
         .and_then(|context| context.get("mcp_metadata"))
         .and_then(Value::as_array)
         .is_some_and(|values| !values.is_empty())
+}
+
+pub(crate) fn ensure_crew_mcp_selection(input: &Value) -> Result<(), ApiError> {
+    if input.get("task_runner").and_then(Value::as_str) != Some("crew") {
+        return Ok(());
+    }
+    let requested = crew_requested_mcp_names(input)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let selected = frozen_mcp_references(input)?
+        .into_iter()
+        .map(|reference| reference.name)
+        .collect::<BTreeSet<_>>();
+    if requested == selected {
+        return Ok(());
+    }
+    let missing = requested.difference(&selected).cloned().collect::<Vec<_>>();
+    let unused = selected.difference(&requested).cloned().collect::<Vec<_>>();
+    Err(ApiError::Unprocessable(format!(
+        "Crew MCP selection must exactly match enabled agent mcpServerNames; missing selections: {}; selected but unused: {}",
+        display_names(&missing),
+        display_names(&unused),
+    )))
+}
+
+pub(crate) fn crew_requested_mcp_names(input: &Value) -> Result<Vec<String>, ApiError> {
+    if input.get("task_runner").and_then(Value::as_str) != Some("crew") {
+        return Ok(Vec::new());
+    }
+    let agents = input
+        .get("crew_definition")
+        .and_then(|definition| definition.get("agents"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::Unprocessable(
+                "the frozen Crew definition must contain an agents array".to_owned(),
+            )
+        })?;
+    let mut names = BTreeSet::new();
+    for agent in agents {
+        if agent.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(values) = agent.get("mcpServerNames") else {
+            continue;
+        };
+        let values = values.as_array().ok_or_else(|| {
+            ApiError::Unprocessable("Crew agent mcpServerNames must be an array".to_owned())
+        })?;
+        for value in values {
+            let name = value
+                .as_str()
+                .map(str::trim)
+                .filter(|name| {
+                    !name.is_empty()
+                        && name.len() <= MAX_NAME_BYTES
+                        && !name.chars().any(char::is_control)
+                })
+                .ok_or_else(|| {
+                    ApiError::Unprocessable(
+                        "Crew agent mcpServerNames contains an invalid name".to_owned(),
+                    )
+                })?;
+            names.insert(name.to_owned());
+            if names.len() > MAX_CREW_MCP_SERVERS {
+                return Err(ApiError::Unprocessable(format!(
+                    "Crew definitions may reference at most {MAX_CREW_MCP_SERVERS} MCP servers"
+                )));
+            }
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
+fn display_names(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names
+            .iter()
+            .map(|name| format!("{name:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 pub(crate) async fn resolve_server_bindings_for_run(
@@ -633,5 +718,33 @@ mod tests {
             "frozen_runtime_context":{"mcp_metadata":[{"entity_id":first,"definition":{}}]}
         }))
         .is_err());
+    }
+
+    #[test]
+    fn crew_mcp_selection_is_exact_and_ignores_disabled_agents() {
+        let selected = Uuid::new_v4();
+        let base = serde_json::json!({
+            "task_runner":"crew",
+            "crew_definition":{"agents":[
+                {"id":"active","mcpServerNames":["Docs"]},
+                {"id":"disabled","enabled":false,"mcpServerNames":["Ignored"]}
+            ]},
+            "frozen_runtime_context":{"mcp_metadata":[
+                {"entity_id":selected,"definition":{"name":"Docs"}}
+            ]}
+        });
+        assert_eq!(crew_requested_mcp_names(&base).unwrap(), vec!["Docs"]);
+        ensure_crew_mcp_selection(&base).unwrap();
+
+        let mut missing = base.clone();
+        missing["frozen_runtime_context"]["mcp_metadata"] = serde_json::json!([]);
+        assert!(ensure_crew_mcp_selection(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("missing selections"));
+
+        let mut invalid = base;
+        invalid["crew_definition"]["agents"][0]["mcpServerNames"] = serde_json::json!("Docs");
+        assert!(crew_requested_mcp_names(&invalid).is_err());
     }
 }
