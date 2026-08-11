@@ -38,10 +38,11 @@ import { oidcEnabled } from '../runtime/oidc'
 import { remoteDeviceId, remoteRuntimeClient, useRemoteRuntimeStore } from '../stores/remoteRuntimeStore'
 import {
   EMPTY_MOBILE_OFFLINE_STATE,
+  createOfflineThreadMessageOperation,
+  flushMobileOutbox,
   loadMobileOfflineState,
   saveMobileOfflineState,
   type MobileOfflineState,
-  type MobileOutboxOperation,
 } from './mobileOfflineStore'
 import { hasMobilePin, setMobilePin, unlockWithBiometrics, verifyMobilePin } from './mobileSecure'
 import { androidPushBuildConfigured, consumeAndroidPushEvents, enableAndroidPush } from './mobilePush'
@@ -89,6 +90,7 @@ export default function MobileApp() {
   const [interventionReloadKey, setInterventionReloadKey] = useState(0)
   const [messageReloadKey, setMessageReloadKey] = useState(0)
   const [ssoEnabled, setSsoEnabled] = useState(false)
+  const [offlineReply, setOfflineReply] = useState('')
   const offlineRef = useRef(offline)
   const fileInput = useRef<HTMLInputElement>(null)
   const cameraInput = useRef<HTMLInputElement>(null)
@@ -172,19 +174,15 @@ export default function MobileApp() {
   const flushOutbox = useCallback(async () => {
     const current = offlineRef.current
     if (!client || !online || current.outbox.length === 0) return
-    const remaining: MobileOutboxOperation[] = []
-    for (const operation of current.outbox) {
-      try {
-        if (operation.kind === 'cancel_run') await client.cancelRun(operation.runId)
-      } catch (cause) {
-        remaining.push({
-          ...operation,
-          attempts: operation.attempts + 1,
-          lastError: messageOf(cause),
-        })
-      }
-    }
-    persist({ ...offlineRef.current, outbox: remaining })
+    const { remaining, createdRuns } = await flushMobileOutbox(client, current.outbox)
+    persist({
+      ...offlineRef.current,
+      runs: [
+        ...createdRuns,
+        ...offlineRef.current.runs.filter((run) => !createdRuns.some((created) => created.spec.id === run.spec.id)),
+      ],
+      outbox: remaining,
+    })
   }, [client, online, persist])
 
   useEffect(() => {
@@ -332,6 +330,21 @@ export default function MobileApp() {
     }
   }
 
+  const queueOfflineReply = (event: FormEvent) => {
+    event.preventDefault()
+    if (!selectedRun || !offlineReply.trim()) return
+    const operation = createOfflineThreadMessageOperation(selectedRun, offlineReply)
+    persist({ ...offlineRef.current, outbox: [...offlineRef.current.outbox, operation] })
+    setOfflineReply('')
+  }
+
+  const discardOutboxOperation = (operationId: string) => {
+    persist({
+      ...offlineRef.current,
+      outbox: offlineRef.current.outbox.filter((operation) => operation.id !== operationId),
+    })
+  }
+
   const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -456,6 +469,17 @@ export default function MobileApp() {
             setMessageReloadKey((value) => value + 1)
           }}
         />
+        {!online ? (
+          <section className="mobile-offline-reply">
+            <h2>Queue a reply</h2>
+            <p>It will start a new durable run on this thread after connectivity returns.</p>
+            <form onSubmit={queueOfflineReply}>
+              <textarea aria-label="Offline reply" value={offlineReply} onChange={(event) => setOfflineReply(event.target.value)} rows={4} placeholder="Continue this work when I am online again…" required />
+              <button type="submit" disabled={!offlineReply.trim()}><ListRestart size={16} /> Add to outbox</button>
+            </form>
+            <small>{offline.outbox.filter((operation) => operation.kind === 'thread_message' && operation.threadId === selectedRun.spec.thread_id).length} queued for this thread</small>
+          </section>
+        ) : null}
         {online ? <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={refreshRuns} /> : null}
         {activeSession && online ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={activeSession} onSessionChanged={() => client.listDesktopSessions(selectedRun.spec.id).then(setSessions)} /> : null}
         {terminalOpen && online ? <RemoteTerminal client={client} runId={selectedRun.spec.id} onClose={() => setTerminalOpen(false)} /> : null}
@@ -478,6 +502,7 @@ export default function MobileApp() {
       {!online ? <div className="mobile-offline-banner"><CloudOff size={16} /> Offline cache</div> : null}
       {online && androidPushBuildConfigured() && pushStatus !== 'enabled' ? <button className="mobile-push-banner" type="button" disabled={pushStatus === 'enabling'} onClick={() => { void enableNotifications() }}><Bell size={16} /> {pushStatus === 'enabling' ? 'Enabling notifications…' : 'Enable private run notifications'}</button> : null}
       {offline.outbox.length > 0 ? <div className="mobile-outbox"><ListRestart size={16} /> {offline.outbox.length} queued action{offline.outbox.length === 1 ? '' : 's'}</div> : null}
+      {offline.outbox.length > 0 ? <section className="mobile-outbox-list"><strong>Encrypted outbox</strong>{offline.outbox.map((operation) => <article key={operation.id}><span><b>{operation.kind === 'cancel_run' ? 'Cancel run' : 'Thread reply'}</b><small>{operation.kind === 'cancel_run' ? operation.runId : operation.request.content && typeof operation.request.content === 'object' && 'text' in operation.request.content ? String(operation.request.content.text) : operation.threadId}</small>{operation.lastError ? <em>{operation.lastError}</em> : null}</span><button type="button" aria-label={`Discard queued ${operation.kind.replaceAll('_', ' ')}`} onClick={() => discardOutboxOperation(operation.id)}>Discard</button></article>)}</section> : null}
       <section className="mobile-run-list">
         <div className="mobile-section-heading"><h1>Runs</h1><button type="button" disabled={!online || busy} onClick={() => { void refreshRuns() }}><RefreshCw size={16} /> Sync</button></div>
         {online ? <RemoteSecuritySettings compact client={client} /> : null}

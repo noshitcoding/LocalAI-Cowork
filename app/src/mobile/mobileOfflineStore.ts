@@ -1,4 +1,5 @@
-import type { MessageRecord, RunEvent, RunRecord } from '../runtime/contracts'
+import type { CreateThreadMessageRequest, MessageRecord, RunEvent, RunRecord } from '../runtime/contracts'
+import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import { fromBase64, mobileSecureGet, mobileSecureSet, toBase64 } from './mobileSecure'
 
 const STORAGE_KEY = 'open-cowork-mobile-cache-v1'
@@ -6,14 +7,21 @@ const KEY_NAMESPACE = 'offline_cache'
 const KEY_NAME = 'aes_gcm_key_v1'
 const AAD = new TextEncoder().encode('open-cowork-mobile-cache-v1')
 
-export type MobileOutboxOperation = {
+type MobileOutboxBase = {
   id: string
-  kind: 'cancel_run'
-  runId: string
   createdAt: string
   attempts: number
   lastError?: string
 }
+
+export type MobileOutboxOperation = MobileOutboxBase & ({
+  kind: 'cancel_run'
+  runId: string
+} | {
+  kind: 'thread_message'
+  threadId: string
+  request: CreateThreadMessageRequest
+})
 
 export type MobileOfflineState = {
   schemaVersion: 1
@@ -31,6 +39,60 @@ export const EMPTY_MOBILE_OFFLINE_STATE: MobileOfflineState = {
   messages: {},
   outbox: [],
   updatedAt: new Date(0).toISOString(),
+}
+
+export function createOfflineThreadMessageOperation(
+  run: RunRecord,
+  prompt: string,
+  id = crypto.randomUUID(),
+  createdAt = new Date().toISOString(),
+): MobileOutboxOperation {
+  const content = prompt.trim()
+  if (!content) throw new Error('Offline replies must not be empty')
+  return {
+    id,
+    kind: 'thread_message',
+    threadId: run.spec.thread_id,
+    request: {
+      content: { text: content },
+      run: {
+        thread_id: run.spec.thread_id,
+        project_id: run.spec.project_id,
+        project_revision: run.spec.project.revision,
+        project_privacy: run.spec.project_privacy,
+        task: null,
+        executor_target: run.spec.executor_target,
+        required_capabilities: run.spec.required_capabilities,
+        input: { prompt: content },
+        model_profile_id: run.spec.model_profile_id ?? null,
+        snapshot_id: null,
+        idempotency_key: id,
+      },
+    },
+    createdAt,
+    attempts: 0,
+  }
+}
+
+export async function flushMobileOutbox(
+  client: Pick<RemoteRuntimeClient, 'cancelRun' | 'createThreadMessage'>,
+  operations: MobileOutboxOperation[],
+): Promise<{ remaining: MobileOutboxOperation[]; createdRuns: RunRecord[] }> {
+  const remaining: MobileOutboxOperation[] = []
+  const createdRuns: RunRecord[] = []
+  for (const operation of operations) {
+    try {
+      if (operation.kind === 'cancel_run') await client.cancelRun(operation.runId)
+      else createdRuns.push((await client.createThreadMessage(operation.threadId, operation.request)).run)
+    } catch (error) {
+      remaining.push({
+        ...operation,
+        attempts: operation.attempts + 1,
+        lastError: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return { remaining, createdRuns }
 }
 
 export async function loadMobileOfflineState(): Promise<MobileOfflineState> {
