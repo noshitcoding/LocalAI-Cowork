@@ -57,7 +57,9 @@ const MAX_EXECUTOR_MCP_BINDINGS: usize = 64;
 const MAX_EXECUTOR_MCP_FILE_BYTES: u64 = 512 * 1024;
 const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OFFICE_BRIDGE_INPUT_BYTES: usize = 1024 * 1024;
+#[cfg(windows)]
 const MAX_OFFICE_STDOUT_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
 const MAX_OFFICE_STDERR_BYTES: usize = 256 * 1024;
 const LATEST_HTTP_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_HTTP_MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
@@ -2150,6 +2152,7 @@ async fn executor_windows_office_bridge_response(input: &[u8], workspace: &Path)
     }
 }
 
+#[cfg(windows)]
 async fn read_bounded_bridge_bytes<R: AsyncRead + Unpin>(
     mut reader: R,
     limit: usize,
