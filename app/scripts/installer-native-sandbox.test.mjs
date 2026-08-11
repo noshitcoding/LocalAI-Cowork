@@ -11,6 +11,7 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
   const installerSmoke = readFileSync(join(appRoot, 'scripts', 'installer-crew-runtime-smoke.ps1'), 'utf8')
   const nativeSandbox = readFileSync(join(appRoot, 'src-tauri', 'src', 'native_windows_sandbox.rs'), 'utf8')
   const releaseWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+  const candidateWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release-candidate.yml'), 'utf8')
 
   assert.match(nativeSandbox, /--lacowork-native-sandbox-smoke/)
   assert.match(nativeSandbox, /let repeated = setup_start\(app_data\)\?/)
@@ -21,4 +22,10 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
   assert.match(installerSmoke, /markerWritten -ne \$true/)
   assert.match(releaseWorkflow, /installer-crew-runtime-smoke\.ps1/)
   assert.doesNotMatch(releaseWorkflow, /SkipNativeSandbox/)
+  assert.match(candidateWorkflow, /workflow_dispatch:/)
+  assert.match(candidateWorkflow, /git merge-base --is-ancestor \$checkedOut origin\/main/)
+  assert.match(candidateWorkflow, /installer-crew-runtime-smoke\.ps1/)
+  assert.match(candidateWorkflow, /UninstallAfterVerification/)
+  assert.doesNotMatch(candidateWorkflow, /SkipNativeSandbox/)
+  assert.doesNotMatch(candidateWorkflow, /gh release|docker\/build-push-action|packages: write/)
 })
