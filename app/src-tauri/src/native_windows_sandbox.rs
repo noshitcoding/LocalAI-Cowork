@@ -496,6 +496,10 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
     ))
 }
 
+fn icacls_sid_grant(sid: &str, permissions: &str) -> String {
+    format!("*{sid}:{permissions}")
+}
+
 pub fn grant_workspace_access(
     app_data: &Path,
     run_id: &str,
@@ -509,13 +513,14 @@ pub fn grant_workspace_access(
     #[cfg(target_os = "windows")]
     {
         let capability_sid = capability_sid_for_run(app_data, run_id)?;
+        let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
         let status = std::process::Command::new("icacls.exe")
             .arg(workspace)
             .args(["/grant:r"])
-            .arg(format!("{}:(OI)(CI)M", SANDBOX_GROUP))
+            .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)M"))
             .args(["/grant:r"])
-            .arg(format!("*{}:(OI)(CI)M", capability_sid))
-            .args(["/grant:r", "SYSTEM:(OI)(CI)F", "/T", "/C", "/Q"])
+            .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)M"))
+            .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
             .creation_flags(0x08000000)
             .status()
             .map_err(|error| format!("failed to set sandbox workspace ACL: {error}"))?;
@@ -542,13 +547,14 @@ pub fn grant_workspace_access_for_roots(
     #[cfg(target_os = "windows")]
     {
         let capability_sid = capability_sid_for_run(app_data, run_id)?;
+        let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
         let status = std::process::Command::new("icacls.exe")
             .arg(workspace)
             .args(["/grant:r"])
-            .arg(format!("{}:(OI)(CI)RX", SANDBOX_GROUP))
+            .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)RX"))
             .args(["/grant:r"])
-            .arg(format!("*{}:(OI)(CI)RX", capability_sid))
-            .args(["/grant:r", "SYSTEM:(OI)(CI)F", "/T", "/C", "/Q"])
+            .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)RX"))
+            .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
             .creation_flags(0x08000000)
             .status()
             .map_err(|error| format!("failed to set sandbox workspace ACL: {error}"))?;
@@ -564,10 +570,10 @@ pub fn grant_workspace_access_for_roots(
             let status = std::process::Command::new("icacls.exe")
                 .arg(writable_root)
                 .args(["/grant:r"])
-                .arg(format!("{}:(OI)(CI)M", SANDBOX_GROUP))
+                .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)M"))
                 .args(["/grant:r"])
-                .arg(format!("*{}:(OI)(CI)M", capability_sid))
-                .args(["/grant:r", "SYSTEM:(OI)(CI)F", "/T", "/C", "/Q"])
+                .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)M"))
+                .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
                 .creation_flags(0x08000000)
                 .status()
                 .map_err(|error| format!("failed to set writable sandbox root ACL: {error}"))?;
@@ -619,10 +625,11 @@ pub fn prepare_bundled_python(resource_dir: &Path, app_data: &Path) -> Result<Pa
     }
     #[cfg(target_os = "windows")]
     {
+        let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
         let status = std::process::Command::new("icacls.exe")
             .arg(&destination)
             .args(["/grant:r"])
-            .arg(format!("{}:(OI)(CI)RX", SANDBOX_GROUP))
+            .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)RX"))
             .args(["/T", "/C", "/Q"])
             .creation_flags(0x08000000)
             .status()
@@ -639,7 +646,7 @@ pub fn grant_capability_read_access(path: &Path, capability_sid: &str) -> Result
     let status = std::process::Command::new("icacls.exe")
         .arg(path)
         .args(["/grant:r"])
-        .arg(format!("*{}:(OI)(CI)RX", capability_sid))
+        .arg(icacls_sid_grant(capability_sid, "(OI)(CI)RX"))
         .args(["/T", "/C", "/Q"])
         .creation_flags(0x08000000)
         .status()
@@ -658,12 +665,12 @@ pub fn grant_capability_read_access(_path: &Path, _capability_sid: &str) -> Resu
 }
 
 #[cfg(target_os = "windows")]
-fn sandbox_account_sid_string() -> Result<String, String> {
+fn local_principal_sid_string(principal: &str, description: &str) -> Result<String, String> {
     use windows_sys::Win32::Foundation::{GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER};
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::Win32::Security::{LookupAccountNameW, SID_NAME_USE};
 
-    let account = wide(SANDBOX_ACCOUNT);
+    let account = wide(principal);
     let mut sid_length = 0u32;
     let mut domain_length = 0u32;
     let mut sid_kind: SID_NAME_USE = 0;
@@ -680,7 +687,7 @@ fn sandbox_account_sid_string() -> Result<String, String> {
     }
     if sid_length == 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
         return Err(format!(
-            "failed to resolve sandbox account SID: {}",
+            "failed to resolve {description} SID: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -699,14 +706,14 @@ fn sandbox_account_sid_string() -> Result<String, String> {
     } == 0
     {
         return Err(format!(
-            "failed to resolve sandbox account SID: {}",
+            "failed to resolve {description} SID: {}",
             std::io::Error::last_os_error()
         ));
     }
     let mut string_sid = std::ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(sid.as_mut_ptr() as _, &mut string_sid) } == 0 {
         return Err(format!(
-            "failed to format sandbox account SID: {}",
+            "failed to format {description} SID: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -722,6 +729,11 @@ fn sandbox_account_sid_string() -> Result<String, String> {
         LocalFree(string_sid as _);
     }
     value
+}
+
+#[cfg(target_os = "windows")]
+fn sandbox_account_sid_string() -> Result<String, String> {
+    local_principal_sid_string(SANDBOX_ACCOUNT, "sandbox account")
 }
 
 #[cfg(target_os = "windows")]
@@ -1384,9 +1396,8 @@ fn native_sandbox_smoke_helper(app_data: &Path, result_path: &Path) -> Result<()
             ));
         }
 
-        fs::create_dir_all(&workspace).map_err(|error| {
-            format!("failed to create the sandbox smoke workspace: {error}")
-        })?;
+        fs::create_dir_all(&workspace)
+            .map_err(|error| format!("failed to create the sandbox smoke workspace: {error}"))?;
         let run_id = uuid::Uuid::new_v4().to_string();
         grant_workspace_access(app_data, &run_id, &workspace)?;
         let marker = workspace.join("sandbox-smoke.txt");
@@ -2245,8 +2256,17 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_membership_enforcement, read_ipc_frame, write_ipc_frame, IPC_STDERR, IPC_STDOUT,
+        finalize_membership_enforcement, icacls_sid_grant, read_ipc_frame, write_ipc_frame,
+        IPC_STDERR, IPC_STDOUT,
     };
+
+    #[test]
+    fn icacls_grants_use_literal_sids_instead_of_account_names() {
+        assert_eq!(
+            icacls_sid_grant("S-1-5-21-1-2-3-1001", "(OI)(CI)M"),
+            "*S-1-5-21-1-2-3-1001:(OI)(CI)M"
+        );
+    }
 
     #[test]
     fn final_safe_membership_accepts_noncanonical_cleanup_results() {
