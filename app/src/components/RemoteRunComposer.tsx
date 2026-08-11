@@ -1,7 +1,7 @@
 import { Play, Plus, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 
-import type { CapabilityCatalog, ExecutorTarget, ProjectRecord, ProviderProfile, RunRecord } from '../runtime/contracts'
+import type { CapabilityCatalog, ExecutorTarget, ProjectRecord, ProviderProfile, RunRecord, SyncedEntity } from '../runtime/contracts'
 import {
   providerModelLabel,
   providerSupportsProject,
@@ -25,6 +25,25 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+async function allMetadata(client: RemoteRuntimeClient, entityType: 'skill' | 'memory'): Promise<SyncedEntity[]> {
+  const entities: SyncedEntity[] = []
+  let after: string | null = null
+  do {
+    const page = await client.listSyncedEntities(entityType, after, 500)
+    entities.push(...page.items.filter((entity) => !entity.tombstone))
+    after = page.next_after
+  } while (after)
+  return entities
+}
+
+function metadataLabel(entity: SyncedEntity): string {
+  const payload = entity.payload && typeof entity.payload === 'object' && !Array.isArray(entity.payload)
+    ? entity.payload as Record<string, unknown>
+    : {}
+  const label = payload.name ?? payload.key
+  return typeof label === 'string' && label.trim() ? label.trim() : entity.entity_id.slice(0, 8)
+}
+
 export default function RemoteRunComposer({
   client,
   onCreated,
@@ -37,23 +56,30 @@ export default function RemoteRunComposer({
   const [open, setOpen] = useState(false)
   const [projects, setProjects] = useState<ProjectRecord[]>([])
   const [profiles, setProfiles] = useState<ProviderProfile[]>([])
+  const [skills, setSkills] = useState<SyncedEntity[]>([])
+  const [memories, setMemories] = useState<SyncedEntity[]>([])
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null)
   const [projectId, setProjectId] = useState('')
   const [target, setTarget] = useState(() => initialTarget ? remoteTargetKey(initialTarget) : 'server:')
   const [modelProfileId, setModelProfileId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [capabilities, setCapabilities] = useState(() => initialCapabilities.join(', '))
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  const [selectedMemoryIds, setSelectedMemoryIds] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [nextProjects, nextCatalog, nextProfiles] = await Promise.all([
+      const [nextProjects, nextCatalog, nextProfiles, nextSkills, nextMemories] = await Promise.all([
         client.listProjects(), client.capabilities(), client.listProviderProfiles(),
+        allMetadata(client, 'skill'), allMetadata(client, 'memory'),
       ])
       setProjects(nextProjects)
       setCatalog(nextCatalog)
       setProfiles(nextProfiles.filter((profile) => !profile.deleted_at))
+      setSkills(nextSkills)
+      setMemories(nextMemories)
       setProjectId((current) => threadProjectId || current || nextProjects[0]?.id || '')
     } catch (cause) {
       setError(messageOf(cause))
@@ -116,13 +142,19 @@ export default function RemoteRunComposer({
           task: null,
           executor_target: choice.target,
           required_capabilities: required,
-          input: { prompt: prompt.trim() },
+          input: {
+            prompt: prompt.trim(),
+            ...(selectedSkillIds.length > 0 ? { skill_ids: selectedSkillIds } : {}),
+            ...(selectedMemoryIds.length > 0 ? { memory_ids: selectedMemoryIds } : {}),
+          },
           model_profile_id: modelProfileId || null,
           snapshot_id: null,
           idempotency_key: crypto.randomUUID(),
         },
       })
       setPrompt('')
+      setSelectedSkillIds([])
+      setSelectedMemoryIds([])
       setOpen(false)
       await onCreated(run)
     } catch (cause) {
@@ -141,6 +173,8 @@ export default function RemoteRunComposer({
         <label>Run on<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="" disabled>No compatible executor</option>{compatibleChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}</select></label>
         <label>Model profile<select value={modelProfileId} onChange={(event) => setModelProfileId(event.target.value)}><option value="">Server/device default</option>{compatibleProfiles.map((profile) => <option key={profile.id} value={profile.id}>{providerModelLabel(profile)}</option>)}</select></label>
         <label>Required capabilities<input value={capabilities} onChange={(event) => setCapabilities(event.target.value)} placeholder="Optional, comma-separated: browser.headless, office.microsoft" /></label>
+        <label>Frozen skills<select aria-label="Frozen skills" multiple value={selectedSkillIds} onChange={(event) => setSelectedSkillIds(Array.from(event.currentTarget.selectedOptions, (option) => option.value))}>{skills.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataLabel(entity)} (r{entity.revision})</option>)}</select></label>
+        <label>Frozen memory<select aria-label="Frozen memory" multiple value={selectedMemoryIds} onChange={(event) => setSelectedMemoryIds(Array.from(event.currentTarget.selectedOptions, (option) => option.value))}>{memories.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataLabel(entity)} (r{entity.revision})</option>)}</select></label>
         {required.length > 0 && compatibleChoices.length === 0 ? <p className="remote-inline-error">No online executor satisfies every required capability.</p> : null}
         <label>Message<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={compact ? 4 : 5} placeholder="What should the agent do?" required /></label>
         <button className={compact ? '' : 'ui-button ui-button--primary'} type="submit" disabled={busy || !projectId || !target || !prompt.trim()}><Play size={14} /> {busy ? 'Starting…' : 'Start run'}</button>

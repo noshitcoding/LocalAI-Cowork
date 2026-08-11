@@ -1324,7 +1324,235 @@ fn task_projection_config(object: &serde_json::Map<String, Value>) -> Result<Val
     }))
 }
 
-pub(crate) async fn freeze_crew_definition_for_run(
+pub(crate) async fn freeze_runtime_context_for_run(
+    pool: &PgPool,
+    user_id: Uuid,
+    input: Value,
+) -> Result<Value, ApiError> {
+    const CONTEXT_TYPES: &[(&str, &str, &[&str])] = &[
+        (
+            "skill_ids",
+            "skill",
+            &[
+                "name",
+                "description",
+                "prompt_template",
+                "trigger_pattern",
+                "run_mode",
+                "auto_generated",
+                "parent_skill_id",
+                "source_task_ids",
+            ],
+        ),
+        (
+            "memory_ids",
+            "memory",
+            &[
+                "scope",
+                "scope_ref",
+                "category",
+                "key",
+                "content",
+                "target",
+                "source_run_id",
+                "confidence",
+                "source",
+            ],
+        ),
+        (
+            "mcp_metadata_ids",
+            "mcp_metadata",
+            &[
+                "name",
+                "transport",
+                "executable_hint",
+                "environment_keys",
+                "device_binding_required",
+                "source",
+            ],
+        ),
+    ];
+    let mut input = strip_client_frozen_fields(input);
+    input = freeze_crew_definition_for_run(pool, user_id, input).await?;
+    let mut frozen = serde_json::Map::new();
+    for (reference_key, entity_type, allowed_fields) in CONTEXT_TYPES {
+        let references = runtime_metadata_references(&input, reference_key)?;
+        if references.is_empty() {
+            continue;
+        }
+        let values =
+            freeze_metadata_entities(pool, user_id, entity_type, &references, allowed_fields)
+                .await?;
+        frozen.insert((*entity_type).to_owned(), Value::Array(values));
+    }
+    if frozen.is_empty() {
+        return Ok(input);
+    }
+    let encoded = serde_json::to_vec(&frozen)?;
+    if encoded.len() > 256 * 1024 {
+        return Err(ApiError::Unprocessable(
+            "selected synchronized runtime context exceeds 256 KiB".to_owned(),
+        ));
+    }
+    input
+        .as_object_mut()
+        .expect("metadata references can only originate from object run input")
+        .insert("frozen_runtime_context".to_owned(), Value::Object(frozen));
+    Ok(input)
+}
+
+fn strip_client_frozen_fields(input: Value) -> Value {
+    match input {
+        Value::Object(mut object) => {
+            object.remove("frozen_runtime_context");
+            object.remove("crew_definition");
+            object.remove("crew_entity_id");
+            object.remove("crew_revision");
+            Value::Object(object)
+        }
+        other => other,
+    }
+}
+
+fn runtime_metadata_references(input: &Value, key: &str) -> Result<Vec<String>, ApiError> {
+    let value = input.get(key).or_else(|| {
+        input.get("task_config").and_then(|config| {
+            config.get(key).or_else(|| {
+                config
+                    .get("sync_metadata")
+                    .and_then(|metadata| metadata.get(key))
+            })
+        })
+    });
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| {
+        ApiError::Unprocessable(format!("{key} must be an array of synchronized entity IDs"))
+    })?;
+    if values.len() > 32 {
+        return Err(ApiError::Unprocessable(format!(
+            "{key} cannot contain more than 32 entries"
+        )));
+    }
+    let mut unique = std::collections::HashSet::new();
+    values
+        .iter()
+        .map(|value| {
+            let reference = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 200)
+                .ok_or_else(|| {
+                    ApiError::Unprocessable(format!(
+                        "{key} entries must contain 1 to 200 characters"
+                    ))
+                })?;
+            if !unique.insert(reference.to_owned()) {
+                return Ok(None);
+            }
+            Ok(Some(reference.to_owned()))
+        })
+        .filter_map(|result| match result {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
+async fn freeze_metadata_entities(
+    pool: &PgPool,
+    user_id: Uuid,
+    entity_type: &str,
+    references: &[String],
+    allowed_fields: &[&str],
+) -> Result<Vec<Value>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT entity_id, revision, payload
+        FROM sync_entities
+        WHERE user_id = $1 AND entity_type = $2 AND NOT tombstone
+          AND (
+            entity_id::text = ANY($3)
+            OR payload ->> '_cowork_local_entity_id' = ANY($3)
+          )
+        "#,
+    )
+    .bind(user_id)
+    .bind(entity_type)
+    .bind(references)
+    .fetch_all(pool)
+    .await?;
+    let mut by_reference = std::collections::HashMap::new();
+    for row in rows {
+        let entity_id: Uuid = row.try_get("entity_id")?;
+        let revision: i64 = row.try_get("revision")?;
+        let payload: Value = row.try_get("payload")?;
+        let local_id = payload
+            .get("_cowork_local_entity_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let definition = sanitized_runtime_metadata(payload, entity_type, allowed_fields)?;
+        let frozen = serde_json::json!({
+            "entity_id": entity_id,
+            "revision": revision,
+            "definition": definition,
+        });
+        by_reference.insert(entity_id.to_string(), frozen.clone());
+        if let Some(local_id) = local_id {
+            by_reference.insert(local_id, frozen);
+        }
+    }
+    references
+        .iter()
+        .map(|reference| {
+            by_reference.get(reference).cloned().ok_or_else(|| {
+                ApiError::Unprocessable(format!(
+                    "{entity_type} metadata {reference} is unavailable or deleted"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn sanitized_runtime_metadata(
+    payload: Value,
+    entity_type: &str,
+    allowed_fields: &[&str],
+) -> Result<Value, ApiError> {
+    let object = payload.as_object().ok_or_else(|| {
+        ApiError::Unprocessable(format!("{entity_type} metadata must be an object"))
+    })?;
+    let sanitized = allowed_fields
+        .iter()
+        .filter_map(|key| {
+            object
+                .get(*key)
+                .map(|value| ((*key).to_owned(), value.clone()))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let required = match entity_type {
+        "skill" => &["name", "prompt_template"][..],
+        "memory" => &["key", "content"][..],
+        "mcp_metadata" => &["name"][..],
+        _ => &[][..],
+    };
+    for key in required {
+        if sanitized
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(ApiError::Unprocessable(format!(
+                "{entity_type} metadata requires {key}"
+            )));
+        }
+    }
+    Ok(Value::Object(sanitized))
+}
+
+async fn freeze_crew_definition_for_run(
     pool: &PgPool,
     user_id: Uuid,
     input: Value,
@@ -2977,5 +3205,66 @@ mod tests {
         assert!(sanitized.get("config").is_none());
         assert!(!sanitized.to_string().contains("never-persist"));
         assert!(!sanitized.to_string().contains("nested-secret"));
+    }
+
+    #[test]
+    fn runtime_metadata_references_are_nested_deduplicated_and_bounded() {
+        let one = Uuid::new_v4().to_string();
+        let two = Uuid::new_v4().to_string();
+        let input = serde_json::json!({
+            "task_config": {
+                "sync_metadata": {"skill_ids": [one.clone(), two.clone(), one.clone()]}
+            }
+        });
+        assert_eq!(
+            runtime_metadata_references(&input, "skill_ids").unwrap(),
+            vec![one, two]
+        );
+        assert!(runtime_metadata_references(
+            &serde_json::json!({"memory_ids": "not-an-array"}),
+            "memory_ids"
+        )
+        .is_err());
+        assert!(runtime_metadata_references(
+            &serde_json::json!({"memory_ids": (0..33).map(|_| Uuid::new_v4()).collect::<Vec<_>>() }),
+            "memory_ids"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn runtime_metadata_allowlist_drops_device_bindings_and_unknown_fields() {
+        let sanitized = sanitized_runtime_metadata(
+            serde_json::json!({
+                "name":"Filesystem",
+                "transport":"stdio",
+                "executable_hint":"npx",
+                "environment_keys":["TOKEN"],
+                "command":"npx --unsafe",
+                "api_key":"must-not-freeze"
+            }),
+            "mcp_metadata",
+            &["name", "transport", "executable_hint", "environment_keys"],
+        )
+        .unwrap();
+        assert_eq!(sanitized["name"], "Filesystem");
+        assert!(sanitized.get("command").is_none());
+        assert!(sanitized.get("api_key").is_none());
+    }
+
+    #[test]
+    fn client_cannot_supply_reserved_frozen_runtime_fields() {
+        let stripped = strip_client_frozen_fields(serde_json::json!({
+            "prompt":"legitimate",
+            "frozen_runtime_context":{"memory":[{"definition":{"content":"untrusted"}}]},
+            "crew_definition":{"id":"injected"},
+            "crew_entity_id":Uuid::new_v4(),
+            "crew_revision":99
+        }));
+        assert_eq!(stripped["prompt"], "legitimate");
+        assert!(stripped.get("frozen_runtime_context").is_none());
+        assert!(stripped.get("crew_definition").is_none());
+        assert!(stripped.get("crew_entity_id").is_none());
+        assert!(stripped.get("crew_revision").is_none());
     }
 }

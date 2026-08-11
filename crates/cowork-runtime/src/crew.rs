@@ -136,6 +136,17 @@ pub fn prepare_crew_request(
         }
         request.insert("executionGuidelines".to_owned(), Value::String(guidelines));
     }
+    if let Some(context) = crate::frozen_runtime_context_text(&run.input) {
+        let existing = request
+            .get("executionGuidelines")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let guidelines = existing
+            .map(|existing| format!("{existing}\n\n{context}"))
+            .unwrap_or(context);
+        request.insert("executionGuidelines".to_owned(), Value::String(guidelines));
+    }
 
     request.insert("id".to_owned(), Value::String(crew_id));
     Ok(definition)
@@ -203,7 +214,10 @@ mod tests {
     fn prepares_a_secret_injected_request_and_filters_disabled_assignments() {
         let spec = run(json!({
             "prompt":"Review the current report",
-            "task_config":{"sync_metadata":{"expected_output":"A concise verdict"}}
+            "task_config":{"sync_metadata":{"expected_output":"A concise verdict"}},
+            "frozen_runtime_context":{"memory":[{"definition":{
+                "category":"preference","key":"tone","content":"Be concise."
+            }}]}
         }));
         let request = prepare_crew_request(
             json!({
@@ -242,5 +256,9 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Expected overall result:\nA concise verdict"));
+        assert!(request["executionGuidelines"]
+            .as_str()
+            .unwrap()
+            .contains("[preference/tone] Be concise."));
     }
 }

@@ -137,6 +137,15 @@ provider, image or capability fails closed. Per-agent provider selection is
 currently a desktop-only feature; a server Crew Run deliberately uses one
 explicit server profile for the whole frozen Crew.
 
+Runs may also select synchronized skills and memory records by ID. The API
+resolves those records in the run creator's namespace, keeps only the supported
+fields, records each exact revision and stores the result in the immutable Run
+input before queueing. The normal Rust agent and the Crew adapter receive the
+same frozen context. Synchronized MCP records contain metadata only: commands,
+endpoints, environment values and credentials remain executor-bound, and the
+runtime must not claim an MCP tool is available unless that executor advertises
+an authorized binding.
+
 The bundled object store uses path-style MinIO by default. An external
 S3-compatible bucket can be selected with `COWORK_S3_ENDPOINT`,
 `COWORK_S3_REGION`, `COWORK_S3_BUCKET` and

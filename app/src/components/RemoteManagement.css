@@ -48,6 +48,7 @@
 .remote-management-panel form select,
 .remote-management-panel form textarea { box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border-color); border-radius: 7px; padding: 7px 9px; background: var(--bg-primary); color: var(--text-primary); }
 .remote-management-panel form textarea { resize: vertical; }
+.remote-run-composer select[multiple] { min-height: 76px; }
 .remote-management-panel form .remote-management-check { display: flex; align-items: center; gap: 7px; }
 .remote-management-panel form .remote-management-check input { width: auto; min-height: 0; }
 .remote-management-actions button:first-child,

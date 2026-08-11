@@ -1441,7 +1441,7 @@ async fn prepare_scheduled_run(
         },
     )
     .map_err(block)?;
-    let input = sync::freeze_crew_definition_for_run(pool, creator_user_id, input)
+    let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
         .await
         .map_err(block)?;
     Ok(RunSpec {
