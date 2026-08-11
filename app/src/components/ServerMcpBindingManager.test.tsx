@@ -104,4 +104,46 @@ describe('ServerMcpBindingManager', () => {
     ))
     await waitFor(() => expect(screen.getByLabelText('MCP binding metadata')).toHaveValue(''))
   })
+
+  it('submits a legacy SSE endpoint through the encrypted HTTP binding flow', async () => {
+    const setServerMcpBinding = vi.fn(async () => ({
+      schema_version: 2, project_id: projectId, mcp_entity_id: entityId,
+      revision: 1, etag: 'W/"binding:1"', name: 'Project docs', transport: 'sse',
+      executable_hint: 'HTTPS SSE endpoint', argument_count: 0, environment_keys: ['Authorization'],
+      created_at: '2026-08-11T12:00:00Z', updated_at: '2026-08-11T12:00:00Z',
+    }))
+    const client = {
+      listProjects: vi.fn(async () => [{ id: projectId, name: 'Docs project' }]),
+      listSyncedEntities: vi.fn(async () => ({
+        schema_version: 2,
+        items: [{
+          schema_version: 2, entity_type: 'mcp_metadata', entity_id: entityId,
+          revision: 4, etag: 'W/"mcp:4"', payload: { name: 'Project docs' },
+          tombstone: false, updated_at: '2026-08-11T12:00:00Z',
+        }],
+        next_after: null, watermark_cursor: 4,
+      })),
+      listServerMcpBindings: vi.fn(async () => []),
+      setServerMcpBinding,
+    } as unknown as RemoteRuntimeClient
+
+    render(<ServerMcpBindingManager compact client={client} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Server MCP' }))
+    await screen.findByRole('option', { name: 'Project docs (r4)' })
+    fireEvent.change(screen.getByLabelText('MCP binding metadata'), { target: { value: entityId } })
+    fireEvent.change(screen.getByLabelText('MCP binding transport'), { target: { value: 'sse' } })
+    fireEvent.change(screen.getByLabelText('MCP HTTPS endpoint'), { target: { value: 'https://mcp.example.com/events' } })
+    fireEvent.change(screen.getByLabelText('MCP credential headers JSON'), { target: { value: '{"Authorization":"Bearer legacy-secret"}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted binding' }))
+
+    await waitFor(() => expect(setServerMcpBinding).toHaveBeenCalledWith(
+      projectId,
+      entityId,
+      expect.objectContaining({
+        transport: 'sse', command: '', args: [], environment: {},
+        url: 'https://mcp.example.com/events',
+        headers: { Authorization: 'Bearer legacy-secret' },
+      }),
+    ))
+  })
 })

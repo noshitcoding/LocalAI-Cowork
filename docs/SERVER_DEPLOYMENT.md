@@ -152,8 +152,9 @@ Synchronized `mcp_metadata` records never contain commands, arguments, endpoints
 or credential values. After creating the metadata record, an Editor can open
 **Server MCP** in Web or Android and bind that exact metadata UUID to one
 project. The complete stdio command, argument array and environment map are
-encrypted with the project user/team envelope key. A Streamable HTTP binding
-instead encrypts its complete HTTPS URL and static credential-header map. List
+encrypted with the project user/team envelope key. Streamable HTTP and legacy
+HTTP+SSE bindings instead encrypt their complete HTTPS URL and static
+credential-header map. List
 responses expose only the transport, a generic `HTTPS endpoint` hint or the
 stdio executable basename, the argument count, and secret environment/header
 names. Updating a binding requires submitting the complete secret again because
@@ -181,6 +182,15 @@ block private, link-local, metadata, host and Compose networks after DNS
 resolution. Keeping credentials in headers rather than URL queries also avoids
 placing them in proxy request paths.
 
+For older MCP servers, select the `sse` transport and provide their HTTPS event
+stream URL. The client opens the long-lived GET stream, accepts only its first
+`endpoint` event as the POST target, requires that resolved target to remain on
+the configured scheme, DNS name and port, and then exchanges MCP 2024-11-05
+JSON-RPC messages through that stream. The server-announced POST target may use
+a session query because it never leaves the already validated origin. Static
+headers are applied to both GET and POST requests; redirects, a cross-origin
+POST target, oversized streams and more than 256 unmatched events fail closed.
+
 Selecting MCP metadata in the Run composer automatically requires
 `tool.mcp.invoke`. A Linux Run fails closed before queueing when its project has
 no matching binding. At execution, the worker decrypts only the selected
@@ -190,14 +200,14 @@ arguments. The one-shot MCP client uses filtered egress, invokes stdio commands
 without a shell, applies a 120-second protocol timeout and recursively redacts
 every bound environment or header value before model or event persistence.
 
-MCP stdio and Streamable HTTP bindings are available to both the normal Rust
+MCP stdio, Streamable HTTP and legacy HTTP+SSE bindings are available to both the normal Rust
 agent and the pinned Crew adapter on the Linux server executor. For Crew Runs,
 the selected frozen metadata names must exactly equal the union of
 `mcpServerNames` on enabled agents. The worker injects only those bindings,
 gives each agent only its own allowlist, and recursively redacts provider and
 MCP environment/header secrets again before any Crew event or response is
-persisted. Static authorization headers are supported; OAuth discovery/dynamic
-registration and the legacy HTTP+SSE transport are not. Managed Windows uses
+persisted. Static authorization headers are supported; OAuth discovery and
+dynamic registration are not. Managed Windows uses
 the executor-local stdio or Streamable HTTP configuration described below; its
 pinned Crew adapter applies the same exact per-agent MCP allowlists and routes
 the actual call back through the hardened Rust executor adapter.
@@ -561,7 +571,8 @@ failure.
 ### Executor-local MCP on Windows
 
 A managed Windows executor can additionally run stdio MCP servers installed on
-that dedicated VM/PC or call a remote Streamable HTTP MCP endpoint. Copy
+that dedicated VM/PC or call a remote Streamable HTTP or legacy HTTP+SSE MCP
+endpoint. Copy
 `agents/cowork-device-agent/mcp-bindings.example.json` outside the checkout,
 replace its placeholder, and set `COWORK_MCP_BINDINGS_FILE` to the absolute
 path. Protect the file with a Windows ACL readable only by Administrators and
@@ -595,6 +606,12 @@ boundary. URL queries and protocol/hop-by-hop header overrides are rejected;
 put static credentials in headers. Configure a model endpoint with
 `COWORK_MODEL_BASE_URL` and, when needed, `COWORK_MODEL_API_KEY_FILE`.
 
+An `sse` entry uses the same local file fields and network restrictions, but
+negotiates MCP 2024-11-05 over the legacy long-lived event stream. The endpoint
+event may direct POSTs only to the same normalized scheme, DNS name and port;
+cross-origin targets are rejected before credentials are sent. Its session
+query is accepted only on that server-announced same-origin target.
+
 On registration, the agent adds `tool.mcp.invoke` and publishes only the bound
 server names. The server will queue and lease a selected MCP Run only to an
 executor in the chosen pool that advertises every exact name. Tool responses,
@@ -607,7 +624,7 @@ result snapshot.
 Crew MCP does not execute the binding through the Python network stack. The
 adapter launches `cowork-device-agent.exe executor-mcp-tool` by a validated JSON
 argument vector; that one-shot process receives the selected binding through
-stdin and reuses the Rust stdio/Streamable HTTP implementation, including
+stdin and reuses the Rust stdio/Streamable HTTP/legacy SSE implementation, including
 direct executable launch, Job Object cleanup, TLS verification, public-DNS
 validation, DNS pinning, proxy disabling and bounded MCP session handling. The
 dedicated Windows account and process boundary are still not a general network

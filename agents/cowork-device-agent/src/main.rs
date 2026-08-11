@@ -105,6 +105,7 @@ enum ExecutorMcpTransport {
     #[default]
     Stdio,
     StreamableHttp,
+    Sse,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -129,7 +130,9 @@ impl ExecutorMcpBinding {
     fn secret_values(&self) -> impl Iterator<Item = &String> {
         match self.transport {
             ExecutorMcpTransport::Stdio => self.environment.values(),
-            ExecutorMcpTransport::StreamableHttp => self.headers.values(),
+            ExecutorMcpTransport::StreamableHttp | ExecutorMcpTransport::Sse => {
+                self.headers.values()
+            }
         }
     }
 }
@@ -2191,6 +2194,7 @@ async fn invoke_executor_mcp(
         ExecutorMcpTransport::StreamableHttp => {
             invoke_executor_http_mcp(binding, tool_name, arguments).await
         }
+        ExecutorMcpTransport::Sse => invoke_executor_sse_mcp(binding, tool_name, arguments).await,
     }
 }
 
@@ -2534,6 +2538,247 @@ async fn invoke_executor_http_mcp_with_policy(
     .await;
     client.close().await;
     result
+}
+
+struct ExecutorSseMcpClient {
+    client: Client,
+    message_url: Url,
+    headers: HeaderMap,
+    stream: reqwest::Response,
+    pending: Vec<u8>,
+    total_stream_bytes: usize,
+    next_id: u64,
+}
+
+impl ExecutorSseMcpClient {
+    async fn new(binding: &ExecutorMcpBinding, allow_insecure_test: bool) -> Result<Self> {
+        let base = ExecutorHttpMcpClient::new(binding, allow_insecure_test).await?;
+        let response = base
+            .request(Method::GET, "text/event-stream")
+            .send()
+            .await
+            .context("executor legacy MCP SSE connection failed")?;
+        if !response.status().is_success() {
+            bail!(
+                "executor legacy MCP SSE endpoint returned status {}",
+                response.status()
+            );
+        }
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .map(str::trim)
+            .unwrap_or_default();
+        if !content_type.eq_ignore_ascii_case("text/event-stream") {
+            bail!("executor legacy MCP SSE endpoint did not return text/event-stream");
+        }
+        let mut client = Self {
+            client: base.client,
+            message_url: base.url.clone(),
+            headers: base.headers,
+            stream: response,
+            pending: Vec::new(),
+            total_stream_bytes: 0,
+            next_id: 1,
+        };
+        let (event, endpoint) = client.next_event().await?;
+        if event != "endpoint" || endpoint.trim().is_empty() {
+            bail!("executor legacy MCP SSE stream did not announce a POST endpoint");
+        }
+        client.message_url = validate_executor_sse_message_endpoint(&base.url, endpoint.trim())?;
+        Ok(client)
+    }
+
+    async fn next_event(&mut self) -> Result<(String, String)> {
+        loop {
+            if let Some((event_end, separator_end)) = executor_sse_event_boundary(&self.pending) {
+                let event = self.pending[..event_end].to_vec();
+                self.pending.drain(..separator_end);
+                if let Some(parsed) = parse_executor_legacy_sse_event(&event)? {
+                    return Ok(parsed);
+                }
+                continue;
+            }
+            let chunk = self
+                .stream
+                .chunk()
+                .await?
+                .context("executor legacy MCP SSE stream closed")?;
+            self.total_stream_bytes = self.total_stream_bytes.saturating_add(chunk.len());
+            if self.total_stream_bytes > MAX_MCP_MESSAGE_BYTES {
+                bail!("executor legacy MCP SSE stream exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+            }
+            self.pending.extend_from_slice(&chunk);
+        }
+    }
+
+    async fn post(&self, payload: &Value) -> Result<()> {
+        let encoded = serde_json::to_vec(payload)?;
+        if encoded.len() > MAX_MCP_MESSAGE_BYTES {
+            bail!("executor legacy MCP HTTP request exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+        }
+        let mut response = self
+            .client
+            .post(self.message_url.clone())
+            .headers(self.headers.clone())
+            .header(ACCEPT, "application/json")
+            .header(CONTENT_TYPE, "application/json")
+            .body(encoded)
+            .send()
+            .await
+            .context("executor legacy MCP HTTP request failed")?;
+        if response.status() != reqwest::StatusCode::ACCEPTED {
+            bail!(
+                "executor legacy MCP HTTP endpoint returned status {}, expected 202",
+                response.status()
+            );
+        }
+        let _ = read_executor_http_body(&mut response).await?;
+        Ok(())
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let request_id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        self.post(&json!({
+            "jsonrpc":"2.0", "id":request_id, "method":method, "params":params
+        }))
+        .await?;
+        for _ in 0..256 {
+            let (event, data) = self.next_event().await?;
+            if event != "message" {
+                continue;
+            }
+            let Ok(message) = serde_json::from_str::<Value>(&data) else {
+                continue;
+            };
+            if message.get("id").is_some() && message.get("method").is_some() {
+                bail!("executor legacy MCP server requests are not supported");
+            }
+            if message.get("id").and_then(Value::as_u64) != Some(request_id) {
+                continue;
+            }
+            if message.get("result").is_none() && message.get("error").is_none() {
+                continue;
+            }
+            return unwrap_executor_http_rpc(message);
+        }
+        bail!("executor legacy MCP server exceeded the event limit during {method}")
+    }
+
+    async fn notify(&self, method: &str, params: Value) -> Result<()> {
+        self.post(&json!({"jsonrpc":"2.0", "method":method, "params":params}))
+            .await
+    }
+}
+
+fn validate_executor_sse_message_endpoint(base: &Url, announced: &str) -> Result<Url> {
+    if announced.len() > 4_096 {
+        bail!("executor legacy MCP SSE message endpoint is too long");
+    }
+    let endpoint = base
+        .join(announced)
+        .context("executor legacy MCP SSE message endpoint is invalid")?;
+    let same_origin = endpoint.scheme() == base.scheme()
+        && endpoint
+            .host_str()
+            .zip(base.host_str())
+            .is_some_and(|(left, right)| {
+                left.trim_end_matches('.')
+                    .eq_ignore_ascii_case(right.trim_end_matches('.'))
+            })
+        && endpoint.port_or_known_default() == base.port_or_known_default();
+    if !same_origin
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.fragment().is_some()
+    {
+        bail!("executor legacy MCP SSE message endpoint must remain on the configured origin");
+    }
+    Ok(endpoint)
+}
+
+fn parse_executor_legacy_sse_event(event: &[u8]) -> Result<Option<(String, String)>> {
+    let event = std::str::from_utf8(event).context("executor legacy MCP SSE is not UTF-8")?;
+    let mut event_name = "message";
+    let mut data = Vec::new();
+    for line in event.lines() {
+        if line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "event" => event_name = value,
+            "data" => data.push(value),
+            _ => {}
+        }
+    }
+    if data.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((event_name.to_owned(), data.join("\n"))))
+}
+
+async fn invoke_executor_sse_mcp(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        invoke_executor_sse_mcp_with_policy(binding, tool_name, arguments, false),
+    )
+    .await
+    .context("executor legacy MCP SSE protocol timed out")?
+}
+
+async fn invoke_executor_sse_mcp_with_policy(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+    allow_insecure_test: bool,
+) -> Result<Value> {
+    let mut client = ExecutorSseMcpClient::new(binding, allow_insecure_test).await?;
+    let initialized = client
+        .request(
+            "initialize",
+            json!({
+                "protocolVersion":"2024-11-05",
+                "clientInfo":{
+                    "name":"Open Cowork managed Windows executor",
+                    "version":env!("CARGO_PKG_VERSION")
+                },
+                "capabilities":{}
+            }),
+        )
+        .await?;
+    let protocol_version = initialized
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .context("executor legacy MCP SSE initialize response omitted protocolVersion")?;
+    if protocol_version != "2024-11-05" {
+        bail!(
+            "executor legacy MCP SSE server negotiated unsupported protocol {protocol_version:?}"
+        );
+    }
+    client
+        .notify("notifications/initialized", json!({}))
+        .await?;
+    let result = client
+        .request(
+            "tools/call",
+            json!({"name":tool_name,"arguments":arguments}),
+        )
+        .await?;
+    Ok(json!({
+        "server_name":binding.name,
+        "tool_name":tool_name,
+        "protocol_version":protocol_version,
+        "result":result,
+    }))
 }
 
 async fn read_executor_http_body(response: &mut reqwest::Response) -> Result<Vec<u8>> {
@@ -4019,7 +4264,7 @@ fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBindi
 
 fn validate_executor_mcp_command_files(bindings: &[ExecutorMcpBinding]) -> Result<()> {
     for binding in bindings {
-        if binding.transport == ExecutorMcpTransport::StreamableHttp {
+        if binding.transport != ExecutorMcpTransport::Stdio {
             continue;
         }
         let command = Path::new(&binding.command);
@@ -4102,12 +4347,12 @@ fn parse_executor_mcp_bindings(
                     bail!("executor MCP binding environment exceeds the safety limits");
                 }
             }
-            ExecutorMcpTransport::StreamableHttp => {
+            ExecutorMcpTransport::StreamableHttp | ExecutorMcpTransport::Sse => {
                 if !binding.command.is_empty()
                     || !binding.args.is_empty()
                     || !binding.environment.is_empty()
                 {
-                    bail!("streamable HTTP executor MCP bindings may not contain stdio fields");
+                    bail!("remote HTTP executor MCP bindings may not contain stdio fields");
                 }
                 validate_executor_http_endpoint(&binding.url, false)?;
                 validate_executor_http_headers(&binding.headers)?;
@@ -4465,7 +4710,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_windows_streamable_http_bindings_are_transport_safe() {
+    fn managed_windows_remote_http_bindings_are_transport_safe() {
         let bindings = parse_executor_mcp_bindings(
             ExecutorKind::ManagedWindows,
             br#"[{
@@ -4485,6 +4730,31 @@ mod tests {
             ),
             "credential=[REDACTED]"
         );
+        let legacy = parse_executor_mcp_bindings(
+            ExecutorKind::ManagedWindows,
+            br#"[{
+                "name":"Legacy Docs",
+                "transport":"sse",
+                "url":"https://mcp.example.com/events",
+                "headers":{"Authorization":"Bearer legacy-secret"}
+            }]"#,
+        )
+        .unwrap();
+        assert_eq!(legacy[0].transport, ExecutorMcpTransport::Sse);
+        assert_eq!(
+            validate_executor_sse_message_endpoint(
+                &Url::parse("https://mcp.example.com/events").unwrap(),
+                "/messages?session=one",
+            )
+            .unwrap()
+            .as_str(),
+            "https://mcp.example.com/messages?session=one"
+        );
+        assert!(validate_executor_sse_message_endpoint(
+            &Url::parse("https://mcp.example.com/events").unwrap(),
+            "https://attacker.example/messages",
+        )
+        .is_err());
 
         let invalid: &[&[u8]] = &[
             br#"[{"name":"Remote","transport":"streamable_http","url":"http://mcp.example.com/mcp"}]"#,
@@ -4703,6 +4973,153 @@ mod tests {
             assert_eq!(record["session"], "windows-fixture-session");
             assert_eq!(record["protocol"], "2025-11-25");
             assert_eq!(record["token"], "executor-secret");
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_windows_legacy_sse_executes_same_origin_post_channel() {
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        async fn read_fixture_request(
+            socket: &mut tokio::net::TcpStream,
+        ) -> (String, HashMap<String, String>, Value) {
+            let mut request = Vec::new();
+            let header_end = loop {
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index + 4;
+                }
+                let mut chunk = [0_u8; 4096];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "legacy fixture closed before HTTP headers");
+                request.extend_from_slice(&chunk[..read]);
+            };
+            let head = std::str::from_utf8(&request[..header_end]).unwrap();
+            let mut lines = head.split("\r\n");
+            let request_target = lines
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_owned();
+            let headers = lines
+                .filter_map(|line| line.split_once(':'))
+                .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+                .collect::<HashMap<_, _>>();
+            let content_length = headers
+                .get("content-length")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let mut chunk = [0_u8; 4096];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "legacy fixture closed before HTTP body");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let body = if content_length == 0 {
+                Value::Null
+            } else {
+                serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap()
+            };
+            (request_target, headers, body)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let records = Arc::new(StdMutex::new(Vec::new()));
+        let server_records = records.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream_socket, _) = listener.accept().await.unwrap();
+            let (target, _, body) = read_fixture_request(&mut stream_socket).await;
+            assert_eq!(target, "/events");
+            assert!(body.is_null());
+            stream_socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: endpoint\ndata: /messages?session=fixture\n\n",
+                )
+                .await
+                .unwrap();
+            stream_socket.flush().await.unwrap();
+            let (events, mut pending_events) = tokio::sync::mpsc::unbounded_channel::<Value>();
+            let stream_task = tokio::spawn(async move {
+                while let Some(message) = pending_events.recv().await {
+                    let body = format!("event: message\ndata: {message}\n\n");
+                    stream_socket.write_all(body.as_bytes()).await.unwrap();
+                    stream_socket.flush().await.unwrap();
+                }
+            });
+
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (target, headers, message) = read_fixture_request(&mut socket).await;
+                let method = message["method"].as_str().unwrap().to_owned();
+                server_records.lock().unwrap().push(json!({
+                    "target":target,
+                    "method":method,
+                    "token":headers.get("x-test-token"),
+                    "protocol":headers.get("mcp-protocol-version"),
+                }));
+                socket
+                    .write_all(
+                        b"HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+                socket.flush().await.unwrap();
+                match method.as_str() {
+                    "initialize" => events
+                        .send(json!({
+                            "jsonrpc":"2.0", "id":message["id"],
+                            "result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}}}
+                        }))
+                        .unwrap(),
+                    "notifications/initialized" => {}
+                    "tools/call" => events
+                        .send(json!({
+                            "jsonrpc":"2.0", "id":message["id"],
+                            "result":{
+                                "content":[{"type":"text","text":"Windows legacy fixture"}],
+                                "structuredContent":message["params"]["arguments"],
+                                "isError":false
+                            }
+                        }))
+                        .unwrap(),
+                    other => panic!("unexpected legacy fixture method {other}"),
+                }
+            }
+            drop(events);
+            stream_task.await.unwrap();
+        });
+        let binding = ExecutorMcpBinding {
+            name: "legacy fixture".to_owned(),
+            transport: ExecutorMcpTransport::Sse,
+            command: String::new(),
+            args: Vec::new(),
+            environment: BTreeMap::new(),
+            url: format!("http://127.0.0.1:{port}/events"),
+            headers: BTreeMap::from([("X-Test-Token".to_owned(), "legacy-secret".to_owned())]),
+        };
+        let response = invoke_executor_sse_mcp_with_policy(
+            &binding,
+            "lookup",
+            json!({"query":"legacy"}),
+            true,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(response["protocol_version"], "2024-11-05");
+        assert_eq!(
+            response["result"]["structuredContent"],
+            json!({"query":"legacy"})
+        );
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 3);
+        for record in records.iter() {
+            assert_eq!(record["target"], "/messages?session=fixture");
+            assert_eq!(record["token"], "legacy-secret");
+            assert!(record["protocol"].is_null());
         }
     }
 

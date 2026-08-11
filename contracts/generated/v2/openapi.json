@@ -4376,7 +4376,8 @@
           "transport": {
             "enum": [
               "stdio",
-              "streamable_http"
+              "streamable_http",
+              "sse"
             ],
             "type": "string"
           },
@@ -4513,7 +4514,8 @@
           "transport": {
             "enum": [
               "stdio",
-              "streamable_http"
+              "streamable_http",
+              "sse"
             ],
             "type": "string"
           },

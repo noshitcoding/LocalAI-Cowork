@@ -35,7 +35,7 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
   const [bindings, setBindings] = useState<ServerMcpBindingRecord[]>([])
   const [projectId, setProjectId] = useState('')
   const [entityId, setEntityId] = useState('')
-  const [transport, setTransport] = useState<'stdio' | 'streamable_http'>('stdio')
+  const [transport, setTransport] = useState<'stdio' | 'streamable_http' | 'sse'>('stdio')
   const [command, setCommand] = useState('')
   const [argsText, setArgsText] = useState('[]')
   const [environmentText, setEnvironmentText] = useState('{}')
@@ -79,7 +79,7 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
   const existing = bindings.find((binding) => binding.mcp_entity_id === entityId) ?? null
   const edit = (binding: ServerMcpBindingRecord) => {
     setEntityId(binding.mcp_entity_id)
-    setTransport(binding.transport === 'streamable_http' ? 'streamable_http' : 'stdio')
+    setTransport(binding.transport === 'sse' ? 'sse' : binding.transport === 'streamable_http' ? 'streamable_http' : 'stdio')
     setCommand(''); setArgsText('[]'); setEnvironmentText('{}'); setUrl(''); setHeadersText('{}')
     setConfirmDeleteId(null); setError(null)
   }
@@ -89,7 +89,7 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
       if (!selectedMetadata) throw new Error('Select synchronized MCP metadata first')
       const args = transport === 'stdio' ? JSON.parse(argsText) as unknown : []
       const environment = transport === 'stdio' ? JSON.parse(environmentText) as unknown : {}
-      const headers = transport === 'streamable_http' ? JSON.parse(headersText) as unknown : {}
+      const headers = transport !== 'stdio' ? JSON.parse(headersText) as unknown : {}
       if (!Array.isArray(args) || args.some((argument) => typeof argument !== 'string')) {
         throw new Error('Arguments must be a JSON array of strings')
       }
@@ -114,8 +114,8 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
         command: transport === 'stdio' ? command : '',
         args: transport === 'stdio' ? args : [],
         environment: transport === 'stdio' ? environmentRecord as Record<string, string> : {},
-        url: transport === 'streamable_http' ? url : '',
-        headers: transport === 'streamable_http' ? headersRecord as Record<string, string> : {},
+        url: transport !== 'stdio' ? url : '',
+        headers: transport !== 'stdio' ? headersRecord as Record<string, string> : {},
       })
       clearSecretForm(); await loadBindings(projectId)
     } catch (cause) {
@@ -150,19 +150,20 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
       {!busy && bindings.length === 0 ? <p>No Linux server MCP bindings.</p> : null}
       {bindings.map((binding) => {
         const confirming = confirmDeleteId === binding.mcp_entity_id
-        return <article key={binding.mcp_entity_id}><span><strong>{binding.name}</strong><small>revision {binding.revision} - {binding.transport === 'streamable_http' ? 'Streamable HTTP' : 'stdio'} - {binding.executable_hint} - {binding.environment_keys.length} secret key(s)</small></span><div><button type="button" disabled={busy} onClick={() => edit(binding)}>Replace</button><button type="button" aria-label={confirming ? `Confirm delete ${binding.name} binding` : `Delete ${binding.name} binding`} disabled={busy} onClick={() => { void remove(binding) }}><Trash2 size={14} />{confirming ? ' Confirm' : null}</button></div></article>
+        const transportLabel = binding.transport === 'sse' ? 'Legacy HTTP+SSE' : binding.transport === 'streamable_http' ? 'Streamable HTTP' : 'stdio'
+        return <article key={binding.mcp_entity_id}><span><strong>{binding.name}</strong><small>revision {binding.revision} - {transportLabel} - {binding.executable_hint} - {binding.environment_keys.length} secret key(s)</small></span><div><button type="button" disabled={busy} onClick={() => edit(binding)}>Replace</button><button type="button" aria-label={confirming ? `Confirm delete ${binding.name} binding` : `Delete ${binding.name} binding`} disabled={busy} onClick={() => { void remove(binding) }}><Trash2 size={14} />{confirming ? ' Confirm' : null}</button></div></article>
       })}
     </div>
     <form onSubmit={save} autoComplete="off">
       <label>Synchronized MCP metadata<select aria-label="MCP binding metadata" value={entityId} onChange={(event) => { setEntityId(event.target.value); setCommand(''); setArgsText('[]'); setEnvironmentText('{}'); setUrl(''); setHeadersText('{}') }} required><option value="" disabled>Select metadata</option>{metadata.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataName(entity)} (r{entity.revision})</option>)}</select></label>
       {existing ? <p className="remote-management-hint">Replacing revision {existing.revision} requires the complete transport configuration and credentials again; stored secrets are never returned.</p> : null}
-      <label>Transport<select aria-label="MCP binding transport" value={transport} onChange={(event) => setTransport(event.target.value as 'stdio' | 'streamable_http')}><option value="stdio">stdio sandbox process</option><option value="streamable_http">Streamable HTTP (HTTPS)</option></select></label>
+      <label>Transport<select aria-label="MCP binding transport" value={transport} onChange={(event) => setTransport(event.target.value as 'stdio' | 'streamable_http' | 'sse')}><option value="stdio">stdio sandbox process</option><option value="streamable_http">Streamable HTTP (HTTPS)</option><option value="sse">Legacy HTTP+SSE (HTTPS)</option></select></label>
       {transport === 'stdio' ? <>
         <label>Sandbox command<input aria-label="MCP sandbox command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="/opt/mcp/example-server" autoComplete="off" required /></label>
         <label>Arguments JSON<textarea aria-label="MCP arguments JSON" value={argsText} onChange={(event) => setArgsText(event.target.value)} rows={4} spellCheck={false} required /></label>
         <label>Environment JSON<textarea aria-label="MCP environment JSON" value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} rows={5} spellCheck={false} autoComplete="off" required /></label>
       </> : <>
-        <label>HTTPS MCP endpoint<input type="url" aria-label="MCP HTTPS endpoint" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://mcp.example.com/mcp" autoComplete="off" required /></label>
+        <label>{transport === 'sse' ? 'HTTPS SSE endpoint' : 'HTTPS MCP endpoint'}<input type="url" aria-label="MCP HTTPS endpoint" value={url} onChange={(event) => setUrl(event.target.value)} placeholder={transport === 'sse' ? 'https://mcp.example.com/events' : 'https://mcp.example.com/mcp'} autoComplete="off" required /></label>
         <label>Credential headers JSON<textarea aria-label="MCP credential headers JSON" value={headersText} onChange={(event) => setHeadersText(event.target.value)} rows={5} spellCheck={false} autoComplete="off" required /></label>
         <p className="remote-management-hint">Use headers such as Authorization for credentials. Only public DNS endpoints on HTTPS port 443 are accepted; userinfo, query strings, IP literals, local hostnames, and redirects are rejected.</p>
       </>}

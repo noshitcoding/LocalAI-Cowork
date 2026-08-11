@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot MCP stdio and Streamable HTTP client for the Linux sandbox."""
+"""One-shot MCP stdio, Streamable HTTP, and legacy HTTP+SSE client."""
 
 from __future__ import annotations
 
@@ -423,6 +423,155 @@ class StreamableHttpClient:
             pass
 
 
+class LegacySseClient:
+    def __init__(
+        self,
+        server: dict[str, Any],
+        timeout_seconds: int,
+        allow_insecure_http: bool = False,
+    ) -> None:
+        validated = StreamableHttpClient(server, timeout_seconds, allow_insecure_http)
+        self.endpoint = validated.endpoint
+        self.headers = validated.headers
+        self.timeout_seconds = timeout_seconds
+        self.opener = validated.opener
+        self.next_id = 1
+        self.total_stream_bytes = 0
+        deadline = time.monotonic() + timeout_seconds
+        request = urllib_request.Request(
+            self.endpoint,
+            headers={**self.headers, "Accept": "text/event-stream"},
+            method="GET",
+        )
+        self.stream = validated.open(request, deadline)
+        if self.stream.headers.get_content_type().lower() != "text/event-stream":
+            self.stream.close()
+            raise RuntimeError("legacy MCP SSE endpoint did not return text/event-stream")
+        event, data = self.read_event(deadline)
+        if event != "endpoint" or not data.strip():
+            self.stream.close()
+            raise RuntimeError("legacy MCP SSE stream did not announce a POST endpoint")
+        self.message_endpoint = self.validate_message_endpoint(data.strip())
+
+    def validate_message_endpoint(self, endpoint: str) -> str:
+        if len(endpoint) > 4096:
+            raise ValueError("legacy MCP SSE message endpoint is too long")
+        resolved = urllib_parse.urljoin(self.endpoint, endpoint)
+        try:
+            base = urllib_parse.urlsplit(self.endpoint)
+            message = urllib_parse.urlsplit(resolved)
+            base_port = base.port or (443 if base.scheme == "https" else 80)
+            message_port = message.port or (443 if message.scheme == "https" else 80)
+        except ValueError as error:
+            raise ValueError("legacy MCP SSE message endpoint is invalid") from error
+        if (
+            message.scheme != base.scheme
+            or (message.hostname or "").rstrip(".").lower()
+            != (base.hostname or "").rstrip(".").lower()
+            or message_port != base_port
+            or message.username is not None
+            or message.password is not None
+            or message.fragment
+        ):
+            raise ValueError("legacy MCP SSE message endpoint must remain on the configured origin")
+        return resolved
+
+    def read_event(self, deadline: float) -> tuple[str, str]:
+        event_name = "message"
+        data_lines: list[str] = []
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("legacy MCP SSE response timed out")
+            raw_bytes = self.stream.readline(MAX_HTTP_BODY_BYTES - self.total_stream_bytes + 1)
+            if not raw_bytes:
+                raise RuntimeError("legacy MCP SSE stream closed")
+            self.total_stream_bytes += len(raw_bytes)
+            if self.total_stream_bytes > MAX_HTTP_BODY_BYTES:
+                raise ValueError("legacy MCP SSE stream exceeds 8 MiB")
+            try:
+                raw_line = raw_bytes.decode("utf-8").rstrip("\r\n")
+            except UnicodeDecodeError as error:
+                raise ValueError("legacy MCP SSE response is not UTF-8") from error
+            if raw_line == "":
+                if data_lines:
+                    return event_name, "\n".join(data_lines)
+                event_name = "message"
+                continue
+            if raw_line.startswith(":"):
+                continue
+            field, separator, value = raw_line.partition(":")
+            if separator and value.startswith(" "):
+                value = value[1:]
+            if field == "event":
+                event_name = value
+            elif field == "data":
+                data_lines.append(value)
+
+    def post(self, payload: dict[str, Any]) -> None:
+        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_HTTP_BODY_BYTES:
+            raise ValueError("legacy MCP HTTP request exceeds 8 MiB")
+        request = urllib_request.Request(
+            self.message_endpoint,
+            data=encoded,
+            headers={
+                **self.headers,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        deadline = time.monotonic() + self.timeout_seconds
+        remaining = deadline - time.monotonic()
+        try:
+            with self.opener.open(request, timeout=remaining) as response:
+                if response.status != 202:
+                    raise RuntimeError(
+                        f"legacy MCP HTTP endpoint returned status {response.status}, expected 202"
+                    )
+                read_http_body(response)
+        except urllib_error.HTTPError as error:
+            raise RuntimeError(
+                f"legacy MCP HTTP endpoint returned status {error.code}, expected 202"
+            ) from error
+        except urllib_error.URLError as error:
+            raise RuntimeError(f"legacy MCP HTTP endpoint request failed: {error.reason}") from error
+
+    def request(self, method: str, params: dict[str, Any]) -> Any:
+        request_id = self.next_id
+        self.next_id += 1
+        self.post({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + self.timeout_seconds
+        for _ in range(256):
+            event, data = self.read_event(deadline)
+            if event != "message":
+                continue
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            if "id" in message and "method" in message:
+                raise RuntimeError("legacy MCP server requests are not supported")
+            if message.get("id") != request_id:
+                continue
+            if "result" not in message and "error" not in message:
+                continue
+            if "error" in message:
+                error = message.get("error")
+                detail = error.get("message") if isinstance(error, dict) else str(error)
+                raise RuntimeError(f"legacy MCP server rejected {method}: {detail}")
+            return message.get("result")
+        raise RuntimeError(f"legacy MCP server exceeded the event limit during {method}")
+
+    def notify(self, method: str, params: dict[str, Any]) -> None:
+        self.post({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def close(self) -> None:
+        self.stream.close()
+
+
 def execute_http(
     server: dict[str, Any],
     name: str,
@@ -463,6 +612,46 @@ def execute_http(
         client.close()
 
 
+def execute_sse(
+    server: dict[str, Any],
+    name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    timeout_seconds: int,
+    allow_insecure_http: bool,
+) -> dict[str, Any]:
+    client = LegacySseClient(server, timeout_seconds, allow_insecure_http)
+    try:
+        initialized = client.request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "clientInfo": {"name": "Open Cowork Linux Executor", "version": "0.3.0"},
+                "capabilities": {},
+            },
+        )
+        protocol_version = (
+            initialized.get("protocolVersion") if isinstance(initialized, dict) else None
+        )
+        if protocol_version != "2024-11-05":
+            raise RuntimeError(
+                f"legacy MCP SSE server negotiated unsupported version {protocol_version!r}"
+            )
+        client.notify("notifications/initialized", {})
+        result = client.request("tools/call", {"name": tool_name, "arguments": arguments})
+        is_error = isinstance(result, dict) and result.get("isError") is True
+        return {
+            "success": not is_error,
+            "server_name": name,
+            "tool_name": tool_name,
+            "protocol_version": protocol_version,
+            "result": result,
+            "error": "MCP tool returned isError=true" if is_error else None,
+        }
+    finally:
+        client.close()
+
+
 def execute(request: dict[str, Any], allow_insecure_http: bool = False) -> dict[str, Any]:
     server = request.get("server")
     tool_name = request.get("tool_name")
@@ -480,6 +669,15 @@ def execute(request: dict[str, Any], allow_insecure_http: bool = False) -> dict[
     transport = server.get("transport", "stdio")
     if transport == "streamable_http":
         return execute_http(
+            server,
+            name,
+            tool_name,
+            arguments,
+            timeout_seconds,
+            allow_insecure_http,
+        )
+    if transport == "sse":
+        return execute_sse(
             server,
             name,
             tool_name,

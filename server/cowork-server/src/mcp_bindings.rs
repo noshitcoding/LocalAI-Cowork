@@ -45,6 +45,7 @@ enum ServerMcpTransport {
     #[default]
     Stdio,
     StreamableHttp,
+    Sse,
 }
 
 impl ServerMcpTransport {
@@ -52,6 +53,7 @@ impl ServerMcpTransport {
         match self {
             Self::Stdio => "stdio",
             Self::StreamableHttp => "streamable_http",
+            Self::Sse => "sse",
         }
     }
 }
@@ -86,16 +88,15 @@ pub(crate) struct ResolvedServerMcpBinding {
 
 impl ResolvedServerMcpBinding {
     pub(crate) fn secret_values(&self) -> Vec<String> {
-        let values = if self.transport == "streamable_http" {
-            self.headers.values()
-        } else {
-            self.environment.values()
+        let values = match self.transport.as_str() {
+            "streamable_http" | "sse" => self.headers.values(),
+            _ => self.environment.values(),
         };
         values.filter(|value| !value.is_empty()).cloned().collect()
     }
 
     pub(crate) fn sandbox_value(&self) -> Value {
-        if self.transport == "streamable_http" {
+        if matches!(self.transport.as_str(), "streamable_http" | "sse") {
             serde_json::json!({
                 "name":self.name,
                 "transport":self.transport,
@@ -535,9 +536,10 @@ fn validated_binding(
         transport: match request.transport.trim() {
             "" | "stdio" => ServerMcpTransport::Stdio,
             "streamable_http" => ServerMcpTransport::StreamableHttp,
+            "sse" => ServerMcpTransport::Sse,
             _ => {
                 return Err(ApiError::Unprocessable(
-                    "MCP transport must be stdio or streamable_http".to_owned(),
+                    "MCP transport must be stdio, streamable_http, or sse".to_owned(),
                 ))
             }
         },
@@ -559,7 +561,9 @@ fn validate_stored_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiEr
     }
     match binding.transport {
         ServerMcpTransport::Stdio => validate_stdio_binding(binding)?,
-        ServerMcpTransport::StreamableHttp => validate_http_binding(binding)?,
+        ServerMcpTransport::StreamableHttp | ServerMcpTransport::Sse => {
+            validate_http_binding(binding)?
+        }
     }
     Ok(())
 }
@@ -614,7 +618,7 @@ fn validate_stdio_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiErr
 fn validate_http_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiError> {
     if !binding.command.is_empty() || !binding.args.is_empty() || !binding.environment.is_empty() {
         return Err(ApiError::Unprocessable(
-            "streamable HTTP MCP bindings may not contain stdio command fields".to_owned(),
+            "remote HTTP MCP bindings may not contain stdio command fields".to_owned(),
         ));
     }
     let url = reqwest::Url::parse(&binding.url)
@@ -628,7 +632,7 @@ fn validate_http_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiErro
         || url.fragment().is_some()
     {
         return Err(ApiError::Unprocessable(
-            "streamable HTTP MCP endpoints require HTTPS port 443 without userinfo, query, or fragment"
+            "remote HTTP MCP endpoints require HTTPS port 443 without userinfo, query, or fragment"
                 .to_owned(),
         ));
     }
@@ -641,7 +645,7 @@ fn validate_http_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiErro
             .any(|suffix| lower_host.ends_with(suffix))
     {
         return Err(ApiError::Unprocessable(
-            "streamable HTTP MCP endpoints must use a public DNS hostname".to_owned(),
+            "remote HTTP MCP endpoints must use a public DNS hostname".to_owned(),
         ));
     }
     let mut names = BTreeSet::new();
@@ -831,13 +835,14 @@ fn binding_hint(binding: &StoredServerMcpBinding) -> Result<String, ApiError> {
             .unwrap_or_default()
             .to_owned()),
         ServerMcpTransport::StreamableHttp => Ok("HTTPS endpoint".to_owned()),
+        ServerMcpTransport::Sse => Ok("HTTPS SSE endpoint".to_owned()),
     }
 }
 
 fn binding_secret_keys(binding: &StoredServerMcpBinding) -> &BTreeMap<String, String> {
     match binding.transport {
         ServerMcpTransport::Stdio => &binding.environment,
-        ServerMcpTransport::StreamableHttp => &binding.headers,
+        ServerMcpTransport::StreamableHttp | ServerMcpTransport::Sse => &binding.headers,
     }
 }
 
@@ -911,6 +916,14 @@ mod tests {
             .headers
             .insert("MCP-Session-Id".to_owned(), "override".to_owned());
         assert!(validate_stored_binding(&invalid).is_err());
+
+        let legacy = StoredServerMcpBinding {
+            transport: ServerMcpTransport::Sse,
+            ..valid
+        };
+        assert!(validate_stored_binding(&legacy).is_ok());
+        assert_eq!(binding_hint(&legacy).unwrap(), "HTTPS SSE endpoint");
+        assert_eq!(legacy.transport.as_str(), "sse");
     }
 
     #[test]

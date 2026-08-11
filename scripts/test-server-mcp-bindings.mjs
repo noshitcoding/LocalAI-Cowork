@@ -49,8 +49,8 @@ function syncMcpMetadata(deviceId, entityId, name, baseRevision = 0, transport =
     payload: {
       name,
       transport,
-      executable_hint: transport === 'streamable_http' ? 'https://mcp.example.com' : 'filesystem-mcp',
-      environment_keys: transport === 'streamable_http' ? ['Authorization'] : ['MCP_TOKEN', 'SAFE_MODE'],
+      executable_hint: transport === 'stdio' ? 'filesystem-mcp' : 'https://mcp.example.com',
+      environment_keys: transport === 'stdio' ? ['MCP_TOKEN', 'SAFE_MODE'] : ['Authorization'],
       device_binding_required: true,
       source: 'server_mcp_acceptance',
     },
@@ -88,6 +88,7 @@ const project = await api('/projects', {
 
 const primaryEntityId = randomUUID()
 const disposableEntityId = randomUUID()
+const legacyEntityId = randomUUID()
 const duplicateNameEntityId = randomUUID()
 const metadata = await api('/sync/changes', {
   method: 'POST',
@@ -96,11 +97,12 @@ const metadata = await api('/sync/changes', {
     changes: [
       syncMcpMetadata(deviceId, primaryEntityId, 'CI filesystem MCP'),
       syncMcpMetadata(deviceId, disposableEntityId, 'CI disposable MCP', 0, 'streamable_http'),
+      syncMcpMetadata(deviceId, legacyEntityId, 'CI legacy SSE MCP', 0, 'sse'),
       syncMcpMetadata(deviceId, duplicateNameEntityId, 'CI filesystem MCP'),
     ],
   },
 })
-if (metadata.results?.length !== 3
+if (metadata.results?.length !== 4
     || metadata.results.some((result) => result.status !== 'applied')) {
   throw new Error(`MCP metadata was not synchronized: ${JSON.stringify(metadata)}`)
 }
@@ -339,6 +341,30 @@ await expectStatus(`${disposablePath}?expected_revision=${disposable.revision}`,
   method: 'DELETE', token,
 })
 
+const legacyPath = `/projects/${project.id}/mcp-bindings/${legacyEntityId}`
+const legacy = await api(legacyPath, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: null,
+    name: 'CI legacy SSE MCP',
+    transport: 'sse',
+    command: '', args: [], environment: {},
+    url: 'https://mcp.example.com/events',
+    headers: { Authorization: 'Bearer mcp-sse-secret-ci-value' },
+  },
+})
+if (legacy.transport !== 'sse'
+    || legacy.executable_hint !== 'HTTPS SSE endpoint'
+    || legacy.argument_count !== 0
+    || JSON.stringify(legacy.environment_keys) !== JSON.stringify(['Authorization'])
+    || JSON.stringify(legacy).includes('mcp-sse-secret-ci-value')) {
+  throw new Error(`legacy SSE binding metadata is unsafe or invalid: ${JSON.stringify(legacy)}`)
+}
+await expectStatus(`${legacyPath}?expected_revision=${legacy.revision}`, 204, {
+  method: 'DELETE', token,
+})
+
 const thread = await api('/threads', {
   method: 'POST',
   token,
@@ -413,3 +439,4 @@ console.log('mcp_binding_name_identity=ok')
 console.log('mcp_binding_missing_run_rejection=ok')
 console.log('mcp_binding_crew_selection=ok')
 console.log('mcp_binding_streamable_http_validation=ok')
+console.log('mcp_binding_legacy_sse_validation=ok')
