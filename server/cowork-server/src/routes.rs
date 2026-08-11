@@ -23,7 +23,7 @@ use crate::{
     auth::{self, ExecutorPrincipal, Principal},
     db, desktop,
     error::ApiError,
-    organization, providers, AppState,
+    organization, providers, workflow, AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -153,11 +153,16 @@ async fn prepare_run(
         &request.executor_target,
     )
     .await?;
-    if let Some(instructions) =
+    if let Some(task) =
         ensure_released_task_reference(&state.pool, request.project_id, request.task.as_ref())
             .await?
     {
-        request.input = freeze_task_instructions(request.input, instructions);
+        let mut required_capabilities = request.required_capabilities;
+        required_capabilities.extend(task.required_capabilities);
+        request.required_capabilities =
+            workflow::effective_task_capabilities(&required_capabilities, &task.config)?;
+        request.input =
+            workflow::freeze_task_input(request.input, &task.instructions, &task.config)?;
     }
     providers::ensure_profile_for_target(
         &state.pool,
@@ -193,43 +198,44 @@ async fn prepare_run(
     Ok((spec, initial_state))
 }
 
+struct ReleasedTaskSnapshot {
+    instructions: String,
+    required_capabilities: Vec<Capability>,
+    config: Value,
+}
+
 async fn ensure_released_task_reference(
     pool: &sqlx::PgPool,
     project_id: Uuid,
     task: Option<&FrozenReference>,
-) -> Result<Option<String>, ApiError> {
+) -> Result<Option<ReleasedTaskSnapshot>, ApiError> {
     let Some(task) = task else {
         return Ok(None);
     };
-    let instructions = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT instructions FROM task_definitions
+    let (instructions, required_capabilities, config) =
+        sqlx::query_as::<_, (String, Value, Value)>(
+            r#"
+        SELECT instructions, required_capabilities, config FROM task_definitions
         WHERE id = $1 AND revision = $2 AND project_id = $3
           AND released AND deleted_at IS NULL
         "#,
-    )
-    .bind(task.id)
-    .bind(task.revision)
-    .bind(project_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or_else(|| {
-        ApiError::Unprocessable(format!(
-            "task {} revision {} is missing, belongs to another project, or is not released",
-            task.id, task.revision
-        ))
-    })?;
-    Ok(Some(instructions))
-}
-
-fn freeze_task_instructions(input: Value, instructions: String) -> Value {
-    let mut object = match input {
-        Value::Object(object) => object,
-        Value::Null => serde_json::Map::new(),
-        other => serde_json::Map::from_iter([("input".to_owned(), other)]),
-    };
-    object.insert("task_instructions".to_owned(), Value::String(instructions));
-    Value::Object(object)
+        )
+        .bind(task.id)
+        .bind(task.revision)
+        .bind(project_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::Unprocessable(format!(
+                "task {} revision {} is missing, belongs to another project, or is not released",
+                task.id, task.revision
+            ))
+        })?;
+    Ok(Some(ReleasedTaskSnapshot {
+        instructions,
+        required_capabilities: serde_json::from_value(required_capabilities)?,
+        config,
+    }))
 }
 
 pub async fn list_runs(
@@ -804,20 +810,31 @@ mod tests {
     }
 
     #[test]
-    fn freezes_authoritative_task_instructions_without_losing_run_input() {
+    fn freezes_authoritative_task_snapshot_without_losing_run_input() {
         assert_eq!(
-            freeze_task_instructions(
+            workflow::freeze_task_input(
                 json!({"prompt": "customer-specific input"}),
-                "released task instructions".to_owned(),
-            ),
+                "released task instructions",
+                &json!({"runner":"crew","crew_id":"reviewers"}),
+            )
+            .unwrap(),
             json!({
                 "prompt": "customer-specific input",
-                "task_instructions": "released task instructions"
+                "task_instructions": "released task instructions",
+                "task_config": {"runner":"crew","crew_id":"reviewers"},
+                "task_runner": "crew",
+                "crew_id": "reviewers",
+                "resolve_current_crew_provider_bindings": true
             })
         );
         assert_eq!(
-            freeze_task_instructions(json!("legacy input"), "instructions".to_owned()),
-            json!({"input": "legacy input", "task_instructions": "instructions"})
+            workflow::freeze_task_input(json!("legacy input"), "instructions", &json!({})).unwrap(),
+            json!({
+                "input": "legacy input",
+                "task_instructions": "instructions",
+                "task_config": {},
+                "task_runner": "model"
+            })
         );
     }
 }

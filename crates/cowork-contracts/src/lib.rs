@@ -77,6 +77,9 @@ pub mod capabilities {
     pub fn model_vllm() -> Capability {
         Capability::from("model.vllm")
     }
+    pub fn crew_python() -> Capability {
+        Capability::from("crew.python")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

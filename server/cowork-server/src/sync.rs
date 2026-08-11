@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::{
     auth::{ExecutorPrincipal, Principal},
     error::ApiError,
-    governance, providers, AppState,
+    governance, providers, workflow, AppState,
 };
 
 const MAX_SYNC_BATCH: usize = 100;
@@ -1380,13 +1380,14 @@ async fn materialize_task(
         "task instructions",
         1_000_000,
     )?;
-    let required_capabilities = object
+    let requested_capabilities = object
         .get("required_capabilities")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
-    serde_json::from_value::<Vec<Capability>>(required_capabilities.clone()).map_err(|error| {
-        ApiError::Unprocessable(format!("invalid task required_capabilities: {error}"))
-    })?;
+    let requested_capabilities = serde_json::from_value::<Vec<Capability>>(requested_capabilities)
+        .map_err(|error| {
+            ApiError::Unprocessable(format!("invalid task required_capabilities: {error}"))
+        })?;
     let default_target = object.get("default_executor_target").cloned();
     if let Some(target) = &default_target {
         serde_json::from_value::<ExecutorTarget>(target.clone()).map_err(|error| {
@@ -1394,6 +1395,10 @@ async fn materialize_task(
         })?;
     }
     let config = task_projection_config(object)?;
+    let required_capabilities = serde_json::to_value(workflow::effective_task_capabilities(
+        &requested_capabilities,
+        &config,
+    )?)?;
     if let Some(row) = &current {
         let unchanged = row.try_get::<Uuid, _>("project_id")? == project_id
             && row.try_get::<String, _>("name")? == name

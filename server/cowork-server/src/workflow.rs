@@ -60,6 +60,8 @@ pub async fn create_task(
     )
     .await?;
     validate_task_fields(&request.name, &request.instructions)?;
+    let required_capabilities =
+        effective_task_capabilities(&request.required_capabilities, &request.config)?;
     if let Some(target) = &request.default_target {
         validate_target_for_project(&state.pool, principal.user_id, request.project_id, target)
             .await?;
@@ -84,7 +86,7 @@ pub async fn create_task(
     .bind(request.project_id)
     .bind(request.name.trim())
     .bind(request.instructions)
-    .bind(serde_json::to_value(request.required_capabilities)?)
+    .bind(serde_json::to_value(required_capabilities)?)
     .bind(
         request
             .default_target
@@ -167,6 +169,8 @@ pub async fn create_task_version(
     Json(request): Json<CreateTaskVersionRequest>,
 ) -> Result<(StatusCode, Json<TaskDefinition>), ApiError> {
     validate_task_fields(&request.name, &request.instructions)?;
+    let required_capabilities =
+        effective_task_capabilities(&request.required_capabilities, &request.config)?;
     let mut tx = state.pool.begin().await?;
     let current = sqlx::query(
         "SELECT * FROM task_definitions WHERE id = $1 AND deleted_at IS NULL ORDER BY revision DESC LIMIT 1 FOR UPDATE",
@@ -216,7 +220,7 @@ pub async fn create_task_version(
     .bind(project_id)
     .bind(request.name.trim())
     .bind(request.instructions)
-    .bind(serde_json::to_value(request.required_capabilities)?)
+    .bind(serde_json::to_value(required_capabilities)?)
     .bind(
         request
             .default_target
@@ -1297,6 +1301,14 @@ pub async fn create_worker_checkpoint(
 
 struct ScheduleBlock(String);
 
+struct ScheduledTriggerContext {
+    schedule_id: Uuid,
+    due_at: DateTime<Utc>,
+    triggered_at: DateTime<Utc>,
+    missed_occurrences: usize,
+    catch_up_truncated: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_scheduled_run(
     pool: &PgPool,
@@ -1339,6 +1351,8 @@ async fn prepare_scheduled_run(
     .map_err(block)?
     .ok_or_else(|| ScheduleBlock("task_has_no_released_version".to_owned()))?;
     let task = row_to_task(&task_row).map_err(block)?;
+    let required_capabilities =
+        effective_task_capabilities(&task.required_capabilities, &task.config).map_err(block)?;
 
     match &schedule.executor_target {
         ExecutorTarget::ServerLinux {
@@ -1372,11 +1386,11 @@ async fn prepare_scheduled_run(
                 .iter()
                 .map(|capability| capability.0.as_str())
                 .collect();
-            task.required_capabilities
+            required_capabilities
                 .iter()
                 .all(|capability| available.contains(capability.0.as_str()))
         }
-        target => db::target_has_executor(pool, target, &task.required_capabilities)
+        target => db::target_has_executor(pool, target, &required_capabilities)
             .await
             .map_err(block)?,
     };
@@ -1417,12 +1431,16 @@ async fn prepare_scheduled_run(
     let input = scheduled_input(
         schedule.input.clone(),
         &task.instructions,
-        schedule.id,
-        due_at,
-        now,
-        missed_occurrences,
-        catch_up_truncated,
-    );
+        &task.config,
+        ScheduledTriggerContext {
+            schedule_id: schedule.id,
+            due_at,
+            triggered_at: now,
+            missed_occurrences,
+            catch_up_truncated,
+        },
+    )
+    .map_err(block)?;
     Ok(RunSpec {
         schema_version: SCHEMA_VERSION,
         id: Uuid::new_v4(),
@@ -1439,7 +1457,7 @@ async fn prepare_scheduled_run(
         }),
         creator_user_id,
         executor_target: schedule.executor_target.clone(),
-        required_capabilities: task.required_capabilities,
+        required_capabilities,
         input,
         model_profile_id: schedule.model_profile_id,
         snapshot_id,
@@ -1451,39 +1469,27 @@ async fn prepare_scheduled_run(
 fn scheduled_input(
     input: Value,
     instructions: &str,
-    schedule_id: Uuid,
-    due_at: DateTime<Utc>,
-    triggered_at: DateTime<Utc>,
-    missed_occurrences: usize,
-    catch_up_truncated: bool,
-) -> Value {
-    let mut object = match input {
-        Value::Object(object) => object,
-        Value::Null => Map::new(),
-        other => {
-            let mut object = Map::new();
-            object.insert("input".to_owned(), other);
-            object
-        }
-    };
+    config: &Value,
+    trigger: ScheduledTriggerContext,
+) -> Result<Value, ApiError> {
+    let mut object = freeze_task_input(input, instructions, config)?
+        .as_object()
+        .cloned()
+        .expect("frozen task input is always an object");
     object
         .entry("prompt".to_owned())
         .or_insert_with(|| Value::String(instructions.to_owned()));
     object.insert(
-        "task_instructions".to_owned(),
-        Value::String(instructions.to_owned()),
-    );
-    object.insert(
         "_schedule".to_owned(),
         json!({
-            "schedule_id": schedule_id,
-            "first_due_at": due_at,
-            "triggered_at": triggered_at,
-            "missed_occurrences": missed_occurrences,
-            "catch_up_truncated": catch_up_truncated
+            "schedule_id": trigger.schedule_id,
+            "first_due_at": trigger.due_at,
+            "triggered_at": trigger.triggered_at,
+            "missed_occurrences": trigger.missed_occurrences,
+            "catch_up_truncated": trigger.catch_up_truncated
         }),
     );
-    Value::Object(object)
+    Ok(Value::Object(object))
 }
 
 async fn resume_waiting_run(
@@ -1693,6 +1699,98 @@ fn validate_task_fields(name: &str, instructions: &str) -> Result<(), ApiError> 
         ));
     }
     Ok(())
+}
+
+fn task_config_value<'a>(config: &'a Value, key: &str) -> Option<&'a Value> {
+    config
+        .get(key)
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            config
+                .get("sync_metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get(key))
+        })
+}
+
+pub(crate) fn task_runner(config: &Value) -> Result<&str, ApiError> {
+    let runner = task_config_value(config, "runner")
+        .and_then(Value::as_str)
+        .unwrap_or("model");
+    if matches!(runner, "model" | "crew") {
+        Ok(runner)
+    } else {
+        Err(ApiError::Unprocessable(
+            "task config runner must be model or crew".to_owned(),
+        ))
+    }
+}
+
+fn task_crew_id(config: &Value) -> Result<Option<&str>, ApiError> {
+    if task_runner(config)? != "crew" {
+        return Ok(None);
+    }
+    let crew_id = task_config_value(config, "crew_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::Unprocessable("crew tasks require a non-empty crew_id".to_owned())
+        })?;
+    Ok(Some(crew_id))
+}
+
+pub(crate) fn effective_task_capabilities(
+    requested: &[Capability],
+    config: &Value,
+) -> Result<Vec<Capability>, ApiError> {
+    let mut capabilities = Vec::with_capacity(requested.len() + 1);
+    let mut seen = std::collections::HashSet::with_capacity(requested.len() + 1);
+    for capability in requested {
+        if capability.0.trim().is_empty() || capability.0.len() > 100 {
+            return Err(ApiError::Unprocessable(
+                "capability names must contain 1 to 100 characters".to_owned(),
+            ));
+        }
+        if seen.insert(capability.0.clone()) {
+            capabilities.push(capability.clone());
+        }
+    }
+    if task_crew_id(config)?.is_some() {
+        let capability = cowork_contracts::capabilities::crew_python();
+        if seen.insert(capability.0.clone()) {
+            capabilities.push(capability);
+        }
+    }
+    Ok(capabilities)
+}
+
+pub(crate) fn freeze_task_input(
+    input: Value,
+    instructions: &str,
+    config: &Value,
+) -> Result<Value, ApiError> {
+    let runner = task_runner(config)?;
+    let crew_id = task_crew_id(config)?;
+    let mut object = match input {
+        Value::Object(object) => object,
+        Value::Null => Map::new(),
+        other => Map::from_iter([("input".to_owned(), other)]),
+    };
+    object.insert(
+        "task_instructions".to_owned(),
+        Value::String(instructions.to_owned()),
+    );
+    object.insert("task_config".to_owned(), config.clone());
+    object.insert("task_runner".to_owned(), Value::String(runner.to_owned()));
+    if let Some(crew_id) = crew_id {
+        object.insert("crew_id".to_owned(), Value::String(crew_id.to_owned()));
+        object.insert(
+            "resolve_current_crew_provider_bindings".to_owned(),
+            Value::Bool(true),
+        );
+    }
+    Ok(Value::Object(object))
 }
 
 fn validated_expiry(value: Option<DateTime<Utc>>) -> Result<DateTime<Utc>, ApiError> {
@@ -1958,13 +2056,40 @@ mod tests {
         let input = scheduled_input(
             json!({"prompt": "today's customer input"}),
             "released task instructions",
-            Uuid::new_v4(),
-            due,
-            due,
-            1,
-            false,
-        );
+            &json!({"sync_metadata":{"runner":"crew","crew_id":"research-crew"}}),
+            ScheduledTriggerContext {
+                schedule_id: Uuid::new_v4(),
+                due_at: due,
+                triggered_at: due,
+                missed_occurrences: 1,
+                catch_up_truncated: false,
+            },
+        )
+        .unwrap();
         assert_eq!(input["prompt"], "today's customer input");
         assert_eq!(input["task_instructions"], "released task instructions");
+        assert_eq!(input["task_runner"], "crew");
+        assert_eq!(input["crew_id"], "research-crew");
+        assert_eq!(
+            input["task_config"],
+            json!({"sync_metadata":{"runner":"crew","crew_id":"research-crew"}})
+        );
+    }
+
+    #[test]
+    fn crew_tasks_require_identity_and_capability() {
+        let error = effective_task_capabilities(&[], &json!({"runner":"crew"}))
+            .expect_err("crew without an identity must be rejected");
+        assert!(error.to_string().contains("crew_id"));
+
+        let capabilities = effective_task_capabilities(
+            &[Capability::from("files"), Capability::from("files")],
+            &json!({"runner":"crew","crew_id":"writers"}),
+        )
+        .unwrap();
+        assert_eq!(
+            capabilities,
+            vec![Capability::from("files"), Capability::from("crew.python")]
+        );
     }
 }

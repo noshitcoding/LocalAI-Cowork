@@ -361,6 +361,10 @@ are omitted, the daemon uses its own local model configuration.
 
 Advertise only capabilities that the device and its daemon can actually serve,
 for example `model.ollama,files,shell,git,web,mcp,browser.headless`. Add
+`crew.python` only after the bundled CrewAI runtime has been prepared and the
+daemon runtime-path health check succeeds; Crew tasks require this capability
+and otherwise remain visibly in `waiting_for_executor` instead of running as a
+different runner. Add
 `desktop.windows` on an interactive Windows device or `desktop.linux` on an
 interactive Linux device. In addition
 to the canonical HTTPS server URL, executor ID, credential file, bridge settings
