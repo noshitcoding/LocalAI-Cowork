@@ -279,6 +279,8 @@ struct ChatMessage<'a> {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,6 +291,21 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatResponseMessage {
     content: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ChatUsage {
+    #[serde(default)]
+    prompt_tokens: u64,
+    #[serde(default)]
+    completion_tokens: u64,
+    #[serde(default)]
+    total_tokens: u64,
+}
+
+struct ModelCallResult {
+    content: String,
+    usage: Option<ChatUsage>,
 }
 
 #[tokio::main]
@@ -1679,9 +1696,50 @@ async fn execute_lease(
     if let Some(daemon) = &config.local_daemon {
         return execute_via_local_daemon(client, config, daemon, lease).await;
     }
-    let content = call_model(config, &lease.run.spec.input).await?;
+    client
+        .append_event(
+            lease,
+            &RunEvent {
+                schema_version: SCHEMA_VERSION,
+                run_id: lease.run.spec.id,
+                sequence: 0,
+                event_id: Uuid::new_v4(),
+                kind: RunEventKind::ModelStarted,
+                payload: json!({"adapter":"openai_compatible","model":config.model_name}),
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await?;
+    let response = call_model(config, &lease.run.spec.input).await?;
+    let usage = response.usage.map(|usage| {
+        json!({
+            "prompt_tokens":usage.prompt_tokens,
+            "completion_tokens":usage.completion_tokens,
+            "total_tokens":usage.total_tokens.max(
+                usage.prompt_tokens.saturating_add(usage.completion_tokens)
+            ),
+        })
+    });
+    client
+        .append_event(
+            lease,
+            &RunEvent {
+                schema_version: SCHEMA_VERSION,
+                run_id: lease.run.spec.id,
+                sequence: 0,
+                event_id: Uuid::new_v4(),
+                kind: RunEventKind::ModelCompleted,
+                payload: json!({
+                    "adapter":"openai_compatible",
+                    "content":response.content,
+                    "usage":usage,
+                }),
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await?;
     Ok(LeaseExecution {
-        result: json!({"content": content}),
+        result: json!({"content":response.content,"usage":usage}),
         result_snapshot_manifest_id: None,
         result_diff_summary: Value::Null,
     })
@@ -3636,7 +3694,7 @@ async fn cleanup_run_workspace(config: &Config, lease: &RunLease) -> Result<()> 
     Ok(())
 }
 
-async fn call_model(config: &Config, input: &Value) -> Result<String> {
+async fn call_model(config: &Config, input: &Value) -> Result<ModelCallResult> {
     let prompt = input
         .get("prompt")
         .and_then(Value::as_str)
@@ -3672,12 +3730,16 @@ async fn call_model(config: &Config, input: &Value) -> Result<String> {
         );
     }
     let response: ChatCompletionResponse = serde_json::from_str(&body)?;
-    response
+    let content = response
         .choices
         .into_iter()
         .next()
         .and_then(|choice| choice.message.content)
-        .context("model response did not contain message content")
+        .context("model response did not contain message content")?;
+    Ok(ModelCallResult {
+        content,
+        usage: response.usage,
+    })
 }
 
 fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBinding>> {

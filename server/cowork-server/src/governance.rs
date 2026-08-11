@@ -348,15 +348,26 @@ pub async fn enforce_storage_quota_tx(
 }
 
 pub async fn ensure_model_quota_for_run(pool: &PgPool, run_id: Uuid) -> Result<(), ApiError> {
-    let scopes = run_quota_scopes(pool, run_id).await?;
+    let mut tx = pool.begin().await?;
+    ensure_model_quota_for_run_tx(&mut tx, run_id).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_model_quota_for_run_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: Uuid,
+) -> Result<(), ApiError> {
+    let scopes = run_quota_scopes_tx(tx, run_id).await?;
     let period_start = current_period_start();
     for (scope, scope_id) in scopes {
+        lock_quota(tx, scope, scope_id).await?;
         if let Some(row) = sqlx::query(
             "SELECT monthly_tokens, monthly_cost_micros, hard_cost_limit FROM quota_limits WHERE scope_type = $1 AND scope_id = $2",
         )
         .bind(quota_scope_name(scope))
         .bind(scope_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut **tx)
         .await?
         {
             let usage = sqlx::query(
@@ -365,7 +376,7 @@ pub async fn ensure_model_quota_for_run(pool: &PgPool, run_id: Uuid) -> Result<(
             .bind(quota_scope_name(scope))
             .bind(scope_id)
             .bind(period_start)
-            .fetch_optional(pool)
+            .fetch_optional(&mut **tx)
             .await?;
             let tokens = usage.as_ref().map(|value| value.get::<i64, _>("tokens")).unwrap_or(0);
             let cost = usage.as_ref().map(|value| value.get::<i64, _>("cost_micros")).unwrap_or(0);
@@ -388,14 +399,25 @@ pub async fn record_model_usage_for_run(
     tokens: u64,
     cost_micros: u64,
 ) -> Result<(), ApiError> {
-    let scopes = run_quota_scopes(pool, run_id).await?;
+    let mut tx = pool.begin().await?;
+    record_model_usage_for_run_tx(&mut tx, run_id, tokens, cost_micros).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn record_model_usage_for_run_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: Uuid,
+    tokens: u64,
+    cost_micros: u64,
+) -> Result<(), ApiError> {
+    let scopes = run_quota_scopes_tx(tx, run_id).await?;
     let period_start = current_period_start();
     let tokens = i64::try_from(tokens).map_err(|error| ApiError::Internal(error.into()))?;
     let cost_micros =
         i64::try_from(cost_micros).map_err(|error| ApiError::Internal(error.into()))?;
-    let mut tx = pool.begin().await?;
     for (scope, scope_id) in scopes {
-        lock_quota(&mut tx, scope, scope_id).await?;
+        lock_quota(tx, scope, scope_id).await?;
         sqlx::query(
             r#"
             INSERT INTO quota_usage (scope_type, scope_id, period_start, tokens, cost_micros, updated_at)
@@ -411,10 +433,9 @@ pub async fn record_model_usage_for_run(
         .bind(period_start)
         .bind(tokens)
         .bind(cost_micros)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
-    tx.commit().await?;
     Ok(())
 }
 
@@ -595,12 +616,12 @@ async fn quota_status(
     })
 }
 
-async fn run_quota_scopes(
-    pool: &PgPool,
+async fn run_quota_scopes_tx(
+    tx: &mut Transaction<'_, Postgres>,
     run_id: Uuid,
 ) -> Result<Vec<(QuotaScopeType, Uuid)>, ApiError> {
     let row = sqlx::query("SELECT run.creator_user_id, project.team_id FROM runs run JOIN projects project ON project.id = run.project_id WHERE run.id = $1")
-        .bind(run_id).fetch_optional(pool).await?
+        .bind(run_id).fetch_optional(&mut **tx).await?
         .ok_or_else(|| ApiError::NotFound(format!("run {run_id} was not found")))?;
     let mut scopes = vec![(QuotaScopeType::User, row.try_get("creator_user_id")?)];
     if let Some(team_id) = row.try_get::<Option<Uuid>, _>("team_id")? {

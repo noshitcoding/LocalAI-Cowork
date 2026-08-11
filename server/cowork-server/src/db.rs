@@ -730,6 +730,78 @@ pub async fn append_leased_event(
     kind: RunEventKind,
     payload: Value,
 ) -> Result<RunEvent, ApiError> {
+    append_leased_event_with_accounting(
+        pool,
+        LeasedEventInput {
+            run_id,
+            executor_id,
+            lease_token,
+            source_event_id,
+            kind,
+            payload,
+        },
+        false,
+    )
+    .await
+}
+
+pub async fn append_external_leased_event(
+    pool: &PgPool,
+    run_id: Uuid,
+    executor_id: Uuid,
+    lease_token: Uuid,
+    source_event_id: Option<Uuid>,
+    kind: RunEventKind,
+    payload: Value,
+) -> Result<RunEvent, ApiError> {
+    append_leased_event_with_accounting(
+        pool,
+        LeasedEventInput {
+            run_id,
+            executor_id,
+            lease_token,
+            source_event_id,
+            kind,
+            payload,
+        },
+        true,
+    )
+    .await
+}
+
+struct LeasedEventInput {
+    run_id: Uuid,
+    executor_id: Uuid,
+    lease_token: Uuid,
+    source_event_id: Option<Uuid>,
+    kind: RunEventKind,
+    payload: Value,
+}
+
+async fn append_leased_event_with_accounting(
+    pool: &PgPool,
+    input: LeasedEventInput,
+    account_external_model_usage: bool,
+) -> Result<RunEvent, ApiError> {
+    let LeasedEventInput {
+        run_id,
+        executor_id,
+        lease_token,
+        source_event_id,
+        kind,
+        payload,
+    } = input;
+    if account_external_model_usage
+        && matches!(
+            kind,
+            RunEventKind::ModelStarted | RunEventKind::ModelCompleted
+        )
+        && source_event_id.is_none()
+    {
+        return Err(ApiError::Unprocessable(
+            "external model events require a stable source_event_id".to_owned(),
+        ));
+    }
     let mut tx = pool.begin().await?;
     verify_lease(&mut tx, run_id, executor_id, lease_token).await?;
     if let Some(source_event_id) = source_event_id {
@@ -750,6 +822,14 @@ pub async fn append_leased_event(
             return Ok(existing);
         }
     }
+    let usage_tokens = if account_external_model_usage {
+        external_model_usage_tokens(kind, &payload)?
+    } else {
+        None
+    };
+    if account_external_model_usage && kind == RunEventKind::ModelStarted {
+        governance::ensure_model_quota_for_run_tx(&mut tx, run_id).await?;
+    }
     let event = append_event_tx_with_id(
         &mut tx,
         run_id,
@@ -758,8 +838,54 @@ pub async fn append_leased_event(
         payload,
     )
     .await?;
+    if let Some(tokens) = usage_tokens {
+        governance::record_model_usage_for_run_tx(&mut tx, run_id, tokens, 0).await?;
+    }
     tx.commit().await?;
     Ok(event)
+}
+
+fn external_model_usage_tokens(
+    kind: RunEventKind,
+    payload: &Value,
+) -> Result<Option<u64>, ApiError> {
+    if kind != RunEventKind::ModelCompleted {
+        return Ok(None);
+    }
+    let Some(usage) = payload.get("usage") else {
+        return Ok(None);
+    };
+    if usage.is_null() {
+        return Ok(None);
+    }
+    let usage = usage.as_object().ok_or_else(|| {
+        ApiError::Unprocessable("external ModelCompleted usage must be an object".to_owned())
+    })?;
+    let field = |name: &str| -> Result<Option<u64>, ApiError> {
+        usage
+            .get(name)
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    ApiError::Unprocessable(format!(
+                        "external ModelCompleted usage.{name} must be an unsigned integer"
+                    ))
+                })
+            })
+            .transpose()
+    };
+    let prompt_tokens = field("prompt_tokens")?;
+    let completion_tokens = field("completion_tokens")?;
+    let total_tokens = field("total_tokens")?;
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        total_tokens.unwrap_or(0).max(
+            prompt_tokens
+                .unwrap_or(0)
+                .saturating_add(completion_tokens.unwrap_or(0)),
+        ),
+    ))
 }
 
 pub async fn complete_leased_run(
@@ -1753,5 +1879,53 @@ mod tests {
             &required,
             &input,
         ));
+    }
+
+    #[test]
+    fn external_model_usage_is_bounded_and_never_understates_the_split() {
+        assert_eq!(
+            external_model_usage_tokens(
+                RunEventKind::ModelCompleted,
+                &json!({"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":5}}),
+            )
+            .unwrap(),
+            Some(30),
+        );
+        assert_eq!(
+            external_model_usage_tokens(
+                RunEventKind::ModelCompleted,
+                &json!({"usage":{"total_tokens":42}}),
+            )
+            .unwrap(),
+            Some(42),
+        );
+        assert_eq!(
+            external_model_usage_tokens(RunEventKind::ModelDelta, &json!({"usage":99})).unwrap(),
+            None,
+        );
+        assert!(external_model_usage_tokens(
+            RunEventKind::ModelCompleted,
+            &json!({"usage":{"total_tokens":-1}}),
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn external_model_events_require_a_stable_id_before_database_access() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/unused")
+            .unwrap();
+        let error = append_external_leased_event(
+            &pool,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            None,
+            RunEventKind::ModelStarted,
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, ApiError::Unprocessable(_)));
     }
 }

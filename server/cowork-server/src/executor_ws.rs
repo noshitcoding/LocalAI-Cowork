@@ -315,7 +315,7 @@ async fn handle_message(
             ("lease_heartbeat", Some(run_id), false)
         }
         ExecutorClientMessage::Event { run_id, request } => {
-            db::append_leased_event(
+            db::append_external_leased_event(
                 &state.pool,
                 run_id,
                 executor_id,

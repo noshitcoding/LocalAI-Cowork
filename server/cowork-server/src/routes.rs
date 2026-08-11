@@ -619,7 +619,7 @@ pub async fn append_executor_event(
 ) -> Result<Json<cowork_contracts::RunEvent>, ApiError> {
     ensure_executor_identity(executor_id, &principal)?;
     Ok(Json(
-        db::append_leased_event(
+        db::append_external_leased_event(
             &state.pool,
             run_id,
             executor_id,

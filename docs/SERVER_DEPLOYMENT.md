@@ -589,6 +589,16 @@ limits; team owners/admins set team limits. A configured cost limit always
 requires a token fallback. Set both model price environment variables to record
 costs; without known prices the token ceiling remains the hard guard.
 
+Server-originated model Runs on personal devices and managed Windows executors
+must persist `ModelStarted` before contacting the configured model endpoint.
+The control plane rejects that event when the user or team quota is exhausted.
+On `ModelCompleted`, reported prompt/completion/total tokens are validated and
+debited in the same PostgreSQL transaction as the stable source event. Replayed
+device events therefore never double-charge after a reconnect. Executor-local
+provider prices are not trusted as billing input, so these Runs debit reported
+tokens with zero server-side cost; the mandatory token fallback remains their
+hard limit when no centrally configured price applies.
+
 Platform administrators have no implicit project-content access. A project
 editor can grant one administrator project- or thread-scoped Viewer access for
 at most 24 hours. Creation, use, and revocation are audited; Viewer access does
