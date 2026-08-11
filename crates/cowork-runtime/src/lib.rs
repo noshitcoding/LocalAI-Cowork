@@ -7,6 +7,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+pub mod crew;
+
 const MAX_MODEL_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]

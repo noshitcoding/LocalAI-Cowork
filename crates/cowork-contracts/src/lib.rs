@@ -727,6 +727,7 @@ pub struct TerminalSessionTicket {
 pub enum SandboxImage {
     Core,
     Gui,
+    Crew,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -23,7 +23,7 @@ use crate::{
     auth::{self, ExecutorPrincipal, Principal},
     db, desktop,
     error::ApiError,
-    organization, providers, workflow, AppState,
+    organization, providers, sync, workflow, AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -163,6 +163,9 @@ async fn prepare_run(
             workflow::effective_task_capabilities(&required_capabilities, &task.config)?;
         request.input =
             workflow::freeze_task_input(request.input, &task.instructions, &task.config)?;
+        request.input =
+            sync::freeze_crew_definition_for_run(&state.pool, principal.user_id, request.input)
+                .await?;
     }
     providers::ensure_profile_for_target(
         &state.pool,

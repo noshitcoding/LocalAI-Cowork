@@ -11,6 +11,7 @@ description = "Outbound-only personal device and managed Windows executor agent"
 anyhow.workspace = true
 chrono.workspace = true
 cowork-contracts = { path = "../../crates/cowork-contracts" }
+cowork-runtime = { path = "../../crates/cowork-runtime" }
 dotenvy = "0.15"
 futures-util = "0.3"
 hex = "0.4"

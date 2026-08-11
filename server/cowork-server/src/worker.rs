@@ -12,6 +12,7 @@ use cowork_contracts::{
     SandboxRunResult, SandboxRunSpec,
 };
 use cowork_runtime::{
+    crew::{prepare_crew_request, CrewModelConfig},
     AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
     ToolOutput,
 };
@@ -32,6 +33,7 @@ type HmacSha256 = Hmac<Sha256>;
 struct WorkerRuntime {
     http: Client,
     agent: Option<Arc<AgentRuntime>>,
+    default_crew_model: Option<Arc<CrewModelConfig>>,
     runner: Option<RunnerConfig>,
     desktop_runner: Option<desktop::RunnerControl>,
     object_store: Option<storage::ObjectStore>,
@@ -77,6 +79,15 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
             })
             .transpose()?
             .map(Arc::new),
+        default_crew_model: config.model_base_url.clone().map(|base_url| {
+            Arc::new(CrewModelConfig {
+                base_url,
+                api_key: config.model_api_key.clone(),
+                model: config.model_name.clone(),
+                timeout: Duration::from_secs(24 * 60 * 60),
+                verify_tls_certificates: true,
+            })
+        }),
         runner: config
             .runner_url
             .clone()
@@ -233,6 +244,15 @@ async fn execute_run(
     });
     let outcome = if lease.run.spec.input.get("sandbox").is_some() {
         execute_sandbox_run(pool, worker_id, lease_duration, runtime, &lease).await
+    } else if lease
+        .run
+        .spec
+        .input
+        .get("task_runner")
+        .and_then(Value::as_str)
+        == Some("crew")
+    {
+        execute_crew_run(pool, worker_id, runtime, &lease).await
     } else {
         execute_agent_run(pool, worker_id, runtime, &lease).await
     };
@@ -337,6 +357,202 @@ async fn execute_agent_run(
     };
     let result = agent.execute(&lease.run.spec, &host).await?;
     Ok(serde_json::to_value(result)?)
+}
+
+async fn execute_crew_run(
+    pool: &PgPool,
+    worker_id: Uuid,
+    runtime: &WorkerRuntime,
+    lease: &RunLease,
+) -> Result<Value> {
+    let model = if let Some(profile_id) = lease.run.spec.model_profile_id {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        CrewModelConfig {
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            model: profile.model,
+            timeout: profile.timeout,
+            verify_tls_certificates: profile.verify_tls_certificates,
+        }
+    } else {
+        runtime
+            .default_crew_model
+            .as_deref()
+            .context("the server Crew model provider is not configured")?
+            .clone()
+    };
+    let definition = lease
+        .run
+        .spec
+        .input
+        .get("crew_definition")
+        .cloned()
+        .context("the Crew run has no frozen crew_definition")?;
+    let request = prepare_crew_request(definition, &lease.run.spec, &model)?;
+    let timeout_seconds = model
+        .timeout
+        .as_secs()
+        .saturating_add(60)
+        .clamp(60, 24 * 60 * 60);
+    let spec = SandboxRunSpec {
+        schema_version: cowork_contracts::SCHEMA_VERSION,
+        run_id: lease.run.spec.id,
+        image: SandboxImage::Crew,
+        argv: vec![
+            "python3".to_owned(),
+            "/opt/cowork/crew-runtime/main.py".to_owned(),
+            "execute".to_owned(),
+        ],
+        environment: Default::default(),
+        stdin_base64: Some(STANDARD.encode(serde_json::to_vec(&request)?)),
+        network: SandboxNetwork::FilteredEgress,
+        limits: SandboxLimits {
+            memory_bytes: 4 * 1024 * 1024 * 1024,
+            cpu_nanos: 2_000_000_000,
+            pids: 512,
+            timeout_seconds,
+            tmpfs_bytes: 1024 * 1024 * 1024,
+            output_bytes: 32 * 1024 * 1024,
+        },
+    };
+    workflow::create_worker_checkpoint(
+        pool,
+        worker_id,
+        lease.run.spec.id,
+        lease.lease_token,
+        false,
+        json!({
+            "phase":"crew_dispatched",
+            "adapter":"crewai",
+            "crew_id":lease.run.spec.input.get("crew_id"),
+            "crew_revision":lease.run.spec.input.get("crew_revision"),
+        }),
+    )
+    .await?;
+    db::append_leased_event(
+        pool,
+        lease.run.spec.id,
+        worker_id,
+        lease.lease_token,
+        None,
+        RunEventKind::ModelStarted,
+        json!({"adapter":"crewai","runtime":"sandbox","model":model.model}),
+    )
+    .await?;
+
+    let result = send_runner_job(runtime, &spec).await?;
+    let stderr = redact_secret(&result.stderr, model.api_key.as_deref());
+    if result.timed_out {
+        bail!("Crew runtime exceeded its configured timeout");
+    }
+    if result.exit_code != Some(0) {
+        bail!(
+            "Crew runtime failed with exit code {:?}: {}",
+            result.exit_code,
+            truncate(stderr.trim(), 8_000)
+        );
+    }
+
+    let mut response = None;
+    let mut emitted_events = 0_usize;
+    for line in result.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut value: Value =
+            serde_json::from_str(line).context("Crew runtime returned invalid JSON")?;
+        redact_secret_value(&mut value, model.api_key.as_deref());
+        if value.get("localAiCoworkEvent").is_some() {
+            if emitted_events < 1_000 && serde_json::to_vec(&value)?.len() <= 1024 * 1024 {
+                db::append_leased_event(
+                    pool,
+                    lease.run.spec.id,
+                    worker_id,
+                    lease.lease_token,
+                    None,
+                    RunEventKind::ModelDelta,
+                    json!({"adapter":"crewai","crew_event":value}),
+                )
+                .await?;
+                emitted_events += 1;
+            }
+        } else {
+            if response.replace(value).is_some() {
+                bail!("Crew runtime returned more than one response");
+            }
+        }
+    }
+    let response = response.context("Crew runtime returned no response")?;
+    let status = response
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("failed");
+    if status != "completed" {
+        bail!(
+            "Crew runtime ended in state {status}: {}",
+            response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown CrewAI error")
+        );
+    }
+    let content = response
+        .get("taskResults")
+        .or_else(|| response.get("task_results"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("output").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    db::append_leased_event(
+        pool,
+        lease.run.spec.id,
+        worker_id,
+        lease.lease_token,
+        None,
+        RunEventKind::ModelCompleted,
+        json!({
+            "adapter":"crewai",
+            "content":content,
+            "task_count":response.get("taskResults").and_then(Value::as_array).map_or(0, Vec::len),
+            "event_count":emitted_events,
+        }),
+    )
+    .await?;
+    Ok(json!({"content":content,"crew_response":response}))
+}
+
+fn redact_secret(value: &str, secret: Option<&str>) -> String {
+    match secret.filter(|secret| !secret.is_empty()) {
+        Some(secret) => value.replace(secret, "[REDACTED]"),
+        None => value.to_owned(),
+    }
+}
+
+fn redact_secret_value(value: &mut Value, secret: Option<&str>) {
+    let Some(secret) = secret.filter(|secret| !secret.is_empty()) else {
+        return;
+    };
+    match value {
+        Value::String(text) => *text = text.replace(secret, "[REDACTED]"),
+        Value::Array(values) => {
+            for value in values {
+                redact_secret_value(value, Some(secret));
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                redact_secret_value(value, Some(secret));
+            }
+        }
+        _ => {}
+    }
 }
 
 struct ServerRuntimeHost<'a> {
@@ -1180,5 +1396,17 @@ mod tests {
         };
         assert_eq!(model_cost_micros(pricing, 500_000, 250_000), 3_000_000);
         assert_eq!(model_cost_micros(pricing, 1, 0), 2);
+    }
+
+    #[test]
+    fn crew_protocol_values_are_recursively_redacted() {
+        let mut value = json!({
+            "message":"provider rejected secret-value",
+            "nested":[{"detail":"secret-value"}],
+        });
+        redact_secret_value(&mut value, Some("secret-value"));
+        assert_eq!(value["message"], "provider rejected [REDACTED]");
+        assert_eq!(value["nested"][0]["detail"], "[REDACTED]");
+        assert!(!value.to_string().contains("secret-value"));
     }
 }

@@ -1441,6 +1441,9 @@ async fn prepare_scheduled_run(
         },
     )
     .map_err(block)?;
+    let input = sync::freeze_crew_definition_for_run(pool, creator_user_id, input)
+        .await
+        .map_err(block)?;
     Ok(RunSpec {
         schema_version: SCHEMA_VERSION,
         id: Uuid::new_v4(),
@@ -1744,6 +1747,7 @@ pub(crate) fn effective_task_capabilities(
     requested: &[Capability],
     config: &Value,
 ) -> Result<Vec<Capability>, ApiError> {
+    reject_cleartext_task_secrets(config)?;
     let mut capabilities = Vec::with_capacity(requested.len() + 1);
     let mut seen = std::collections::HashSet::with_capacity(requested.len() + 1);
     for capability in requested {
@@ -1763,6 +1767,56 @@ pub(crate) fn effective_task_capabilities(
         }
     }
     Ok(capabilities)
+}
+
+fn reject_cleartext_task_secrets(value: &Value) -> Result<(), ApiError> {
+    fn visit(value: &Value, path: &mut Vec<String>) -> Option<String> {
+        match value {
+            Value::Object(object) => object.iter().find_map(|(key, value)| {
+                path.push(key.clone());
+                let normalized = key
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                let secret_key = matches!(
+                    normalized.as_str(),
+                    "apikey"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "clientsecret"
+                        | "password"
+                        | "authorization"
+                        | "credential"
+                );
+                let found = if secret_key
+                    && value
+                        .as_str()
+                        .is_some_and(|secret| !secret.trim().is_empty())
+                {
+                    Some(path.join("."))
+                } else {
+                    visit(value, path)
+                };
+                path.pop();
+                found
+            }),
+            Value::Array(values) => values.iter().enumerate().find_map(|(index, value)| {
+                path.push(index.to_string());
+                let found = visit(value, path);
+                path.pop();
+                found
+            }),
+            _ => None,
+        }
+    }
+
+    if let Some(path) = visit(value, &mut Vec::new()) {
+        return Err(ApiError::Unprocessable(format!(
+            "task config must not contain cleartext credentials ({path}); reference a provider profile instead"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn freeze_task_input(
@@ -2091,5 +2145,16 @@ mod tests {
             capabilities,
             vec![Capability::from("files"), Capability::from("crew.python")]
         );
+
+        let error = effective_task_capabilities(
+            &[],
+            &json!({
+                "runner":"crew",
+                "crew_id":"writers",
+                "crew_request":{"providerConfigs":{"openAICompatible":{"apiKey":"secret"}}}
+            }),
+        )
+        .expect_err("task versions must never persist cleartext provider credentials");
+        assert!(error.to_string().contains("provider profile"));
     }
 }

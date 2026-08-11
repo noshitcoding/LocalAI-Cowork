@@ -1324,6 +1324,213 @@ fn task_projection_config(object: &serde_json::Map<String, Value>) -> Result<Val
     }))
 }
 
+pub(crate) async fn freeze_crew_definition_for_run(
+    pool: &PgPool,
+    user_id: Uuid,
+    input: Value,
+) -> Result<Value, ApiError> {
+    if input.get("task_runner").and_then(Value::as_str) != Some("crew") {
+        return Ok(input);
+    }
+    let crew_id = input
+        .get("crew_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::Unprocessable("crew run is missing crew_id".to_owned()))?;
+    let embedded = input
+        .get("task_config")
+        .and_then(|config| {
+            config
+                .get("crew_definition")
+                .or_else(|| config.get("crew_request"))
+        })
+        .cloned();
+    let (entity_id, revision, definition) = if let Some(definition) = embedded {
+        (None, None, definition)
+    } else {
+        let row = sqlx::query(
+            r#"
+            SELECT entity_id, revision, payload
+            FROM sync_entities
+            WHERE user_id = $1 AND entity_type = 'crew' AND NOT tombstone
+              AND (
+                entity_id::text = $2
+                OR payload ->> '_cowork_local_entity_id' = $2
+                OR payload -> 'definition' ->> 'id' = $2
+              )
+            ORDER BY updated_at DESC, revision DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(crew_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::Unprocessable(format!(
+                "crew {crew_id} is unavailable in the user's synchronized metadata"
+            ))
+        })?;
+        let payload: Value = row.try_get("payload")?;
+        let definition = payload
+            .get("definition")
+            .cloned()
+            .ok_or_else(|| ApiError::Unprocessable(format!("crew {crew_id} has no definition")))?;
+        (
+            Some(row.try_get::<Uuid, _>("entity_id")?),
+            Some(row.try_get::<i64, _>("revision")?),
+            definition,
+        )
+    };
+    let definition = sanitized_crew_definition(definition, crew_id)?;
+    let mut object = input
+        .as_object()
+        .cloned()
+        .expect("frozen task input is always an object");
+    object.insert("crew_definition".to_owned(), definition);
+    if let Some(entity_id) = entity_id {
+        object.insert(
+            "crew_entity_id".to_owned(),
+            Value::String(entity_id.to_string()),
+        );
+    }
+    if let Some(revision) = revision {
+        object.insert("crew_revision".to_owned(), Value::Number(revision.into()));
+    }
+    Ok(Value::Object(object))
+}
+
+fn sanitized_crew_definition(definition: Value, expected_id: &str) -> Result<Value, ApiError> {
+    const ALLOWED_FIELDS: &[&str] = &[
+        "id",
+        "name",
+        "description",
+        "executionSubject",
+        "executionGuidelines",
+        "knowledgeFocus",
+        "governanceMode",
+        "outputMode",
+        "stopOnFailure",
+        "retryCount",
+        "managerReviewEnabled",
+        "managerReviewGuidelines",
+        "shareAllTaskOutputs",
+        "sharedOutputCharLimit",
+        "agents",
+        "tasks",
+        "process",
+        "managerAgentId",
+        "verbose",
+        "maxRpm",
+        "maxParallelTasks",
+    ];
+    let object = definition
+        .as_object()
+        .ok_or_else(|| ApiError::Unprocessable("crew definition must be an object".to_owned()))?;
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::Unprocessable("crew definition is missing id".to_owned()))?;
+    if id != expected_id {
+        return Err(ApiError::Unprocessable(format!(
+            "crew definition id {id} does not match task crew_id {expected_id}"
+        )));
+    }
+    let mut sanitized = ALLOWED_FIELDS
+        .iter()
+        .filter_map(|key| {
+            object
+                .get(*key)
+                .map(|value| ((*key).to_owned(), value.clone()))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    sanitized.insert(
+        "agents".to_owned(),
+        sanitized_crew_array(
+            object.get("agents"),
+            "agents",
+            &[
+                "id",
+                "name",
+                "role",
+                "goal",
+                "backstory",
+                "skillsMarkdown",
+                "personalityId",
+                "tools",
+                "mcpServerNames",
+                "enabled",
+                "allowDelegation",
+                "verbose",
+                "maxIterations",
+                "maxRpm",
+            ],
+        )?,
+    );
+    sanitized.insert(
+        "tasks".to_owned(),
+        sanitized_crew_array(
+            object.get("tasks"),
+            "tasks",
+            &[
+                "id",
+                "title",
+                "name",
+                "description",
+                "expectedOutput",
+                "agentId",
+                "context",
+                "dependencies",
+                "asyncExecution",
+            ],
+        )?,
+    );
+    let encoded = serde_json::to_vec(&sanitized)?;
+    if encoded.len() > MAX_SYNC_PAYLOAD_BYTES {
+        return Err(ApiError::Unprocessable(format!(
+            "crew definition exceeds {MAX_SYNC_PAYLOAD_BYTES} bytes"
+        )));
+    }
+    Ok(Value::Object(sanitized))
+}
+
+fn sanitized_crew_array(
+    value: Option<&Value>,
+    name: &str,
+    allowed_fields: &[&str],
+) -> Result<Value, ApiError> {
+    let values = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::Unprocessable(format!("crew definition requires {name}")))?;
+    if values.len() > 1_000 {
+        return Err(ApiError::Unprocessable(format!(
+            "crew definition {name} exceeds 1000 entries"
+        )));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let object = value.as_object().ok_or_else(|| {
+                ApiError::Unprocessable(format!("crew definition {name} must contain objects"))
+            })?;
+            Ok(Value::Object(
+                allowed_fields
+                    .iter()
+                    .filter_map(|key| {
+                        object
+                            .get(*key)
+                            .map(|value| ((*key).to_owned(), value.clone()))
+                    })
+                    .collect(),
+            ))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()
+        .map(Value::Array)
+}
+
 async fn materialize_task(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
@@ -2749,5 +2956,26 @@ mod tests {
             bounded_message_text(&Value::String("a€b".to_owned()), 3),
             ("a".to_owned(), true)
         );
+    }
+
+    #[test]
+    fn frozen_crew_definitions_drop_all_provider_configuration() {
+        let sanitized = sanitized_crew_definition(
+            serde_json::json!({
+                "id":"researchers",
+                "name":"Research crew",
+                "agents":[{"id":"agent","name":"Agent","apiKey":"nested-secret"}],
+                "tasks":[{"id":"task","agentId":"agent","credential":"nested-secret"}],
+                "providerConfigs":{"openAICompatible":{"apiKey":"never-persist"}},
+                "config":{"apiKey":"never-persist-either"}
+            }),
+            "researchers",
+        )
+        .unwrap();
+        assert_eq!(sanitized["id"], "researchers");
+        assert!(sanitized.get("providerConfigs").is_none());
+        assert!(sanitized.get("config").is_none());
+        assert!(!sanitized.to_string().contains("never-persist"));
+        assert!(!sanitized.to_string().contains("nested-secret"));
     }
 }

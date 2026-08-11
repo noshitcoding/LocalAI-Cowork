@@ -50,8 +50,12 @@ password contains URI-reserved characters, percent-encode it in
 `database_url.txt`.
 
 Configure `COWORK_MODEL_BASE_URL`, `COWORK_MODEL_NAME` and optionally
-`COWORK_MODEL_API_KEY` for server model runs. This key is injected only into the
-worker/control-plane environment, never into a sandbox or browser client.
+`COWORK_MODEL_API_KEY` for server model runs. Ordinary agent calls keep this key
+inside the worker. A Crew run receives its selected server provider credential
+only in the signed, schema-checked stdin of its dedicated sandbox process. The
+credential is never written into the frozen Run, an event, an artifact, a
+browser response, or the sandbox workspace; protocol output is recursively
+redacted before persistence.
 
 Set `COWORK_PUBLIC_ORIGIN` to the one canonical HTTPS origin, without a path,
 and `COWORK_WEBAUTHN_RP_ID` to its stable relying-party domain. For example:
@@ -120,7 +124,18 @@ Tagged releases publish server, runner, web, egress and sandbox images to GHCR
 with SBOM and provenance attestations. `SERVER-IMAGES.txt` in the matching
 GitHub release records immutable digests. For a reviewed source checkout, set
 `COWORK_UPGRADE_BUILD_FROM_SOURCE=1` and run `docker compose build --pull`
-instead. The runner starts only after both pinned sandbox images exist.
+instead. The runner starts only after all three pinned Core, GUI and Crew
+sandbox images exist.
+
+Server Crew tasks freeze the released task configuration and the current
+secret-free synchronized Crew definition before they enter the queue. The
+worker then applies the Run's server-bound model profile (or the configured
+server default) to every enabled Crew agent and dispatches CrewAI 1.15.8 through
+the filtered-egress sandbox. Disabled agents and their tasks are removed from
+the request, unsafe dispatch is checkpointed, and a missing definition,
+provider, image or capability fails closed. Per-agent provider selection is
+currently a desktop-only feature; a server Crew Run deliberately uses one
+explicit server profile for the whole frozen Crew.
 
 The bundled object store uses path-style MinIO by default. An external
 S3-compatible bucket can be selected with `COWORK_S3_ENDPOINT`,
@@ -364,7 +379,9 @@ for example `model.ollama,files,shell,git,web,mcp,browser.headless`. Add
 `crew.python` only after the bundled CrewAI runtime has been prepared and the
 daemon runtime-path health check succeeds; Crew tasks require this capability
 and otherwise remain visibly in `waiting_for_executor` instead of running as a
-different runner. Add
+different runner. Server-originated personal Crew runs currently also require
+`COWORK_MODEL_BASE_URL` and `COWORK_MODEL_NAME` on the outbound device agent;
+the resulting per-Run Crew configuration is encrypted by the daemon. Add
 `desktop.windows` on an interactive Windows device or `desktop.linux` on an
 interactive Linux device. In addition
 to the canonical HTTPS server URL, executor ID, credential file, bridge settings

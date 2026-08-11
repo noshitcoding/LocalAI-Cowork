@@ -53,6 +53,7 @@ struct Config {
     signing_key: Vec<u8>,
     core_image: String,
     gui_image: String,
+    crew_image: String,
     filtered_egress_network: Option<String>,
     filtered_egress_proxy: Option<String>,
     seccomp_profile: String,
@@ -969,6 +970,7 @@ async fn execute(state: &AppState, spec: &SandboxRunSpec) -> Result<SandboxRunRe
     let image = match spec.image {
         SandboxImage::Core => &config.core_image,
         SandboxImage::Gui => &config.gui_image,
+        SandboxImage::Crew => &config.crew_image,
     };
     let memory = spec.limits.memory_bytes.to_string();
     let cpus = format!("{:.3}", spec.limits.cpu_nanos as f64 / 1_000_000_000_f64);
@@ -1197,6 +1199,8 @@ impl Config {
                 .unwrap_or_else(|_| "open-cowork-sandbox-core:0.3.0".to_owned()),
             gui_image: env::var("COWORK_RUNNER_GUI_IMAGE")
                 .unwrap_or_else(|_| "open-cowork-sandbox-gui:0.3.0".to_owned()),
+            crew_image: env::var("COWORK_RUNNER_CREW_IMAGE")
+                .unwrap_or_else(|_| "open-cowork-sandbox-crew:0.3.0".to_owned()),
             filtered_egress_network: env::var("COWORK_SANDBOX_EGRESS_NETWORK")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
@@ -1323,6 +1327,7 @@ mod tests {
             signing_key: vec![1; 32],
             core_image: "core:test".to_owned(),
             gui_image: "gui:test".to_owned(),
+            crew_image: "crew:test".to_owned(),
             filtered_egress_network: None,
             filtered_egress_proxy: None,
             seccomp_profile: "builtin".to_owned(),

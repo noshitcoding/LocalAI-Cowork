@@ -55,7 +55,7 @@ services:
       COWORK_LISTEN_ADDR: 0.0.0.0:8080
       COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
       DATABASE_URL_FILE: /run/secrets/database_url
-      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
       COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
       COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
       COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}
@@ -116,7 +116,7 @@ services:
       COWORK_MODE: worker
       COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
       DATABASE_URL_FILE: /run/secrets/database_url
-      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
       COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
       COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
       COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}
@@ -170,6 +170,7 @@ services:
       COWORK_RUNNER_SIGNING_KEY_FILE: /run/secrets/runner_signing_key
       COWORK_RUNNER_CORE_IMAGE: ${COWORK_SANDBOX_CORE_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-core}:${COWORK_VERSION:-0.3.0}
       COWORK_RUNNER_GUI_IMAGE: ${COWORK_SANDBOX_GUI_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-gui}:${COWORK_VERSION:-0.3.0}
+      COWORK_RUNNER_CREW_IMAGE: ${COWORK_SANDBOX_CREW_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-crew}:${COWORK_VERSION:-0.3.0}
       COWORK_SANDBOX_EGRESS_NETWORK: open-cowork-sandbox-egress
       COWORK_SANDBOX_HTTP_PROXY: http://egress-proxy:3128
       COWORK_SANDBOX_SECCOMP_PROFILE: ${COWORK_SANDBOX_SECCOMP_PROFILE:-builtin}
@@ -184,6 +185,8 @@ services:
       sandbox-core:
         condition: service_completed_successfully
       sandbox-gui:
+        condition: service_completed_successfully
+      sandbox-crew:
         condition: service_completed_successfully
       egress-proxy:
         condition: service_healthy
@@ -246,6 +249,22 @@ services:
       context: ..
       dockerfile: deploy/sandboxes/gui/Dockerfile
     command: ["true"]
+    restart: "no"
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  sandbox-crew:
+    image: ${COWORK_SANDBOX_CREW_IMAGE:-ghcr.io/noshitcoding/open-cowork-sandbox-crew}:${COWORK_VERSION:-0.3.0}
+    build:
+      context: ..
+      dockerfile: deploy/sandboxes/crew/Dockerfile
+    command: ["python3", "/opt/cowork/crew-runtime/main.py", "status"]
     restart: "no"
     network_mode: none
     read_only: true

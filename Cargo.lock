@@ -757,6 +757,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "cowork-contracts",
+ "cowork-runtime",
  "dotenvy",
  "futures-util",
  "hex",

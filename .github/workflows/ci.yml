@@ -252,6 +252,41 @@ jobs:
       - name: Nginx-compatible TLS to Caddy acceptance
         run: node scripts/test-gateway-e2e.mjs
 
+  crew-sandbox:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build isolated CrewAI image
+        run: docker build --file deploy/sandboxes/crew/Dockerfile --tag open-cowork-sandbox-crew:ci .
+
+      - name: Verify pinned runtime without network or privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            open-cowork-sandbox-crew:ci \
+            python3 /opt/cowork/crew-runtime/main.py status > crew-runtime-status.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.loads(Path('crew-runtime-status.json').read_text(encoding='utf-8'))
+          assert status['runtimeCompatible'] is True, status
+          assert status['crewaiVersion'] == status['expectedCrewaiVersion'] == '1.15.8', status
+          assert status['runtimeSchemaVersion'] == 2, status
+          PY
+
   web-cross-browser:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04

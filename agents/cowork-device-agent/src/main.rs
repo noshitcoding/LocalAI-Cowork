@@ -16,6 +16,7 @@ use cowork_contracts::{
     RunRecord, RunState, SnapshotManifest, SnapshotUploadChunk, SnapshotUploadFile,
     SnapshotUploadSession, SyncApplyStatus, SyncChange, SyncOperation, SCHEMA_VERSION,
 };
+use cowork_runtime::crew::{prepare_crew_request, CrewModelConfig};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -1496,19 +1497,58 @@ async fn execute_via_local_daemon(
     } else {
         None
     };
-    let model_config = config.model_base_url.as_ref().map(|base_url| {
-        json!({
+    let model_config = if lease
+        .run
+        .spec
+        .input
+        .get("task_runner")
+        .and_then(Value::as_str)
+        == Some("crew")
+    {
+        let base_url = config.model_base_url.as_ref().context(
+            "personal Crew runs require COWORK_MODEL_BASE_URL on the outbound device agent",
+        )?;
+        let model = CrewModelConfig {
+            base_url: base_url.clone(),
+            api_key: config.model_api_key.clone(),
+            model: config.model_name.clone(),
+            timeout: Duration::from_secs(20 * 60),
+            verify_tls_certificates: true,
+        };
+        let definition = lease
+            .run
+            .spec
+            .input
+            .get("crew_definition")
+            .cloned()
+            .context("the personal Crew run has no frozen crew_definition")?;
+        let crew_request = prepare_crew_request(definition, &lease.run.spec, &model)?;
+        Some(json!({
             "base_url": base_url,
             "api_key": config.model_api_key,
             "model": config.model_name,
             "timeout_ms": 20 * 60 * 1_000_u64,
-            "max_steps": 64,
+            "max_steps": 1,
             "verify_tls_certificates": true,
             "mcp_servers": [],
-            "crew_request": null,
+            "crew_request": crew_request,
             "codex_request": null,
+        }))
+    } else {
+        config.model_base_url.as_ref().map(|base_url| {
+            json!({
+                "base_url": base_url,
+                "api_key": config.model_api_key,
+                "model": config.model_name,
+                "timeout_ms": 20 * 60 * 1_000_u64,
+                "max_steps": 64,
+                "verify_tls_certificates": true,
+                "mcp_servers": [],
+                "crew_request": null,
+                "codex_request": null,
+            })
         })
-    });
+    };
     let imported: RunRecord = serde_json::from_value(
         daemon
             .call(
