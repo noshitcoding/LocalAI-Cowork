@@ -117,6 +117,20 @@ struct SetupResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxSmokeResult {
+    ok: bool,
+    setup_ready: bool,
+    repeated_setup_ready: bool,
+    account: String,
+    group: String,
+    execution_status: Option<String>,
+    identity_verified: bool,
+    marker_written: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunnerRequest {
@@ -372,7 +386,8 @@ pub fn setup_start(app_data: &Path) -> Result<SetupStatus, String> {
 
     fs::create_dir_all(setup_dir(app_data)).map_err(|error| error.to_string())?;
     let password = generate_password()?;
-    let encrypted_for_helper = protect_data(password.as_bytes(), true)?;
+    let encrypted_for_helper = protect_data(password.as_bytes(), true)
+        .map_err(|error| format!("failed to protect the UAC setup secret: {error}"))?;
     let nonce = uuid::Uuid::new_v4().to_string();
     let request_path = setup_dir(app_data).join(format!("setup-{nonce}.request"));
     let result_path = setup_dir(app_data).join(format!("setup-{nonce}.result"));
@@ -418,29 +433,35 @@ pub fn setup_start(app_data: &Path) -> Result<SetupStatus, String> {
         let _ = fs::remove_file(&result_path);
         return Err("UAC sandbox setup did not finish within two minutes".to_string());
     }
-    let result_bytes =
-        fs::read(&result_path).map_err(|_| "elevated setup returned no result".to_string())?;
+    let result_bytes = fs::read(&result_path)
+        .map_err(|error| format!("elevated setup returned no result: {error}"))?;
     let _ = fs::remove_file(&result_path);
-    let result: SetupResult = serde_json::from_slice(&result_bytes).map_err(|e| e.to_string())?;
+    let result: SetupResult = serde_json::from_slice(&result_bytes)
+        .map_err(|error| format!("elevated setup returned an invalid result: {error}"))?;
     if !result.ok {
         return Err(result
             .error
             .unwrap_or_else(|| "elevated setup failed".to_string()));
     }
 
-    let encrypted = protect_data(password.as_bytes(), false)?;
-    write_private_file(&credential_path(app_data), &encrypted)?;
+    let encrypted = protect_data(password.as_bytes(), false)
+        .map_err(|error| format!("failed to protect the sandbox credential: {error}"))?;
+    write_private_file(&credential_path(app_data), &encrypted)
+        .map_err(|error| format!("failed to store the sandbox credential: {error}"))?;
     if !matches!(load_capability_seed(app_data), Ok(seed) if seed.len() == 32) {
         let mut capability_seed = [0u8; 32];
         getrandom::fill(&mut capability_seed).map_err(|error| error.to_string())?;
-        let protected_seed = protect_data(&capability_seed, false)?;
+        let protected_seed = protect_data(&capability_seed, false)
+            .map_err(|error| format!("failed to protect the sandbox capability seed: {error}"))?;
         capability_seed.fill(0);
-        write_private_file(&capability_seed_path(app_data), &protected_seed)?;
+        write_private_file(&capability_seed_path(app_data), &protected_seed)
+            .map_err(|error| format!("failed to store the sandbox capability seed: {error}"))?;
     }
     write_private_file(
         &setup_marker_path(app_data),
         &serde_json::to_vec(&result).map_err(|e| e.to_string())?,
-    )?;
+    )
+    .map_err(|error| format!("failed to store the sandbox setup marker: {error}"))?;
     Ok(setup_status(app_data))
 }
 
@@ -1316,7 +1337,108 @@ pub fn dispatch_helper_from_args() -> Option<i32> {
         };
         return Some(code);
     }
+    if mode == "--lacowork-native-sandbox-smoke" {
+        let code = match (args.get(2), args.get(3)) {
+            (Some(app_data), Some(result)) => {
+                native_sandbox_smoke_helper(Path::new(app_data), Path::new(result))
+            }
+            _ => Err("sandbox smoke arguments are missing".to_string()),
+        };
+        return Some(if code.is_ok() { 0 } else { 1 });
+    }
     None
+}
+
+fn native_sandbox_smoke_helper(app_data: &Path, result_path: &Path) -> Result<(), String> {
+    let mut report = SandboxSmokeResult {
+        ok: false,
+        setup_ready: false,
+        repeated_setup_ready: false,
+        account: SANDBOX_ACCOUNT.to_string(),
+        group: SANDBOX_GROUP.to_string(),
+        execution_status: None,
+        identity_verified: false,
+        marker_written: false,
+        error: None,
+    };
+    let workspace = std::env::temp_dir().join(format!(
+        "lacowork-native-sandbox-smoke-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let outcome = (|| {
+        let first = setup_start(app_data)?;
+        report.setup_ready = first.ready;
+        if !first.ready {
+            return Err(format!(
+                "initial sandbox setup is not ready: {}",
+                first.reason.unwrap_or_default()
+            ));
+        }
+
+        let repeated = setup_start(app_data)?;
+        report.repeated_setup_ready = repeated.ready;
+        if !repeated.ready {
+            return Err(format!(
+                "repeated sandbox setup is not ready: {}",
+                repeated.reason.unwrap_or_default()
+            ));
+        }
+
+        fs::create_dir_all(&workspace).map_err(|error| {
+            format!("failed to create the sandbox smoke workspace: {error}")
+        })?;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        grant_workspace_access(app_data, &run_id, &workspace)?;
+        let marker = workspace.join("sandbox-smoke.txt");
+        let marker_literal = marker.display().to_string().replace('\'', "''");
+        let response = execute(
+            app_data,
+            &ExecRequest {
+                run_id,
+                command: format!(
+                    "$identity = whoami; $identity; Set-Content -LiteralPath '{marker_literal}' -Value 'sandbox-smoke-ok' -NoNewline"
+                ),
+                shell: Some("powershell".to_string()),
+                cwd: workspace.display().to_string(),
+                timeout_ms: Some(30_000),
+                stream_id: uuid::Uuid::new_v4().to_string(),
+            },
+            |_, _, _| {},
+        )?;
+        report.execution_status = Some(response.status.clone());
+        report.identity_verified = response
+            .stdout
+            .to_ascii_lowercase()
+            .contains(&SANDBOX_ACCOUNT.to_ascii_lowercase());
+        report.marker_written = fs::read_to_string(&marker)
+            .map(|contents| contents == "sandbox-smoke-ok")
+            .unwrap_or(false);
+        if response.status != "completed" || response.exit_code != Some(0) {
+            return Err(format!(
+                "sandbox identity probe did not complete successfully (status {}, exit {:?}): {}",
+                response.status, response.exit_code, response.stderr
+            ));
+        }
+        if !report.identity_verified {
+            return Err(format!(
+                "sandbox identity probe did not run as {SANDBOX_ACCOUNT}: {}",
+                response.stdout
+            ));
+        }
+        if !report.marker_written {
+            return Err("sandbox identity probe did not write its workspace marker".to_string());
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&workspace);
+    report.ok = outcome.is_ok();
+    report.error = outcome.as_ref().err().cloned();
+    let serialized = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
+    if let Some(parent) = result_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(result_path, serialized).map_err(|error| error.to_string())?;
+    outcome
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1449,6 +1571,7 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         ));
     }
     let administrators = localized_administrators_group()?;
+    let mut enforcement_errors = Vec::new();
     let administrators_result = unsafe {
         NetLocalGroupDelMembers(
             std::ptr::null(),
@@ -1462,7 +1585,7 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         && administrators_result != ERROR_NO_SUCH_MEMBER
         && administrators_result != ERROR_MEMBER_NOT_IN_ALIAS
     {
-        return Err(format!(
+        enforcement_errors.push(format!(
             "failed to enforce standard-user membership (Windows error {administrators_result})"
         ));
     }
@@ -1482,12 +1605,27 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         && group_administrators_result != ERROR_NO_SUCH_MEMBER
         && group_administrators_result != ERROR_MEMBER_NOT_IN_ALIAS
     {
-        return Err(format!(
+        enforcement_errors.push(format!(
             "failed to enforce non-admin sandbox group membership (Windows error {group_administrators_result})"
         ));
     }
+    let membership = sandbox_account_membership_ready();
     pass.fill(0);
-    Ok(())
+    finalize_membership_enforcement(enforcement_errors, membership)
+}
+
+fn finalize_membership_enforcement(
+    enforcement_errors: Vec<String>,
+    membership: Result<(), String>,
+) -> Result<(), String> {
+    match membership {
+        Ok(()) => Ok(()),
+        Err(reason) if enforcement_errors.is_empty() => Err(reason),
+        Err(reason) => Err(format!(
+            "{}; final membership verification failed: {reason}",
+            enforcement_errors.join("; ")
+        )),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2106,7 +2244,29 @@ fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_ipc_frame, write_ipc_frame, IPC_STDERR, IPC_STDOUT};
+    use super::{
+        finalize_membership_enforcement, read_ipc_frame, write_ipc_frame, IPC_STDERR, IPC_STDOUT,
+    };
+
+    #[test]
+    fn final_safe_membership_accepts_noncanonical_cleanup_results() {
+        assert!(finalize_membership_enforcement(
+            vec!["unexpected Windows cleanup result".to_string()],
+            Ok(()),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn unsafe_final_membership_preserves_cleanup_diagnostics() {
+        let error = finalize_membership_enforcement(
+            vec!["cleanup failed".to_string()],
+            Err("sandbox account is unexpectedly a local administrator".to_string()),
+        )
+        .expect_err("unsafe membership must fail");
+        assert!(error.contains("cleanup failed"));
+        assert!(error.contains("unexpectedly a local administrator"));
+    }
 
     #[test]
     fn binary_ipc_frames_round_trip_without_text_markers() {

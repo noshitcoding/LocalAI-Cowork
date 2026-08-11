@@ -159,7 +159,11 @@ function SandboxSetupCard() {
       window.dispatchEvent(new CustomEvent('lacowork-sandbox-status-changed', { detail: next }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
-      await refresh()
+      try {
+        setStatus(await safeInvoke<SandboxSetupStatus>('sandbox_setup_status'))
+      } catch {
+        // Keep the actionable setup failure visible if the follow-up status check also fails.
+      }
     } finally {
       setSettingUp(false)
     }
