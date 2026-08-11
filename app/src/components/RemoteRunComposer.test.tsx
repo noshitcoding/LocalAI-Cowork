@@ -113,4 +113,88 @@ describe('RemoteRunComposer thread continuation', () => {
     })
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(run))
   })
+
+  it('removes Windows pools that do not bind every selected MCP server', async () => {
+    const projectId = '20000000-0000-4000-8000-000000000001'
+    const mcpId = '20000000-0000-4000-8000-000000000002'
+    const poolId = '20000000-0000-4000-8000-000000000003'
+    const client = {
+      listProjects: vi.fn(async () => [{
+        schema_version: 2,
+        id: projectId,
+        revision: 1,
+        etag: 'W/"project:1"',
+        owner_user_id: '20000000-0000-4000-8000-000000000004',
+        team_id: null,
+        privacy: 'private_local',
+        name: 'Private project',
+        description: '',
+        preferred_executor_target: null,
+        current_version_id: null,
+        policy: {},
+        created_at: '2026-08-11T12:00:00Z',
+        updated_at: '2026-08-11T12:00:00Z',
+        deleted_at: null,
+      }]),
+      capabilities: vi.fn(async () => ({
+        schema_version: 2,
+        server_linux: [{
+          schema_version: 2, name: 'tool.mcp.invoke', version: 'test', attributes: {},
+        }],
+        executors: [{
+          registration: {
+            schema_version: 2,
+            executor_id: '20000000-0000-4000-8000-000000000005',
+            kind: 'managed_windows',
+            pool_id: poolId,
+            owner_user_id: null,
+            display_name: 'Windows Office',
+            protocol_version: 2,
+            capabilities: [{
+              schema_version: 2,
+              name: 'tool.mcp.invoke',
+              version: 'test',
+              attributes: { server_names: ['CRM'] },
+            }],
+            labels: {},
+            max_concurrent_runs: 1,
+          },
+          online: true,
+          draining: false,
+          active_runs: 0,
+          last_seen_at: '2026-08-11T12:00:00Z',
+        }],
+      })),
+      listProviderProfiles: vi.fn(async () => []),
+      listSyncedEntities: vi.fn(async (entityType: string) => ({
+        schema_version: 2,
+        items: entityType === 'mcp_metadata' ? [{
+          schema_version: 2,
+          entity_type: 'mcp_metadata',
+          entity_id: mcpId,
+          revision: 1,
+          etag: `W/"${mcpId}:1"`,
+          payload: { name: 'Project docs' },
+          tombstone: false,
+          updated_at: '2026-08-11T12:00:00Z',
+        }] : [],
+        next_after: null,
+        watermark_cursor: 1,
+      })),
+    } as unknown as RemoteRuntimeClient
+
+    render(<RemoteRunComposer client={client} onCreated={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New run' }))
+    expect(await screen.findByRole('option', { name: 'Windows pool · Windows Office' }))
+      .toBeInTheDocument()
+
+    const mcpOption = screen.getByRole('option', { name: 'Project docs (r1)' }) as HTMLOptionElement
+    mcpOption.selected = true
+    fireEvent.change(screen.getByRole('listbox', { name: 'Executor-bound MCP' }))
+
+    await waitFor(() => expect(
+      screen.queryByRole('option', { name: 'Windows pool · Windows Office' }),
+    ).not.toBeInTheDocument())
+    expect(screen.getByRole('option', { name: 'Linux server' })).toBeInTheDocument()
+  })
 })

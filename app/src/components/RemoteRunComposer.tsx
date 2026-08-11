@@ -8,6 +8,8 @@ import {
   providerSupportsTarget,
   remoteTargetChoices,
   remoteTargetKey,
+  remoteTargetSupports,
+  selectedMcpServerNames,
 } from '../runtime/remoteExecutionOptions'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 
@@ -98,9 +100,17 @@ export default function RemoteRunComposer({
     [capabilities, selectedMcpIds.length],
   )
   const choices = useMemo(() => catalog ? remoteTargetChoices(catalog) : [], [catalog])
+  const requiredMcpServerNames = useMemo(
+    () => selectedMcpServerNames(mcpMetadata, selectedMcpIds),
+    [mcpMetadata, selectedMcpIds],
+  )
   const compatibleChoices = useMemo(
-    () => choices.filter((choice) => required.every((capability) => choice.capabilities.has(capability))),
-    [choices, required],
+    () => choices.filter((choice) => remoteTargetSupports(
+      choice,
+      required,
+      requiredMcpServerNames,
+    )),
+    [choices, required, requiredMcpServerNames],
   )
 
   useEffect(() => {

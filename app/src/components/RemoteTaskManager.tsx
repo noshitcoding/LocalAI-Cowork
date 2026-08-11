@@ -14,6 +14,7 @@ import {
   providerSupportsTarget,
   remoteTargetChoices,
   remoteTargetKey,
+  remoteTargetSupports,
 } from '../runtime/remoteExecutionOptions'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import './RemoteManagement.css'
@@ -70,7 +71,7 @@ export default function RemoteTaskManager({ client, compact = false, onRunCreate
   const choices = useMemo(() => catalog ? remoteTargetChoices(catalog) : [], [catalog])
   const required = capabilitiesFrom(capabilityText)
   const formChoices = choices.filter((choice) => (
-    required.every((capability) => choice.capabilities.has(capability))
+    remoteTargetSupports(choice, required)
   ))
   useEffect(() => {
     if (defaultTarget && !formChoices.some((choice) => choice.key === defaultTarget)) {
@@ -80,7 +81,7 @@ export default function RemoteTaskManager({ client, compact = false, onRunCreate
 
   const runProject = projects.find((project) => project.id === runTask?.project_id)
   const runChoices = choices.filter((choice) => (
-    runTask?.required_capabilities.every((capability) => choice.capabilities.has(capability)) ?? false
+    runTask ? remoteTargetSupports(choice, runTask.required_capabilities) : false
   ))
   const selectedRunTarget = runChoices.find((choice) => choice.key === runTarget)?.target
   const runProfiles = profiles.filter((profile) => (
@@ -132,8 +133,9 @@ export default function RemoteTaskManager({ client, compact = false, onRunCreate
     catch (cause) { setError(messageOf(cause)) } finally { setBusy(false) }
   }
   const prepareRun = (task: TaskDefinition) => {
-    const compatible = choices.filter((choice) => task.required_capabilities.every(
-      (capability) => choice.capabilities.has(capability),
+    const compatible = choices.filter((choice) => remoteTargetSupports(
+      choice,
+      task.required_capabilities,
     ))
     const preferred = task.default_target ? remoteTargetKey(task.default_target) : ''
     setRunTask(task)

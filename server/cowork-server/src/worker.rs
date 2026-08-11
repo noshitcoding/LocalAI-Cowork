@@ -792,7 +792,7 @@ impl RuntimeHost for ServerRuntimeHost<'_> {
                 tools.push(tool_definition(
                     "MCPTool",
                     &format!(
-                        "Call a tool on an encrypted project-bound Linux MCP stdio server. Available servers: {names}"
+                        "Call a tool on an encrypted project-bound Linux MCP server. Available servers: {names}"
                     ),
                     json!({"type":"object","properties":{"server_name":{"type":"string"},"tool_name":{"type":"string"},"arguments":{"type":"object"}},"required":["server_name","tool_name"],"additionalProperties":false}),
                     Some("tool.mcp.invoke"),

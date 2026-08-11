@@ -8,6 +8,7 @@ import {
   providerSupportsTarget,
   remoteTargetChoices,
   remoteTargetKey,
+  remoteTargetSupports,
 } from '../runtime/remoteExecutionOptions'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 
@@ -57,7 +58,7 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
   const task = tasks.find((item) => item.id === taskId)
   const allChoices = useMemo(() => catalog ? remoteTargetChoices(catalog) : [], [catalog])
   const compatible = useMemo(() => allChoices.filter((choice) => (
-    task?.required_capabilities.every((required) => choice.capabilities.has(required)) ?? true
+    task ? remoteTargetSupports(choice, task.required_capabilities) : true
   )), [allChoices, task])
   useEffect(() => {
     const preferred = task?.default_target ? remoteTargetKey(task.default_target) : null
