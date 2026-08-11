@@ -13,13 +13,14 @@ const indexHtmlPath = join(distDir, 'index.html')
 // the validated command registry, safe Markdown chat rendering, model guidance,
 // the native sandbox review surface, the security-required React Router 7 upgrade,
 // the Codex account/setup plus unified API-profile controls, the distributed
-// runtime clients, and the lazily loaded noVNC remote-desktop viewer.
-// Keep the CSS allowance deliberately tight.
+// runtime clients, the Web/Android management surfaces, and the lazily loaded
+// noVNC remote-desktop viewer. Total CSS/JS includes every platform-specific
+// lazy chunk even though a deployed client only loads its own surface.
 // Keep headroom tight so the check still catches accidental bundle growth.
 const budgets = {
   initialGzipBytes: 307 * 1024,
-  cssGzipBytes: 41 * 1024,
-  totalJsGzipBytes: 600 * 1024,
+  cssGzipBytes: 44 * 1024,
+  totalJsGzipBytes: 610 * 1024,
   largestJsChunkGzipBytes: 120 * 1024,
 }
 
