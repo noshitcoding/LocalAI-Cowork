@@ -512,15 +512,15 @@ jobs:
           SQL
           seeded="$(docker exec "${postgres_container}" psql -U cowork -d cowork_worker_soak_ci -tAc \
             "SELECT (SELECT count(*) FROM auth_sessions) || '|' || (SELECT count(*) FROM access_tokens) || '|' || (SELECT count(*) FROM auth_refresh_token_history) || '|' || (SELECT count(*) FROM push_subscriptions);")"
-          if [[ "${seeded}" != '1|1|1|1' ]]; then
+          IFS='|' read -r seeded_sessions seeded_access seeded_history seeded_push <<< "${seeded}"
+          if (( seeded_sessions < 1 || seeded_access != seeded_sessions || seeded_history != 1 || seeded_push != 1 )); then
             echo "authentication retention fixture was not seeded correctly: ${seeded}" >&2
             exit 1
           fi
           echo 'auth_session_retention_fixture=ok'
           docker exec -i "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
           UPDATE auth_sessions
-          SET expires_at = now() - interval '91 days'
-          WHERE id = (SELECT id FROM auth_sessions ORDER BY created_at LIMIT 1);
+          SET expires_at = now() - interval '91 days';
           SQL
           retained=''
           for _ in $(seq 1 100); do

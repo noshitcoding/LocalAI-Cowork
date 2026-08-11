@@ -6,6 +6,7 @@ import {
   desktopSessionSchema,
   desktopStreamTicketSchema,
   executorRecordSchema,
+  invitationSecretSchema,
   messageRecordSchema,
   terminalSessionTicketSchema,
   threadRecordSchema,
@@ -48,6 +49,7 @@ import {
   type ExecutorTarget,
   type ExecutorRecord,
   type PersonalDeviceRemoteControlMode,
+  type InvitationSecret,
   type RunEvent,
   type RunArtifact,
   type PushConfiguration,
@@ -186,6 +188,12 @@ export class RemoteRuntimeClient implements RuntimeClient {
   async createTeam(name: string): Promise<TeamRecord> {
     return teamRecordSchema.parse(await this.#request('/api/v1/teams', {
       method: 'POST', body: JSON.stringify({ name }),
+    }))
+  }
+
+  async createInvitation(email: string): Promise<InvitationSecret> {
+    return invitationSecretSchema.parse(await this.#request('/api/v1/auth/invitations', {
+      method: 'POST', body: JSON.stringify({ email, expires_at: null }),
     }))
   }
 

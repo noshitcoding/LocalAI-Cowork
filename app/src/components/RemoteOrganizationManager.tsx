@@ -1,7 +1,7 @@
-import { Building2, FolderPlus, Plus, Save, Trash2, UserPlus, Users, X } from 'lucide-react'
+import { Building2, Copy, FolderPlus, MailPlus, Plus, Save, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 
-import type { ProjectPrivacy, ProjectRecord, TeamMemberRecord, TeamRecord } from '../runtime/contracts'
+import type { InvitationSecret, ProjectPrivacy, ProjectRecord, TeamMemberRecord, TeamRecord } from '../runtime/contracts'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import './RemoteManagement.css'
 
@@ -21,6 +21,8 @@ export default function RemoteOrganizationManager({ client, currentUserId, compa
   const [projectName, setProjectName] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
   const [projectPrivacy, setProjectPrivacy] = useState<ProjectPrivacy>('private_local')
+  const [invitationEmail, setInvitationEmail] = useState('')
+  const [invitation, setInvitation] = useState<InvitationSecret | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -84,6 +86,11 @@ export default function RemoteOrganizationManager({ client, currentUserId, compa
       setProjectName(''); setProjectDescription(''); await load()
     } catch (cause) { setError(messageOf(cause)) } finally { setBusy(false) }
   }
+  const createInvitation = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(null); setInvitation(null)
+    try { setInvitation(await client.createInvitation(invitationEmail.trim().toLocaleLowerCase())) }
+    catch (cause) { setError(messageOf(cause)) } finally { setBusy(false) }
+  }
   const removeProject = async (project: ProjectRecord) => {
     setBusy(true); setError(null)
     try { await client.deleteProject(project.id, project.revision); await load() }
@@ -123,6 +130,12 @@ export default function RemoteOrganizationManager({ client, currentUserId, compa
         <label>Storage<select value={projectPrivacy} onChange={(event) => setProjectPrivacy(event.target.value as ProjectPrivacy)}><option value="private_local">Private, files stay local</option>{teamProjectAllowed ? <option value="team_managed">Team-managed server files</option> : null}</select></label>
         <label>Description<textarea value={projectDescription} onChange={(event) => setProjectDescription(event.target.value)} rows={3} /></label>
         <div className="remote-management-actions"><button type="submit" disabled={busy || !projectName.trim()}><FolderPlus size={14} /> Create project</button></div>
+      </form>
+      <form onSubmit={createInvitation}>
+        <strong><MailPlus size={14} /> Invite a server account</strong>
+        <label>Email<input type="email" value={invitationEmail} onChange={(event) => setInvitationEmail(event.target.value)} required /></label>
+        <div className="remote-management-actions"><button type="submit" disabled={busy || !invitationEmail.trim()}><MailPlus size={14} /> Create invitation</button></div>
+        {invitation ? <div className="remote-invitation-secret"><span><strong>{invitation.email}</strong><small>Expires {new Date(invitation.expires_at).toLocaleString()}</small></span><code>{invitation.token}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(invitation.token) }}><Copy size={14} /> Copy token</button></div> : null}
       </form>
       {error ? <div className="remote-inline-error" role="alert">{error}</div> : null}
     </section>

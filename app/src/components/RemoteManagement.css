@@ -62,6 +62,14 @@
 .remote-organization-grid .remote-management-list article > button { width: 100%; border: 0; padding: 9px; background: transparent; color: inherit; text-align: left; }
 .remote-organization-grid .remote-management-list article.selected { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 8%, transparent); }
 .remote-organization-projects { margin-top: 12px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+.remote-invitation-secret { display: grid; grid-column: 1 / -1; gap: 6px; border: 1px solid var(--border-color); border-radius: 8px; padding: 9px; background: var(--bg-primary); }
+.remote-invitation-secret > span { display: grid; gap: 2px; }
+.remote-invitation-secret small { color: var(--text-secondary); }
+.remote-invitation-secret code { overflow-wrap: anywhere; user-select: all; }
+.remote-invitation-secret button { justify-self: start; }
+.remote-login-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.remote-login-modes button { min-height: 34px; border: 1px solid var(--border-color); border-radius: 7px; background: transparent; color: var(--text-secondary); }
+.remote-login-modes button[aria-pressed="true"] { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 10%, transparent); color: var(--text-primary); }
 
 @media (max-width: 760px) {
   .remote-server-header .remote-management-panel {

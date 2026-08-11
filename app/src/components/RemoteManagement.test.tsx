@@ -102,4 +102,27 @@ describe('remote task and provider management', () => {
       policy: { tool_policy: 'autonomous' },
     }))
   })
+
+  it('creates a one-time server invitation for an administrator to share', async () => {
+    const createInvitation = vi.fn(async () => ({
+      schema_version: 2,
+      invitation_id: '10000000-0000-4000-8000-000000000081',
+      email: 'new-member@example.test',
+      token: `invite-${'i'.repeat(40)}`,
+      expires_at: '2026-08-17T12:00:00Z',
+    }))
+    const client = {
+      listTeams: vi.fn(async () => []),
+      listProjects: vi.fn(async () => []),
+      createInvitation,
+    } as unknown as RemoteRuntimeClient
+    render(<RemoteOrganizationManager compact client={client} currentUserId={project.owner_user_id} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Email' }), {
+      target: { value: 'NEW-MEMBER@example.test' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create invitation' }))
+    await waitFor(() => expect(createInvitation).toHaveBeenCalledWith('new-member@example.test'))
+    expect(await screen.findByText('new-member@example.test')).toBeInTheDocument()
+  })
 })

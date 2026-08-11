@@ -263,6 +263,15 @@ export const teamMemberRecordSchema = z.object({
 })
 export type TeamMemberRecord = z.infer<typeof teamMemberRecordSchema>
 
+export const invitationSecretSchema = z.object({
+  schema_version: z.number().int(),
+  invitation_id: z.string().uuid(),
+  email: z.string().email(),
+  token: z.string().min(32),
+  expires_at: z.string().datetime({ offset: true }),
+})
+export type InvitationSecret = z.infer<typeof invitationSecretSchema>
+
 export const projectRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),

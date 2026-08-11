@@ -43,12 +43,23 @@ function activeSession(sessions: DesktopSession[]): DesktopSession | undefined {
   return sessions.find((session) => !['ended', 'failed'].includes(session.state))
 }
 
+function invitationFromLocation(): string {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get('invitation')?.trim() ?? ''
+}
+
 export default function RemoteServerView() {
   const account = useRemoteRuntimeStore()
   const [serverUrl, setServerUrl] = useState(account.serverUrl)
   const [email, setEmail] = useState(account.email)
   const [password, setPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [secondFactor, setSecondFactor] = useState('')
+  const initialInvitation = useMemo(() => invitationFromLocation(), [])
+  const [authMode, setAuthMode] = useState<'login' | 'bootstrap' | 'invitation'>(initialInvitation ? 'invitation' : 'login')
+  const [displayName, setDisplayName] = useState('')
+  const [bootstrapToken, setBootstrapToken] = useState('')
+  const [invitationToken, setInvitationToken] = useState(initialInvitation)
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -76,6 +87,12 @@ export default function RemoteServerView() {
     // action itself coalesces StrictMode and concurrent callers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  useEffect(() => {
+    if (!initialInvitation || typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    url.searchParams.delete('invitation')
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [initialInvitation])
   useEffect(() => {
     let canceled = false
     const timer = window.setTimeout(() => {
@@ -139,11 +156,24 @@ export default function RemoteServerView() {
     event.preventDefault()
     setError(null)
     try {
-      await account.login(serverUrl, email, password, secondFactor)
+      if (authMode !== 'login' && password !== passwordConfirmation) {
+        throw new Error('The password confirmation does not match')
+      }
+      if (authMode === 'bootstrap') {
+        await account.bootstrap(serverUrl, email, displayName, password, bootstrapToken)
+      } else if (authMode === 'invitation') {
+        await account.acceptInvitation(serverUrl, email, displayName, password, invitationToken)
+      } else {
+        await account.login(serverUrl, email, password, secondFactor)
+      }
       setPassword('')
+      setPasswordConfirmation('')
       setSecondFactor('')
+      setBootstrapToken('')
+      setInvitationToken('')
     } catch (cause) {
       setPassword('')
+      setPasswordConfirmation('')
       setSecondFactor('')
       setError(messageOf(cause))
     }
@@ -193,18 +223,23 @@ export default function RemoteServerView() {
       <div className="remote-server-view remote-server-login">
         <form className="remote-login-card" onSubmit={login}>
           <div className="remote-login-mark"><Server size={28} /></div>
-          <h1>Connect to Open Cowork Server</h1>
-          <p>Sign in to manage durable runs, desktops, browser sessions, and encrypted artifacts.</p>
+          <h1>{authMode === 'bootstrap' ? 'Set up the first administrator' : authMode === 'invitation' ? 'Accept an Open Cowork invitation' : 'Connect to Open Cowork Server'}</h1>
+          <p>{authMode === 'bootstrap' ? 'Use the one-time bootstrap token configured on the server.' : authMode === 'invitation' ? 'Create your account with the private token sent by an administrator.' : 'Sign in to manage durable runs, desktops, browser sessions, and encrypted artifacts.'}</p>
           <label>{IS_WEB_APP ? 'Workspace server' : 'Server URL'}<input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://cowork.example.com" readOnly={IS_WEB_APP} required /></label>
           <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label>
-          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-          <label>Authenticator or recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only if two-factor authentication is enabled" /></label>
+          {authMode !== 'login' ? <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" maxLength={200} required /></label> : null}
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={authMode === 'login' ? undefined : 12} required /></label>
+          {authMode !== 'login' ? <label>Confirm password<input type="password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} autoComplete="new-password" minLength={12} required /></label> : null}
+          {authMode === 'login' ? <label>Authenticator or recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only if two-factor authentication is enabled" /></label> : null}
+          {authMode === 'bootstrap' ? <label>Bootstrap token<input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} autoComplete="off" minLength={16} required /></label> : null}
+          {authMode === 'invitation' ? <label>Invitation token<input value={invitationToken} onChange={(event) => setInvitationToken(event.target.value)} autoComplete="off" minLength={32} required /></label> : null}
           {(error || account.error) ? <div className="remote-inline-error" role="alert">{error ?? account.error}</div> : null}
           <button className="ui-button ui-button--primary ui-button--lg" type="submit" disabled={account.status === 'authenticating' || account.status === 'restoring'}>
-            {account.status === 'restoring' ? 'Restoring session…' : account.status === 'authenticating' ? 'Signing in…' : 'Sign in'}
+            {account.status === 'restoring' ? 'Restoring session…' : account.status === 'authenticating' ? 'Working…' : authMode === 'bootstrap' ? 'Create administrator' : authMode === 'invitation' ? 'Create account' : 'Sign in'}
           </button>
-          {(webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button className="ui-button ui-button--secondary ui-button--lg" type="button" disabled={account.status === 'authenticating' || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={16} /> Sign in with passkey</button> : null}
-          {ssoEnabled ? <button className="ui-button ui-button--secondary ui-button--lg" type="button" disabled={account.status === 'authenticating' || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={16} /> Sign in with SSO</button> : null}
+          {authMode === 'login' && (webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button className="ui-button ui-button--secondary ui-button--lg" type="button" disabled={account.status === 'authenticating' || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={16} /> Sign in with passkey</button> : null}
+          {authMode === 'login' && ssoEnabled ? <button className="ui-button ui-button--secondary ui-button--lg" type="button" disabled={account.status === 'authenticating' || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={16} /> Sign in with SSO</button> : null}
+          <div className="remote-login-modes"><button type="button" aria-pressed={authMode === 'login'} onClick={() => setAuthMode('login')}>Sign in</button><button type="button" aria-pressed={authMode === 'invitation'} onClick={() => setAuthMode('invitation')}>Use invitation</button><button type="button" aria-pressed={authMode === 'bootstrap'} onClick={() => setAuthMode('bootstrap')}>First admin</button></div>
           {account.status === 'restoring' ? <button className="ui-button ui-button--ghost" type="button" onClick={() => account.clearError()}>Use another account</button> : null}
           <small>{IS_WEB_APP
             ? 'This web app is bound to its canonical origin. The refresh session stays in a secure HttpOnly cookie.'

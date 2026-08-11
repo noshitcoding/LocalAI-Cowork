@@ -70,7 +70,12 @@ export default function MobileApp() {
   const [serverUrl, setServerUrl] = useState(account.serverUrl)
   const [email, setEmail] = useState(account.email)
   const [password, setPassword] = useState('')
+  const [accountPasswordConfirmation, setAccountPasswordConfirmation] = useState('')
   const [secondFactor, setSecondFactor] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'bootstrap' | 'invitation'>('login')
+  const [displayName, setDisplayName] = useState('')
+  const [bootstrapToken, setBootstrapToken] = useState('')
+  const [invitationToken, setInvitationToken] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
   const [offline, setOffline] = useState<MobileOfflineState>(EMPTY_MOBILE_OFFLINE_STATE)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
@@ -259,11 +264,24 @@ export default function MobileApp() {
     setBusy(true)
     setError(null)
     try {
-      await account.login(serverUrl, email, password, secondFactor)
+      if (authMode !== 'login' && password !== accountPasswordConfirmation) {
+        throw new Error('Password confirmation does not match')
+      }
+      if (authMode === 'bootstrap') {
+        await account.bootstrap(serverUrl, email, displayName, password, bootstrapToken)
+      } else if (authMode === 'invitation') {
+        await account.acceptInvitation(serverUrl, email, displayName, password, invitationToken)
+      } else {
+        await account.login(serverUrl, email, password, secondFactor)
+      }
       setPassword('')
+      setAccountPasswordConfirmation('')
       setSecondFactor('')
+      setBootstrapToken('')
+      setInvitationToken('')
     } catch (cause) {
       setPassword('')
+      setAccountPasswordConfirmation('')
       setSecondFactor('')
       setError(messageOf(cause))
     } finally {
@@ -374,15 +392,20 @@ export default function MobileApp() {
     return (
       <main className="mobile-login-screen">
         <div className="mobile-brand"><Server size={32} /><h1>Open Cowork</h1></div>
-        <p>Connect this phone to one canonical Open Cowork server.</p>
+        <p>{authMode === 'bootstrap' ? 'Set up the first server administrator.' : authMode === 'invitation' ? 'Create the account invited to this server.' : 'Connect this phone to one canonical Open Cowork server.'}</p>
         <form onSubmit={login}>
           <label>Server URL<input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://cowork.example.com" required /></label>
           <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label>
-          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-          <label>Authenticator / recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only when enabled" /></label>
-          <button type="submit" disabled={busy || account.status === 'restoring'}>{account.status === 'restoring' ? 'Restoring…' : 'Connect'}</button>
-          {(webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button type="button" disabled={busy || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={18} /> Sign in with passkey</button> : null}
-          {ssoEnabled ? <button type="button" disabled={busy || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={18} /> Sign in with SSO</button> : null}
+          {authMode !== 'login' ? <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" required /></label> : null}
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={authMode === 'login' ? undefined : 12} required /></label>
+          {authMode !== 'login' ? <label>Confirm password<input type="password" value={accountPasswordConfirmation} onChange={(event) => setAccountPasswordConfirmation(event.target.value)} autoComplete="new-password" minLength={12} required /></label> : null}
+          {authMode === 'login' ? <label>Authenticator / recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only when enabled" /></label> : null}
+          {authMode === 'bootstrap' ? <label>Bootstrap token<input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} autoComplete="off" minLength={16} required /></label> : null}
+          {authMode === 'invitation' ? <label>Invitation token<input value={invitationToken} onChange={(event) => setInvitationToken(event.target.value)} autoComplete="off" minLength={32} required /></label> : null}
+          <button type="submit" disabled={busy || account.status === 'restoring'}>{account.status === 'restoring' ? 'Restoring…' : authMode === 'bootstrap' ? 'Create administrator' : authMode === 'invitation' ? 'Create account' : 'Connect'}</button>
+          {authMode === 'login' && (webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button type="button" disabled={busy || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={18} /> Sign in with passkey</button> : null}
+          {authMode === 'login' && ssoEnabled ? <button type="button" disabled={busy || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={18} /> Sign in with SSO</button> : null}
+          <div className="mobile-auth-modes"><button type="button" aria-pressed={authMode === 'login'} onClick={() => setAuthMode('login')}>Sign in</button><button type="button" aria-pressed={authMode === 'invitation'} onClick={() => setAuthMode('invitation')}>Invitation</button><button type="button" aria-pressed={authMode === 'bootstrap'} onClick={() => setAuthMode('bootstrap')}>First admin</button></div>
         </form>
         {offline.runs.length > 0 ? <small>{offline.runs.length} cached runs remain available after sign-out.</small> : null}
         {(error || account.error) ? <div className="mobile-error" role="alert">{error ?? account.error}</div> : null}

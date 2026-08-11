@@ -50,6 +50,9 @@ body:has(.mobile-login-screen) {
 }
 .mobile-lock-screen form button,
 .mobile-login-screen form button { background: #1ea88f; border-color: #34c5aa; color: #04120f; font-weight: 750; }
+.mobile-login-screen .mobile-auth-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.mobile-login-screen .mobile-auth-modes button { min-height: 40px; padding: 7px; border-color: #2a3a4f; background: #111a27; color: #aab9cb; font-size: 11px; }
+.mobile-login-screen .mobile-auth-modes button[aria-pressed="true"] { border-color: #34c5aa; background: #102a29; color: #8de6d6; }
 .mobile-link-button { display: flex; align-items: center; justify-content: center; gap: 8px; }
 
 .mobile-shell { min-height: 100dvh; padding-bottom: env(safe-area-inset-bottom); background: #070b12; }

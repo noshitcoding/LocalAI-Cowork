@@ -94,6 +94,7 @@ const responseSchemas = new Map([
   ['put /api/v1/schedules/{schedule_id}', 'ScheduleRecord'],
   ['get /api/v1/operations/metrics', 'OperationsSnapshot'],
   ['get /api/v1/auth/sessions', 'AuthSessionRecord'],
+  ['post /api/v1/auth/invitations', 'InvitationSecret'],
   ['get /api/v1/support-grants', 'SupportGrantRecord'], ['post /api/v1/support-grants', 'SupportGrantRecord'],
   ['get /api/v1/runs/{run_id}/artifacts', 'RunArtifact'],
   ['get /api/v1/runs/{run_id}/approvals', 'ApprovalRequest'],
