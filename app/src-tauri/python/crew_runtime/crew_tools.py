@@ -168,10 +168,34 @@ def _truncate(value: object, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     return text[:limit].rstrip() + f"\n...[truncated after {limit} characters]"
 
 
-def _safe_result(operation: str, callback) -> str:
+def _emit_tool_protocol_event(event: str, operation: str, success: bool | None = None) -> None:
+    stdout = sys.__stdout__
+    if stdout is None:
+        return
+    payload: dict[str, Any] = {"tool": operation}
+    if success is not None:
+        payload["success"] = success
+    envelope = {
+        "localAiCoworkEvent": event,
+        "payload": payload,
+    }
     try:
-        return _truncate(callback())
+        os.write(
+            stdout.fileno(),
+            (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8"),
+        )
+    except Exception:
+        pass
+
+
+def _safe_result(operation: str, callback) -> str:
+    _emit_tool_protocol_event("tool_started", operation)
+    try:
+        result = _truncate(callback())
+        _emit_tool_protocol_event("tool_completed", operation, True)
+        return result
     except Exception as exc:
+        _emit_tool_protocol_event("tool_completed", operation, False)
         return f"ERROR ({operation}): {exc.__class__.__name__}: {exc}"
 
 

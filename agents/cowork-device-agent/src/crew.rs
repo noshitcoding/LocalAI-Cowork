@@ -8,7 +8,10 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use cowork_contracts::{ExecutorKind, RunEvent, RunEventKind, RunLease, SCHEMA_VERSION};
-use cowork_runtime::crew::{apply_crew_agent_tool_policy, prepare_crew_request, CrewModelConfig};
+use cowork_runtime::crew::{
+    apply_crew_agent_tool_policy, crew_protocol_run_event_kind, prepare_crew_request,
+    CrewModelConfig,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
@@ -325,10 +328,11 @@ pub(crate) async fn execute_managed_run(
                     if emitted_events < MAX_CREW_EVENTS
                         && serde_json::to_vec(&value)?.len() <= MAX_CREW_EVENT_BYTES
                     {
+                        let event_kind = crew_protocol_run_event_kind(&value);
                         append_event(
                             client,
                             lease,
-                            RunEventKind::ModelDelta,
+                            event_kind,
                             json!({"adapter":"crewai","crew_event":value}),
                             &secrets,
                         )

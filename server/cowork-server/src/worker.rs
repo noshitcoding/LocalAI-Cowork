@@ -13,7 +13,10 @@ use cowork_contracts::{
     SandboxRunResult, SandboxRunSpec,
 };
 use cowork_runtime::{
-    crew::{apply_crew_agent_tool_policy, prepare_crew_request, CrewModelConfig},
+    crew::{
+        apply_crew_agent_tool_policy, crew_protocol_run_event_kind, prepare_crew_request,
+        CrewModelConfig,
+    },
     AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
     ToolOutput,
 };
@@ -506,13 +509,14 @@ async fn execute_crew_run(
         redact_secret_values(&mut value, &secret_redactions);
         if value.get("localAiCoworkEvent").is_some() {
             if emitted_events < 1_000 && serde_json::to_vec(&value)?.len() <= 1024 * 1024 {
+                let event_kind = crew_protocol_run_event_kind(&value);
                 db::append_leased_event(
                     pool,
                     lease.run.spec.id,
                     worker_id,
                     lease.lease_token,
                     None,
-                    RunEventKind::ModelDelta,
+                    event_kind,
                     json!({"adapter":"crewai","crew_event":value}),
                 )
                 .await?;

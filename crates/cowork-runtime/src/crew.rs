@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use cowork_contracts::{Capability, RunSpec};
+use cowork_contracts::{Capability, RunEventKind, RunSpec};
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,14 @@ pub struct CrewModelConfig {
     pub model: String,
     pub timeout: Duration,
     pub verify_tls_certificates: bool,
+}
+
+pub fn crew_protocol_run_event_kind(event: &Value) -> RunEventKind {
+    match event.get("localAiCoworkEvent").and_then(Value::as_str) {
+        Some("tool_started") => RunEventKind::ToolStarted,
+        Some("tool_completed") => RunEventKind::ToolCompleted,
+        _ => RunEventKind::ModelDelta,
+    }
 }
 
 pub fn apply_crew_agent_tool_policy<F>(
@@ -405,6 +413,22 @@ mod tests {
                 Capability::from("web.fetch"),
                 Capability::from("shell"),
             ]
+        );
+    }
+
+    #[test]
+    fn crew_tool_protocol_events_map_to_durable_run_event_kinds() {
+        assert_eq!(
+            crew_protocol_run_event_kind(&json!({"localAiCoworkEvent":"tool_started"})),
+            RunEventKind::ToolStarted
+        );
+        assert_eq!(
+            crew_protocol_run_event_kind(&json!({"localAiCoworkEvent":"tool_completed"})),
+            RunEventKind::ToolCompleted
+        );
+        assert_eq!(
+            crew_protocol_run_event_kind(&json!({"localAiCoworkEvent":"crew_log"})),
+            RunEventKind::ModelDelta
         );
     }
 }

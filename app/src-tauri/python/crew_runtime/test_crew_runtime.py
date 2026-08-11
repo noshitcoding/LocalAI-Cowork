@@ -127,6 +127,23 @@ class CrewRuntimeToolTests(unittest.TestCase):
         built_agent = crew_runtime.build_agent(self.request, self.agent)
         self.assertEqual(set(tools), {tool.name for tool in built_agent.tools})
 
+    def test_tool_protocol_events_are_structured_and_content_free(self) -> None:
+        with mock.patch.object(crew_tools, "_emit_tool_protocol_event") as emit:
+            success = crew_tools._safe_result("read_file", lambda: "private result")
+            failure = crew_tools._safe_result(
+                "microsoft_office",
+                lambda: (_ for _ in ()).throw(RuntimeError("private failure")),
+            )
+
+        self.assertEqual(success, "private result")
+        self.assertIn("private failure", failure)
+        self.assertEqual(emit.call_args_list, [
+            mock.call("tool_started", "read_file"),
+            mock.call("tool_completed", "read_file", True),
+            mock.call("tool_started", "microsoft_office"),
+            mock.call("tool_completed", "microsoft_office", False),
+        ])
+
     def test_executor_bound_mcp_is_agent_scoped_and_redacts_secrets(self) -> None:
         self.agent["mcpServerNames"] = ["Allowed MCP", "Missing MCP", "Blocked MCP"]
         access = self.request["governance"]["agentAccess"][0]
