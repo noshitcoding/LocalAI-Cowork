@@ -12,6 +12,10 @@ const waves = Number.parseInt(process.env.COWORK_TEST_SOAK_WAVES ?? '5', 10)
 const runsPerWave = Number.parseInt(process.env.COWORK_TEST_RUNS_PER_WAVE ?? '16', 10)
 const expectedWorkers = Number.parseInt(process.env.COWORK_TEST_WORKER_COUNT ?? '4', 10)
 
+function localBinary(name) {
+  return join('target', 'debug', `${name}${process.platform === 'win32' ? '.exe' : ''}`)
+}
+
 if (!bootstrapToken) throw new Error('COWORK_TEST_BOOTSTRAP_TOKEN is required')
 if (!Number.isInteger(waves) || waves < 2 || waves > 20) throw new Error('invalid soak wave count')
 if (!Number.isInteger(runsPerWave) || runsPerWave < 4 || runsPerWave > 100) throw new Error('invalid runs per wave')
@@ -173,7 +177,9 @@ async function stopChild(child) {
 
 async function exerciseBackgroundMetadataSync({ token, userId, executorId, credentialToken, serverEntityId }) {
   const root = await mkdtemp(join(tmpdir(), 'cowork-metadata-sync-'))
-  const socketPath = join(root, 'daemon.sock')
+  const socketPath = process.platform === 'win32'
+    ? `\\\\.\\pipe\\cowork-metadata-sync-${randomUUID()}`
+    : join(root, 'daemon.sock')
   const ipcToken = `sync-ipc-${randomUUID()}`
   const logs = { daemon: '', agent: '' }
   let daemon
@@ -183,7 +189,7 @@ async function exerciseBackgroundMetadataSync({ token, userId, executorId, crede
     child.stderr.on('data', (chunk) => { logs[name] = `${logs[name]}${chunk}`.slice(-20_000) })
   }
   try {
-    daemon = spawn('target/debug/cowork-local-daemon', [], {
+    daemon = spawn(localBinary('cowork-local-daemon'), [], {
       env: {
         ...process.env,
         COWORK_DAEMON_DATA_DIR: join(root, 'daemon-data'),
@@ -208,7 +214,7 @@ async function exerciseBackgroundMetadataSync({ token, userId, executorId, crede
       },
       expected_revision: 0,
     })
-    agent = spawn('target/debug/cowork-device-agent', [], {
+    agent = spawn(localBinary('cowork-device-agent'), [], {
       env: {
         ...process.env,
         COWORK_SERVER_URL: apiBase.replace(/\/api\/v1$/, ''),

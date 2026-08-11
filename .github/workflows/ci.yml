@@ -671,6 +671,72 @@ jobs:
           fi
           echo 'auth_session_retention=ok'
 
+  multi-worker-soak-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Start the bundled PostgreSQL service
+        shell: pwsh
+        run: |
+          $service = Get-Service | Where-Object Name -Like 'postgresql*' | Select-Object -First 1
+          if (-not $service) { throw 'The Windows runner has no bundled PostgreSQL service.' }
+          if ($service.StartType -eq 'Disabled') { Set-Service -Name $service.Name -StartupType Manual }
+          if ($service.Status -ne 'Running') { Start-Service -Name $service.Name }
+          $psql = Get-Command psql -ErrorAction SilentlyContinue
+          if (-not $psql) {
+            $psqlPath = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $psqlPath) { throw 'psql is unavailable on the Windows runner.' }
+            $env:PATH = "$($psqlPath.DirectoryName);$env:PATH"
+          }
+          $env:PGPASSWORD = 'root'
+          psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE cowork LOGIN PASSWORD 'worker-soak-ci-postgres';"
+          createdb -U postgres -O cowork cowork_worker_soak_ci
+
+      - name: Build the Windows control plane and personal sync bridge
+        run: cargo build --locked --package cowork-server --package cowork-local-daemon --package cowork-device-agent
+
+      - name: Compete across four native Windows worker processes
+        shell: pwsh
+        env:
+          COWORK_TEST_POSTGRES_PASSWORD: worker-soak-ci-postgres
+          COWORK_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000061
+          COWORK_LISTEN_ADDR: 127.0.0.1:18099
+          COWORK_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_RUNNER_SIGNING_KEY: worker-soak-runner-signing-key-00000000
+          COWORK_SERVER_CAPABILITIES: shell,files
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_WORKER_POLL_MS: '10'
+          COWORK_MAINTENANCE_EVERY_POLLS: '1'
+          COWORK_LEASE_SECONDS: '30'
+          COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
+          COWORK_TEST_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_TEST_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_TEST_SOAK_WAVES: ${{ inputs.soak_profile == 'extended' && '20' || '5' }}
+          COWORK_TEST_RUNS_PER_WAVE: ${{ inputs.soak_profile == 'extended' && '25' || '16' }}
+        run: .\scripts\run-worker-soak.ps1 -WorkerCount 4
+
   security:
     runs-on: ubuntu-latest
 
