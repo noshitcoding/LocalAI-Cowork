@@ -1,0 +1,301 @@
+import { randomUUID } from 'node:crypto'
+
+const apiBase = process.env.COWORK_TEST_API_URL ?? 'http://127.0.0.1:18101/api/v1'
+const bootstrapToken = process.env.COWORK_TEST_BOOTSTRAP_TOKEN
+
+if (!bootstrapToken) throw new Error('COWORK_TEST_BOOTSTRAP_TOKEN is required')
+
+async function api(path, { method = 'GET', token, body } = {}) {
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${method} ${path} returned ${response.status}: ${text}`)
+  }
+  return text ? JSON.parse(text) : null
+}
+
+async function expectStatus(path, expectedStatus, { method = 'GET', token, body } = {}) {
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (response.status !== expectedStatus) {
+    throw new Error(
+      `${method} ${path} returned ${response.status}, expected ${expectedStatus}: ${await response.text()}`,
+    )
+  }
+}
+
+function syncMcpMetadata(deviceId, entityId, name, baseRevision = 0) {
+  return {
+    schema_version: 2,
+    operation_id: randomUUID(),
+    device_id: deviceId,
+    entity_type: 'mcp_metadata',
+    entity_id: entityId,
+    base_revision: baseRevision,
+    operation: 'upsert',
+    payload: {
+      name,
+      transport: 'stdio',
+      executable_hint: 'filesystem-mcp',
+      environment_keys: ['MCP_TOKEN', 'SAFE_MODE'],
+      device_binding_required: true,
+      source: 'server_mcp_acceptance',
+    },
+    client_timestamp: new Date().toISOString(),
+  }
+}
+
+const deviceId = randomUUID()
+const session = await api('/auth/bootstrap', {
+  method: 'POST',
+  token: bootstrapToken,
+  body: {
+    email: 'server-mcp-ci@opencowork.invalid',
+    display_name: 'Server MCP CI',
+    password: 'Server-MCP-CI-Password-42!',
+    device_id: deviceId,
+  },
+})
+const token = session.access_token
+const team = await api('/teams', {
+  method: 'POST', token, body: { name: 'Server MCP acceptance team' },
+})
+const project = await api('/projects', {
+  method: 'POST',
+  token,
+  body: {
+    name: 'Server MCP acceptance project',
+    description: '',
+    privacy: 'team_managed',
+    team_id: team.id,
+    preferred_executor_target: { kind: 'server_linux', pool_id: null },
+    policy: { tool_policy: 'autonomous' },
+  },
+})
+
+const primaryEntityId = randomUUID()
+const disposableEntityId = randomUUID()
+const duplicateNameEntityId = randomUUID()
+const metadata = await api('/sync/changes', {
+  method: 'POST',
+  token,
+  body: {
+    changes: [
+      syncMcpMetadata(deviceId, primaryEntityId, 'CI filesystem MCP'),
+      syncMcpMetadata(deviceId, disposableEntityId, 'CI disposable MCP'),
+      syncMcpMetadata(deviceId, duplicateNameEntityId, 'CI filesystem MCP'),
+    ],
+  },
+})
+if (metadata.results?.length !== 3
+    || metadata.results.some((result) => result.status !== 'applied')) {
+  throw new Error(`MCP metadata was not synchronized: ${JSON.stringify(metadata)}`)
+}
+
+const primaryPath = `/projects/${project.id}/mcp-bindings/${primaryEntityId}`
+const created = await api(primaryPath, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: null,
+    name: 'CI filesystem MCP',
+    command: '/opt/cowork/bin/filesystem-mcp',
+    args: ['--stdio', '/workspace'],
+    environment: { MCP_TOKEN: 'mcp-binding-initial-secret-ci-value', SAFE_MODE: '1' },
+  },
+})
+if (created.revision !== 1
+    || created.transport !== 'stdio'
+    || created.executable_hint !== 'filesystem-mcp'
+    || created.argument_count !== 2
+    || JSON.stringify(created.environment_keys) !== JSON.stringify(['MCP_TOKEN', 'SAFE_MODE'])) {
+  throw new Error(`created MCP binding metadata is invalid: ${JSON.stringify(created)}`)
+}
+if (JSON.stringify(created).includes('mcp-binding-initial-secret-ci-value')) {
+  throw new Error('MCP binding creation response disclosed its environment secret')
+}
+
+const listed = await api(`/projects/${project.id}/mcp-bindings`, { token })
+if (listed.length !== 1 || listed[0].mcp_entity_id !== primaryEntityId
+    || JSON.stringify(listed).includes('mcp-binding-initial-secret-ci-value')) {
+  throw new Error(`MCP binding list is unsafe or incomplete: ${JSON.stringify(listed)}`)
+}
+await expectStatus(`/projects/${project.id}/mcp-bindings/${duplicateNameEntityId}`, 409, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: null,
+    name: 'CI filesystem MCP',
+    command: '/opt/cowork/bin/duplicate-mcp',
+    args: [],
+    environment: {},
+  },
+})
+await expectStatus(primaryPath, 409, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: null,
+    name: 'CI filesystem MCP',
+    command: '/opt/cowork/bin/filesystem-mcp',
+    args: [],
+    environment: {},
+  },
+})
+await expectStatus(primaryPath, 422, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: created.revision,
+    name: 'CI filesystem MCP',
+    command: '/opt/cowork/bin/filesystem-mcp',
+    args: [],
+    environment: { HTTP_PROXY: 'http://private-network.invalid' },
+  },
+})
+await expectStatus(primaryPath, 422, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: created.revision,
+    name: 'Wrong synchronized name',
+    command: '/opt/cowork/bin/filesystem-mcp',
+    args: [],
+    environment: {},
+  },
+})
+
+const updated = await api(primaryPath, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: created.revision,
+    name: 'CI filesystem MCP',
+    command: '/opt/cowork/bin/filesystem-mcp-v2',
+    args: ['--stdio'],
+    environment: { MCP_TOKEN: 'mcp-binding-rotated-secret-ci-value' },
+  },
+})
+if (updated.revision !== 2 || updated.executable_hint !== 'filesystem-mcp-v2'
+    || updated.argument_count !== 1
+    || JSON.stringify(updated.environment_keys) !== JSON.stringify(['MCP_TOKEN'])
+    || JSON.stringify(updated).includes('mcp-binding-rotated-secret-ci-value')) {
+  throw new Error(`updated MCP binding metadata is invalid: ${JSON.stringify(updated)}`)
+}
+
+const renamedMetadata = await api('/sync/changes', {
+  method: 'POST',
+  token,
+  body: {
+    changes: [syncMcpMetadata(deviceId, primaryEntityId, 'CI filesystem MCP renamed', 1)],
+  },
+})
+if (renamedMetadata.results?.[0]?.status !== 'applied'
+    || renamedMetadata.results?.[0]?.entity?.revision !== 2) {
+  throw new Error(`MCP metadata rename was not synchronized: ${JSON.stringify(renamedMetadata)}`)
+}
+
+const disposablePath = `/projects/${project.id}/mcp-bindings/${disposableEntityId}`
+const disposable = await api(disposablePath, {
+  method: 'PUT',
+  token,
+  body: {
+    expected_revision: null,
+    name: 'CI disposable MCP',
+    command: '/opt/cowork/bin/disposable-mcp',
+    args: [],
+    environment: {},
+  },
+})
+await expectStatus(`${disposablePath}?expected_revision=${disposable.revision + 1}`, 409, {
+  method: 'DELETE', token,
+})
+await expectStatus(`${disposablePath}?expected_revision=${disposable.revision}`, 204, {
+  method: 'DELETE', token,
+})
+
+const thread = await api('/threads', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: project.id,
+    title: 'Missing MCP binding rejection',
+    forked_from_thread_id: null,
+    forked_from_message_id: null,
+  },
+})
+await expectStatus(`/threads/${thread.id}/messages`, 422, {
+  method: 'POST',
+  token,
+  body: {
+    content: { text: 'This run must fail closed before queueing.' },
+    run: {
+      thread_id: thread.id,
+      project_id: project.id,
+      project_revision: project.revision,
+      project_privacy: 'team_managed',
+      task: null,
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: [],
+      input: { mcp_metadata_ids: [disposableEntityId] },
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `missing-mcp-binding-${randomUUID()}`,
+    },
+  },
+})
+const renamedThread = await api('/threads', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: project.id,
+    title: 'Renamed MCP binding rejection',
+    forked_from_thread_id: null,
+    forked_from_message_id: null,
+  },
+})
+await expectStatus(`/threads/${renamedThread.id}/messages`, 422, {
+  method: 'POST',
+  token,
+  body: {
+    content: { text: 'This stale binding must fail closed before queueing.' },
+    run: {
+      thread_id: renamedThread.id,
+      project_id: project.id,
+      project_revision: project.revision,
+      project_privacy: 'team_managed',
+      task: null,
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: [],
+      input: { mcp_metadata_ids: [primaryEntityId] },
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `renamed-mcp-binding-${randomUUID()}`,
+    },
+  },
+})
+
+const finalBindings = await api(`/projects/${project.id}/mcp-bindings`, { token })
+if (finalBindings.length !== 1 || finalBindings[0].mcp_entity_id !== primaryEntityId
+    || finalBindings[0].revision !== 2) {
+  throw new Error(`final MCP binding state is invalid: ${JSON.stringify(finalBindings)}`)
+}
+
+console.log('mcp_binding_encrypted_api=ok')
+console.log('mcp_binding_safe_metadata=ok')
+console.log('mcp_binding_revision_conflicts=ok')
+console.log('mcp_binding_name_identity=ok')
+console.log('mcp_binding_missing_run_rejection=ok')

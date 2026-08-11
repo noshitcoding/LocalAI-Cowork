@@ -23,7 +23,7 @@ use crate::{
     auth::{self, ExecutorPrincipal, Principal},
     db, desktop,
     error::ApiError,
-    organization, providers, sync, workflow, AppState,
+    mcp_bindings, organization, providers, sync, workflow, AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -166,6 +166,33 @@ async fn prepare_run(
     }
     request.input =
         sync::freeze_runtime_context_for_run(&state.pool, principal.user_id, request.input).await?;
+    if mcp_bindings::run_selects_mcp(&request.input) {
+        if request.input.get("task_runner").and_then(Value::as_str) == Some("crew") {
+            return Err(ApiError::Unprocessable(
+                "executor-bound MCP is not yet available to Crew runs".to_owned(),
+            ));
+        }
+        if matches!(
+            &request.executor_target,
+            cowork_contracts::ExecutorTarget::ServerLinux { .. }
+        ) {
+            mcp_bindings::ensure_server_bindings_for_run(
+                &state.pool,
+                request.project_id,
+                &request.input,
+            )
+            .await?;
+        }
+        if !request
+            .required_capabilities
+            .iter()
+            .any(|capability| capability.0 == "tool.mcp.invoke")
+        {
+            request
+                .required_capabilities
+                .push(cowork_contracts::capabilities::mcp_invoke());
+        }
+    }
     providers::ensure_profile_for_target(
         &state.pool,
         principal.user_id,

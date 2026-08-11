@@ -47,6 +47,9 @@ pub mod capabilities {
     pub fn mcp() -> Capability {
         Capability::from("mcp")
     }
+    pub fn mcp_invoke() -> Capability {
+        Capability::from("tool.mcp.invoke")
+    }
     pub fn browser_headless() -> Capability {
         Capability::from("browser.headless")
     }
@@ -1066,6 +1069,33 @@ pub struct UpdateProviderProfileRequest {
 pub struct SetProviderProfileSecretRequest {
     pub expected_revision: i64,
     pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMcpBindingRecord {
+    pub schema_version: u16,
+    pub project_id: Uuid,
+    pub mcp_entity_id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub name: String,
+    pub transport: String,
+    pub executable_hint: String,
+    pub argument_count: u32,
+    pub environment_keys: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetServerMcpBindingRequest {
+    pub expected_revision: Option<i64>,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

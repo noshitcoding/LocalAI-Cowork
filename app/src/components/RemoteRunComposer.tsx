@@ -25,7 +25,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function allMetadata(client: RemoteRuntimeClient, entityType: 'skill' | 'memory'): Promise<SyncedEntity[]> {
+async function allMetadata(client: RemoteRuntimeClient, entityType: 'skill' | 'memory' | 'mcp_metadata'): Promise<SyncedEntity[]> {
   const entities: SyncedEntity[] = []
   let after: string | null = null
   do {
@@ -58,6 +58,7 @@ export default function RemoteRunComposer({
   const [profiles, setProfiles] = useState<ProviderProfile[]>([])
   const [skills, setSkills] = useState<SyncedEntity[]>([])
   const [memories, setMemories] = useState<SyncedEntity[]>([])
+  const [mcpMetadata, setMcpMetadata] = useState<SyncedEntity[]>([])
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null)
   const [projectId, setProjectId] = useState('')
   const [target, setTarget] = useState(() => initialTarget ? remoteTargetKey(initialTarget) : 'server:')
@@ -66,20 +67,22 @@ export default function RemoteRunComposer({
   const [capabilities, setCapabilities] = useState(() => initialCapabilities.join(', '))
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
   const [selectedMemoryIds, setSelectedMemoryIds] = useState<string[]>([])
+  const [selectedMcpIds, setSelectedMcpIds] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [nextProjects, nextCatalog, nextProfiles, nextSkills, nextMemories] = await Promise.all([
+      const [nextProjects, nextCatalog, nextProfiles, nextSkills, nextMemories, nextMcpMetadata] = await Promise.all([
         client.listProjects(), client.capabilities(), client.listProviderProfiles(),
-        allMetadata(client, 'skill'), allMetadata(client, 'memory'),
+        allMetadata(client, 'skill'), allMetadata(client, 'memory'), allMetadata(client, 'mcp_metadata'),
       ])
       setProjects(nextProjects)
       setCatalog(nextCatalog)
       setProfiles(nextProfiles.filter((profile) => !profile.deleted_at))
       setSkills(nextSkills)
       setMemories(nextMemories)
+      setMcpMetadata(nextMcpMetadata)
       setProjectId((current) => threadProjectId || current || nextProjects[0]?.id || '')
     } catch (cause) {
       setError(messageOf(cause))
@@ -88,8 +91,11 @@ export default function RemoteRunComposer({
 
   useEffect(() => { if (open) void load() }, [load, open])
   const required = useMemo(
-    () => [...new Set(capabilities.split(',').map((item) => item.trim()).filter(Boolean))],
-    [capabilities],
+    () => [...new Set([
+      ...capabilities.split(',').map((item) => item.trim()).filter(Boolean),
+      ...(selectedMcpIds.length > 0 ? ['tool.mcp.invoke'] : []),
+    ])],
+    [capabilities, selectedMcpIds.length],
   )
   const choices = useMemo(() => catalog ? remoteTargetChoices(catalog) : [], [catalog])
   const compatibleChoices = useMemo(
@@ -146,6 +152,7 @@ export default function RemoteRunComposer({
             prompt: prompt.trim(),
             ...(selectedSkillIds.length > 0 ? { skill_ids: selectedSkillIds } : {}),
             ...(selectedMemoryIds.length > 0 ? { memory_ids: selectedMemoryIds } : {}),
+            ...(selectedMcpIds.length > 0 ? { mcp_metadata_ids: selectedMcpIds } : {}),
           },
           model_profile_id: modelProfileId || null,
           snapshot_id: null,
@@ -155,6 +162,7 @@ export default function RemoteRunComposer({
       setPrompt('')
       setSelectedSkillIds([])
       setSelectedMemoryIds([])
+      setSelectedMcpIds([])
       setOpen(false)
       await onCreated(run)
     } catch (cause) {
@@ -175,6 +183,7 @@ export default function RemoteRunComposer({
         <label>Required capabilities<input value={capabilities} onChange={(event) => setCapabilities(event.target.value)} placeholder="Optional, comma-separated: browser.headless, office.microsoft" /></label>
         <label>Frozen skills<select aria-label="Frozen skills" multiple value={selectedSkillIds} onChange={(event) => setSelectedSkillIds(Array.from(event.currentTarget.selectedOptions, (option) => option.value))}>{skills.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataLabel(entity)} (r{entity.revision})</option>)}</select></label>
         <label>Frozen memory<select aria-label="Frozen memory" multiple value={selectedMemoryIds} onChange={(event) => setSelectedMemoryIds(Array.from(event.currentTarget.selectedOptions, (option) => option.value))}>{memories.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataLabel(entity)} (r{entity.revision})</option>)}</select></label>
+        <label>Executor-bound MCP<select aria-label="Executor-bound MCP" multiple value={selectedMcpIds} onChange={(event) => setSelectedMcpIds(Array.from(event.currentTarget.selectedOptions, (option) => option.value))}>{mcpMetadata.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataLabel(entity)} (r{entity.revision})</option>)}</select></label>
         {required.length > 0 && compatibleChoices.length === 0 ? <p className="remote-inline-error">No online executor satisfies every required capability.</p> : null}
         <label>Message<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={compact ? 4 : 5} placeholder="What should the agent do?" required /></label>
         <button className={compact ? '' : 'ui-button ui-button--primary'} type="submit" disabled={busy || !projectId || !target || !prompt.trim()}><Play size={14} /> {busy ? 'Starting…' : 'Start run'}</button>

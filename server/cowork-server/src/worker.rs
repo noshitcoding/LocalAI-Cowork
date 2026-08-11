@@ -25,7 +25,12 @@ use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use crate::{config::Config, db, desktop, governance, providers, storage, workflow};
+use crate::{
+    config::Config,
+    db, desktop, governance,
+    mcp_bindings::{self, ResolvedServerMcpBinding},
+    providers, storage, workflow,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -356,11 +361,19 @@ async fn execute_agent_run(
         .as_ref()
         .or(runtime.agent.as_deref())
         .context("the server model provider is not configured")?;
+    let mcp_bindings = mcp_bindings::resolve_server_bindings_for_run(
+        pool,
+        runtime.object_store.as_ref(),
+        lease.run.spec.project_id,
+        &lease.run.spec.input,
+    )
+    .await?;
     let host = ServerRuntimeHost {
         pool,
         worker_id,
         runtime,
         lease,
+        mcp_bindings,
     };
     let result = agent.execute(&lease.run.spec, &host).await?;
     Ok(serde_json::to_value(result)?)
@@ -575,6 +588,19 @@ fn redact_secret(value: &str, secret: Option<&str>) -> String {
     }
 }
 
+fn redact_secrets(value: &str, secrets: &[String]) -> String {
+    let mut secrets = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .collect::<Vec<_>>();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets
+        .into_iter()
+        .fold(value.to_owned(), |redacted, secret| {
+            redacted.replace(secret.as_str(), "[REDACTED]")
+        })
+}
+
 fn crew_usage(response: &Value) -> Option<CrewUsage> {
     let usage = response.get("usage")?.as_object()?;
     let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
@@ -618,6 +644,7 @@ struct ServerRuntimeHost<'a> {
     worker_id: Uuid,
     runtime: &'a WorkerRuntime,
     lease: &'a RunLease,
+    mcp_bindings: Vec<ResolvedServerMcpBinding>,
 }
 
 #[async_trait]
@@ -662,6 +689,23 @@ impl RuntimeHost for ServerRuntimeHost<'_> {
                 tool_definition("OfficePreview", "Render the first page or all pages of an Office document/PDF to PNG review artifacts.", json!({"type":"object","properties":{"path":{"type":"string"},"all_pages":{"type":"boolean"},"dpi":{"type":"integer","minimum":72,"maximum":200}},"required":["path"],"additionalProperties":false}), Some("office.libreoffice"), false),
                 tool_definition("DesktopOpenOffice", "Open an Office document in the persistent visible LibreOffice desktop for observation or manual takeover.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}), Some("desktop.linux"), false),
             ]);
+            if !self.mcp_bindings.is_empty() {
+                let names = self
+                    .mcp_bindings
+                    .iter()
+                    .map(|binding| binding.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tools.push(tool_definition(
+                    "MCPTool",
+                    &format!(
+                        "Call a tool on an encrypted project-bound Linux MCP stdio server. Available servers: {names}"
+                    ),
+                    json!({"type":"object","properties":{"server_name":{"type":"string"},"tool_name":{"type":"string"},"arguments":{"type":"object"}},"required":["server_name","tool_name"],"additionalProperties":false}),
+                    Some("tool.mcp.invoke"),
+                    true,
+                ));
+            }
         }
         tools
     }
@@ -756,6 +800,7 @@ impl RuntimeHost for ServerRuntimeHost<'_> {
                 | "BrowserClick"
                 | "BrowserFill"
                 | "BrowserUpload"
+                | "MCPTool"
         );
         let policy = self.tool_policy().await?;
         if mutating && policy == "read_only" {
@@ -865,6 +910,7 @@ impl ServerRuntimeHost<'_> {
         let mut network = SandboxNetwork::None;
         let mut limits = SandboxLimits::default();
         let mut image = SandboxImage::Core;
+        let mut secret_redactions = Vec::new();
         let argv = match invocation.name.as_str() {
             "Read" => {
                 let path = validated_workspace_path(argument("path")?)?;
@@ -975,6 +1021,54 @@ impl ServerRuntimeHost<'_> {
                     "--show-error".to_owned(),
                     url.to_owned(),
                 ]
+            }
+            "MCPTool" => {
+                let server_name = argument("server_name")?;
+                let tool_name = argument("tool_name")?;
+                if tool_name.trim().is_empty()
+                    || tool_name.len() > 1024
+                    || tool_name.chars().any(char::is_control)
+                {
+                    bail!("MCP tool name is missing or invalid");
+                }
+                let binding = self
+                    .mcp_bindings
+                    .iter()
+                    .find(|binding| binding.name == server_name)
+                    .with_context(|| {
+                        format!("MCP server {server_name:?} is not bound to this Linux executor")
+                    })?;
+                let arguments = invocation
+                    .arguments
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if !arguments.is_object() {
+                    bail!("MCPTool arguments must be an object");
+                }
+                let payload = json!({
+                    "server": {
+                        "name": binding.name,
+                        "command": binding.command,
+                        "args": binding.args,
+                        "environment": binding.environment,
+                    },
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "timeout_seconds": 120,
+                });
+                secret_redactions.extend(
+                    binding
+                        .environment
+                        .values()
+                        .filter(|value| !value.is_empty())
+                        .cloned(),
+                );
+                stdin_base64 = Some(STANDARD.encode(serde_json::to_vec(&payload)?));
+                network = SandboxNetwork::FilteredEgress;
+                limits.timeout_seconds = 150;
+                limits.output_bytes = 8 * 1024 * 1024;
+                vec!["python3".to_owned(), "/opt/cowork/mcp-tool.py".to_owned()]
             }
             name if name.starts_with("Browser") => {
                 let action = match name {
@@ -1090,23 +1184,32 @@ impl ServerRuntimeHost<'_> {
             limits,
         };
         let result = send_runner_job(self.runtime, &spec).await?;
-        let failed = result.timed_out || result.exit_code != Some(0);
-        let content = if failed {
-            format!("stdout:\n{}\nstderr:\n{}", result.stdout, result.stderr)
-        } else if result.stderr.is_empty() {
-            result.stdout.clone()
+        let stdout = redact_secrets(&result.stdout, &secret_redactions);
+        let stderr = redact_secrets(&result.stderr, &secret_redactions);
+        let structured = if invocation.name.starts_with("Browser")
+            || invocation.name.starts_with("Office")
+            || invocation.name == "MCPTool"
+        {
+            serde_json::from_str::<Value>(&stdout).unwrap_or(Value::Null)
         } else {
-            format!("{}\n[stderr]\n{}", result.stdout, result.stderr)
+            Value::Null
+        };
+        let failed = result.timed_out
+            || result.exit_code != Some(0)
+            || (invocation.name == "MCPTool"
+                && structured.get("success").and_then(Value::as_bool) != Some(true));
+        let content = if failed {
+            format!("stdout:\n{stdout}\nstderr:\n{stderr}")
+        } else if invocation.name == "MCPTool" {
+            serde_json::to_string_pretty(structured.get("result").unwrap_or(&structured))?
+        } else if stderr.is_empty() {
+            stdout.clone()
+        } else {
+            format!("{stdout}\n[stderr]\n{stderr}")
         };
         // Browser and Office adapters emit structured diagnostics even when an
         // operation fails. Persisting those artifacts is essential for review
         // and must not depend on a zero exit code.
-        let structured =
-            if invocation.name.starts_with("Browser") || invocation.name.starts_with("Office") {
-                serde_json::from_str::<Value>(&result.stdout).unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
         if let Some(artifacts) = structured.get("artifacts").and_then(Value::as_array) {
             for path in artifacts.iter().filter_map(Value::as_str) {
                 let payload = if let Some(store) = &self.runtime.object_store {
@@ -1466,6 +1569,17 @@ mod tests {
         assert_eq!(value["message"], "provider rejected [REDACTED]");
         assert_eq!(value["nested"][0]["detail"], "[REDACTED]");
         assert!(!value.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn mcp_environment_values_are_redacted_longest_first() {
+        assert_eq!(
+            redact_secrets(
+                "token=secret-value fallback=secret",
+                &["secret".to_owned(), "secret-value".to_owned()],
+            ),
+            "token=[REDACTED] fallback=[REDACTED]"
+        );
     }
 
     #[test]

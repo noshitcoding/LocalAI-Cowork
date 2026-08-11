@@ -6,6 +6,7 @@ mod desktop;
 mod error;
 mod executor_ws;
 mod governance;
+mod mcp_bindings;
 mod oidc;
 mod operations;
 mod organization;
@@ -207,6 +208,14 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         .route(
             "/projects/{project_id}/members",
             post(organization::set_project_member),
+        )
+        .route(
+            "/projects/{project_id}/mcp-bindings",
+            get(mcp_bindings::list),
+        )
+        .route(
+            "/projects/{project_id}/mcp-bindings/{mcp_entity_id}",
+            put(mcp_bindings::set).delete(mcp_bindings::delete),
         )
         .route(
             "/provider-profiles",

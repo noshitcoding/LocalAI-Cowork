@@ -564,6 +564,63 @@ describe('runtime routing', () => {
     expect(requests[2].body).toEqual({ expected_revision: 1, api_key: 'one-time-secret' })
   })
 
+  it('writes MCP secrets only to the encrypted project binding endpoint', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000042'
+    const mcpEntityId = '10000000-0000-4000-8000-000000000043'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const binding = {
+      schema_version: 2,
+      project_id: projectId,
+      mcp_entity_id: mcpEntityId,
+      revision: 1,
+      etag: `W/"${projectId}:${mcpEntityId}:1"`,
+      name: 'Project docs',
+      transport: 'stdio' as const,
+      executable_hint: 'docs-mcp',
+      argument_count: 1,
+      environment_keys: ['MCP_TOKEN'],
+      created_at: '2026-08-11T12:00:00Z',
+      updated_at: '2026-08-11T12:00:00Z',
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input), method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(init?.method === 'PUT' ? binding : [binding]), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listServerMcpBindings(projectId)).resolves.toEqual([binding])
+    await expect(client.setServerMcpBinding(projectId, mcpEntityId, {
+      expected_revision: null,
+      name: 'Project docs',
+      command: '/opt/mcp/docs-mcp',
+      args: ['--stdio'],
+      environment: { MCP_TOKEN: 'one-time-secret' },
+    })).resolves.toEqual(binding)
+    await client.deleteServerMcpBinding(projectId, mcpEntityId, 1)
+
+    expect(requests).toMatchObject([
+      { method: 'GET', url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings` },
+      {
+        method: 'PUT',
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings/${mcpEntityId}`,
+        body: { environment: { MCP_TOKEN: 'one-time-secret' } },
+      },
+      {
+        method: 'DELETE',
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings/${mcpEntityId}?expected_revision=1`,
+      },
+    ])
+    expect(JSON.stringify(binding)).not.toContain('one-time-secret')
+  })
+
   it('creates, versions, releases, and deletes reusable server tasks', async () => {
     const projectId = '10000000-0000-4000-8000-000000000050'
     const taskId = '10000000-0000-4000-8000-000000000051'

@@ -55,7 +55,7 @@ services:
       COWORK_LISTEN_ADDR: 0.0.0.0:8080
       COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
       DATABASE_URL_FILE: /run/secrets/database_url
-      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,tool.mcp.invoke,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
       COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
       COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
       COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}
@@ -116,7 +116,7 @@ services:
       COWORK_MODE: worker
       COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
       DATABASE_URL_FILE: /run/secrets/database_url
-      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
+      COWORK_SERVER_CAPABILITIES: ${COWORK_SERVER_CAPABILITIES:-model.external,crew.python,files,shell,git,web.fetch,tool.mcp.invoke,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice}
       COWORK_MODEL_BASE_URL: ${COWORK_MODEL_BASE_URL:-}
       COWORK_MODEL_API_KEY: ${COWORK_MODEL_API_KEY:-}
       COWORK_MODEL_NAME: ${COWORK_MODEL_NAME:-gpt-5-mini}

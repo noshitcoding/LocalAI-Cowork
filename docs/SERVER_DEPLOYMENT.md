@@ -146,6 +146,39 @@ ledger. If a provider adapter exposes no usage counters, the worker records no
 fabricated estimate; operators should therefore use a provider with usage
 reporting when hard accounting is required.
 
+### Linux server MCP bindings
+
+Synchronized `mcp_metadata` records never contain commands, arguments, endpoints
+or credential values. After creating the metadata record, an Editor can open
+**Server MCP** in Web or Android and bind that exact metadata UUID to one
+project. The complete stdio command, argument array and environment map are
+encrypted with the project user/team envelope key. List responses expose only
+the executable basename, argument count and environment-key names. Updating a
+binding requires submitting the complete secret again because the API never
+returns stored values. Binding names are unique inside a project because the
+agent-facing MCP contract addresses servers by name. Renaming synchronized MCP
+metadata intentionally blocks new Runs until an Editor replaces the binding;
+this prevents a stale credential binding from silently changing identity.
+
+The configured command must already exist in the pinned Core sandbox image.
+For a custom MCP server, derive a reviewed Core image from
+`deploy/sandboxes/core/Dockerfile`, install the fixed executable/version, set
+`COWORK_SANDBOX_CORE_IMAGE`, and rebuild the runner image set. Do not use a
+binding to download arbitrary packages at Run time.
+
+Selecting MCP metadata in the Run composer automatically requires
+`tool.mcp.invoke`. A Linux Run fails closed before queueing when its project has
+no matching binding. At execution, the worker decrypts only the selected
+bindings, sends them inside the HMAC-signed internal runner body, and the runner
+delivers them to the sandbox over stdin rather than Docker environment
+arguments. The one-shot MCP client uses filtered egress, invokes the command
+without a shell, applies a 120-second protocol timeout and redacts every bound
+environment value from stdout/stderr before model or event persistence.
+
+This binding currently supports MCP stdio for the normal Rust agent on the
+Linux server executor. Crew, managed-Windows and streamable-HTTP MCP adapters
+remain separate compatibility work and must not be advertised as available.
+
 Runs may also select synchronized skills and memory records by ID. The API
 resolves those records in the run creator's namespace, keeps only the supported
 fields, records each exact revision and stores the result in the immutable Run

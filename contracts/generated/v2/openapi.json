@@ -4324,6 +4324,82 @@
         "title": "ScheduleRecord",
         "type": "object"
       },
+      "ServerMcpBindingRecord": {
+        "$id": "https://schemas.open-cowork.invalid/v2/ServerMcpBindingRecord.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "argument_count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          },
+          "environment_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "executable_hint": {
+            "type": "string"
+          },
+          "mcp_entity_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "schema_version": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "transport": {
+            "const": "stdio",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "project_id",
+          "mcp_entity_id",
+          "revision",
+          "etag",
+          "name",
+          "transport",
+          "executable_hint",
+          "argument_count",
+          "environment_keys",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ServerMcpBindingRecord",
+        "type": "object"
+      },
       "ServerSyncChange": {
         "$id": "https://schemas.open-cowork.invalid/v2/ServerSyncChange.schema.json",
         "additionalProperties": false,
@@ -4383,6 +4459,54 @@
           "created_at"
         ],
         "title": "ServerSyncChange",
+        "type": "object"
+      },
+      "SetServerMcpBindingRequest": {
+        "$id": "https://schemas.open-cowork.invalid/v2/SetServerMcpBindingRequest.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "command": {
+            "type": "string"
+          },
+          "environment": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "name",
+          "command",
+          "args",
+          "environment"
+        ],
+        "title": "SetServerMcpBindingRequest",
         "type": "object"
       },
       "SnapshotChunk": {
@@ -8484,6 +8608,154 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectRecord"
+                }
+              }
+            },
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "protected"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp-bindings": {
+      "get": {
+        "operationId": "getProjectsProjectIdMcpBindings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ServerMcpBindingRecord"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "protected"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/mcp-bindings/{mcp_entity_id}": {
+      "delete": {
+        "operationId": "deleteProjectsProjectIdMcpBindingsMcpEntityId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mcp_entity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "protected"
+        ]
+      },
+      "put": {
+        "operationId": "putProjectsProjectIdMcpBindingsMcpEntityId",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mcp_entity_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetServerMcpBindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerMcpBindingRecord"
                 }
               }
             },

@@ -27,6 +27,7 @@ import {
   pushSubscriptionRecordSchema,
   runEventSchema,
   runRecordSchema,
+  serverMcpBindingRecordSchema,
   serverSyncChangeSchema,
   syncedEntityPageSchema,
   pushSyncChangesResponseSchema,
@@ -68,6 +69,8 @@ import {
   type PullSyncChangesResponse,
   type MessageRecord,
   type RunRecord,
+  type ServerMcpBindingRecord,
+  type SetServerMcpBindingRequest,
   type PushSyncChangesResponse,
   type RunInputRequest,
   type ScheduleRecord,
@@ -319,6 +322,35 @@ export class RemoteRuntimeClient implements RuntimeClient {
   async deleteProviderProfile(profileId: string, expectedRevision: number): Promise<void> {
     await this.#request(
       `/api/v1/provider-profiles/${encodeURIComponent(profileId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async listServerMcpBindings(projectId: string): Promise<ServerMcpBindingRecord[]> {
+    return serverMcpBindingRecordSchema.array().parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings`,
+    ))
+  }
+
+  async setServerMcpBinding(
+    projectId: string,
+    mcpEntityId: string,
+    request: SetServerMcpBindingRequest,
+  ): Promise<ServerMcpBindingRecord> {
+    return serverMcpBindingRecordSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings/${encodeURIComponent(mcpEntityId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteServerMcpBinding(
+    projectId: string,
+    mcpEntityId: string,
+    expectedRevision: number,
+  ): Promise<void> {
+    await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings/${encodeURIComponent(mcpEntityId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
       { method: 'DELETE' },
       false,
     )

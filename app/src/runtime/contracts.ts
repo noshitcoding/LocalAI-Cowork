@@ -582,6 +582,31 @@ export const providerProfileSchema = z.object({
 })
 export type ProviderProfile = z.infer<typeof providerProfileSchema>
 
+export const serverMcpBindingRecordSchema = z.object({
+  schema_version: z.number().int(),
+  project_id: z.string().uuid(),
+  mcp_entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  name: z.string(),
+  transport: z.literal('stdio'),
+  executable_hint: z.string(),
+  argument_count: z.number().int().nonnegative(),
+  environment_keys: z.array(z.string()),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+})
+export type ServerMcpBindingRecord = z.infer<typeof serverMcpBindingRecordSchema>
+
+export const setServerMcpBindingRequestSchema = z.object({
+  expected_revision: z.number().int().positive().nullable(),
+  name: z.string(),
+  command: z.string(),
+  args: z.array(z.string()),
+  environment: z.record(z.string(), z.string()),
+})
+export type SetServerMcpBindingRequest = z.infer<typeof setServerMcpBindingRequestSchema>
+
 export const scheduleRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),

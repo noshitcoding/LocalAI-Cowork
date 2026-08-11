@@ -74,6 +74,9 @@ jobs:
         working-directory: app
         run: npm run prepare:codex-runtime
 
+      - name: Linux MCP sandbox protocol tests
+        run: python -m unittest deploy/sandboxes/core/test_mcp_tool.py
+
       - name: Quality gates
         working-directory: app
         run: npm run verify
@@ -424,6 +427,101 @@ jobs:
             cat "${test_root}/server.log"
             exit 1
           fi
+
+  server-mcp-bindings:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_server_mcp_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: server-mcp-ci-postgres
+        ports:
+          - 15435:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_server_mcp_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Build control plane
+        run: cargo build --locked --package cowork-server
+
+      - name: Validate encrypted executor-bound MCP bindings
+        shell: bash
+        env:
+          DATABASE_URL: postgres://cowork:server-mcp-ci-postgres@127.0.0.1:15435/cowork_server_mcp_ci
+          COWORK_MODE: api
+          COWORK_LISTEN_ADDR: 127.0.0.1:18101
+          COWORK_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000081
+          COWORK_SERVER_CAPABILITIES: model.external,tool.mcp.invoke
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_S3_ENDPOINT: http://127.0.0.1:19999
+          COWORK_S3_BUCKET: cowork-server-mcp-ci
+          COWORK_S3_ACCESS_KEY: server-mcp-ci-access-key
+          COWORK_S3_SECRET_KEY: server-mcp-ci-secret-key
+          COWORK_STORAGE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          COWORK_TEST_API_URL: http://127.0.0.1:18101/api/v1
+          COWORK_TEST_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          ./target/debug/cowork-server >"${test_root}/server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 150); do
+            if curl --fail --silent http://127.0.0.1:18101/readyz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "${ready}" -ne 1 ]]; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+          if ! node scripts/test-server-mcp-bindings.mjs; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "${postgres_container}"
+          persisted="$(docker exec "${postgres_container}" psql -U cowork -d cowork_server_mcp_ci -tAc \
+            "SELECT count(*) || '|' || min(octet_length(encrypted_data_key)) || '|' || min(octet_length(binding_nonce)) || '|' || min(octet_length(binding_wrap_nonce)) || '|' || min(position(convert_to('mcp-binding-rotated-secret-ci-value', 'UTF8') in encrypted_binding)) FROM server_mcp_bindings;")"
+          if [[ "${persisted}" != '1|48|12|12|0' ]]; then
+            echo "encrypted MCP binding persistence is invalid: ${persisted}" >&2
+            exit 1
+          fi
+          echo 'mcp_binding_envelope_encryption=ok'
 
   multi-worker-soak:
     if: github.event_name == 'workflow_dispatch'

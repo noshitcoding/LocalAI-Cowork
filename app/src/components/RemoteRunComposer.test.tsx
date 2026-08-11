@@ -11,6 +11,7 @@ describe('RemoteRunComposer thread continuation', () => {
     const projectId = '10000000-0000-4000-8000-000000000012'
     const skillId = '10000000-0000-4000-8000-000000000015'
     const memoryId = '10000000-0000-4000-8000-000000000016'
+    const mcpId = '10000000-0000-4000-8000-000000000017'
     const run = {
       spec: { id: '10000000-0000-4000-8000-000000000013' },
     } as RunRecord
@@ -35,7 +36,14 @@ describe('RemoteRunComposer thread continuation', () => {
         updated_at: '2026-08-10T12:00:00Z',
         deleted_at: null,
       }]),
-      capabilities: vi.fn(async () => ({ schema_version: 2, server_linux: [], executors: [] })),
+      capabilities: vi.fn(async () => ({
+        schema_version: 2,
+        server_linux: [{
+          name: 'tool.mcp.invoke', available: true, interactive: false,
+          supports_offline: false, constraints: {},
+        }],
+        executors: [],
+      })),
       listProviderProfiles: vi.fn(async () => []),
       listSyncedEntities: vi.fn(async (entityType: string) => ({
         schema_version: 2,
@@ -43,9 +51,13 @@ describe('RemoteRunComposer thread continuation', () => {
           schema_version: 2, entity_type: 'skill', entity_id: skillId, revision: 2,
           etag: `W/"${skillId}:2"`, payload: { name: 'Evidence review' }, tombstone: false,
           updated_at: '2026-08-10T12:00:00Z',
-        }] : [{
+        }] : entityType === 'memory' ? [{
           schema_version: 2, entity_type: 'memory', entity_id: memoryId, revision: 5,
           etag: `W/"${memoryId}:5"`, payload: { key: 'tone' }, tombstone: false,
+          updated_at: '2026-08-10T12:00:00Z',
+        }] : [{
+          schema_version: 2, entity_type: 'mcp_metadata', entity_id: mcpId, revision: 3,
+          etag: `W/"${mcpId}:3"`, payload: { name: 'Project docs' }, tombstone: false,
           updated_at: '2026-08-10T12:00:00Z',
         }],
         next_after: null,
@@ -77,6 +89,9 @@ describe('RemoteRunComposer thread continuation', () => {
     const memoryOption = screen.getByRole('option', { name: 'tone (r5)' }) as HTMLOptionElement
     memoryOption.selected = true
     fireEvent.change(screen.getByRole('listbox', { name: 'Frozen memory' }))
+    const mcpOption = screen.getByRole('option', { name: 'Project docs (r3)' }) as HTMLOptionElement
+    mcpOption.selected = true
+    fireEvent.change(screen.getByRole('listbox', { name: 'Executor-bound MCP' }))
     fireEvent.click(screen.getByRole('button', { name: 'Start run' }))
 
     await waitFor(() => expect(createThreadMessage).toHaveBeenCalledTimes(1))
@@ -92,6 +107,7 @@ describe('RemoteRunComposer thread continuation', () => {
           prompt: 'Continue the analysis',
           skill_ids: [skillId],
           memory_ids: [memoryId],
+          mcp_metadata_ids: [mcpId],
         },
       }),
     })

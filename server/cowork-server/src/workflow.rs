@@ -26,7 +26,7 @@ use crate::{
     auth::{ExecutorPrincipal, Principal},
     db,
     error::ApiError,
-    organization, providers, sync, AppState,
+    mcp_bindings, organization, providers, sync, AppState,
 };
 
 const DEFAULT_WAIT_DAYS: i64 = 7;
@@ -1351,8 +1351,46 @@ async fn prepare_scheduled_run(
     .map_err(block)?
     .ok_or_else(|| ScheduleBlock("task_has_no_released_version".to_owned()))?;
     let task = row_to_task(&task_row).map_err(block)?;
-    let required_capabilities =
+    let mut required_capabilities =
         effective_task_capabilities(&task.required_capabilities, &task.config).map_err(block)?;
+    let creator_user_id = schedule_created_by(pool, schedule.id)
+        .await
+        .map_err(block)?;
+    let input = scheduled_input(
+        schedule.input.clone(),
+        &task.instructions,
+        &task.config,
+        ScheduledTriggerContext {
+            schedule_id: schedule.id,
+            due_at,
+            triggered_at: now,
+            missed_occurrences,
+            catch_up_truncated,
+        },
+    )
+    .map_err(block)?;
+    let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
+        .await
+        .map_err(block)?;
+    if mcp_bindings::run_selects_mcp(&input) {
+        if input.get("task_runner").and_then(Value::as_str) == Some("crew") {
+            return Err(ScheduleBlock("crew_mcp_binding_not_supported".to_owned()));
+        }
+        if matches!(
+            &schedule.executor_target,
+            ExecutorTarget::ServerLinux { .. }
+        ) {
+            mcp_bindings::ensure_server_bindings_for_run(pool, schedule.project_id, &input)
+                .await
+                .map_err(block)?;
+        }
+        if !required_capabilities
+            .iter()
+            .any(|capability| capability.0 == "tool.mcp.invoke")
+        {
+            required_capabilities.push(cowork_contracts::capabilities::mcp_invoke());
+        }
+    }
 
     match &schedule.executor_target {
         ExecutorTarget::ServerLinux {
@@ -1425,25 +1463,6 @@ async fn prepare_scheduled_run(
     } else {
         None
     };
-    let creator_user_id = schedule_created_by(pool, schedule.id)
-        .await
-        .map_err(block)?;
-    let input = scheduled_input(
-        schedule.input.clone(),
-        &task.instructions,
-        &task.config,
-        ScheduledTriggerContext {
-            schedule_id: schedule.id,
-            due_at,
-            triggered_at: now,
-            missed_occurrences,
-            catch_up_truncated,
-        },
-    )
-    .map_err(block)?;
-    let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
-        .await
-        .map_err(block)?;
     Ok(RunSpec {
         schema_version: SCHEMA_VERSION,
         id: Uuid::new_v4(),

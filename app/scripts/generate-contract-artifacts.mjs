@@ -86,6 +86,8 @@ const responseSchemas = new Map([
   ['get /api/v1/provider-profiles', 'ProviderProfile'], ['post /api/v1/provider-profiles', 'ProviderProfile'],
   ['put /api/v1/provider-profiles/{profile_id}', 'ProviderProfile'],
   ['put /api/v1/provider-profiles/{profile_id}/secret', 'ProviderProfile'],
+  ['get /api/v1/projects/{project_id}/mcp-bindings', 'ServerMcpBindingRecord'],
+  ['put /api/v1/projects/{project_id}/mcp-bindings/{mcp_entity_id}', 'ServerMcpBindingRecord'],
   ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['put /api/v1/projects/{project_id}', 'ProjectRecord'],
   ['put /api/v1/threads/{thread_id}', 'ThreadRecord'],
   ['get /api/v1/projects/{project_id}/threads', 'ThreadRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
@@ -115,6 +117,7 @@ const responseSchemas = new Map([
 const arrayResponses = new Set([
   'get /api/v1/projects', 'get /api/v1/teams', 'get /api/v1/teams/{team_id}/members',
   'get /api/v1/provider-profiles', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/projects/{project_id}/mcp-bindings',
   'get /api/v1/projects/{project_id}/threads',
   'get /api/v1/threads/{thread_id}/messages',
   'get /api/v1/auth/sessions',
@@ -124,6 +127,7 @@ const arrayResponses = new Set([
   'get /api/v1/projects/{project_id}/versions',
 ])
 const requestSchemas = new Map([
+  ['put /api/v1/projects/{project_id}/mcp-bindings/{mcp_entity_id}', 'SetServerMcpBindingRequest'],
   ['post /api/v1/projects/{project_id}/versions', 'CreateProjectVersionRequest'],
   ['post /api/v1/projects/{project_id}/versions/{version_id}/apply', 'ApplyProjectVersionRequest'],
   ['post /api/v1/projects/{project_id}/merge-apply', 'ApplyProjectMergeRequest'],
