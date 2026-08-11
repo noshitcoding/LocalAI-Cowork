@@ -392,6 +392,55 @@ describe('chatStore', () => {
     delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
   })
 
+  it('restores persisted provider metadata when returning to a chat', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true })
+    const threadId = 'thread-provider-refresh'
+    useChatStore.setState({
+      threads: [{
+        id: threadId,
+        title: 'Codex chat',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2,
+        providerSettings: {
+          backend: 'openai-compatible',
+          profileId: 'default-ollama',
+          model: 'gemma4:latest',
+        },
+      }],
+      activeThreadId: null,
+    })
+    invokeMock.mockImplementation(async (command) => {
+      if (command === 'db_list_threads') {
+        return [{
+          id: threadId,
+          title: 'Codex chat',
+          createdAt: '2026-08-10T12:00:00Z',
+          updatedAt: '2026-08-10T13:00:00Z',
+          providerSettingsJson: JSON.stringify({
+            backend: 'codex',
+            authProfileId: 'codex-account-1',
+            model: 'gpt-5.6-sol',
+            reasoningEffort: 'xhigh',
+          }),
+          runner: 'model',
+        }]
+      }
+      if (command === 'db_list_messages') return []
+      return undefined
+    })
+
+    await useChatStore.getState().setActiveThread(threadId)
+
+    expect(getActiveThread(useChatStore.getState())?.providerSettings).toEqual({
+      backend: 'codex',
+      authProfileId: 'codex-account-1',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'xhigh',
+    })
+    delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+  })
+
   it('reloads the complete persisted history for every request preparation', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true })
     let historyReadCount = 0

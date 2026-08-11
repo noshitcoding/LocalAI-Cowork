@@ -274,6 +274,17 @@ function modelCapability(provider: ChatProviderState): string {
   return 'model.external'
 }
 
+async function bindProviderForDaemon(
+  provider: ChatProviderState,
+  client: LocalDaemonRuntimeClient,
+): Promise<string | null> {
+  if (provider.profileId) {
+    await client.upsertProviderBindingFromCredentials(provider.profileId, provider.endpoint)
+    return null
+  }
+  return provider.apiKey || null
+}
+
 export async function createDurableLocalRun(
   input: DurableLocalRunInput,
   client = createLocalDaemonRuntimeClient(),
@@ -290,16 +301,7 @@ export async function createDurableLocalRun(
   const workspacePath = input.workspacePath?.trim() || null
   if (workspacePath) await client.bindProjectWorkspace(projectId, workspacePath)
 
-  const apiKey = input.provider.profileId
-    ? await getCredential(llmApiKeyLocator(input.provider.profileId))
-    : input.provider.apiKey || null
-  if (input.provider.profileId) {
-    await client.upsertProviderBinding(
-      input.provider.profileId,
-      input.provider.endpoint,
-      apiKey,
-    )
-  }
+  const apiKey = await bindProviderForDaemon(input.provider, client)
   const requiredCapabilities = [modelCapability(input.provider)]
   if (workspacePath) requiredCapabilities.push('files', 'shell')
   const mcpBindings = configuredMcpBindings(input)
@@ -323,6 +325,8 @@ export async function createDurableLocalRun(
       client_thread_id: input.clientThreadId,
       client_project_id: input.clientProjectId,
       client_task_id: input.clientTaskId ?? null,
+      client_provider_profile_id: input.provider.profileId ?? null,
+      resolve_current_provider_binding: input.provider.profileId ? true : false,
       client_assistant_message_id: input.assistantMessageId,
       client_user_message_id: input.userMessageId ?? null,
       source: input.source,
@@ -612,16 +616,7 @@ export async function upsertDurableLocalSchedule(
   const scheduleId = localRuntimeEntityUuid('task', `schedule:${input.scheduleClientId}`)
   const workspacePath = input.workspacePath?.trim() || null
   if (workspacePath) await client.bindProjectWorkspace(projectId, workspacePath)
-  const apiKey = input.provider.profileId
-    ? await getCredential(llmApiKeyLocator(input.provider.profileId))
-    : input.provider.apiKey || null
-  if (input.provider.profileId) {
-    await client.upsertProviderBinding(
-      input.provider.profileId,
-      input.provider.endpoint,
-      apiKey,
-    )
-  }
+  const apiKey = await bindProviderForDaemon(input.provider, client)
   const requiredCapabilities = [modelCapability(input.provider)]
   if (workspacePath) requiredCapabilities.push('files', 'shell')
   const mcpBindings = configuredMcpBindings(input)

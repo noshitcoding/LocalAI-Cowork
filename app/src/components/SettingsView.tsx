@@ -159,7 +159,11 @@ function SandboxSetupCard() {
       window.dispatchEvent(new CustomEvent('lacowork-sandbox-status-changed', { detail: next }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
-      await refresh()
+      try {
+        setStatus(await safeInvoke<SandboxSetupStatus>('sandbox_setup_status'))
+      } catch {
+        // Keep the actionable setup failure visible if the follow-up status check also fails.
+      }
     } finally {
       setSettingUp(false)
     }
@@ -175,31 +179,44 @@ function SandboxSetupCard() {
           ? tr('Error')
           : tr('Not configured')
 
+  const stateTone = error
+    ? 'danger'
+    : settingUp || loading
+      ? 'info'
+      : status?.ready
+        ? 'success'
+        : 'warning'
+
   return (
     <div id="ai-sandbox">
       <Section title={tr('AI Sandbox')} icon={ShieldCheck}>
-        <div className="card">
-          <div className="about-cowork-intro">
-            <strong>{stateLabel}</strong>
-            <span>
+        <div className="card sandbox-setup-card">
+          <div className="sandbox-setup-summary">
+            <span className={`sandbox-status-badge sandbox-status-badge-${stateTone}`} aria-live="polite">
+              {stateLabel}
+            </span>
+            <p>
               {status?.ready
                 ? tr('Every normal AI chat automatically uses the native Windows sandbox. Original files are changed only after diff confirmation.')
                 : tr('Chat, web, MCP, and explicitly shared files remain available. Without setup, local file access is read-only and AI shell commands are disabled.')}
-            </span>
+            </p>
           </div>
-          <dl className="about-cowork-details">
+          <dl className="about-cowork-details sandbox-setup-details">
             <div><dt>{tr('Account')}</dt><dd>{status?.account ?? 'LACoworkOnline'}</dd></div>
             <div><dt>{tr('Group')}</dt><dd>{status?.group ?? 'LACoworkSandbox'}</dd></div>
-            <div><dt>{tr('Setup version')}</dt><dd>{status?.version ?? '—'}</dd></div>
+            <div><dt>{tr('Setup version')}</dt><dd>{status?.version ?? '\u2014'}</dd></div>
           </dl>
-          {(error || status?.reason) && (
-            <p className="hint-text" role="alert">{error ?? status?.reason}</p>
+          {error && (
+            <p className="sandbox-setup-note sandbox-setup-note-error" role="alert">{error}</p>
           )}
-          <div className="settings-grid-spaced">
-            <button type="button" className="btn-send" onClick={() => void startSetup()} disabled={loading || settingUp || status?.supported === false}>
+          {!error && status?.reason && (
+            <p className="sandbox-setup-note">{status.reason}</p>
+          )}
+          <div className="sandbox-setup-actions">
+            <button type="button" className="sandbox-setup-button sandbox-setup-button-primary" onClick={() => void startSetup()} disabled={loading || settingUp || status?.supported === false}>
               {status?.ready ? tr('Set up again') : tr('Set up sandbox')}
             </button>
-            <button type="button" className="btn-sm" onClick={() => void refresh()} disabled={loading || settingUp}>
+            <button type="button" className="sandbox-setup-button sandbox-setup-button-secondary" onClick={() => void refresh()} disabled={loading || settingUp}>
               {tr('Check readiness')}
             </button>
           </div>

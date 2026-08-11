@@ -372,7 +372,8 @@ pub fn setup_start(app_data: &Path) -> Result<SetupStatus, String> {
 
     fs::create_dir_all(setup_dir(app_data)).map_err(|error| error.to_string())?;
     let password = generate_password()?;
-    let encrypted_for_helper = protect_data(password.as_bytes(), true)?;
+    let encrypted_for_helper = protect_data(password.as_bytes(), true)
+        .map_err(|error| format!("failed to protect the UAC setup secret: {error}"))?;
     let nonce = uuid::Uuid::new_v4().to_string();
     let request_path = setup_dir(app_data).join(format!("setup-{nonce}.request"));
     let result_path = setup_dir(app_data).join(format!("setup-{nonce}.result"));
@@ -418,29 +419,35 @@ pub fn setup_start(app_data: &Path) -> Result<SetupStatus, String> {
         let _ = fs::remove_file(&result_path);
         return Err("UAC sandbox setup did not finish within two minutes".to_string());
     }
-    let result_bytes =
-        fs::read(&result_path).map_err(|_| "elevated setup returned no result".to_string())?;
+    let result_bytes = fs::read(&result_path)
+        .map_err(|error| format!("elevated setup returned no result: {error}"))?;
     let _ = fs::remove_file(&result_path);
-    let result: SetupResult = serde_json::from_slice(&result_bytes).map_err(|e| e.to_string())?;
+    let result: SetupResult = serde_json::from_slice(&result_bytes)
+        .map_err(|error| format!("elevated setup returned an invalid result: {error}"))?;
     if !result.ok {
         return Err(result
             .error
             .unwrap_or_else(|| "elevated setup failed".to_string()));
     }
 
-    let encrypted = protect_data(password.as_bytes(), false)?;
-    write_private_file(&credential_path(app_data), &encrypted)?;
+    let encrypted = protect_data(password.as_bytes(), false)
+        .map_err(|error| format!("failed to protect the sandbox credential: {error}"))?;
+    write_private_file(&credential_path(app_data), &encrypted)
+        .map_err(|error| format!("failed to store the sandbox credential: {error}"))?;
     if !matches!(load_capability_seed(app_data), Ok(seed) if seed.len() == 32) {
         let mut capability_seed = [0u8; 32];
         getrandom::fill(&mut capability_seed).map_err(|error| error.to_string())?;
-        let protected_seed = protect_data(&capability_seed, false)?;
+        let protected_seed = protect_data(&capability_seed, false)
+            .map_err(|error| format!("failed to protect the sandbox capability seed: {error}"))?;
         capability_seed.fill(0);
-        write_private_file(&capability_seed_path(app_data), &protected_seed)?;
+        write_private_file(&capability_seed_path(app_data), &protected_seed)
+            .map_err(|error| format!("failed to store the sandbox capability seed: {error}"))?;
     }
     write_private_file(
         &setup_marker_path(app_data),
         &serde_json::to_vec(&result).map_err(|e| e.to_string())?,
-    )?;
+    )
+    .map_err(|error| format!("failed to store the sandbox setup marker: {error}"))?;
     Ok(setup_status(app_data))
 }
 
@@ -1449,6 +1456,7 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         ));
     }
     let administrators = localized_administrators_group()?;
+    let mut enforcement_errors = Vec::new();
     let administrators_result = unsafe {
         NetLocalGroupDelMembers(
             std::ptr::null(),
@@ -1462,7 +1470,7 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         && administrators_result != ERROR_NO_SUCH_MEMBER
         && administrators_result != ERROR_MEMBER_NOT_IN_ALIAS
     {
-        return Err(format!(
+        enforcement_errors.push(format!(
             "failed to enforce standard-user membership (Windows error {administrators_result})"
         ));
     }
@@ -1482,12 +1490,20 @@ fn create_or_update_local_principal(password: &str) -> Result<(), String> {
         && group_administrators_result != ERROR_NO_SUCH_MEMBER
         && group_administrators_result != ERROR_MEMBER_NOT_IN_ALIAS
     {
-        return Err(format!(
+        enforcement_errors.push(format!(
             "failed to enforce non-admin sandbox group membership (Windows error {group_administrators_result})"
         ));
     }
+    let membership = sandbox_account_membership_ready();
     pass.fill(0);
-    Ok(())
+    match membership {
+        Ok(()) => Ok(()),
+        Err(reason) if enforcement_errors.is_empty() => Err(reason),
+        Err(reason) => Err(format!(
+            "{}; final membership verification failed: {reason}",
+            enforcement_errors.join("; ")
+        )),
+    }
 }
 
 #[cfg(target_os = "windows")]

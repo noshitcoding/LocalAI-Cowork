@@ -190,7 +190,6 @@ export const useCodexStore = create<CodexStoreState>((set, get) => ({
       if (result.authUrl) await openUrl(result.authUrl)
       if (result.verificationUrl && result.userCode) {
         set({ deviceLogin: { profileId: id, verificationUrl: result.verificationUrl, userCode: result.userCode } })
-        await openUrl(result.verificationUrl)
       }
       set((state) => ({
         profiles: state.profiles.map((profile) => profile.id === id ? { ...profile, status: 'login_pending' } : profile),

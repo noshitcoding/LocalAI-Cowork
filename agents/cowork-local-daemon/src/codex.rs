@@ -210,8 +210,8 @@ async fn execute_codex_inner(
             json!({
                 "cwd": cwd,
                 "model": model,
-                "approvalPolicy": "unlessTrusted",
-                "sandbox": if read_only { "readOnly" } else { "workspaceWrite" },
+                "approvalPolicy": "untrusted",
+                "sandbox": if read_only { "read-only" } else { "workspace-write" },
                 "serviceName": "open_cowork_daemon",
                 "dynamicTools": host.tools().into_iter().map(|tool| json!({
                     "type":"function",
@@ -236,7 +236,7 @@ async fn execute_codex_inner(
                 "threadId": thread_id,
                 "input": [{"type":"text","text":prompt}],
                 "cwd": cwd,
-                "approvalPolicy": "unlessTrusted",
+                "approvalPolicy": "untrusted",
                 "sandboxPolicy": if read_only {
                     json!({"type":"readOnly","networkAccess":false})
                 } else {

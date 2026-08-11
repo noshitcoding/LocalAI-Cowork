@@ -209,6 +209,16 @@ export class LocalDaemonRuntimeClient implements RuntimeClient {
     }) as LocalDaemonProviderBinding
   }
 
+  async upsertProviderBindingFromCredentials(
+    profileId: string,
+    baseUrl: string,
+  ): Promise<LocalDaemonProviderBinding> {
+    return await this.#bridge.call('provider_bindings.upsert_from_credentials', {
+      profile_id: profileId,
+      base_url: baseUrl,
+    }) as LocalDaemonProviderBinding
+  }
+
   async getProviderBinding(profileId: string): Promise<LocalDaemonProviderBinding> {
     return await this.#bridge.call('provider_bindings.get', {
       profile_id: profileId,

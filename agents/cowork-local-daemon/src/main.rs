@@ -60,6 +60,8 @@ mod office;
 mod sync_ipc;
 
 const MAX_IPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const LEGACY_LOCAL_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
+const DEFAULT_LOCAL_USER_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -304,6 +306,10 @@ async fn main() -> Result<()> {
     };
     let connection = Connection::open(&config.database_path)?;
     initialize_database(&connection)?;
+    let migrated_runs = migrate_legacy_creator_user_id(&connection, config.user_id)?;
+    if migrated_runs > 0 {
+        tracing::info!(migrated_runs, "migrated legacy local run creator IDs");
+    }
     interrupt_active_runs(&connection, "daemon_restarted")?;
     config.fallback_model.validate()?;
     let (shutdown, mut shutdown_receiver) = watch::channel(false);
@@ -444,7 +450,7 @@ impl Config {
                 .unwrap_or_else(|_| default_ipc_endpoint(&data_dir)),
             ipc_token,
             user_id: env::var("COWORK_DAEMON_USER_ID")
-                .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000001".to_owned())
+                .unwrap_or_else(|_| DEFAULT_LOCAL_USER_ID.to_owned())
                 .parse()
                 .context("invalid COWORK_DAEMON_USER_ID")?,
             device_id: persistent_uuid("COWORK_DAEMON_DEVICE_ID", &data_dir.join("device-id.txt"))?,
@@ -628,6 +634,31 @@ fn initialize_database(connection: &Connection) -> Result<()> {
         "#,
     )?;
     Ok(())
+}
+
+fn migrate_legacy_creator_user_id(connection: &Connection, user_id: Uuid) -> Result<usize> {
+    let legacy_user_id: Uuid = LEGACY_LOCAL_USER_ID
+        .parse()
+        .expect("the legacy local user ID must remain a UUID");
+    if user_id == legacy_user_id {
+        return Ok(0);
+    }
+    let mut statement = connection.prepare("SELECT record_json FROM daemon_runs")?;
+    let encoded_records = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut migrated = 0;
+    for encoded in encoded_records {
+        let mut record: RunRecord = serde_json::from_str(&encoded)?;
+        if record.spec.creator_user_id != legacy_user_id {
+            continue;
+        }
+        record.spec.creator_user_id = user_id;
+        save_record(connection, &record)?;
+        migrated += 1;
+    }
+    Ok(migrated)
 }
 
 fn interrupt_active_runs(connection: &Connection, safe_reason: &str) -> Result<()> {
@@ -4090,14 +4121,11 @@ async fn dispatch(daemon: &Daemon, request: IpcRequest) -> IpcResponse {
 }
 
 async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
-    let model_config = params
+    let mut model_config = params
         .get("model_config")
         .cloned()
         .map(serde_json::from_value::<PersistedModelConfig>)
         .transpose()?;
-    if let Some(config) = &model_config {
-        config.validate()?;
-    }
     let request: CreateRunRequest = serde_json::from_value(params)?;
     if request.executor_target
         != (ExecutorTarget::PersonalDevice {
@@ -4105,6 +4133,35 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
         })
     {
         bail!("the local daemon only accepts its own personal_device target");
+    }
+    let mut database = daemon.database.lock().await;
+    if request
+        .input
+        .get("resolve_current_provider_binding")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let profile_id = request
+            .input
+            .get("client_provider_profile_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("run requires a provider profile ID")?;
+        validate_provider_profile_id(profile_id)?;
+        let binding =
+            load_provider_binding(&database, profile_id, &daemon.config.model_secret_key)?
+                .with_context(|| {
+                    format!("run is waiting for the per-device provider binding ({profile_id})")
+                })?;
+        let config = model_config
+            .as_mut()
+            .context("run requires a model configuration")?;
+        config.base_url = binding.base_url;
+        config.api_key = binding.api_key;
+    }
+    if let Some(config) = &model_config {
+        config.validate()?;
     }
     let now = Utc::now();
     let spec = RunSpec {
@@ -4127,7 +4184,6 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
         idempotency_key: request.idempotency_key,
         created_at: now,
     };
-    let mut database = daemon.database.lock().await;
     if let Some(existing) = database
         .query_row(
             "SELECT record_json FROM daemon_runs WHERE idempotency_key = ?1",
@@ -5693,6 +5749,140 @@ mod tests {
             shutdown,
             browser: Arc::new(developer_browser::DeveloperBrowserState::default()),
         }
+    }
+
+    #[tokio::test]
+    async fn immediate_runs_resolve_encrypted_provider_bindings() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        let binding = ProviderDeviceBinding {
+            base_url: "https://current.example.test/v1".to_owned(),
+            api_key: Some("current-native-secret".to_owned()),
+        };
+        let encrypted =
+            encrypt_secret_payload(&serde_json::to_vec(&binding).unwrap(), &[31; 32]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO daemon_provider_bindings (profile_id, encrypted_binding, updated_at) VALUES (?1, ?2, ?3)",
+                params!["profile-current", encrypted, Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        let device_id = Uuid::new_v4();
+        let daemon = daemon_for_test(connection, device_id);
+        let run: RunRecord = serde_json::from_value(
+            create_run(
+                &daemon,
+                json!({
+                    "thread_id": Uuid::new_v4(),
+                    "project_id": Uuid::new_v4(),
+                    "project_revision": 1,
+                    "project_privacy": "private_local",
+                    "task": null,
+                    "executor_target": {"kind":"personal_device","device_id":device_id},
+                    "required_capabilities": ["model.external"],
+                    "input": {
+                        "prompt": "test",
+                        "client_provider_profile_id": "profile-current",
+                        "resolve_current_provider_binding": true
+                    },
+                    "model_profile_id": null,
+                    "snapshot_id": null,
+                    "idempotency_key": format!("immediate-binding-{}", Uuid::new_v4()),
+                    "model_config": {
+                        "base_url": "https://stale.example.test/v1",
+                        "api_key": null,
+                        "model": "test-model",
+                        "timeout_ms": 30000,
+                        "max_steps": 8,
+                        "verify_tls_certificates": true
+                    }
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+
+        let resolved = load_run_model_config(&daemon, run.spec.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.base_url, "https://current.example.test/v1");
+        assert_eq!(resolved.api_key.as_deref(), Some("current-native-secret"));
+    }
+
+    #[test]
+    fn legacy_local_creator_ids_are_migrated_to_contract_valid_uuids() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        let run_id = Uuid::new_v4();
+        let thread_id = Uuid::new_v4();
+        let project_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let now = Utc::now();
+        let record: RunRecord = serde_json::from_value(json!({
+            "spec": {
+                "schema_version": SCHEMA_VERSION,
+                "id": run_id,
+                "thread_id": thread_id,
+                "project_id": project_id,
+                "project": {"id": project_id, "revision": 1},
+                "project_privacy": "private_local",
+                "task": null,
+                "creator_user_id": LEGACY_LOCAL_USER_ID,
+                "executor_target": {"kind": "personal_device", "device_id": device_id},
+                "required_capabilities": [],
+                "input": {},
+                "model_profile_id": null,
+                "snapshot_id": null,
+                "idempotency_key": format!("legacy-user-{run_id}"),
+                "created_at": now,
+            },
+            "state": "completed",
+            "revision": 1,
+            "etag": format!("W/\"{run_id}:1\""),
+            "assigned_executor_id": device_id,
+            "lease_expires_at": null,
+            "started_at": null,
+            "finished_at": now,
+            "result": null,
+            "error": null,
+            "updated_at": now,
+        }))
+        .unwrap();
+        connection
+            .execute(
+                "INSERT INTO daemon_runs (id, thread_id, state, revision, record_json, created_at, updated_at, idempotency_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+                params![
+                    run_id.to_string(),
+                    thread_id.to_string(),
+                    "completed",
+                    1,
+                    serde_json::to_string(&record).unwrap(),
+                    now.to_rfc3339(),
+                    record.spec.idempotency_key,
+                ],
+            )
+            .unwrap();
+
+        let current_user_id: Uuid = DEFAULT_LOCAL_USER_ID.parse().unwrap();
+        assert_eq!(
+            migrate_legacy_creator_user_id(&connection, current_user_id).unwrap(),
+            1
+        );
+        assert_eq!(
+            migrate_legacy_creator_user_id(&connection, current_user_id).unwrap(),
+            0
+        );
+        let encoded: String = connection
+            .query_row(
+                "SELECT record_json FROM daemon_runs WHERE id = ?1",
+                [run_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migrated: RunRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(migrated.spec.creator_user_id, current_user_id);
     }
 
     #[tokio::test]

@@ -8143,7 +8143,7 @@ fn run_codex_turn(
                 "threadId": thread_id,
                 "input": [{ "type": "text", "text": prompt }],
                 "cwd": cwd,
-                "approvalPolicy": "unlessTrusted",
+                "approvalPolicy": "untrusted",
                 "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
                 "model": model,
                 "effort": reasoning_effort
@@ -15486,9 +15486,9 @@ fn codex_thread_open_impl(
     }
 
     let sandbox = if request.permission_mode == "plan" {
-        "readOnly"
+        "read-only"
     } else {
-        "workspaceWrite"
+        "workspace-write"
     };
     let result = runtime.request(
         &profile.id,
@@ -15496,7 +15496,7 @@ fn codex_thread_open_impl(
         Some(serde_json::json!({
             "cwd": request.cwd,
             "model": request.model,
-            "approvalPolicy": "unlessTrusted",
+            "approvalPolicy": "untrusted",
             "sandbox": sandbox,
             "serviceName": "open_cowork",
             "dynamicTools": request.dynamic_tools
@@ -15569,7 +15569,7 @@ fn codex_turn_start(
             "threadId": request.thread_id,
             "input": [{ "type": "text", "text": request.prompt }],
             "cwd": request.cwd,
-            "approvalPolicy": "unlessTrusted",
+            "approvalPolicy": "untrusted",
             "sandboxPolicy": sandbox_policy,
             "model": request.model,
             "effort": request.reasoning_effort

@@ -29,7 +29,6 @@ import {
   workTaskMetadataForDaemon,
   type WorkTask,
 } from '../stores/workTasksStore'
-import { getCredential, llmApiKeyLocator } from '../security/credentialVault'
 import { safeInvoke } from '../utils/safeInvoke'
 import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/chatMessages'
 import {
@@ -675,10 +674,7 @@ export async function mirrorProviderDeviceBinding(
 ): Promise<void> {
   const baseUrl = profile.baseUrl.trim()
   if (!baseUrl) return
-  const apiKey = profile.hasApiKey === true
-    ? await getCredential(llmApiKeyLocator(profile.id))
-    : null
-  await client.upsertProviderBinding(profile.id, baseUrl, apiKey)
+  await client.upsertProviderBindingFromCredentials(profile.id, baseUrl)
 }
 
 export async function mirrorMcpDeviceBinding(

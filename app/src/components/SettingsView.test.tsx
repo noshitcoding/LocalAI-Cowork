@@ -259,6 +259,37 @@ describe('SettingsView', () => {
     confirmSpy.mockRestore()
   })
 
+  it('keeps the actionable sandbox setup error visible after refreshing readiness', async () => {
+    ;(window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {}
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'sandbox_setup_status') {
+        return Promise.resolve({
+          supported: true,
+          ready: false,
+          version: 1,
+          account: 'LACoworkOnline',
+          group: 'LACoworkSandbox',
+          reason: 'elevated sandbox setup has not completed',
+        })
+      }
+      if (command === 'sandbox_setup_start') {
+        return Promise.reject(new Error('failed to store the sandbox setup marker: access denied'))
+      }
+      return defaultInvoke(command)
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderSettingsView(['/settings?section=sandbox'])
+
+    await screen.findByText('elevated sandbox setup has not completed')
+    fireEvent.click(screen.getByRole('button', { name: 'Set up sandbox' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'failed to store the sandbox setup marker: access denied',
+    )
+    expect(invokeMock.mock.calls.filter(([command]) => command === 'sandbox_setup_status')).toHaveLength(2)
+    confirmSpy.mockRestore()
+  })
+
   it('localizes the directly selected category', async () => {
     await i18n.changeLanguage('de')
     renderSettingsView(['/settings?section=ui'])
