@@ -35,15 +35,19 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
   const [bindings, setBindings] = useState<ServerMcpBindingRecord[]>([])
   const [projectId, setProjectId] = useState('')
   const [entityId, setEntityId] = useState('')
+  const [transport, setTransport] = useState<'stdio' | 'streamable_http'>('stdio')
   const [command, setCommand] = useState('')
   const [argsText, setArgsText] = useState('[]')
   const [environmentText, setEnvironmentText] = useState('{}')
+  const [url, setUrl] = useState('')
+  const [headersText, setHeadersText] = useState('{}')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const clearSecretForm = useCallback(() => {
-    setEntityId(''); setCommand(''); setArgsText('[]'); setEnvironmentText('{}')
+    setEntityId(''); setTransport('stdio'); setCommand(''); setArgsText('[]'); setEnvironmentText('{}')
+    setUrl(''); setHeadersText('{}')
     setConfirmDeleteId(null)
   }, [])
   const loadBindings = useCallback(async (selectedProjectId: string) => {
@@ -74,15 +78,18 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
   )
   const existing = bindings.find((binding) => binding.mcp_entity_id === entityId) ?? null
   const edit = (binding: ServerMcpBindingRecord) => {
-    setEntityId(binding.mcp_entity_id); setCommand(''); setArgsText('[]'); setEnvironmentText('{}')
+    setEntityId(binding.mcp_entity_id)
+    setTransport(binding.transport === 'streamable_http' ? 'streamable_http' : 'stdio')
+    setCommand(''); setArgsText('[]'); setEnvironmentText('{}'); setUrl(''); setHeadersText('{}')
     setConfirmDeleteId(null); setError(null)
   }
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError(null)
     try {
       if (!selectedMetadata) throw new Error('Select synchronized MCP metadata first')
-      const args = JSON.parse(argsText) as unknown
-      const environment = JSON.parse(environmentText) as unknown
+      const args = transport === 'stdio' ? JSON.parse(argsText) as unknown : []
+      const environment = transport === 'stdio' ? JSON.parse(environmentText) as unknown : {}
+      const headers = transport === 'streamable_http' ? JSON.parse(headersText) as unknown : {}
       if (!Array.isArray(args) || args.some((argument) => typeof argument !== 'string')) {
         throw new Error('Arguments must be a JSON array of strings')
       }
@@ -93,12 +100,22 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
       if (Object.values(environmentRecord).some((value) => typeof value !== 'string')) {
         throw new Error('Environment must be a JSON object containing only string values')
       }
+      if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+        throw new Error('Headers must be a JSON object containing only string values')
+      }
+      const headersRecord = recordOf(headers)
+      if (Object.values(headersRecord).some((value) => typeof value !== 'string')) {
+        throw new Error('Headers must be a JSON object containing only string values')
+      }
       await client.setServerMcpBinding(projectId, entityId, {
         expected_revision: existing?.revision ?? null,
         name: metadataName(selectedMetadata),
-        command,
-        args,
-        environment: environmentRecord as Record<string, string>,
+        transport,
+        command: transport === 'stdio' ? command : '',
+        args: transport === 'stdio' ? args : [],
+        environment: transport === 'stdio' ? environmentRecord as Record<string, string> : {},
+        url: transport === 'streamable_http' ? url : '',
+        headers: transport === 'streamable_http' ? headersRecord as Record<string, string> : {},
       })
       clearSecretForm(); await loadBindings(projectId)
     } catch (cause) {
@@ -127,22 +144,29 @@ export default function ServerMcpBindingManager({ client, compact = false }: Pro
   if (!open) return <button className="ui-button ui-button--secondary ui-button--sm" type="button" onClick={() => setOpen(true)}><PlugZap size={14} /> Server MCP</button>
   return <section className={`remote-management-panel${compact ? ' compact' : ''}`}>
     <header><div><PlugZap size={16} /><strong>Linux server MCP bindings</strong></div><button type="button" aria-label="Close server MCP" onClick={close}><X size={15} /></button></header>
-    <p className="remote-management-hint">Commands, arguments, and environment values are envelope-encrypted for this project. Clients receive only safe binding metadata. The command must already exist in the pinned Core sandbox image.</p>
+    <p className="remote-management-hint">Stdio commands or HTTPS endpoints and their credential values are envelope-encrypted for this project. Clients receive only safe binding metadata. Stdio commands must already exist in the pinned Core sandbox image.</p>
     <label>Project<select aria-label="MCP binding project" value={projectId} onChange={(event) => { const value = event.target.value; setProjectId(value); clearSecretForm(); void loadBindings(value) }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
     <div className="remote-management-list">
       {!busy && bindings.length === 0 ? <p>No Linux server MCP bindings.</p> : null}
       {bindings.map((binding) => {
         const confirming = confirmDeleteId === binding.mcp_entity_id
-        return <article key={binding.mcp_entity_id}><span><strong>{binding.name}</strong><small>revision {binding.revision} - {binding.executable_hint} - {binding.environment_keys.length} environment key(s)</small></span><div><button type="button" disabled={busy} onClick={() => edit(binding)}>Replace</button><button type="button" aria-label={confirming ? `Confirm delete ${binding.name} binding` : `Delete ${binding.name} binding`} disabled={busy} onClick={() => { void remove(binding) }}><Trash2 size={14} />{confirming ? ' Confirm' : null}</button></div></article>
+        return <article key={binding.mcp_entity_id}><span><strong>{binding.name}</strong><small>revision {binding.revision} - {binding.transport === 'streamable_http' ? 'Streamable HTTP' : 'stdio'} - {binding.executable_hint} - {binding.environment_keys.length} secret key(s)</small></span><div><button type="button" disabled={busy} onClick={() => edit(binding)}>Replace</button><button type="button" aria-label={confirming ? `Confirm delete ${binding.name} binding` : `Delete ${binding.name} binding`} disabled={busy} onClick={() => { void remove(binding) }}><Trash2 size={14} />{confirming ? ' Confirm' : null}</button></div></article>
       })}
     </div>
     <form onSubmit={save} autoComplete="off">
-      <label>Synchronized MCP metadata<select aria-label="MCP binding metadata" value={entityId} onChange={(event) => { setEntityId(event.target.value); setCommand(''); setArgsText('[]'); setEnvironmentText('{}') }} required><option value="" disabled>Select metadata</option>{metadata.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataName(entity)} (r{entity.revision})</option>)}</select></label>
-      {existing ? <p className="remote-management-hint">Replacing revision {existing.revision} requires the complete command, arguments, and environment again; stored secrets are never returned.</p> : null}
-      <label>Sandbox command<input aria-label="MCP sandbox command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="/opt/mcp/example-server" autoComplete="off" required /></label>
-      <label>Arguments JSON<textarea aria-label="MCP arguments JSON" value={argsText} onChange={(event) => setArgsText(event.target.value)} rows={4} spellCheck={false} required /></label>
-      <label>Environment JSON<textarea aria-label="MCP environment JSON" value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} rows={5} spellCheck={false} autoComplete="off" required /></label>
-      <div className="remote-management-actions"><button type="submit" disabled={busy || !projectId || !entityId || !command.trim()}><Save size={14} /> {existing ? 'Replace encrypted binding' : 'Create encrypted binding'}</button><button type="button" onClick={clearSecretForm}>Clear</button></div>
+      <label>Synchronized MCP metadata<select aria-label="MCP binding metadata" value={entityId} onChange={(event) => { setEntityId(event.target.value); setCommand(''); setArgsText('[]'); setEnvironmentText('{}'); setUrl(''); setHeadersText('{}') }} required><option value="" disabled>Select metadata</option>{metadata.map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{metadataName(entity)} (r{entity.revision})</option>)}</select></label>
+      {existing ? <p className="remote-management-hint">Replacing revision {existing.revision} requires the complete transport configuration and credentials again; stored secrets are never returned.</p> : null}
+      <label>Transport<select aria-label="MCP binding transport" value={transport} onChange={(event) => setTransport(event.target.value as 'stdio' | 'streamable_http')}><option value="stdio">stdio sandbox process</option><option value="streamable_http">Streamable HTTP (HTTPS)</option></select></label>
+      {transport === 'stdio' ? <>
+        <label>Sandbox command<input aria-label="MCP sandbox command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="/opt/mcp/example-server" autoComplete="off" required /></label>
+        <label>Arguments JSON<textarea aria-label="MCP arguments JSON" value={argsText} onChange={(event) => setArgsText(event.target.value)} rows={4} spellCheck={false} required /></label>
+        <label>Environment JSON<textarea aria-label="MCP environment JSON" value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} rows={5} spellCheck={false} autoComplete="off" required /></label>
+      </> : <>
+        <label>HTTPS MCP endpoint<input type="url" aria-label="MCP HTTPS endpoint" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://mcp.example.com/mcp" autoComplete="off" required /></label>
+        <label>Credential headers JSON<textarea aria-label="MCP credential headers JSON" value={headersText} onChange={(event) => setHeadersText(event.target.value)} rows={5} spellCheck={false} autoComplete="off" required /></label>
+        <p className="remote-management-hint">Use headers such as Authorization for credentials. Only public DNS endpoints on HTTPS port 443 are accepted; userinfo, query strings, IP literals, local hostnames, and redirects are rejected.</p>
+      </>}
+      <div className="remote-management-actions"><button type="submit" disabled={busy || !projectId || !entityId || (transport === 'stdio' ? !command.trim() : !url.trim())}><Save size={14} /> {existing ? 'Replace encrypted binding' : 'Create encrypted binding'}</button><button type="button" onClick={clearSecretForm}>Clear</button></div>
     </form>
     {error ? <div className="remote-inline-error" role="alert">{error}</div> : null}
   </section>

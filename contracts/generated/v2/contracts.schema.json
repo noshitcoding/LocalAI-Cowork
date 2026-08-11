@@ -4341,7 +4341,10 @@
           "type": "integer"
         },
         "transport": {
-          "const": "stdio",
+          "enum": [
+            "stdio",
+            "streamable_http"
+          ],
           "type": "string"
         },
         "updated_at": {
@@ -4462,16 +4465,38 @@
             }
           ]
         },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "name": {
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "stdio",
+            "streamable_http"
+          ],
+          "type": "string"
+        },
+        "url": {
           "type": "string"
         }
       },
       "required": [
         "expected_revision",
         "name",
+        "transport",
         "command",
         "args",
-        "environment"
+        "environment",
+        "url",
+        "headers"
       ],
       "title": "SetServerMcpBindingRequest",
       "type": "object"

@@ -37,7 +37,7 @@ async function expectStatus(path, expectedStatus, { method = 'GET', token, body 
   }
 }
 
-function syncMcpMetadata(deviceId, entityId, name, baseRevision = 0) {
+function syncMcpMetadata(deviceId, entityId, name, baseRevision = 0, transport = 'stdio') {
   return {
     schema_version: 2,
     operation_id: randomUUID(),
@@ -48,9 +48,9 @@ function syncMcpMetadata(deviceId, entityId, name, baseRevision = 0) {
     operation: 'upsert',
     payload: {
       name,
-      transport: 'stdio',
-      executable_hint: 'filesystem-mcp',
-      environment_keys: ['MCP_TOKEN', 'SAFE_MODE'],
+      transport,
+      executable_hint: transport === 'streamable_http' ? 'https://mcp.example.com' : 'filesystem-mcp',
+      environment_keys: transport === 'streamable_http' ? ['Authorization'] : ['MCP_TOKEN', 'SAFE_MODE'],
       device_binding_required: true,
       source: 'server_mcp_acceptance',
     },
@@ -95,7 +95,7 @@ const metadata = await api('/sync/changes', {
   body: {
     changes: [
       syncMcpMetadata(deviceId, primaryEntityId, 'CI filesystem MCP'),
-      syncMcpMetadata(deviceId, disposableEntityId, 'CI disposable MCP'),
+      syncMcpMetadata(deviceId, disposableEntityId, 'CI disposable MCP', 0, 'streamable_http'),
       syncMcpMetadata(deviceId, duplicateNameEntityId, 'CI filesystem MCP'),
     ],
   },
@@ -294,17 +294,44 @@ if (renamedMetadata.results?.[0]?.status !== 'applied'
 }
 
 const disposablePath = `/projects/${project.id}/mcp-bindings/${disposableEntityId}`
+for (const invalid of [
+  { url: 'http://mcp.example.com/mcp', headers: {} },
+  { url: 'https://127.0.0.1/mcp', headers: {} },
+  { url: 'https://mcp.example.com:8443/mcp', headers: {} },
+  { url: 'https://mcp.example.com/mcp?token=unsafe', headers: {} },
+  { url: 'https://mcp.example.com/mcp', headers: { 'MCP-Session-Id': 'override' } },
+]) {
+  await expectStatus(disposablePath, 422, {
+    method: 'PUT',
+    token,
+    body: {
+      expected_revision: null,
+      name: 'CI disposable MCP',
+      transport: 'streamable_http',
+      command: '', args: [], environment: {},
+      url: invalid.url, headers: invalid.headers,
+    },
+  })
+}
 const disposable = await api(disposablePath, {
   method: 'PUT',
   token,
   body: {
     expected_revision: null,
     name: 'CI disposable MCP',
-    command: '/opt/cowork/bin/disposable-mcp',
-    args: [],
-    environment: {},
+    transport: 'streamable_http',
+    command: '', args: [], environment: {},
+    url: 'https://mcp.example.com/mcp',
+    headers: { Authorization: 'Bearer mcp-http-secret-ci-value' },
   },
 })
+if (disposable.transport !== 'streamable_http'
+    || disposable.executable_hint !== 'HTTPS endpoint'
+    || disposable.argument_count !== 0
+    || JSON.stringify(disposable.environment_keys) !== JSON.stringify(['Authorization'])
+    || JSON.stringify(disposable).includes('mcp-http-secret-ci-value')) {
+  throw new Error(`streamable HTTP binding metadata is unsafe or invalid: ${JSON.stringify(disposable)}`)
+}
 await expectStatus(`${disposablePath}?expected_revision=${disposable.revision + 1}`, 409, {
   method: 'DELETE', token,
 })
@@ -385,3 +412,4 @@ console.log('mcp_binding_revision_conflicts=ok')
 console.log('mcp_binding_name_identity=ok')
 console.log('mcp_binding_missing_run_rejection=ok')
 console.log('mcp_binding_crew_selection=ok')
+console.log('mcp_binding_streamable_http_validation=ok')

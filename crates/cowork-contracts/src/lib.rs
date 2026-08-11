@@ -1087,15 +1087,26 @@ pub struct ServerMcpBindingRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+fn default_server_mcp_binding_transport() -> String {
+    "stdio".to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetServerMcpBindingRequest {
     pub expected_revision: Option<i64>,
     pub name: String,
+    #[serde(default = "default_server_mcp_binding_transport")]
+    pub transport: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

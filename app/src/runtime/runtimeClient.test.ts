@@ -600,9 +600,12 @@ describe('runtime routing', () => {
     await expect(client.setServerMcpBinding(projectId, mcpEntityId, {
       expected_revision: null,
       name: 'Project docs',
+      transport: 'stdio',
       command: '/opt/mcp/docs-mcp',
       args: ['--stdio'],
       environment: { MCP_TOKEN: 'one-time-secret' },
+      url: '',
+      headers: {},
     })).resolves.toEqual(binding)
     await client.deleteServerMcpBinding(projectId, mcpEntityId, 1)
 

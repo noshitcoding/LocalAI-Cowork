@@ -134,6 +134,7 @@ class CrewRuntimeToolTests(unittest.TestCase):
         access["blockedMcpServerNames"] = ["Blocked MCP"]
         self.request["executorMcpBindings"] = [{
             "name": "Allowed MCP",
+            "transport": "stdio",
             "command": "/opt/cowork/bin/fake-mcp",
             "args": ["--stdio"],
             "environment": {
@@ -170,6 +171,26 @@ class CrewRuntimeToolTests(unittest.TestCase):
         )
         denied = tools["mcp_tool"]._run("Blocked MCP", "lookup", {})
         self.assertIn("not allowed", denied)
+
+    def test_executor_bound_streamable_http_mcp_keeps_headers_and_redacts_values(self) -> None:
+        bindings = crew_tools._executor_mcp_bindings({
+            "executorMcpBindings": [{
+                "name": "Remote MCP",
+                "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer http-secret"},
+            }]
+        })
+
+        self.assertEqual(bindings["Remote MCP"]["transport"], "streamable_http")
+        self.assertEqual(bindings["Remote MCP"]["url"], "https://mcp.example.com/mcp")
+        self.assertEqual(
+            crew_tools._redact_mcp_binding_values(
+                "request failed with Bearer http-secret",
+                bindings["Remote MCP"],
+            ),
+            "request failed with [REDACTED]",
+        )
 
     def test_file_tools_edit_read_glob_and_grep_inside_workspace(self) -> None:
         tools = self._tools()

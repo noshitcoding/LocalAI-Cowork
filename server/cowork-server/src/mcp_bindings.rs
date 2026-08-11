@@ -28,6 +28,9 @@ const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_ENVIRONMENT: usize = 64;
 const MAX_ENVIRONMENT_KEY_BYTES: usize = 256;
 const MAX_ENVIRONMENT_VALUE_BYTES: usize = 64 * 1024;
+const MAX_HEADERS: usize = 64;
+const MAX_HEADER_KEY_BYTES: usize = 256;
+const MAX_HEADER_VALUE_BYTES: usize = 64 * 1024;
 const MAX_ENCODED_BINDING_BYTES: usize = 512 * 1024;
 const MAX_CREW_MCP_SERVERS: usize = 64;
 
@@ -36,20 +39,79 @@ pub struct DeleteBindingQuery {
     expected_revision: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ServerMcpTransport {
+    #[default]
+    Stdio,
+    StreamableHttp,
+}
+
+impl ServerMcpTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdio => "stdio",
+            Self::StreamableHttp => "streamable_http",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredServerMcpBinding {
     name: String,
+    #[serde(default)]
+    transport: ServerMcpTransport,
+    #[serde(default)]
     command: String,
+    #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
     environment: BTreeMap<String, String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedServerMcpBinding {
     pub name: String,
+    pub transport: String,
     pub command: String,
     pub args: Vec<String>,
     pub environment: BTreeMap<String, String>,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl ResolvedServerMcpBinding {
+    pub(crate) fn secret_values(&self) -> Vec<String> {
+        let values = if self.transport == "streamable_http" {
+            self.headers.values()
+        } else {
+            self.environment.values()
+        };
+        values.filter(|value| !value.is_empty()).cloned().collect()
+    }
+
+    pub(crate) fn sandbox_value(&self) -> Value {
+        if self.transport == "streamable_http" {
+            serde_json::json!({
+                "name":self.name,
+                "transport":self.transport,
+                "url":self.url,
+                "headers":self.headers,
+            })
+        } else {
+            serde_json::json!({
+                "name":self.name,
+                "transport":"stdio",
+                "command":self.command,
+                "args":self.args,
+                "environment":self.environment,
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,10 +174,9 @@ pub async fn set(
     let sealed = team_id
         .map(|team_id| store.seal_for_team(team_id, &encoded))
         .unwrap_or_else(|| store.seal_for_user(owner_user_id, &encoded))?;
-    let executable_hint = executable_hint(&binding.command);
+    let executable_hint = binding_hint(&binding)?;
     let environment_keys = Value::Array(
-        binding
-            .environment
+        binding_secret_keys(&binding)
             .keys()
             .cloned()
             .map(Value::String)
@@ -175,9 +236,9 @@ pub async fn set(
             r#"
             INSERT INTO server_mcp_bindings (
                 project_id, mcp_entity_id, revision, etag, owner_user_id, team_id,
-                name, executable_hint, argument_count, environment_keys,
+                name, transport, executable_hint, argument_count, environment_keys,
                 encrypted_binding, encrypted_data_key, binding_nonce, binding_wrap_nonce
-            ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
             "#,
         )
@@ -187,6 +248,7 @@ pub async fn set(
         .bind(owner_user_id)
         .bind(team_id)
         .bind(&binding.name)
+        .bind(binding.transport.as_str())
         .bind(executable_hint)
         .bind(argument_count)
         .bind(environment_keys)
@@ -201,10 +263,10 @@ pub async fn set(
             r#"
             UPDATE server_mcp_bindings SET
                 revision = $3, etag = $4, owner_user_id = $5, team_id = $6,
-                name = $7, executable_hint = $8, argument_count = $9,
-                environment_keys = $10, encrypted_binding = $11,
-                encrypted_data_key = $12, binding_nonce = $13,
-                binding_wrap_nonce = $14, updated_at = now()
+                name = $7, transport = $8, executable_hint = $9, argument_count = $10,
+                environment_keys = $11, encrypted_binding = $12,
+                encrypted_data_key = $13, binding_nonce = $14,
+                binding_wrap_nonce = $15, updated_at = now()
             WHERE project_id = $1 AND mcp_entity_id = $2
             RETURNING *
             "#,
@@ -216,6 +278,7 @@ pub async fn set(
         .bind(owner_user_id)
         .bind(team_id)
         .bind(&binding.name)
+        .bind(binding.transport.as_str())
         .bind(executable_hint)
         .bind(argument_count)
         .bind(environment_keys)
@@ -442,9 +505,12 @@ pub(crate) async fn resolve_server_bindings_for_run(
             mcp_entity_id,
             ResolvedServerMcpBinding {
                 name: binding.name,
+                transport: binding.transport.as_str().to_owned(),
                 command: binding.command,
                 args: binding.args,
                 environment: binding.environment,
+                url: binding.url,
+                headers: binding.headers,
             },
         );
     }
@@ -466,9 +532,20 @@ fn validated_binding(
 ) -> Result<StoredServerMcpBinding, ApiError> {
     let binding = StoredServerMcpBinding {
         name: request.name.trim().to_owned(),
+        transport: match request.transport.trim() {
+            "" | "stdio" => ServerMcpTransport::Stdio,
+            "streamable_http" => ServerMcpTransport::StreamableHttp,
+            _ => {
+                return Err(ApiError::Unprocessable(
+                    "MCP transport must be stdio or streamable_http".to_owned(),
+                ))
+            }
+        },
         command: request.command.trim().to_owned(),
         args: request.args,
         environment: request.environment,
+        url: request.url.trim().to_owned(),
+        headers: request.headers,
     };
     validate_stored_binding(&binding)?;
     Ok(binding)
@@ -479,6 +556,19 @@ fn validate_stored_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiEr
         return Err(ApiError::Unprocessable(format!(
             "MCP binding name must contain 1 to {MAX_NAME_BYTES} bytes"
         )));
+    }
+    match binding.transport {
+        ServerMcpTransport::Stdio => validate_stdio_binding(binding)?,
+        ServerMcpTransport::StreamableHttp => validate_http_binding(binding)?,
+    }
+    Ok(())
+}
+
+fn validate_stdio_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiError> {
+    if !binding.url.is_empty() || !binding.headers.is_empty() {
+        return Err(ApiError::Unprocessable(
+            "stdio MCP bindings may not contain an HTTP URL or headers".to_owned(),
+        ));
     }
     if binding.command.is_empty()
         || binding.command.len() > MAX_COMMAND_BYTES
@@ -519,6 +609,86 @@ fn validate_stored_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiEr
         ));
     }
     Ok(())
+}
+
+fn validate_http_binding(binding: &StoredServerMcpBinding) -> Result<(), ApiError> {
+    if !binding.command.is_empty() || !binding.args.is_empty() || !binding.environment.is_empty() {
+        return Err(ApiError::Unprocessable(
+            "streamable HTTP MCP bindings may not contain stdio command fields".to_owned(),
+        ));
+    }
+    let url = reqwest::Url::parse(&binding.url)
+        .map_err(|_| ApiError::Unprocessable("MCP endpoint URL is invalid".to_owned()))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ApiError::Unprocessable(
+            "streamable HTTP MCP endpoints require HTTPS port 443 without userinfo, query, or fragment"
+                .to_owned(),
+        ));
+    }
+    let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+    let lower_host = host.to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_ok()
+        || matches!(lower_host.as_str(), "localhost" | "localhost.localdomain")
+        || [".localhost", ".local", ".internal", ".home.arpa"]
+            .iter()
+            .any(|suffix| lower_host.ends_with(suffix))
+    {
+        return Err(ApiError::Unprocessable(
+            "streamable HTTP MCP endpoints must use a public DNS hostname".to_owned(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    if binding.headers.len() > MAX_HEADERS
+        || binding.headers.iter().any(|(name, value)| {
+            let lower_name = name.to_ascii_lowercase();
+            name.is_empty()
+                || name.len() > MAX_HEADER_KEY_BYTES
+                || !name.bytes().all(is_http_token_byte)
+                || !names.insert(lower_name.clone())
+                || is_reserved_mcp_header(&lower_name)
+                || value.len() > MAX_HEADER_VALUE_BYTES
+                || !value
+                    .bytes()
+                    .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte))
+        })
+    {
+        return Err(ApiError::Unprocessable(
+            "MCP HTTP headers exceed the safety limits or override protocol headers".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+fn is_reserved_mcp_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept"
+            | "connection"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "http-proxy"
+            | "https-proxy"
+            | "mcp-protocol-version"
+            | "mcp-session-id"
+            | "origin"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 async fn ensure_owned_mcp_metadata(
@@ -652,12 +822,23 @@ fn fixed_nonce(value: Vec<u8>, name: &str) -> Result<[u8; 12], ApiError> {
         .map_err(|_| ApiError::Internal(anyhow::anyhow!("{name} has an invalid persisted length")))
 }
 
-fn executable_hint(command: &str) -> String {
-    command
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or_default()
-        .to_owned()
+fn binding_hint(binding: &StoredServerMcpBinding) -> Result<String, ApiError> {
+    match binding.transport {
+        ServerMcpTransport::Stdio => Ok(binding
+            .command
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_owned()),
+        ServerMcpTransport::StreamableHttp => Ok("HTTPS endpoint".to_owned()),
+    }
+}
+
+fn binding_secret_keys(binding: &StoredServerMcpBinding) -> &BTreeMap<String, String> {
+    match binding.transport {
+        ServerMcpTransport::Stdio => &binding.environment,
+        ServerMcpTransport::StreamableHttp => &binding.headers,
+    }
 }
 
 fn binding_etag(project_id: Uuid, entity_id: Uuid, revision: i64) -> String {
@@ -672,9 +853,12 @@ mod tests {
     fn binding_validation_rejects_shell_nuls_and_invalid_environment_names() {
         let valid = StoredServerMcpBinding {
             name: "Docs".to_owned(),
+            transport: ServerMcpTransport::Stdio,
             command: "/opt/mcp/docs-server".to_owned(),
             args: vec!["--stdio".to_owned()],
             environment: BTreeMap::from([("MCP_TOKEN".to_owned(), "secret".to_owned())]),
+            url: String::new(),
+            headers: BTreeMap::new(),
         };
         assert!(validate_stored_binding(&valid).is_ok());
         let mut invalid = valid.clone();
@@ -684,6 +868,48 @@ mod tests {
         invalid
             .environment
             .insert("BAD=NAME".to_owned(), "value".to_owned());
+        assert!(validate_stored_binding(&invalid).is_err());
+    }
+
+    #[test]
+    fn streamable_http_binding_requires_public_https_and_protects_protocol_headers() {
+        let valid = StoredServerMcpBinding {
+            name: "Remote Docs".to_owned(),
+            transport: ServerMcpTransport::StreamableHttp,
+            command: String::new(),
+            args: Vec::new(),
+            environment: BTreeMap::new(),
+            url: "https://mcp.example.org/tools".to_owned(),
+            headers: BTreeMap::from([(
+                "Authorization".to_owned(),
+                "Bearer executor-secret".to_owned(),
+            )]),
+        };
+        assert!(validate_stored_binding(&valid).is_ok());
+        assert_eq!(binding_hint(&valid).unwrap(), "HTTPS endpoint");
+        assert_eq!(
+            binding_secret_keys(&valid).keys().collect::<Vec<_>>(),
+            vec!["Authorization"]
+        );
+
+        for endpoint in [
+            "http://mcp.example.org/tools",
+            "https://127.0.0.1/tools",
+            "https://service.internal/tools",
+            "https://mcp.example.org:8443/tools",
+            "https://mcp.example.org/tools?token=secret",
+        ] {
+            let mut invalid = valid.clone();
+            invalid.url = endpoint.to_owned();
+            assert!(
+                validate_stored_binding(&invalid).is_err(),
+                "accepted {endpoint}"
+            );
+        }
+        let mut invalid = valid.clone();
+        invalid
+            .headers
+            .insert("MCP-Session-Id".to_owned(), "override".to_owned());
         assert!(validate_stored_binding(&invalid).is_err());
     }
 

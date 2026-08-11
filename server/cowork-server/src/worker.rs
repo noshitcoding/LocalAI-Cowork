@@ -708,19 +708,8 @@ fn inject_crew_mcp_context(
         let binding = by_name
             .get(name.as_str())
             .with_context(|| format!("Crew MCP binding {name:?} was not resolved"))?;
-        secrets.extend(
-            binding
-                .environment
-                .values()
-                .filter(|value| !value.is_empty())
-                .cloned(),
-        );
-        executor_bindings.push(json!({
-            "name":binding.name,
-            "command":binding.command,
-            "args":binding.args,
-            "environment":binding.environment,
-        }));
+        secrets.extend(binding.secret_values());
+        executor_bindings.push(binding.sandbox_value());
     }
     let request = request
         .as_object_mut()
@@ -1151,23 +1140,12 @@ impl ServerRuntimeHost<'_> {
                     bail!("MCPTool arguments must be an object");
                 }
                 let payload = json!({
-                    "server": {
-                        "name": binding.name,
-                        "command": binding.command,
-                        "args": binding.args,
-                        "environment": binding.environment,
-                    },
+                    "server": binding.sandbox_value(),
                     "tool_name": tool_name,
                     "arguments": arguments,
                     "timeout_seconds": 120,
                 });
-                secret_redactions.extend(
-                    binding
-                        .environment
-                        .values()
-                        .filter(|value| !value.is_empty())
-                        .cloned(),
-                );
+                secret_redactions.extend(binding.secret_values());
                 stdin_base64 = Some(STANDARD.encode(serde_json::to_vec(&payload)?));
                 network = SandboxNetwork::FilteredEgress;
                 limits.timeout_seconds = 150;
@@ -1686,9 +1664,12 @@ mod tests {
         });
         let bindings = vec![ResolvedServerMcpBinding {
             name: "Docs".to_owned(),
+            transport: "stdio".to_owned(),
             command: "/opt/cowork/bin/docs-mcp".to_owned(),
             args: vec!["--stdio".to_owned()],
             environment: BTreeMap::from([("DOCS_TOKEN".to_owned(), "crew-secret".to_owned())]),
+            url: String::new(),
+            headers: BTreeMap::new(),
         }];
 
         let secrets = inject_crew_mcp_context(&mut request, &bindings, creator_user_id).unwrap();
@@ -1698,6 +1679,7 @@ mod tests {
             request["executorMcpBindings"][0]["command"],
             "/opt/cowork/bin/docs-mcp"
         );
+        assert_eq!(request["executorMcpBindings"][0]["transport"], "stdio");
         assert_eq!(
             request["governance"]["subject"],
             format!("server-run:{creator_user_id}")

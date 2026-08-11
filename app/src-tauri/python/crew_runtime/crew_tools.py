@@ -1114,10 +1114,13 @@ def _executor_mcp_bindings(request: dict) -> dict[str, dict[str, Any]]:
         if not isinstance(value, dict):
             continue
         name = str(value.get("name") or "").strip()
+        transport = str(value.get("transport") or "stdio").strip()
         command = value.get("command")
         args = value.get("args", [])
         environment = value.get("environment", {})
-        if (
+        url = value.get("url")
+        headers = value.get("headers", {})
+        if transport == "stdio" and (
             name
             and isinstance(command, str)
             and command.strip()
@@ -1128,9 +1131,23 @@ def _executor_mcp_bindings(request: dict) -> dict[str, dict[str, Any]]:
         ):
             bindings[name] = {
                 "name": name,
+                "transport": "stdio",
                 "command": command,
                 "args": args,
                 "environment": environment,
+            }
+        elif transport == "streamable_http" and (
+            name
+            and isinstance(url, str)
+            and url.startswith("https://")
+            and isinstance(headers, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in headers.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "transport": "streamable_http",
+                "url": url,
+                "headers": headers,
             }
     return bindings
 
@@ -1163,7 +1180,7 @@ def _allowed_mcp_server_names(request: dict, agent: dict) -> list[str]:
 
 def _redact_mcp_binding_values(value: str, binding: dict[str, Any]) -> str:
     redacted = value
-    environment = binding.get("environment") or {}
+    environment = binding.get("environment") or binding.get("headers") or {}
     secrets = sorted(
         (secret for secret in environment.values() if isinstance(secret, str) and secret),
         key=len,
@@ -1192,7 +1209,7 @@ def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
 
 class McpTool(BaseTool):
     name: str = "mcp_tool"
-    description: str = "Call a tool on an executor-bound MCP stdio server."
+    description: str = "Call a tool on an executor-bound MCP server."
     args_schema: type[BaseModel] = McpToolInput
     _bindings: dict[str, dict[str, Any]] = PrivateAttr()
     _allowed_names: set[str] = PrivateAttr()
@@ -1207,7 +1224,7 @@ class McpTool(BaseTool):
         names = [name for name in allowed_names if name in bindings]
         super().__init__(
             description=(
-                "Call a tool on an encrypted executor-bound MCP stdio server. "
+                "Call a tool on an encrypted executor-bound MCP server. "
                 f"Allowed servers: {', '.join(names)}"
             )
         )

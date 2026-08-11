@@ -152,13 +152,16 @@ Synchronized `mcp_metadata` records never contain commands, arguments, endpoints
 or credential values. After creating the metadata record, an Editor can open
 **Server MCP** in Web or Android and bind that exact metadata UUID to one
 project. The complete stdio command, argument array and environment map are
-encrypted with the project user/team envelope key. List responses expose only
-the executable basename, argument count and environment-key names. Updating a
-binding requires submitting the complete secret again because the API never
-returns stored values. Binding names are unique inside a project because the
-agent-facing MCP contract addresses servers by name. Renaming synchronized MCP
-metadata intentionally blocks new Runs until an Editor replaces the binding;
-this prevents a stale credential binding from silently changing identity.
+encrypted with the project user/team envelope key. A Streamable HTTP binding
+instead encrypts its complete HTTPS URL and static credential-header map. List
+responses expose only the transport, a generic `HTTPS endpoint` hint or the
+stdio executable basename, the argument count, and secret environment/header
+names. Updating a binding requires submitting the complete secret again because
+the API never returns stored values. Binding names are unique inside a project
+because the agent-facing MCP contract addresses servers by name. Renaming
+synchronized MCP metadata intentionally blocks new Runs until an Editor replaces
+the binding; this prevents a stale credential binding from silently changing
+identity.
 
 The configured command must already exist in the pinned Core sandbox image.
 For a custom MCP server, derive a reviewed Core image from
@@ -166,22 +169,36 @@ For a custom MCP server, derive a reviewed Core image from
 `COWORK_SANDBOX_CORE_IMAGE`, and rebuild the runner image set. Do not use a
 binding to download arbitrary packages at Run time.
 
+Streamable HTTP follows the stable MCP 2025-11-25 transport and lifecycle. The
+client handles JSON and SSE responses, propagates a valid `MCP-Session-Id`, sends
+`MCP-Protocol-Version` after initialization, resumes interrupted SSE delivery by
+event ID within a bounded retry budget, and attempts session deletion on exit.
+The endpoint must use HTTPS on port 443 and a public DNS name; user information, query
+strings, fragments, IP literals, local/internal names, redirects, reserved MCP
+or hop-by-hop headers, and control characters are rejected. The sandbox still
+reaches it only through the filtered egress proxy, whose destination checks
+block private, link-local, metadata, host and Compose networks after DNS
+resolution. Keeping credentials in headers rather than URL queries also avoids
+placing them in proxy request paths.
+
 Selecting MCP metadata in the Run composer automatically requires
 `tool.mcp.invoke`. A Linux Run fails closed before queueing when its project has
 no matching binding. At execution, the worker decrypts only the selected
 bindings, sends them inside the HMAC-signed internal runner body, and the runner
 delivers them to the sandbox over stdin rather than Docker environment
-arguments. The one-shot MCP client uses filtered egress, invokes the command
-without a shell, applies a 120-second protocol timeout and redacts every bound
-environment value from stdout/stderr before model or event persistence.
+arguments. The one-shot MCP client uses filtered egress, invokes stdio commands
+without a shell, applies a 120-second protocol timeout and recursively redacts
+every bound environment or header value before model or event persistence.
 
-MCP stdio bindings are available to both the normal Rust agent and the pinned
-Crew adapter on the Linux server executor. For Crew Runs, the selected frozen
-metadata names must exactly equal the union of `mcpServerNames` on enabled
-agents. The worker injects only those bindings, gives each agent only its own
-allowlist, and recursively redacts provider and MCP environment secrets again
-before any Crew event or response is persisted. Managed Windows uses the
-executor-local stdio configuration described below. Streamable-HTTP MCP and
+MCP stdio and Streamable HTTP bindings are available to both the normal Rust
+agent and the pinned Crew adapter on the Linux server executor. For Crew Runs,
+the selected frozen metadata names must exactly equal the union of
+`mcpServerNames` on enabled agents. The worker injects only those bindings,
+gives each agent only its own allowlist, and recursively redacts provider and
+MCP environment/header secrets again before any Crew event or response is
+persisted. Static authorization headers are supported; OAuth discovery/dynamic
+registration and the legacy HTTP+SSE transport are not. Managed Windows uses
+the executor-local stdio configuration described below. Streamable HTTP and
 Crew MCP on managed Windows remain separate compatibility work and must not be
 advertised as available.
 

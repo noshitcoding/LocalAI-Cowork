@@ -589,7 +589,7 @@ export const serverMcpBindingRecordSchema = z.object({
   revision: z.number().int().positive(),
   etag: z.string(),
   name: z.string(),
-  transport: z.literal('stdio'),
+  transport: z.enum(['stdio', 'streamable_http']),
   executable_hint: z.string(),
   argument_count: z.number().int().nonnegative(),
   environment_keys: z.array(z.string()),
@@ -601,9 +601,12 @@ export type ServerMcpBindingRecord = z.infer<typeof serverMcpBindingRecordSchema
 export const setServerMcpBindingRequestSchema = z.object({
   expected_revision: z.number().int().positive().nullable(),
   name: z.string(),
+  transport: z.enum(['stdio', 'streamable_http']),
   command: z.string(),
   args: z.array(z.string()),
   environment: z.record(z.string(), z.string()),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()),
 })
 export type SetServerMcpBindingRequest = z.infer<typeof setServerMcpBindingRequestSchema>
 
