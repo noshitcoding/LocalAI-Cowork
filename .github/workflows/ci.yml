@@ -318,7 +318,7 @@ jobs:
         working-directory: app
         run: npm run build -- --mode web
 
-      - name: Browser and WCAG matrix
+      - name: Desktop, Android, iPhone, and WCAG browser matrix
         working-directory: app
         run: npx playwright test -c playwright.web.config.ts e2e/web-runtime.spec.ts
 
