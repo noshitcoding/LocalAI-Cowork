@@ -180,8 +180,9 @@ Crew adapter on the Linux server executor. For Crew Runs, the selected frozen
 metadata names must exactly equal the union of `mcpServerNames` on enabled
 agents. The worker injects only those bindings, gives each agent only its own
 allowlist, and recursively redacts provider and MCP environment secrets again
-before any Crew event or response is persisted. Managed-Windows and
-streamable-HTTP MCP adapters remain separate compatibility work and must not be
+before any Crew event or response is persisted. Managed Windows uses the
+executor-local stdio configuration described below. Streamable-HTTP MCP and
+Crew MCP on managed Windows remain separate compatibility work and must not be
 advertised as available.
 
 Runs may also select synchronized skills and memory records by ID. The API
@@ -481,6 +482,43 @@ adapter performs Word/Excel/PowerPoint editing and export through COM and GUI
 automation with visible applications, forced macro disablement, dialog
 detection, live desktop streaming, single-run concurrency, cleanup, and a
 post-run health gate.
+
+### Executor-local MCP on Windows
+
+A managed Windows executor can additionally run stdio MCP servers installed on
+that dedicated VM/PC. Copy
+`agents/cowork-device-agent/mcp-bindings.example.json` outside the checkout,
+replace its placeholder, and set `COWORK_MCP_BINDINGS_FILE` to the absolute
+path. Protect the file with a Windows ACL readable only by Administrators and
+the dedicated executor account. The file is deliberately local to the
+executor; neither its commands nor its environment values are synchronized to
+the control plane.
+
+Each JSON entry has `name`, `command`, optional `args`, and optional
+`environment`. `name` must exactly match the name of synchronized MCP metadata
+selected in the Run. The command must be an absolute path to a reviewed,
+already installed `.exe` or `.com`; batch and command files are rejected so it
+is started directly without `cmd.exe` or PowerShell command-line
+interpretation. The executable itself must be a regular non-symlink file. The
+child receives only a small Windows process baseline and its binding-specific
+environment, so it does not inherit the executor token, model key, or unrelated
+`COWORK_*` values. It and all descendants are attached to a kill-on-close
+Windows Job Object. Configure a model endpoint with `COWORK_MODEL_BASE_URL` and,
+when needed, `COWORK_MODEL_API_KEY_FILE`.
+
+On registration, the agent adds `tool.mcp.invoke` and publishes only the bound
+server names. The server will queue and lease a selected MCP Run only to an
+executor in the chosen pool that advertises every exact name. Tool responses,
+events, checkpoints, errors, and final model content are recursively redacted
+for all configured environment values. A disconnect after an unsafe MCP
+checkpoint interrupts the Run for manual review instead of starting the tool a
+second time. Changed workspace files are uploaded as the normal review-only
+result snapshot.
+
+This first Windows adapter supports local stdio servers only. It does not yet
+support streamable HTTP or Crew MCP. The dedicated Windows account and process
+boundary are not a network sandbox: use host firewall/endpoint policy when an
+MCP server must be denied private-network access.
 
 Microsoft does not recommend unattended Office server automation. Operate this
 as best-effort interactive RPA on licensed Windows/Microsoft 365 installations

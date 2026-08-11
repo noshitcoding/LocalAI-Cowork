@@ -1426,7 +1426,7 @@ async fn prepare_scheduled_run(
                 .iter()
                 .all(|capability| available.contains(capability.0.as_str()))
         }
-        target => db::target_has_executor(pool, target, &required_capabilities)
+        target => db::target_has_executor(pool, target, &required_capabilities, &input)
             .await
             .map_err(block)?,
     };

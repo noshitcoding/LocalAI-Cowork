@@ -2584,8 +2584,13 @@ async fn resume_snapshot_runs(state: &AppState, manifest_id: Uuid) -> Result<(),
                     .all(|required| server.contains(required.0.as_str()))
             }
             target => {
-                db::target_has_executor(&state.pool, target, &run.spec.required_capabilities)
-                    .await?
+                db::target_has_executor(
+                    &state.pool,
+                    target,
+                    &run.spec.required_capabilities,
+                    &run.spec.input,
+                )
+                .await?
             }
         };
         db::transition_run(

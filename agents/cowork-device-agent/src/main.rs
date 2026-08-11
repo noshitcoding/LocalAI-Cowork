@@ -2,10 +2,12 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
     path::{Component, Path, PathBuf},
+    process::Stdio,
     time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use cowork_contracts::{
     AppendRunEventRequest, ApprovalRequest, ApprovalState, BeginSnapshotUploadRequest, Capability,
     CapabilityDescriptor, CompleteRunRequest, CreateApprovalRequest, CreateCheckpointRequest,
@@ -16,13 +18,19 @@ use cowork_contracts::{
     RunRecord, RunState, SnapshotManifest, SnapshotUploadChunk, SnapshotUploadFile,
     SnapshotUploadSession, SyncApplyStatus, SyncChange, SyncOperation, SCHEMA_VERSION,
 };
-use cowork_runtime::crew::{prepare_crew_request, CrewModelConfig};
+use cowork_runtime::{
+    crew::{prepare_crew_request, CrewModelConfig},
+    AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
+    ToolOutput,
+};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Method};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{
     connect_async,
@@ -38,6 +46,9 @@ use uuid::Uuid;
 mod windows_desktop;
 
 const SNAPSHOT_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_EXECUTOR_MCP_BINDINGS: usize = 64;
+const MAX_EXECUTOR_MCP_FILE_BYTES: u64 = 512 * 1024;
+const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
 struct LeaseExecution {
@@ -54,7 +65,7 @@ struct WorkspaceInventory {
     total_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Config {
     server_url: String,
     token: String,
@@ -70,6 +81,90 @@ struct Config {
     poll_interval: Duration,
     workspace_root: PathBuf,
     local_daemon: Option<LocalDaemonClient>,
+    mcp_bindings: Vec<ExecutorMcpBinding>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutorMcpBinding {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    environment: BTreeMap<String, String>,
+}
+
+struct ManagedMcpProcessJob {
+    #[cfg(windows)]
+    handle: isize,
+}
+
+impl ManagedMcpProcessJob {
+    fn attach(child: &tokio::process::Child) -> Result<Self> {
+        #[cfg(windows)]
+        {
+            use std::{ffi::c_void, mem::size_of, ptr};
+            use windows_sys::Win32::{
+                Foundation::CloseHandle,
+                System::{
+                    JobObjects::{
+                        AssignProcessToJobObject, CreateJobObjectW,
+                        JobObjectExtendedLimitInformation, SetInformationJobObject,
+                        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    },
+                    Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
+                },
+            };
+            let process_id = child.id().context("MCP server has no process ID")?;
+            unsafe {
+                let job = CreateJobObjectW(ptr::null(), ptr::null());
+                if job.is_null() {
+                    bail!("failed to create the MCP process job");
+                }
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const c_void,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    CloseHandle(job);
+                    bail!("failed to configure the MCP process job");
+                }
+                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, process_id);
+                if process.is_null() {
+                    CloseHandle(job);
+                    bail!("failed to open the MCP server for job assignment");
+                }
+                let assigned = AssignProcessToJobObject(job, process);
+                CloseHandle(process);
+                if assigned == 0 {
+                    CloseHandle(job);
+                    bail!("failed to assign the MCP server to its lifecycle job");
+                }
+                Ok(Self {
+                    handle: job as isize,
+                })
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ManagedMcpProcessJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle as _);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -261,7 +356,8 @@ impl Config {
         } else {
             ""
         };
-        let capabilities: Vec<CapabilityDescriptor> =
+        let mcp_bindings = load_executor_mcp_bindings(kind)?;
+        let mut capabilities: Vec<CapabilityDescriptor> =
             value_or("COWORK_AGENT_CAPABILITIES", default_capability)
                 .split(',')
                 .map(str::trim)
@@ -273,6 +369,53 @@ impl Config {
                     attributes: BTreeMap::new(),
                 })
                 .collect();
+        if kind == ExecutorKind::ManagedWindows
+            && capabilities
+                .iter()
+                .any(|capability| capability.name.0 == "crew.python")
+        {
+            bail!("managed Windows executors do not currently support crew.python");
+        }
+        let mcp_capability = capabilities
+            .iter_mut()
+            .find(|capability| capability.name.0 == "tool.mcp.invoke");
+        if mcp_bindings.is_empty() {
+            if kind == ExecutorKind::ManagedWindows && mcp_capability.is_some() {
+                bail!(
+                    "managed Windows executors may advertise tool.mcp.invoke only with COWORK_MCP_BINDINGS_FILE"
+                );
+            }
+        } else {
+            if model_base_url.is_none() {
+                bail!("managed Windows MCP execution requires COWORK_MODEL_BASE_URL");
+            }
+            let server_names = mcp_bindings
+                .iter()
+                .map(|binding| Value::String(binding.name.clone()))
+                .collect::<Vec<_>>();
+            if let Some(capability) = mcp_capability {
+                capability
+                    .attributes
+                    .insert("server_names".to_owned(), Value::Array(server_names));
+                capability.attributes.insert(
+                    "binding_source".to_owned(),
+                    Value::String("executor_local_file".to_owned()),
+                );
+            } else {
+                capabilities.push(CapabilityDescriptor {
+                    schema_version: SCHEMA_VERSION,
+                    name: Capability::from("tool.mcp.invoke"),
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                    attributes: BTreeMap::from([
+                        ("server_names".to_owned(), Value::Array(server_names)),
+                        (
+                            "binding_source".to_owned(),
+                            Value::String("executor_local_file".to_owned()),
+                        ),
+                    ]),
+                });
+            }
+        }
         let advertises_windows_desktop = capabilities
             .iter()
             .any(|capability| capability.name.0 == "desktop.windows");
@@ -334,6 +477,7 @@ impl Config {
                 ".cowork-agent-workspaces",
             )),
             local_daemon,
+            mcp_bindings,
         })
     }
 }
@@ -1460,6 +1604,11 @@ async fn execute_lease(
             result_diff_summary: Value::Null,
         });
     }
+    if config.kind == ExecutorKind::ManagedWindows
+        && !selected_executor_mcp_names(&lease.run.spec.input)?.is_empty()
+    {
+        return execute_managed_mcp_run(client, config, lease).await;
+    }
     if let Some(daemon) = &config.local_daemon {
         return execute_via_local_daemon(client, config, daemon, lease).await;
     }
@@ -1469,6 +1618,486 @@ async fn execute_lease(
         result_snapshot_manifest_id: None,
         result_diff_summary: Value::Null,
     })
+}
+
+async fn execute_managed_mcp_run(
+    client: &ControlPlaneClient,
+    config: &Config,
+    lease: &RunLease,
+) -> Result<LeaseExecution> {
+    if lease
+        .run
+        .spec
+        .input
+        .get("task_runner")
+        .and_then(Value::as_str)
+        == Some("crew")
+    {
+        bail!("Crew MCP execution is not available on managed Windows executors");
+    }
+    let selected = selected_executor_mcp_names(&lease.run.spec.input)?;
+    let bindings = config
+        .mcp_bindings
+        .iter()
+        .filter(|binding| selected.binary_search(&binding.name).is_ok())
+        .collect::<Vec<_>>();
+    if bindings.len() != selected.len() {
+        bail!("this managed Windows executor does not have every selected MCP binding");
+    }
+    let model = AgentModelConfig {
+        base_url: config
+            .model_base_url
+            .clone()
+            .context("managed Windows MCP execution requires a model endpoint")?,
+        api_key: config.model_api_key.clone(),
+        model: config.model_name.clone(),
+        timeout: Duration::from_secs(20 * 60),
+        max_steps: 64,
+        verify_tls_certificates: true,
+    };
+    let runtime = AgentRuntime::new(model)?;
+    let workspace = if lease.run.spec.snapshot_id.is_some() {
+        materialize_run_workspace(client, config, lease).await?
+    } else {
+        let path = config.workspace_root.join(lease.run.spec.id.to_string());
+        if path.parent() != Some(config.workspace_root.as_path()) {
+            bail!("refusing a managed MCP workspace outside the configured root");
+        }
+        tokio::fs::create_dir_all(&path).await?;
+        path
+    };
+    let before = inventory_workspace(&workspace).await?;
+    let mut secrets = bindings
+        .iter()
+        .flat_map(|binding| binding.environment.values())
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    secrets.extend(
+        config
+            .model_api_key
+            .clone()
+            .filter(|value| !value.is_empty()),
+    );
+    let host = ManagedMcpRuntimeHost {
+        client,
+        lease,
+        workspace: &workspace,
+        bindings,
+        secrets,
+    };
+    let result = runtime
+        .execute(&lease.run.spec, &host)
+        .await
+        .map_err(|error| anyhow::anyhow!(host.redact(&format!("{error:#}"))))?;
+    let content = host.redact(&result.content);
+    let after = inventory_workspace(&workspace).await?;
+    let diff_summary = workspace_diff_summary(Some(&before), &after);
+    let result_snapshot_manifest_id = if before.fingerprints == after.fingerprints {
+        None
+    } else {
+        Some(publish_result_snapshot(client, lease, &after).await?)
+    };
+    Ok(LeaseExecution {
+        result: json!({
+            "content":content,
+            "steps":result.steps,
+            "usage":{
+                "prompt_tokens":result.prompt_tokens,
+                "completion_tokens":result.completion_tokens,
+                "total_tokens":result.prompt_tokens.saturating_add(result.completion_tokens),
+            }
+        }),
+        result_snapshot_manifest_id,
+        result_diff_summary: diff_summary,
+    })
+}
+
+struct ManagedMcpRuntimeHost<'a> {
+    client: &'a ControlPlaneClient,
+    lease: &'a RunLease,
+    workspace: &'a Path,
+    bindings: Vec<&'a ExecutorMcpBinding>,
+    secrets: Vec<String>,
+}
+
+impl ManagedMcpRuntimeHost<'_> {
+    fn redact(&self, value: &str) -> String {
+        redact_executor_secrets(value, &self.secrets)
+    }
+
+    async fn append(&self, kind: RunEventKind, mut payload: Value) -> Result<()> {
+        redact_executor_secret_value(&mut payload, &self.secrets);
+        self.client
+            .append_event(
+                self.lease,
+                &RunEvent {
+                    schema_version: SCHEMA_VERSION,
+                    run_id: self.lease.run.spec.id,
+                    sequence: 0,
+                    event_id: Uuid::new_v4(),
+                    kind,
+                    payload,
+                    created_at: chrono::Utc::now(),
+                },
+            )
+            .await
+    }
+}
+
+#[async_trait]
+impl RuntimeHost for ManagedMcpRuntimeHost<'_> {
+    fn tools(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "MCPTool".to_owned(),
+            description: format!(
+                "Call a tool on one of these executor-bound MCP servers: {}",
+                self.bindings
+                    .iter()
+                    .map(|binding| binding.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            input_schema: json!({
+                "type":"object",
+                "properties":{
+                    "server_name":{"type":"string"},
+                    "tool_name":{"type":"string"},
+                    "arguments":{"type":"object"}
+                },
+                "required":["server_name","tool_name","arguments"],
+                "additionalProperties":false
+            }),
+            required_capability: Some(Capability::from("tool.mcp.invoke")),
+            mutating: true,
+        }]
+    }
+
+    async fn emit(&self, kind: RunEventKind, payload: Value) -> Result<()> {
+        self.append(kind, payload).await
+    }
+
+    async fn execute_tool(&self, invocation: ToolInvocation) -> Result<ToolOutput> {
+        if invocation.name != "MCPTool" {
+            bail!("managed Windows executor received an unsupported tool");
+        }
+        let server_name = invocation
+            .arguments
+            .get("server_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("MCPTool requires server_name")?;
+        let tool_name = invocation
+            .arguments
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("MCPTool requires tool_name")?;
+        let arguments = invocation
+            .arguments
+            .get("arguments")
+            .and_then(Value::as_object)
+            .cloned()
+            .context("MCPTool arguments must be an object")?;
+        let binding = self
+            .bindings
+            .iter()
+            .copied()
+            .find(|binding| binding.name == server_name)
+            .with_context(|| format!("MCP server {server_name:?} is not selected for this Run"))?;
+        self.client
+            .create_checkpoint(
+                self.lease,
+                Uuid::new_v4(),
+                false,
+                json!({
+                    "phase":"managed_windows_mcp_dispatched",
+                    "server_name":server_name,
+                    "tool_name":tool_name,
+                }),
+            )
+            .await?;
+        let response =
+            invoke_executor_mcp(binding, tool_name, Value::Object(arguments), self.workspace)
+                .await
+                .map_err(|error| anyhow::anyhow!(self.redact(&format!("{error:#}"))))?;
+        let is_error = response
+            .get("result")
+            .and_then(|result| result.get("isError"))
+            .and_then(Value::as_bool)
+            == Some(true);
+        let mut content = response.get("result").cloned().unwrap_or(Value::Null);
+        redact_executor_secret_value(&mut content, &self.secrets);
+        Ok(ToolOutput {
+            content: serde_json::to_string_pretty(&content)?,
+            is_error,
+            safe_to_resume: true,
+            metadata: json!({"server_name":server_name,"tool_name":tool_name}),
+        })
+    }
+
+    async fn checkpoint(&self, mut state: Value, _safe_to_resume: bool) -> Result<()> {
+        redact_executor_secret_value(&mut state, &self.secrets);
+        self.client
+            .create_checkpoint(self.lease, Uuid::new_v4(), false, state)
+            .await
+    }
+}
+
+fn selected_executor_mcp_names(input: &Value) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for item in input
+        .get("frozen_runtime_context")
+        .and_then(|context| context.get("mcp_metadata"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = item
+            .get("definition")
+            .and_then(|definition| definition.get("name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| {
+                !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+            })
+            .context("selected MCP metadata contains an invalid name")?;
+        if seen.insert(name.to_owned()) {
+            names.push(name.to_owned());
+        }
+        if names.len() > MAX_EXECUTOR_MCP_BINDINGS {
+            bail!("a Run may select at most {MAX_EXECUTOR_MCP_BINDINGS} MCP servers");
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+async fn invoke_executor_mcp(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+    workspace: &Path,
+) -> Result<Value> {
+    if tool_name.is_empty() || tool_name.len() > 1_024 || tool_name.chars().any(char::is_control) {
+        bail!("MCP tool name is missing or invalid");
+    }
+    if !arguments.is_object() {
+        bail!("MCP tool arguments must be an object");
+    }
+    let mut command = tokio::process::Command::new(&binding.command);
+    command
+        .args(&binding.args)
+        .current_dir(workspace)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    for name in [
+        "SystemRoot",
+        "WINDIR",
+        "PATH",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+    ] {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.envs(&binding.environment);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to start MCP server {:?}", binding.name))?;
+    let _process_job = match ManagedMcpProcessJob::attach(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error)
+                .with_context(|| format!("failed to isolate MCP server {:?}", binding.name));
+        }
+    };
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("MCP server did not expose stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("MCP server did not expose stdout")?;
+    let mut stdout = BufReader::new(stdout);
+    let protocol = async {
+        let initialized = executor_mcp_request(
+            &mut stdin,
+            &mut stdout,
+            1,
+            "initialize",
+            json!({
+                "protocolVersion":"2024-11-05",
+                "clientInfo":{
+                    "name":"Open Cowork managed Windows executor",
+                    "version":env!("CARGO_PKG_VERSION")
+                },
+                "capabilities":{}
+            }),
+        )
+        .await?;
+        write_executor_mcp_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc":"2.0",
+                "method":"notifications/initialized",
+                "params":{}
+            }),
+        )
+        .await?;
+        let result = executor_mcp_request(
+            &mut stdin,
+            &mut stdout,
+            2,
+            "tools/call",
+            json!({"name":tool_name,"arguments":arguments}),
+        )
+        .await?;
+        Ok(json!({
+            "server_name":binding.name,
+            "tool_name":tool_name,
+            "protocol_version":initialized.get("protocolVersion"),
+            "result":result,
+        }))
+    }
+    .await;
+    drop(stdin);
+    if child.try_wait()?.is_none() {
+        child
+            .kill()
+            .await
+            .context("failed to terminate MCP server")?;
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    protocol
+}
+
+async fn executor_mcp_request<W, R>(
+    stdin: &mut W,
+    stdout: &mut R,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncBufRead + Unpin,
+{
+    write_executor_mcp_message(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+    )
+    .await?;
+    for _ in 0..=256 {
+        let line = tokio::time::timeout(Duration::from_secs(120), read_executor_mcp_line(stdout))
+            .await
+            .with_context(|| format!("MCP request {method} timed out"))??
+            .with_context(|| format!("MCP server closed stdout during {method}"))?;
+        let Ok(message) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if message.get("id").and_then(Value::as_u64) != Some(id) {
+            continue;
+        }
+        if let Some(error) = message.get("error") {
+            let detail = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| error.to_string());
+            bail!(
+                "MCP server rejected {method}: {}",
+                detail.chars().take(2_000).collect::<String>()
+            );
+        }
+        return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+    }
+    bail!("MCP server exceeded the unsolicited-message limit during {method}")
+}
+
+async fn write_executor_mcp_message<W: AsyncWrite + Unpin>(
+    stdin: &mut W,
+    value: &Value,
+) -> Result<()> {
+    let mut encoded = serde_json::to_vec(value)?;
+    if encoded.len() > MAX_MCP_MESSAGE_BYTES {
+        bail!("MCP request exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+    }
+    encoded.push(b'\n');
+    stdin.write_all(&encoded).await?;
+    stdin.flush().await?;
+    Ok(())
+}
+
+async fn read_executor_mcp_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok((!line.is_empty()).then_some(line));
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(take) > MAX_MCP_MESSAGE_BYTES {
+            bail!("MCP response line exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn redact_executor_secrets(value: &str, secrets: &[String]) -> String {
+    let mut secrets = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .collect::<Vec<_>>();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets
+        .into_iter()
+        .fold(value.to_owned(), |redacted, secret| {
+            redacted.replace(secret.as_str(), "[REDACTED]")
+        })
+}
+
+fn redact_executor_secret_value(value: &mut Value, secrets: &[String]) {
+    match value {
+        Value::String(text) => *text = redact_executor_secrets(text, secrets),
+        Value::Array(values) => {
+            for value in values {
+                redact_executor_secret_value(value, secrets);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                redact_executor_secret_value(value, secrets);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn execute_via_local_daemon(
@@ -2513,6 +3142,102 @@ async fn call_model(config: &Config, input: &Value) -> Result<String> {
         .context("model response did not contain message content")
 }
 
+fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBinding>> {
+    let Some(path) = optional("COWORK_MCP_BINDINGS_FILE") else {
+        return Ok(Vec::new());
+    };
+    if kind != ExecutorKind::ManagedWindows {
+        bail!("COWORK_MCP_BINDINGS_FILE is currently supported only for managed Windows executors");
+    }
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("failed to inspect COWORK_MCP_BINDINGS_FILE {path}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("COWORK_MCP_BINDINGS_FILE must reference a regular non-symlink file");
+    }
+    if metadata.len() > MAX_EXECUTOR_MCP_FILE_BYTES {
+        bail!("COWORK_MCP_BINDINGS_FILE exceeds {MAX_EXECUTOR_MCP_FILE_BYTES} bytes");
+    }
+    let bytes = fs::read(&path)
+        .with_context(|| format!("failed to read COWORK_MCP_BINDINGS_FILE {path}"))?;
+    let bindings = parse_executor_mcp_bindings(kind, &bytes)?;
+    for binding in &bindings {
+        let command = Path::new(&binding.command);
+        if !command.is_absolute() {
+            bail!("managed Windows MCP commands must use absolute executable paths");
+        }
+        let metadata = fs::symlink_metadata(command).with_context(|| {
+            format!(
+                "failed to inspect MCP executable for binding {:?}",
+                binding.name
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("managed Windows MCP commands must reference regular non-symlink files");
+        }
+    }
+    Ok(bindings)
+}
+
+fn parse_executor_mcp_bindings(
+    kind: ExecutorKind,
+    bytes: &[u8],
+) -> Result<Vec<ExecutorMcpBinding>> {
+    if kind != ExecutorKind::ManagedWindows {
+        bail!("executor MCP bindings are currently supported only for managed Windows");
+    }
+    if bytes.len() as u64 > MAX_EXECUTOR_MCP_FILE_BYTES {
+        bail!("executor MCP binding payload exceeds {MAX_EXECUTOR_MCP_FILE_BYTES} bytes");
+    }
+    let mut bindings: Vec<ExecutorMcpBinding> =
+        serde_json::from_slice(bytes).context("invalid executor MCP binding JSON")?;
+    if bindings.is_empty() || bindings.len() > MAX_EXECUTOR_MCP_BINDINGS {
+        bail!("executor MCP binding files require 1 to {MAX_EXECUTOR_MCP_BINDINGS} entries");
+    }
+    let mut names = HashSet::new();
+    for binding in &mut bindings {
+        binding.name = binding.name.trim().to_owned();
+        binding.command = binding.command.trim().to_owned();
+        if binding.name.is_empty()
+            || binding.name.len() > 256
+            || binding.name.chars().any(char::is_control)
+            || !names.insert(binding.name.clone())
+        {
+            bail!("executor MCP binding names must be unique valid strings of at most 256 bytes");
+        }
+        let normalized_command = binding.command.to_ascii_lowercase();
+        if binding.command.is_empty()
+            || binding.command.len() > 32 * 1024
+            || binding.command.chars().any(|character| character == '\0')
+            || !(normalized_command.ends_with(".exe") || normalized_command.ends_with(".com"))
+        {
+            bail!("executor MCP binding commands must be direct .exe or .com executables");
+        }
+        if binding.args.len() > 256
+            || binding
+                .args
+                .iter()
+                .any(|argument| argument.len() > 64 * 1024 || argument.contains('\0'))
+        {
+            bail!("executor MCP binding arguments exceed the safety limits");
+        }
+        if binding.environment.len() > 64
+            || binding.environment.iter().any(|(key, value)| {
+                key.is_empty()
+                    || key.len() > 256
+                    || key.chars().any(|character| {
+                        character == '=' || character == '\0' || character.is_control()
+                    })
+                    || value.len() > 64 * 1024
+                    || value.contains('\0')
+            })
+        {
+            bail!("executor MCP binding environment exceeds the safety limits");
+        }
+    }
+    bindings.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(bindings)
+}
+
 fn required(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("missing required environment variable {name}"))
 }
@@ -2740,6 +3465,155 @@ mod tests {
             ),
             json!({"name": "Local Ollama", "model": "llama3.1:8b"})
         );
+    }
+
+    #[test]
+    fn managed_windows_mcp_bindings_are_bounded_unique_and_secret_redacted() {
+        let bindings = parse_executor_mcp_bindings(
+            ExecutorKind::ManagedWindows,
+            br#"[
+                {"name":" Docs ","command":" C:\\MCP\\docs.exe ","args":["--stdio"],
+                 "environment":{"MCP_TOKEN":"executor-secret-value"}}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(bindings[0].name, "Docs");
+        assert_eq!(bindings[0].command, "C:\\MCP\\docs.exe");
+        assert_eq!(
+            redact_executor_secrets(
+                "token=executor-secret-value",
+                &bindings[0]
+                    .environment
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+            "token=[REDACTED]"
+        );
+        assert!(parse_executor_mcp_bindings(
+            ExecutorKind::PersonalDevice,
+            br#"[{"name":"Docs","command":"docs.exe"}]"#,
+        )
+        .is_err());
+        assert!(parse_executor_mcp_bindings(
+            ExecutorKind::ManagedWindows,
+            br#"[
+                {"name":"Docs","command":"one.exe"},
+                {"name":"Docs","command":"two.exe"}
+            ]"#,
+        )
+        .is_err());
+        assert!(parse_executor_mcp_bindings(
+            ExecutorKind::ManagedWindows,
+            br#"[{"name":"Docs","command":"C:\\MCP\\docs.cmd"}]"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn selected_executor_mcp_names_are_exact_deduplicated_and_sorted() {
+        assert_eq!(
+            selected_executor_mcp_names(&json!({
+                "frozen_runtime_context":{"mcp_metadata":[
+                    {"definition":{"name":"Zebra"}},
+                    {"definition":{"name":"Docs"}},
+                    {"definition":{"name":"Docs"}}
+                ]}
+            }))
+            .unwrap(),
+            vec!["Docs", "Zebra"]
+        );
+        assert!(selected_executor_mcp_names(&json!({
+            "frozen_runtime_context":{"mcp_metadata":[{"definition":{"name":"\n"}}]}
+        }))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn native_mcp_rpc_ignores_notifications_and_returns_matching_response() {
+        let (client, server) = tokio::io::duplex(16 * 1024);
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let (server_read, mut server_write) = tokio::io::split(server);
+        let mut client_read = BufReader::new(client_read);
+        let server_task = tokio::spawn(async move {
+            let mut server_read = BufReader::new(server_read);
+            let request = read_executor_mcp_line(&mut server_read)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&request).unwrap()["id"], 7);
+            write_executor_mcp_message(
+                &mut server_write,
+                &json!({"jsonrpc":"2.0","method":"notifications/progress","params":{}}),
+            )
+            .await
+            .unwrap();
+            write_executor_mcp_message(
+                &mut server_write,
+                &json!({"jsonrpc":"2.0","id":7,"result":{"content":"ok"}}),
+            )
+            .await
+            .unwrap();
+        });
+
+        let response = executor_mcp_request(
+            &mut client_write,
+            &mut client_read,
+            7,
+            "tools/call",
+            json!({"name":"lookup","arguments":{}}),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response, json!({"content":"ok"}));
+        server_task.await.unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn managed_windows_mcp_process_uses_stdio_binding_environment_and_workspace() {
+        let workspace = env::temp_dir().join(format!("cowork-agent-mcp-{}", Uuid::new_v4()));
+        fs::create_dir_all(&workspace).unwrap();
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq 'initialize') {
+    $response = @{ jsonrpc = '2.0'; id = $request.id; result = @{ protocolVersion = '2024-11-05' } }
+    [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 10))
+    [Console]::Out.Flush()
+  } elseif ($request.method -eq 'tools/call') {
+    $text = $env:MCP_TEST_SECRET + '|' + (Get-Location).Path
+    $response = @{ jsonrpc = '2.0'; id = $request.id; result = @{ content = @(@{ type = 'text'; text = $text }); isError = $false } }
+    [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress -Depth 10))
+    [Console]::Out.Flush()
+    break
+  }
+}
+"#;
+        let binding = ExecutorMcpBinding {
+            name: "fixture".to_owned(),
+            command: "powershell.exe".to_owned(),
+            args: vec![
+                "-NoProfile".to_owned(),
+                "-NonInteractive".to_owned(),
+                "-Command".to_owned(),
+                script.to_owned(),
+            ],
+            environment: BTreeMap::from([(
+                "MCP_TEST_SECRET".to_owned(),
+                "executor-only-value".to_owned(),
+            )]),
+        };
+
+        let response = invoke_executor_mcp(&binding, "fixture_tool", json!({}), &workspace)
+            .await
+            .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("executor-only-value|"));
+        assert!(text.ends_with(workspace.file_name().unwrap().to_str().unwrap()));
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[tokio::test]

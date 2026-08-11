@@ -1,0 +1,12 @@
+[
+  {
+    "name": "company-files",
+    "command": "C:\\Program Files\\nodejs\\node.exe",
+    "args": [
+      "C:\\OpenCowork\\McpServers\\company-files\\server.js"
+    ],
+    "environment": {
+      "COMPANY_FILES_API_TOKEN": "replace-with-an-executor-local-secret"
+    }
+  }
+]

@@ -451,6 +451,7 @@ pub async fn target_has_executor(
     pool: &PgPool,
     target: &ExecutorTarget,
     required: &[Capability],
+    input: &Value,
 ) -> Result<bool, ApiError> {
     let rows = match target {
         ExecutorTarget::ServerLinux { .. } => return Ok(true),
@@ -473,7 +474,7 @@ pub async fn target_has_executor(
     };
     for row in rows {
         let executor = row_to_executor(&row)?;
-        if has_capabilities(&executor.registration, required) {
+        if supports_run(&executor.registration, required, input) {
             return Ok(true);
         }
     }
@@ -527,7 +528,11 @@ pub async fn claim_external_run(
         .into_iter()
         .find_map(|row| match row_to_run(&row) {
             Ok(run)
-                if has_capabilities(&executor.registration, &run.spec.required_capabilities) =>
+                if supports_run(
+                    &executor.registration,
+                    &run.spec.required_capabilities,
+                    &run.spec.input,
+                ) =>
             {
                 Some(Ok(run))
             }
@@ -611,6 +616,58 @@ pub async fn recover_external_run(
         tx.commit().await?;
         return Ok(None);
     };
+    let run_id: Uuid = row.try_get("id")?;
+    let previous_state: String = row.try_get("state")?;
+    let safe_to_resume = sqlx::query_scalar::<_, bool>(
+        "SELECT safe_to_resume FROM run_checkpoints WHERE run_id = $1 ORDER BY sequence DESC LIMIT 1",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if safe_to_resume == Some(false) {
+        sqlx::query(
+            r#"
+            UPDATE runs SET state = 'interrupted', revision = revision + 1,
+                lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+                error = jsonb_build_object(
+                    'code', 'unsafe_tool_interrupted',
+                    'message', 'The executor disconnected during or after an unsafe action. The action was not retried.',
+                    'retryable', false,
+                    'details', jsonb_build_object(
+                        'safe_to_resume', false,
+                        'manual_review_required', true,
+                        'detected_during_reconnect', true
+                    )
+                ), updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE executors SET active_runs = GREATEST(active_runs - 1, 0) WHERE id = $1",
+        )
+        .bind(executor_id)
+        .execute(&mut *tx)
+        .await?;
+        append_event_tx(
+            &mut tx,
+            run_id,
+            RunEventKind::StateChanged,
+            json!({
+                "from": previous_state,
+                "to": "interrupted",
+                "reason": "unsafe_tool_interrupted",
+                "safe_to_resume": false,
+                "manual_review_required": true,
+                "detected_during_reconnect": true,
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(None);
+    }
     let lease_token: Uuid = row
         .try_get::<Option<Uuid>, _>("lease_token")?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("recoverable run has no lease token")))?;
@@ -618,7 +675,7 @@ pub async fn recover_external_run(
     let row = sqlx::query(
         "UPDATE runs SET lease_expires_at = $2, updated_at = now() WHERE id = $1 RETURNING *",
     )
-    .bind(row.try_get::<Uuid, _>("id")?)
+    .bind(run_id)
     .bind(lease_expires_at)
     .fetch_one(&mut *tx)
     .await?;
@@ -1413,6 +1470,50 @@ fn has_capabilities(registration: &ExecutorRegistration, required: &[Capability]
         .all(|item| available.contains(item.0.as_str()))
 }
 
+fn supports_run(
+    registration: &ExecutorRegistration,
+    required: &[Capability],
+    input: &Value,
+) -> bool {
+    if !has_capabilities(registration, required) {
+        return false;
+    }
+    if registration.kind != ExecutorKind::ManagedWindows {
+        return true;
+    }
+    if input.get("task_runner").and_then(Value::as_str) == Some("crew") {
+        return false;
+    }
+    let selected = input
+        .get("frozen_runtime_context")
+        .and_then(|context| context.get("mcp_metadata"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("definition")
+                .and_then(|definition| definition.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+        })
+        .collect::<HashSet<_>>();
+    if selected.is_empty() {
+        return true;
+    }
+    let configured = registration
+        .capabilities
+        .iter()
+        .find(|descriptor| descriptor.name.0 == "tool.mcp.invoke")
+        .and_then(|descriptor| descriptor.attributes.get("server_names"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<HashSet<_>>();
+    selected.is_subset(&configured)
+}
+
 fn row_to_run(row: &PgRow) -> Result<RunRecord, ApiError> {
     let spec: RunSpec = serde_json::from_value(row.try_get("spec")?)?;
     let state = parse_state(row.try_get("state")?)?;
@@ -1568,4 +1669,67 @@ fn event_kind_name(kind: RunEventKind) -> &'static str {
 
 fn parse_event_kind(value: &str) -> Result<RunEventKind, ApiError> {
     serde_json::from_value(Value::String(value.to_owned())).map_err(ApiError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cowork_contracts::CapabilityDescriptor;
+    use std::collections::BTreeMap;
+
+    fn registration(kind: ExecutorKind, server_names: &[&str]) -> ExecutorRegistration {
+        ExecutorRegistration {
+            schema_version: SCHEMA_VERSION,
+            executor_id: Uuid::new_v4(),
+            kind,
+            pool_id: Some(Uuid::new_v4()),
+            owner_user_id: None,
+            display_name: "executor".to_owned(),
+            protocol_version: SCHEMA_VERSION,
+            capabilities: vec![CapabilityDescriptor {
+                schema_version: SCHEMA_VERSION,
+                name: Capability::from("tool.mcp.invoke"),
+                version: "test".to_owned(),
+                attributes: BTreeMap::from([("server_names".to_owned(), json!(server_names))]),
+            }],
+            labels: BTreeMap::new(),
+            personal_device_remote_control: None,
+            max_concurrent_runs: 1,
+        }
+    }
+
+    #[test]
+    fn managed_windows_claims_only_runs_matching_its_local_mcp_names() {
+        let input = json!({
+            "frozen_runtime_context":{"mcp_metadata":[
+                {"definition":{"name":"Docs"}}
+            ]}
+        });
+        let required = [Capability::from("tool.mcp.invoke")];
+        assert!(supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["Docs", "CRM"]),
+            &required,
+            &input,
+        ));
+        assert!(!supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["CRM"]),
+            &required,
+            &input,
+        ));
+        assert!(!supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["Docs"]),
+            &required,
+            &json!({
+                "task_runner":"crew",
+                "frozen_runtime_context":{"mcp_metadata":[
+                    {"definition":{"name":"Docs"}}
+                ]}
+            }),
+        ));
+        assert!(supports_run(
+            &registration(ExecutorKind::PersonalDevice, &[]),
+            &required,
+            &input,
+        ));
+    }
 }

@@ -9,6 +9,7 @@ description = "Outbound-only personal device and managed Windows executor agent"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 cowork-contracts = { path = "../../crates/cowork-contracts" }
 cowork-runtime = { path = "../../crates/cowork-runtime" }
@@ -32,7 +33,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",
+    "Win32_System_JobObjects",
     "Win32_System_Memory",
+    "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }

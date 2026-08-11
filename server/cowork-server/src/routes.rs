@@ -744,6 +744,7 @@ async fn initial_run_state(
         &state.pool,
         &request.executor_target,
         &request.required_capabilities,
+        &request.input,
     )
     .await?
     {
