@@ -175,7 +175,7 @@ For a custom MCP server, derive a reviewed Core image from
 `COWORK_SANDBOX_CORE_IMAGE`, and rebuild the runner image set. Do not use a
 binding to download arbitrary packages at Run time.
 
-Streamable HTTP follows the stable MCP 2025-11-25 transport and lifecycle. The
+Streamable HTTP currently implements the MCP 2025-11-25 transport and lifecycle. The
 client handles JSON and SSE responses, propagates a valid `MCP-Session-Id`, sends
 `MCP-Protocol-Version` after initialization, resumes interrupted SSE delivery by
 event ID within a bounded retry budget, and attempts session deletion on exit.
@@ -212,7 +212,13 @@ the selected frozen metadata names must exactly equal the union of
 gives each agent only its own allowlist, and recursively redacts provider and
 MCP environment/header secrets again before any Crew event or response is
 persisted. Static authorization headers are supported; OAuth discovery and
-dynamic registration are not. Managed Windows uses
+dynamic registration are not. The newer MCP 2026-07-28 line changes the wire
+model to a stateless core, removes this initialization/session lifecycle, adds
+header routing and hardens authorization. This deployment does not yet claim
+2026-07-28 compatibility; use a 2025-11-25-compatible MCP endpoint until the
+versioned adapter and its N-1 tests are implemented. See the official
+[MCP 2026-07-28 release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
+for the breaking protocol changes. Managed Windows uses
 the executor-local stdio or Streamable HTTP configuration described below; its
 pinned Crew adapter applies the same exact per-agent MCP allowlists and routes
 the actual call back through the hardened Rust executor adapter.
@@ -598,7 +604,7 @@ values. It and all descendants are attached to a kill-on-close Windows Job
 Object.
 
 A `streamable_http` entry instead has `url` and optional static `headers`. It
-uses the stable MCP 2025-11-25 transport with JSON/SSE responses, session and
+uses the implemented MCP 2025-11-25 transport with JSON/SSE responses, session and
 protocol headers, bounded SSE resume, best-effort session deletion, no
 redirects and normal TLS certificate verification. Only HTTPS port 443 and a
 public DNS hostname are accepted. Immediately before connecting, the agent

@@ -272,6 +272,19 @@ h1, h2, h3 { overflow-wrap: anywhere; }
 .workflow-step h3 { margin: 0 0 10px; font-size: 1.24rem; }
 .workflow-step p { margin: 0; color: var(--muted); font-size: 0.9rem; }
 
+/* Distributed runtime */
+.runtime-grid { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line-strong); background: var(--bg-soft); }
+.runtime-card { min-height: 320px; padding: 28px 25px; border-right: 1px solid var(--line); background: var(--panel); }
+.runtime-card:last-child { border-right: 0; }
+.runtime-card > span { color: var(--accent-text); font-family: var(--font-mono); font-size: 0.64rem; font-weight: 760; letter-spacing: 0.09em; }
+.runtime-card h3 { margin: 88px 0 12px; font-size: 1.45rem; line-height: 1.1; letter-spacing: -0.03em; }
+.runtime-card p { margin: 0; color: var(--muted); font-size: 0.88rem; }
+.pilot-note { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 28px; padding: 22px 24px; border: 1px solid var(--line); border-top: 0; background: var(--accent-soft); }
+.pilot-note strong { color: var(--accent-text); font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.07em; text-transform: uppercase; }
+.pilot-note p { margin: 0; color: var(--muted); font-size: 0.82rem; }
+.pilot-note > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 14px; }
+.pilot-note a { color: var(--accent-text); font-family: var(--font-mono); font-size: 0.67rem; font-weight: 730; text-decoration: none; text-transform: uppercase; }
+
 /* Control ledger */
 .control-grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(520px, 1.2fr); align-items: center; gap: clamp(60px, 9vw, 130px); padding: clamp(38px, 6vw, 76px); border: 1px solid var(--line-strong); background: var(--panel); clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 26px 100%, 0 calc(100% - 26px)); }
 .control-copy h2 { font-size: clamp(2.7rem, 5vw, 4.8rem); }
@@ -407,6 +420,11 @@ h1, h2, h3 { overflow-wrap: anywhere; }
   .workflow-board { grid-template-columns: repeat(2, 1fr); }
   .workflow-step:nth-child(2) { border-right: 0; }
   .workflow-step:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .runtime-grid { grid-template-columns: repeat(2, 1fr); }
+  .runtime-card:nth-child(2) { border-right: 0; }
+  .runtime-card:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .pilot-note { grid-template-columns: 1fr; }
+  .pilot-note > div { justify-content: flex-start; }
   .comparison-grid, .grid, .steps, .trust-panel, .link-grid { grid-template-columns: 1fr; }
   .comparison-card { min-height: 240px; }
   .footer-main { grid-template-columns: 1fr; gap: 22px; }
@@ -449,6 +467,10 @@ h1, h2, h3 { overflow-wrap: anywhere; }
   .workflow-board { grid-template-columns: 1fr; }
   .workflow-step { min-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
   .workflow-step:last-child { border-bottom: 0; }
+  .runtime-grid { grid-template-columns: 1fr; }
+  .runtime-card { min-height: 250px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .runtime-card:last-child { border-bottom: 0; }
+  .runtime-card h3 { margin-top: 54px; }
   .control-grid { min-width: 0; padding: 28px 18px; clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%); }
   .policy-ledger > div { grid-template-columns: 1fr; gap: 3px; padding-block: 10px; }
   .policy-ledger .ledger-header { grid-template-columns: 1fr auto; }
