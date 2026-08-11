@@ -47,6 +47,9 @@ pub mod capabilities {
     pub fn mcp() -> Capability {
         Capability::from("mcp")
     }
+    pub fn mcp_invoke() -> Capability {
+        Capability::from("tool.mcp.invoke")
+    }
     pub fn browser_headless() -> Capability {
         Capability::from("browser.headless")
     }
@@ -76,6 +79,9 @@ pub mod capabilities {
     }
     pub fn model_vllm() -> Capability {
         Capability::from("model.vllm")
+    }
+    pub fn crew_python() -> Capability {
+        Capability::from("crew.python")
     }
 }
 
@@ -724,6 +730,7 @@ pub struct TerminalSessionTicket {
 pub enum SandboxImage {
     Core,
     Gui,
+    Crew,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,6 +859,17 @@ pub struct TeamRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamMemberRecord {
+    pub schema_version: u16,
+    pub team_id: Uuid,
+    pub user_id: Uuid,
+    pub role: TeamRole,
+    pub email: String,
+    pub display_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTeamRequest {
     pub name: String,
 }
@@ -894,6 +912,17 @@ pub struct CreateProjectRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProjectRequest {
+    pub expected_revision: i64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub preferred_executor_target: Option<ExecutorTarget>,
+    #[serde(default)]
+    pub policy: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetProjectMemberRequest {
     pub user_id: Uuid,
     pub role: ProjectRole,
@@ -905,6 +934,12 @@ pub struct CreateThreadRequest {
     pub title: String,
     pub forked_from_thread_id: Option<Uuid>,
     pub forked_from_message_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateThreadRequest {
+    pub expected_revision: i64,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -995,6 +1030,86 @@ pub struct GrantExecutorPoolRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderProfile {
+    pub schema_version: u16,
+    pub id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub owner_user_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub name: String,
+    pub provider_kind: String,
+    pub model_defaults: Value,
+    pub has_secret: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProviderProfileRequest {
+    pub team_id: Option<Uuid>,
+    pub name: String,
+    pub provider_kind: String,
+    #[serde(default)]
+    pub model_defaults: Value,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProviderProfileRequest {
+    pub expected_revision: i64,
+    pub name: String,
+    pub provider_kind: String,
+    #[serde(default)]
+    pub model_defaults: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetProviderProfileSecretRequest {
+    pub expected_revision: i64,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerMcpBindingRecord {
+    pub schema_version: u16,
+    pub project_id: Uuid,
+    pub mcp_entity_id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub name: String,
+    pub transport: String,
+    pub executable_hint: String,
+    pub argument_count: u32,
+    pub environment_keys: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_server_mcp_binding_transport() -> String {
+    "stdio".to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetServerMcpBindingRequest {
+    pub expected_revision: Option<i64>,
+    pub name: String,
+    #[serde(default = "default_server_mcp_binding_transport")]
+    pub transport: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDefinition {
     pub schema_version: u16,
     pub id: Uuid,
@@ -1056,6 +1171,44 @@ pub struct ThreadRecord {
     pub forked_from_message_id: Option<Uuid>,
     pub title: String,
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageRecord {
+    pub schema_version: u16,
+    pub id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub thread_id: Uuid,
+    pub author_user_id: Option<Uuid>,
+    pub role: MessageRole,
+    pub content: Value,
+    pub run_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateThreadMessageRequest {
+    pub content: Value,
+    pub run: CreateRunRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMessageRun {
+    pub schema_version: u16,
+    pub message: MessageRecord,
+    pub run: RunRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1291,6 +1444,71 @@ pub struct SyncChange {
     pub operation: SyncOperation,
     pub payload: Option<Value>,
     pub client_timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncApplyStatus {
+    Applied,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncedEntity {
+    pub schema_version: u16,
+    pub entity_type: String,
+    pub entity_id: Uuid,
+    pub revision: i64,
+    pub etag: String,
+    pub payload: Option<Value>,
+    pub tombstone: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncedEntityPage {
+    pub schema_version: u16,
+    pub items: Vec<SyncedEntity>,
+    pub next_after: Option<Uuid>,
+    pub watermark_cursor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncApplyResult {
+    pub schema_version: u16,
+    pub operation_id: Uuid,
+    pub status: SyncApplyStatus,
+    pub entity: Option<SyncedEntity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushSyncChangesRequest {
+    pub changes: Vec<SyncChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushSyncChangesResponse {
+    pub schema_version: u16,
+    pub results: Vec<SyncApplyResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSyncChange {
+    pub schema_version: u16,
+    pub cursor: i64,
+    pub entity_type: String,
+    pub entity_id: Uuid,
+    pub revision: i64,
+    pub operation: SyncOperation,
+    pub payload: Option<Value>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PullSyncChangesResponse {
+    pub schema_version: u16,
+    pub changes: Vec<ServerSyncChange>,
+    pub next_cursor: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

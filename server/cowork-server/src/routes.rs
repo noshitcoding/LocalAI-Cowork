@@ -2,16 +2,17 @@ use std::{collections::BTreeMap, convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::{sse::Event, sse::KeepAlive, IntoResponse, Sse},
     Json,
 };
 use chrono::Utc;
 use cowork_contracts::{
     ensure_compatible, AppendRunEventRequest, Capability, CapabilityDescriptor, CompleteRunRequest,
-    CreateExecutorCredentialRequest, CreateRunRequest, ExecutorCredentialSecret, ExecutorHeartbeat,
-    ExecutorKind, ExecutorRegistration, FailRunRequest, FrozenReference, LeaseHeartbeat,
-    ListRunsResponse, ProjectPrivacy, ProjectRole, RunRecord, RunSpec, RunState, API_VERSION,
+    CreateExecutorCredentialRequest, CreateRunRequest, CreateThreadMessageRequest,
+    ExecutorCredentialSecret, ExecutorHeartbeat, ExecutorKind, ExecutorRegistration,
+    FailRunRequest, FrozenReference, LeaseHeartbeat, ListRunsResponse, MessageRecord,
+    ProjectPrivacy, ProjectRole, RunRecord, RunSpec, RunState, ThreadMessageRun, API_VERSION,
     MIN_COMPATIBLE_SCHEMA_VERSION, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use crate::{
     auth::{self, ExecutorPrincipal, Principal},
     db, desktop,
     error::ApiError,
-    organization, AppState,
+    mcp_bindings, organization, providers, sync, workflow, AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -80,6 +81,67 @@ pub async fn create_run(
     Extension(principal): Extension<Principal>,
     Json(request): Json<CreateRunRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let (spec, initial_state) = prepare_run(&state, &principal, request).await?;
+    let run = db::create_run(&state.pool, &spec, initial_state).await?;
+    Ok((StatusCode::CREATED, Json(run)))
+}
+
+pub async fn create_thread_message(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Json(request): Json<CreateThreadMessageRequest>,
+) -> Result<(StatusCode, Json<ThreadMessageRun>), ApiError> {
+    validate_message_content(&request.content)?;
+    if request.run.thread_id != thread_id {
+        return Err(ApiError::Unprocessable(
+            "run.thread_id must match the thread in the request path".to_owned(),
+        ));
+    }
+    let (spec, initial_state) = prepare_run(&state, &principal, request.run).await?;
+    let (message, run) =
+        db::create_thread_message_run(&state.pool, &spec, initial_state, request.content).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(ThreadMessageRun {
+            schema_version: SCHEMA_VERSION,
+            message,
+            run,
+        }),
+    ))
+}
+
+pub async fn list_thread_messages(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Vec<MessageRecord>>, ApiError> {
+    let project_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT project_id FROM threads WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(thread_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("thread {thread_id} was not found")))?;
+    organization::ensure_thread_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        thread_id,
+        ProjectRole::Viewer,
+    )
+    .await?;
+    Ok(Json(
+        db::list_thread_messages(&state.pool, thread_id, query.limit.unwrap_or(100)).await?,
+    ))
+}
+
+async fn prepare_run(
+    state: &AppState,
+    principal: &Principal,
+    mut request: CreateRunRequest,
+) -> Result<(RunSpec, RunState), ApiError> {
     validate_create_run(&request)?;
     organization::ensure_run_context(
         &state.pool,
@@ -91,9 +153,62 @@ pub async fn create_run(
         &request.executor_target,
     )
     .await?;
+    if let Some(task) =
+        ensure_released_task_reference(&state.pool, request.project_id, request.task.as_ref())
+            .await?
+    {
+        let mut required_capabilities = request.required_capabilities;
+        required_capabilities.extend(task.required_capabilities);
+        request.required_capabilities =
+            workflow::effective_task_capabilities(&required_capabilities, &task.config)?;
+        request.input =
+            workflow::freeze_task_input(request.input, &task.instructions, &task.config)?;
+    }
+    request.input =
+        sync::freeze_runtime_context_for_run(&state.pool, principal.user_id, request.input).await?;
+    workflow::apply_frozen_crew_capabilities(&mut request.required_capabilities, &request.input)?;
+    mcp_bindings::ensure_crew_mcp_selection(&request.input)?;
+    if mcp_bindings::run_selects_mcp(&request.input) {
+        if matches!(
+            &request.executor_target,
+            cowork_contracts::ExecutorTarget::ServerLinux { .. }
+        ) {
+            mcp_bindings::ensure_server_bindings_for_run(
+                &state.pool,
+                request.project_id,
+                &request.input,
+            )
+            .await?;
+        }
+        if !request
+            .required_capabilities
+            .iter()
+            .any(|capability| capability.0 == "tool.mcp.invoke")
+        {
+            request
+                .required_capabilities
+                .push(cowork_contracts::capabilities::mcp_invoke());
+        }
+    }
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        request.model_profile_id,
+        &request.executor_target,
+    )
+    .await?;
+    providers::ensure_crew_profiles_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        &request.input,
+        &request.executor_target,
+    )
+    .await?;
     let now = Utc::now();
     let run_id = Uuid::new_v4();
-    let initial_state = initial_run_state(&state, &request).await?;
+    let initial_state = initial_run_state(state, &request).await?;
     let spec = RunSpec {
         schema_version: SCHEMA_VERSION,
         id: run_id,
@@ -114,8 +229,47 @@ pub async fn create_run(
         idempotency_key: request.idempotency_key,
         created_at: now,
     };
-    let run = db::create_run(&state.pool, &spec, initial_state).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(run)))
+    Ok((spec, initial_state))
+}
+
+struct ReleasedTaskSnapshot {
+    instructions: String,
+    required_capabilities: Vec<Capability>,
+    config: Value,
+}
+
+async fn ensure_released_task_reference(
+    pool: &sqlx::PgPool,
+    project_id: Uuid,
+    task: Option<&FrozenReference>,
+) -> Result<Option<ReleasedTaskSnapshot>, ApiError> {
+    let Some(task) = task else {
+        return Ok(None);
+    };
+    let (instructions, required_capabilities, config) =
+        sqlx::query_as::<_, (String, Value, Value)>(
+            r#"
+        SELECT instructions, required_capabilities, config FROM task_definitions
+        WHERE id = $1 AND revision = $2 AND project_id = $3
+          AND released AND deleted_at IS NULL
+        "#,
+        )
+        .bind(task.id)
+        .bind(task.revision)
+        .bind(project_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            ApiError::Unprocessable(format!(
+                "task {} revision {} is missing, belongs to another project, or is not released",
+                task.id, task.revision
+            ))
+        })?;
+    Ok(Some(ReleasedTaskSnapshot {
+        instructions,
+        required_capabilities: serde_json::from_value(required_capabilities)?,
+        config,
+    }))
 }
 
 pub async fn list_runs(
@@ -474,7 +628,7 @@ pub async fn append_executor_event(
 ) -> Result<Json<cowork_contracts::RunEvent>, ApiError> {
     ensure_executor_identity(executor_id, &principal)?;
     Ok(Json(
-        db::append_leased_event(
+        db::append_external_leased_event(
             &state.pool,
             run_id,
             executor_id,
@@ -599,6 +753,7 @@ async fn initial_run_state(
         &state.pool,
         &request.executor_target,
         &request.required_capabilities,
+        &request.input,
     )
     .await?
     {
@@ -627,6 +782,21 @@ fn validate_create_run(request: &CreateRunRequest) -> Result<(), ApiError> {
         return Err(ApiError::Unprocessable(
             "capability names must contain 1 to 100 characters".to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_message_content(content: &Value) -> Result<(), ApiError> {
+    const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+    if content.is_null() {
+        return Err(ApiError::Unprocessable(
+            "message content must not be null".to_owned(),
+        ));
+    }
+    if serde_json::to_vec(content)?.len() > MAX_MESSAGE_BYTES {
+        return Err(ApiError::Unprocessable(format!(
+            "message content must not exceed {MAX_MESSAGE_BYTES} bytes"
+        )));
     }
     Ok(())
 }
@@ -665,5 +835,41 @@ mod tests {
             idempotency_key: "".to_owned(),
         };
         assert!(validate_create_run(&request).is_err());
+    }
+
+    #[test]
+    fn rejects_null_and_oversized_message_content() {
+        assert!(validate_message_content(&Value::Null).is_err());
+        assert!(validate_message_content(&json!({"text": "a".repeat(256 * 1024)})).is_err());
+        assert!(validate_message_content(&json!({"text": "hello"})).is_ok());
+    }
+
+    #[test]
+    fn freezes_authoritative_task_snapshot_without_losing_run_input() {
+        assert_eq!(
+            workflow::freeze_task_input(
+                json!({"prompt": "customer-specific input"}),
+                "released task instructions",
+                &json!({"runner":"crew","crew_id":"reviewers"}),
+            )
+            .unwrap(),
+            json!({
+                "prompt": "customer-specific input",
+                "task_instructions": "released task instructions",
+                "task_config": {"runner":"crew","crew_id":"reviewers"},
+                "task_runner": "crew",
+                "crew_id": "reviewers",
+                "resolve_current_crew_provider_bindings": true
+            })
+        );
+        assert_eq!(
+            workflow::freeze_task_input(json!("legacy input"), "instructions", &json!({})).unwrap(),
+            json!({
+                "input": "legacy input",
+                "task_instructions": "instructions",
+                "task_config": {},
+                "task_runner": "model"
+            })
+        );
     }
 }

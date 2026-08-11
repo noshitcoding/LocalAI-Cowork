@@ -47,6 +47,13 @@ test('web build loads only the remote control plane without Tauri initialization
   await expect(page.getByRole('heading', { name: 'Connect to Open Cowork Server' })).toBeVisible()
   await expect(page.locator('#boot-loader')).toHaveCount(0)
   await expectWcagAa(page)
+  const layout = await page.evaluate(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+    documentHeight: document.documentElement.scrollHeight,
+  }))
+  expect(layout.documentWidth, 'The web login must not overflow a mobile viewport horizontally.').toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.documentHeight).toBeGreaterThan(0)
   await expect.poll(() => page.evaluate(() => ({
     publicApi: '__TAURI__' in window,
     nativeBridge: '__TAURI_INTERNALS__' in window,

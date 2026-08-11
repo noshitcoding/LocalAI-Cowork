@@ -571,6 +571,23 @@ def resolve_agent_provider(agent_payload: dict) -> str:
     return str(agent_payload.get("providerKind") or "ollama").strip() or "ollama"
 
 
+def resolve_agent_provider_config(request: dict, agent_payload: dict) -> dict:
+    provider_configs = request.get("providerConfigs") or {}
+    profile_id = str(agent_payload.get("providerProfileId") or "").strip()
+    if profile_id:
+        by_profile = provider_configs.get("byProfile") or {}
+        config = by_profile.get(profile_id)
+        if not isinstance(config, dict):
+            raise ValueError(f"Provider profile {profile_id} was not injected for this Crew agent.")
+        return config
+    provider = resolve_agent_provider(agent_payload)
+    if provider == "openai-compatible":
+        return provider_configs.get("openAICompatible") or {}
+    if provider == "openrouter":
+        return provider_configs.get("openRouter") or {}
+    return {}
+
+
 def resolve_provider_model_from_catalog(configured_model: object, models: object) -> str:
     configured = str(configured_model or "").strip()
     normalized_models: list[str] = []
@@ -614,12 +631,10 @@ def resolve_agent_model_label(request: dict, agent_payload: dict) -> str:
     if model_override:
         return model_override
 
-    provider_configs = request.get("providerConfigs") or {}
+    config = resolve_agent_provider_config(request, agent_payload)
     if provider == "openai-compatible":
-        config = provider_configs.get("openAICompatible") or {}
         return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
     if provider == "openrouter":
-        config = provider_configs.get("openRouter") or {}
         return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
 
     request_config = request.get("config") or {}
@@ -649,6 +664,89 @@ def parse_int(value: object, fallback: int = 0) -> int:
         return fallback
 
 
+CREW_USAGE_FIELDS = (
+    "total_tokens",
+    "prompt_tokens",
+    "cached_prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cache_creation_tokens",
+    "successful_requests",
+)
+
+
+def normalize_usage_metrics(value: object) -> dict[str, int] | None:
+    """Return CrewAI's reported counters without estimating missing usage."""
+    if value is None:
+        return None
+
+    normalized: dict[str, int] = {}
+    found_counter = False
+    for field in CREW_USAGE_FIELDS:
+        try:
+            raw = value.get(field) if isinstance(value, dict) else getattr(value, field, None)
+        except Exception:
+            raw = None
+        if raw is None or isinstance(raw, bool):
+            normalized[field] = 0
+            continue
+        try:
+            counter = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            normalized[field] = 0
+            continue
+        if counter < 0:
+            normalized[field] = 0
+            continue
+        normalized[field] = counter
+        found_counter = True
+
+    return normalized if found_counter else None
+
+
+def merge_usage_metrics(
+    accumulated: dict[str, int] | None,
+    additional: dict[str, int] | None,
+) -> dict[str, int] | None:
+    if additional is None:
+        return accumulated
+    if accumulated is None:
+        return {field: additional.get(field, 0) for field in CREW_USAGE_FIELDS}
+    return {
+        field: accumulated.get(field, 0) + additional.get(field, 0)
+        for field in CREW_USAGE_FIELDS
+    }
+
+
+def collect_crew_usage(crew: object, output: object | None = None) -> dict[str, int] | None:
+    """Read the pinned CrewOutput/Crew metrics contract, tolerating older adapters."""
+    sources: list[object] = []
+    if output is not None:
+        try:
+            sources.append(output.get("token_usage") if isinstance(output, dict) else getattr(output, "token_usage", None))
+        except Exception:
+            pass
+    for field in ("usage_metrics", "token_usage"):
+        try:
+            sources.append(getattr(crew, field, None))
+        except Exception:
+            pass
+    for source in sources:
+        if (usage := normalize_usage_metrics(source)) is not None:
+            return usage
+
+    # The custom parallel path prepares and executes tasks without Crew.kickoff,
+    # so CrewAI has not populated usage_metrics yet. Its calculator only reads
+    # counters already held by the LLM adapters and does not make model calls.
+    try:
+        calculator = getattr(crew, "calculate_usage_metrics", None)
+        if callable(calculator):
+            return normalize_usage_metrics(calculator())
+    except Exception:
+        pass
+    return None
+
+
 def is_openrouter_free_model(model: str) -> bool:
     return str(model or "").strip().lower().endswith(":free")
 
@@ -663,7 +761,7 @@ def openrouter_model_id(model: str) -> str:
 def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) -> None:
     invalid_models: list[str] = []
     free_models: list[str] = []
-    has_openrouter_agent = False
+    openrouter_agents: list[dict] = []
 
     for agent_payload in agent_payloads:
         if not isinstance(agent_payload, dict):
@@ -671,7 +769,7 @@ def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) 
         provider = resolve_agent_provider(agent_payload)
         if provider != "openrouter":
             continue
-        has_openrouter_agent = True
+        openrouter_agents.append(agent_payload)
         model = resolve_agent_model_label(payload, agent_payload)
         model_id = openrouter_model_id(model)
         if model_id in RETIRED_OPENROUTER_MODELS:
@@ -679,14 +777,14 @@ def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) 
         elif is_openrouter_free_model(model):
             free_models.append(model)
 
-    if has_openrouter_agent:
-        provider_configs = payload.get("providerConfigs") or {}
-        openrouter_config = provider_configs.get("openRouter") or {}
-        if not str(openrouter_config.get("apiKey") or "").strip():
-            raise ValueError(
-                "OpenRouter API key is missing. Add it to the default OpenRouter LLM profile "
-                "or this Crew's OpenRouter provider profile before starting the Crew."
-            )
+    if any(
+        not str(resolve_agent_provider_config(payload, agent).get("apiKey") or "").strip()
+        for agent in openrouter_agents
+    ):
+        raise ValueError(
+            "OpenRouter API key is missing. Add it to the default OpenRouter LLM profile "
+            "or this Crew's OpenRouter provider profile before starting the Crew."
+        )
 
     if invalid_models:
         raise ValueError(
@@ -912,13 +1010,7 @@ def normalize_openai_compatible_base_url(base_url: object) -> str:
 
 def resolve_agent_timeout_ms(request: dict, agent: dict) -> int:
     request_config = request.get("config") or {}
-    provider_configs = request.get("providerConfigs") or {}
-    provider = resolve_agent_provider(agent)
-    provider_config: dict = {}
-    if provider == "openrouter":
-        provider_config = provider_configs.get("openRouter") or {}
-    elif provider == "openai-compatible":
-        provider_config = provider_configs.get("openAICompatible") or {}
+    provider_config = resolve_agent_provider_config(request, agent)
 
     fallback = parse_int(request_config.get("timeoutMs"), 600_000)
     return max(1_000, parse_int(provider_config.get("timeoutMs"), fallback))
@@ -1274,10 +1366,10 @@ def build_llm(request: dict, agent: dict):
     provider = resolve_agent_provider(agent)
     model_override = str(agent.get("modelOverride") or "").strip()
     request_config = request.get("config") or {}
-    provider_configs = request.get("providerConfigs") or {}
+    provider_config = resolve_agent_provider_config(request, agent)
 
     if provider == "openai-compatible":
-        config = provider_configs.get("openAICompatible") or {}
+        config = provider_config
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         configured_model = model_override or resolve_provider_model_from_catalog(
             config.get("model"), config.get("models")
@@ -1299,7 +1391,7 @@ def build_llm(request: dict, agent: dict):
         return LLM(**llm_kwargs)
 
     if provider == "openrouter":
-        config = provider_configs.get("openRouter") or {}
+        config = provider_config
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         configured_model = model_override or resolve_provider_model_from_catalog(
             config.get("model"), config.get("models")
@@ -1622,7 +1714,7 @@ def extract_task_output(task_obj) -> str | None:
 
 
 OFFICE_ARTIFACT_PATTERN = re.compile(
-    r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:pptx|docx))"
+    r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:pptx|docx|xlsx|pdf))"
 )
 EDIT_ARTIFACT_PATTERN = re.compile(
     r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:md|py|json|csv|txt|ts|tsx|js|jsx|rs))"
@@ -1631,7 +1723,7 @@ EDIT_ARTIFACT_PATTERN = re.compile(
 
 def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if not tools.intersection({"office_workflow", "microsoft_office"}):
         return []
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1648,8 +1740,10 @@ def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payl
             candidate = root / candidate
         resolved = candidate.resolve(strict=False)
         try:
-            resolved.relative_to(root)
+            relative = resolved.relative_to(root)
         except ValueError:
+            continue
+        if not relative.parts or relative.parts[0].lower() != "artifacts":
             continue
         if resolved not in seen:
             paths.append(resolved)
@@ -1726,14 +1820,23 @@ def build_artifact_repair_description(
             relative_paths.append(path.name)
     context = "\n\n".join(context_outputs)
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    repair_contract = (
-        "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
-        "sections_json must be a JSON array of objects with title plus body or bullets. "
-        "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
-        if "office_workflow" in tools
-        else "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
-        "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
-    )
+    if "microsoft_office" in tools:
+        repair_contract = (
+            "Immediately call microsoft_office with the application, action, existing workspace source, exact artifacts/ "
+            "output path, optional PDF preview path, and required action parameters from the original task. "
+            "Do not return a proposed call as text. The task succeeds only after the bridge reports success."
+        )
+    elif "office_workflow" in tools:
+        repair_contract = (
+            "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
+            "sections_json must be a JSON array of objects with title plus body or bullets. "
+            "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
+        )
+    else:
+        repair_contract = (
+            "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
+            "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
+        )
     return (
         f"{build_task_description(request, task_payload, agent_payload)}\n\n"
         "ARTIFACT REPAIR REQUIRED:\n"
@@ -1757,7 +1860,7 @@ def deterministic_office_fallback(
     if not missing:
         return None
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if "office_workflow" not in tools or "microsoft_office" in tools:
         return None
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1827,7 +1930,7 @@ def resolve_process(process_name: str):
 
 def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if not tools.intersection({"office_workflow", "microsoft_office"}):
         return []
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1844,8 +1947,10 @@ def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payl
             candidate = root / candidate
         resolved = candidate.resolve(strict=False)
         try:
-            resolved.relative_to(root)
+            relative = resolved.relative_to(root)
         except ValueError:
+            continue
+        if not relative.parts or relative.parts[0].lower() != "artifacts":
             continue
         if resolved not in seen:
             paths.append(resolved)
@@ -1922,14 +2027,23 @@ def build_artifact_repair_description(
             relative_paths.append(path.name)
     context = "\n\n".join(context_outputs)
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    repair_contract = (
-        "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
-        "sections_json must be a JSON array of objects with title plus body or bullets. "
-        "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
-        if "office_workflow" in tools
-        else "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
-        "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
-    )
+    if "microsoft_office" in tools:
+        repair_contract = (
+            "Immediately call microsoft_office with the application, action, existing workspace source, exact artifacts/ "
+            "output path, optional PDF preview path, and required action parameters from the original task. "
+            "Do not return a proposed call as text. The task succeeds only after the bridge reports success."
+        )
+    elif "office_workflow" in tools:
+        repair_contract = (
+            "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
+            "sections_json must be a JSON array of objects with title plus body or bullets. "
+            "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
+        )
+    else:
+        repair_contract = (
+            "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
+            "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
+        )
     return (
         f"{build_task_description(request, task_payload, agent_payload)}\n\n"
         "ARTIFACT REPAIR REQUIRED:\n"
@@ -1953,7 +2067,7 @@ def deterministic_office_fallback(
     if not missing:
         return None
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if "office_workflow" not in tools or "microsoft_office" in tools:
         return None
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -2143,6 +2257,7 @@ def execute_definition(payload: dict) -> dict:
     logs: list[dict] = []
     status = "completed"
     error_message = None
+    usage: dict[str, int] | None = None
     runtime_task_id = ordered_task_bindings[0][0].get("id") if ordered_task_bindings else "runtime"
     runtime_agent_id = manager_agent_id or "python-runtime"
     stdout_buffer = LiveCapture(
@@ -2293,6 +2408,8 @@ def execute_definition(payload: dict) -> dict:
             severity="info",
         )
 
+    crew = None
+    crew_output = None
     try:
         crew = Crew(**crew_kwargs)
         record_execution_log(
@@ -2313,7 +2430,8 @@ def execute_definition(payload: dict) -> dict:
             if process_name.lower() == "parallel":
                 execute_parallel_crew(crew, ordered_task_bindings)
             else:
-                crew.kickoff()
+                crew_output = crew.kickoff()
+        usage = merge_usage_metrics(usage, collect_crew_usage(crew, crew_output))
         stdout_buffer.flush()
         stderr_buffer.flush()
         record_execution_log(
@@ -2331,6 +2449,8 @@ def execute_definition(payload: dict) -> dict:
             severity="info",
         )
     except Exception as exc:
+        if crew is not None:
+            usage = merge_usage_metrics(usage, collect_crew_usage(crew, crew_output))
         status = "failed"
         error_message = classify_runtime_error(exc)
         stderr_buffer.write(traceback.format_exc())
@@ -2417,13 +2537,18 @@ def execute_definition(payload: dict) -> dict:
                 )
                 try:
                     with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                        repair_crew.kickoff()
+                        repair_output_value = repair_crew.kickoff()
+                    usage = merge_usage_metrics(
+                        usage,
+                        collect_crew_usage(repair_crew, repair_output_value),
+                    )
                     stdout_buffer.flush()
                     stderr_buffer.flush()
                     repair_output = extract_task_output(repair_task)
                     if repair_output:
                         repaired_outputs[task_id] = repair_output
                 except Exception as exc:
+                    usage = merge_usage_metrics(usage, collect_crew_usage(repair_crew))
                     stderr_buffer.write(traceback.format_exc())
                     stderr_buffer.flush()
                     record_execution_log(
@@ -2628,13 +2753,16 @@ def execute_definition(payload: dict) -> dict:
 
     mark_recovered_provider_logs(logs, status)
 
-    return {
+    response = {
         "crewId": crew_id,
         "status": status,
         "taskResults": task_results,
         "logs": logs,
         "error": error_message,
     }
+    if usage is not None:
+        response["usage"] = usage
+    return response
 
 
 def main() -> int:

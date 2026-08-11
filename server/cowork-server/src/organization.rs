@@ -7,14 +7,20 @@ use chrono::Utc;
 use cowork_contracts::{
     CreateExecutorPoolRequest, CreateProjectRequest, CreateTeamRequest, CreateThreadRequest,
     ExecutorKind, ExecutorPool, ExecutorTarget, GrantExecutorPoolRequest, ProjectPrivacy,
-    ProjectRecord, ProjectRole, SetProjectMemberRequest, SetTeamMemberRequest, TeamRecord,
-    TeamRole, ThreadRecord, SCHEMA_VERSION,
+    ProjectRecord, ProjectRole, SetProjectMemberRequest, SetTeamMemberRequest, TeamMemberRecord,
+    TeamRecord, TeamRole, ThreadRecord, UpdateProjectRequest, UpdateThreadRequest, SCHEMA_VERSION,
 };
+use serde::Deserialize;
 use serde_json::Value;
 use sqlx::{postgres::PgRow, PgPool, Row};
 use uuid::Uuid;
 
-use crate::{auth::Principal, db, error::ApiError, governance, AppState};
+use crate::{auth::Principal, db, error::ApiError, governance, sync, AppState};
+
+#[derive(Debug, Deserialize)]
+pub struct RevisionQuery {
+    expected_revision: i64,
+}
 
 pub async fn create_team(
     State(state): State<AppState>,
@@ -81,6 +87,31 @@ pub async fn set_team_member(
             "team ownership transfer requires a dedicated ownership operation".to_owned(),
         ));
     }
+    let mut tx = state.pool.begin().await?;
+    let target_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(team_id)
+    .bind(request.user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if target_role.as_deref() == Some("owner") {
+        return Err(ApiError::Unprocessable(
+            "team ownership transfer requires a dedicated ownership operation".to_owned(),
+        ));
+    }
+    let user_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(request.user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !user_exists {
+        return Err(ApiError::NotFound(format!(
+            "user {} was not found",
+            request.user_id
+        )));
+    }
     sqlx::query(
         r#"
         INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)
@@ -90,8 +121,67 @@ pub async fn set_team_member(
     .bind(team_id)
     .bind(request.user_id)
     .bind(team_role_name(request.role))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+    sync::publish_team_provider_profiles_for_user_tx(&mut tx, team_id, request.user_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_team_members(
+    State(state): State<AppState>,
+    Path(team_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<TeamMemberRecord>>, ApiError> {
+    ensure_team_member(&state.pool, principal.user_id, team_id).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT member.team_id, member.user_id, member.role, member.created_at,
+               account.email, account.display_name
+        FROM team_members member
+        JOIN users account ON account.id = member.user_id AND account.deleted_at IS NULL
+        WHERE member.team_id = $1
+        ORDER BY CASE member.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+                 lower(account.display_name), member.user_id
+        "#,
+    )
+    .bind(team_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.iter()
+            .map(row_to_team_member)
+            .collect::<Result<_, _>>()?,
+    ))
+}
+
+pub async fn remove_team_member(
+    State(state): State<AppState>,
+    Path((team_id, user_id)): Path<(Uuid, Uuid)>,
+    Extension(principal): Extension<Principal>,
+) -> Result<StatusCode, ApiError> {
+    ensure_team_admin(&state.pool, principal.user_id, team_id).await?;
+    let mut tx = state.pool.begin().await?;
+    let role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("team member {user_id} was not found")))?;
+    if role == "owner" {
+        return Err(ApiError::Unprocessable(
+            "team ownership transfer requires a dedicated ownership operation".to_owned(),
+        ));
+    }
+    sqlx::query("DELETE FROM team_members WHERE team_id = $1 AND user_id = $2")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sync::publish_team_provider_profile_tombstones_for_user_tx(&mut tx, team_id, user_id).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -101,6 +191,8 @@ pub async fn create_project(
     Json(request): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectRecord>), ApiError> {
     let name = validated_name(&request.name, "project")?;
+    let description = validated_description(&request.description)?;
+    let policy = validated_project_policy(request.policy)?;
     match request.privacy {
         ProjectPrivacy::PrivateLocal if request.team_id.is_some() => {
             return Err(ApiError::Unprocessable(
@@ -118,6 +210,7 @@ pub async fn create_project(
     let id = Uuid::new_v4();
     let now = Utc::now();
     let etag = format!("W/\"{id}:1\"");
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO projects (
@@ -133,18 +226,21 @@ pub async fn create_project(
     .bind(request.team_id)
     .bind(project_privacy_name(request.privacy))
     .bind(name)
-    .bind(request.description)
+    .bind(description)
     .bind(
         request
             .preferred_executor_target
             .map(serde_json::to_value)
             .transpose()?,
     )
-    .bind(request.policy)
+    .bind(policy)
     .bind(now)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_project(&row)?)))
+    sync::publish_canonical_project_tx(&mut tx, id).await?;
+    let project = row_to_project(&row)?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(project)))
 }
 
 pub async fn list_projects(
@@ -238,6 +334,202 @@ pub async fn get_project(
     Ok(Json(row_to_project(&row)?))
 }
 
+pub async fn update_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Json(request): Json<UpdateProjectRequest>,
+) -> Result<Json<ProjectRecord>, ApiError> {
+    ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    let name = validated_name(&request.name, "project")?;
+    let description = validated_description(&request.description)?;
+    let policy = validated_project_policy(request.policy)?;
+    if request.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        UPDATE projects
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            name = $3, description = $4, preferred_executor_target = $5,
+            policy = $6, updated_at = now()
+        WHERE id = $1 AND revision = $2 AND deleted_at IS NULL
+        RETURNING *
+        "#,
+    )
+    .bind(project_id)
+    .bind(request.expected_revision)
+    .bind(name)
+    .bind(description)
+    .bind(
+        request
+            .preferred_executor_target
+            .map(serde_json::to_value)
+            .transpose()?,
+    )
+    .bind(policy)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Conflict("project revision changed; reload before updating".to_owned())
+    })?;
+    sync::publish_canonical_project_tx(&mut tx, project_id).await?;
+    let project = row_to_project(&row)?;
+    tx.commit().await?;
+    Ok(Json(project))
+}
+
+pub async fn delete_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<Uuid>,
+    axum::extract::Query(query): axum::extract::Query<RevisionQuery>,
+    Extension(principal): Extension<Principal>,
+) -> Result<StatusCode, ApiError> {
+    ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    if query.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let mut tx = state.pool.begin().await?;
+    let project = sqlx::query(
+        "SELECT owner_user_id, privacy, revision FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("project {project_id} was not found")))?;
+    if project.try_get::<i64, _>("revision")? != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "project revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let owner_user_id: Uuid = project.try_get("owner_user_id")?;
+    let private = project.try_get::<&str, _>("privacy")? == "private_local";
+    let thread_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM threads WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let message_ids = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT message.id FROM messages message
+        JOIN threads thread ON thread.id = message.thread_id
+        WHERE thread.project_id = $1 AND message.deleted_at IS NULL
+        ORDER BY message.id FOR UPDATE OF message
+        "#,
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut task_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM task_definitions WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id, revision FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    task_ids.dedup();
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE project_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE schedules
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            enabled = FALSE, next_run_at = NULL,
+            blocked_reason = 'project deleted', deleted_at = now(), updated_at = now()
+        WHERE project_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE task_definitions SET released = FALSE, deleted_at = now() WHERE project_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE messages AS message
+        SET revision = message.revision + 1,
+            etag = 'W/"' || message.id::text || ':' || (message.revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        FROM threads thread
+        WHERE message.thread_id = thread.id AND thread.project_id = $1
+          AND message.deleted_at IS NULL
+        "#,
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        WHERE project_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE projects
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    if private {
+        for message_id in message_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "message", message_id)
+                .await?;
+        }
+        for thread_id in thread_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "thread", thread_id).await?;
+        }
+        for schedule_id in schedule_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id)
+                .await?;
+        }
+        for task_id in task_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "task", task_id).await?;
+        }
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "project", project_id).await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn set_project_member(
     State(state): State<AppState>,
     Path(project_id): Path<Uuid>,
@@ -303,6 +595,7 @@ pub async fn create_thread(
     }
     let id = Uuid::new_v4();
     let etag = format!("W/\"{id}:1\"");
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO threads (
@@ -319,9 +612,179 @@ pub async fn create_thread(
     .bind(request.forked_from_thread_id)
     .bind(request.forked_from_message_id)
     .bind(title)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_thread(&row)?)))
+    sync::publish_canonical_thread_tx(&mut tx, id).await?;
+    let thread = row_to_thread(&row)?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(thread)))
+}
+
+pub async fn update_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Json(request): Json<UpdateThreadRequest>,
+) -> Result<Json<ThreadRecord>, ApiError> {
+    if request.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let project_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT project_id FROM threads WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(thread_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("thread {thread_id} was not found")))?;
+    ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    let title = validated_name(&request.title, "thread")?;
+    let mut tx = state.pool.begin().await?;
+    let row = sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            title = $3, updated_at = now()
+        WHERE id = $1 AND revision = $2 AND deleted_at IS NULL
+        RETURNING *
+        "#,
+    )
+    .bind(thread_id)
+    .bind(request.expected_revision)
+    .bind(title)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        ApiError::Conflict("thread revision changed; reload before updating".to_owned())
+    })?;
+    sync::publish_canonical_thread_tx(&mut tx, thread_id).await?;
+    let thread = row_to_thread(&row)?;
+    tx.commit().await?;
+    Ok(Json(thread))
+}
+
+pub async fn delete_thread(
+    State(state): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+    axum::extract::Query(query): axum::extract::Query<RevisionQuery>,
+    Extension(principal): Extension<Principal>,
+) -> Result<StatusCode, ApiError> {
+    if query.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let thread = sqlx::query(
+        r#"
+        SELECT thread.project_id, thread.revision, project.owner_user_id, project.privacy
+        FROM threads thread
+        JOIN projects project ON project.id = thread.project_id
+        WHERE thread.id = $1 AND thread.deleted_at IS NULL AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("thread {thread_id} was not found")))?;
+    let project_id: Uuid = thread.try_get("project_id")?;
+    ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    if thread.try_get::<i64, _>("revision")? != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "thread revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let owner_user_id: Uuid = thread.try_get("owner_user_id")?;
+    let private = thread.try_get::<&str, _>("privacy")? == "private_local";
+    let mut tx = state.pool.begin().await?;
+    let locked_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT revision FROM threads WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(thread_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("thread {thread_id} was not found")))?;
+    if locked_revision != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "thread revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let message_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM messages WHERE thread_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(thread_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE thread_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(thread_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE schedules
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            enabled = FALSE, next_run_at = NULL,
+            blocked_reason = 'thread deleted', deleted_at = now(), updated_at = now()
+        WHERE thread_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE messages
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        WHERE thread_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            deleted_at = now(), updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut *tx)
+    .await?;
+    if private {
+        for message_id in message_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "message", message_id)
+                .await?;
+        }
+        for schedule_id in schedule_ids {
+            sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id)
+                .await?;
+        }
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "thread", thread_id).await?;
+        sync::publish_canonical_project_tx(&mut tx, project_id).await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_project_threads(
@@ -700,6 +1163,23 @@ pub(crate) async fn ensure_team_admin(
     }
 }
 
+async fn ensure_team_member(pool: &PgPool, user_id: Uuid, team_id: Uuid) -> Result<(), ApiError> {
+    let member = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    if member {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized(
+            "team membership is required".to_owned(),
+        ))
+    }
+}
+
 async fn ensure_pool_admin(pool: &PgPool, user_id: Uuid, pool_id: Uuid) -> Result<(), ApiError> {
     if db::user_is_platform_admin(pool, user_id).await? {
         return Ok(());
@@ -728,6 +1208,18 @@ fn row_to_team(row: &PgRow) -> Result<TeamRecord, ApiError> {
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         deleted_at: row.try_get("deleted_at")?,
+    })
+}
+
+fn row_to_team_member(row: &PgRow) -> Result<TeamMemberRecord, ApiError> {
+    Ok(TeamMemberRecord {
+        schema_version: SCHEMA_VERSION,
+        team_id: row.try_get("team_id")?,
+        user_id: row.try_get("user_id")?,
+        role: parse_team_role(row.try_get("role")?)?,
+        email: row.try_get("email")?,
+        display_name: row.try_get("display_name")?,
+        created_at: row.try_get("created_at")?,
     })
 }
 
@@ -793,6 +1285,28 @@ fn validated_name<'a>(value: &'a str, entity: &str) -> Result<&'a str, ApiError>
     }
 }
 
+fn validated_description(value: &str) -> Result<&str, ApiError> {
+    if value.len() > 200_000 {
+        Err(ApiError::Unprocessable(
+            "project description must not exceed 200000 characters".to_owned(),
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+fn validated_project_policy(policy: Value) -> Result<Value, ApiError> {
+    if policy.is_null() {
+        Ok(serde_json::json!({}))
+    } else if policy.is_object() {
+        Ok(policy)
+    } else {
+        Err(ApiError::Unprocessable(
+            "project policy must be a JSON object".to_owned(),
+        ))
+    }
+}
+
 fn role_rank(role: ProjectRole) -> u8 {
     match role {
         ProjectRole::Viewer => 0,
@@ -825,6 +1339,17 @@ fn team_role_name(role: TeamRole) -> &'static str {
         TeamRole::Owner => "owner",
         TeamRole::Admin => "admin",
         TeamRole::Member => "member",
+    }
+}
+
+fn parse_team_role(value: &str) -> Result<TeamRole, ApiError> {
+    match value {
+        "owner" => Ok(TeamRole::Owner),
+        "admin" => Ok(TeamRole::Admin),
+        "member" => Ok(TeamRole::Member),
+        other => Err(ApiError::Internal(anyhow::anyhow!(
+            "unknown team role {other}"
+        ))),
     }
 }
 
@@ -861,5 +1386,25 @@ fn parse_executor_kind(value: &str) -> Result<ExecutorKind, ApiError> {
         other => Err(ApiError::Internal(anyhow::anyhow!(
             "unknown executor kind {other}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_mutation_boundaries_are_fail_closed() {
+        assert!(validated_name(" Project ", "project").is_ok());
+        assert!(validated_name(" ", "project").is_err());
+        assert!(validated_name(&"x".repeat(201), "project").is_err());
+        assert!(validated_description(&"x".repeat(200_000)).is_ok());
+        assert!(validated_description(&"x".repeat(200_001)).is_err());
+        assert_eq!(
+            validated_project_policy(Value::Null).expect("null policy defaults safely"),
+            serde_json::json!({})
+        );
+        assert!(validated_project_policy(serde_json::json!({"tool_policy": "autonomous"})).is_ok());
+        assert!(validated_project_policy(serde_json::json!(["not", "an", "object"])).is_err());
     }
 }

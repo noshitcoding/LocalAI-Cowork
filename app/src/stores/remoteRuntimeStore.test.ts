@@ -92,4 +92,36 @@ describe('remote runtime account', () => {
     expect(await getCredential({ scope: 'remote_server', ownerId: 'primary', field: 'refresh_token' }))
       .toBe(refreshTokens.refresh_token)
   })
+
+  it('accepts an invitation without persisting either session token in localStorage', async () => {
+    const tokens = tokenResponse('invitation')
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(tokens), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await useRemoteRuntimeStore.getState().acceptInvitation(
+      'https://cowork.example.test',
+      'invited@example.test',
+      'Invited User',
+      'correct horse battery staple',
+      `invitation-${'i'.repeat(40)}`,
+    )
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cowork.example.test/api/v1/auth/invitations/accept',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('Invited User'),
+      }),
+    )
+    expect(useRemoteRuntimeStore.getState()).toMatchObject({
+      status: 'authenticated', email: 'invited@example.test', userId: USER_ID,
+    })
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain(tokens.access_token)
+    expect(JSON.stringify({ ...window.localStorage })).not.toContain(tokens.refresh_token)
+    expect(await getCredential({ scope: 'remote_server', ownerId: 'primary', field: 'refresh_token' }))
+      .toBe(tokens.refresh_token)
+  })
 })

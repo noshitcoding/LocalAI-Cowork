@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { ArrowDown, ArrowUp, LogIn, LogOut, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowDown, ArrowUp, Copy, LogIn, LogOut, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
@@ -38,6 +38,7 @@ function statusLabel(status: CodexAuthProfile['status'], tr: TFunction): string 
 
 export default function CodexAccountsPanel() {
   const { t: tr } = useTranslation()
+  const [deviceLinkCopyState, setDeviceLinkCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const {
     runtime,
     profiles,
@@ -58,9 +59,23 @@ export default function CodexAccountsPanel() {
     void load()
   }, [load])
 
+  useEffect(() => {
+    setDeviceLinkCopyState('idle')
+  }, [deviceLogin?.verificationUrl])
+
   const addAndLogin = async () => {
     const id = await createProfile()
     await login(id, 'browser')
+  }
+
+  const copyDeviceLoginUrl = async () => {
+    if (!deviceLogin) return
+    try {
+      await navigator.clipboard.writeText(deviceLogin.verificationUrl)
+      setDeviceLinkCopyState('copied')
+    } catch {
+      setDeviceLinkCopyState('failed')
+    }
   }
 
   return (
@@ -134,10 +149,29 @@ export default function CodexAccountsPanel() {
       )}
 
       {deviceLogin ? (
-        <div className="card" role="status">
+        <div className="card codex-device-login-card" role="status">
           <strong>{tr('Device code: {{code}}', { code: deviceLogin.userCode })}</strong>
-          <p className="hint-text">{tr('Open the sign-in page and enter this code.')}</p>
-          <button type="button" className="btn-sm" onClick={() => void openUrl(deviceLogin.verificationUrl)}>{tr('Open sign-in page')}</button>
+          <p className="hint-text">{tr('Copy the sign-in link or open it manually, then enter this code.')}</p>
+          <label className="codex-device-login-field">
+            <span>{tr('Sign-in link')}</span>
+            <div className="codex-device-login-copy-row">
+              <input
+                aria-label={tr('Sign-in link')}
+                value={deviceLogin.verificationUrl}
+                readOnly
+                onFocus={(event) => event.currentTarget.select()}
+              />
+              <button type="button" className="btn-sm" onClick={() => void copyDeviceLoginUrl()}>
+                <Copy size={14} /> {deviceLinkCopyState === 'copied' ? tr('Link copied') : tr('Copy sign-in link')}
+              </button>
+            </div>
+          </label>
+          <div className="actions llm-profile-actions">
+            <button type="button" className="btn-sm" onClick={() => void openUrl(deviceLogin.verificationUrl)}>{tr('Open sign-in page')}</button>
+          </div>
+          {deviceLinkCopyState === 'failed' ? (
+            <p className="error" role="alert">{tr('Could not copy the link. Select it and copy it manually.')}</p>
+          ) : null}
         </div>
       ) : null}
       {error ? <p className="error" role="alert">{error}</p> : null}

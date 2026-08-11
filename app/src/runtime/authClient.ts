@@ -90,6 +90,15 @@ export class RemoteAuthClient {
     return this.#tokens('/api/v1/auth/login', credentials)
   }
 
+  acceptInvitation(request: {
+    token: string
+    display_name: string
+    password: string
+    device_id: string
+  }): Promise<AuthTokens> {
+    return this.#tokens('/api/v1/auth/invitations/accept', request)
+  }
+
   async loginPasskey(email: string, deviceId: string): Promise<AuthTokens> {
     const startResponse = await this.#fetch(
       `${this.#baseUrl}/api/v1/auth/passkeys/authenticate/start`,

@@ -6,13 +6,20 @@ import {
   desktopSessionSchema,
   desktopStreamTicketSchema,
   executorRecordSchema,
+  invitationSecretSchema,
+  messageRecordSchema,
   terminalSessionTicketSchema,
   threadRecordSchema,
+  threadMessageRunSchema,
   listRunsResponseSchema,
   operationsSnapshotSchema,
+  pullSyncChangesResponseSchema,
   passkeyChallengeSchema,
   passkeyRecordSchema,
+  projectMergeReviewSchema,
   projectRecordSchema,
+  projectVersionSchema,
+  providerProfileSchema,
   quotaStatusSchema,
   reauthenticationGrantSchema,
   runArtifactSchema,
@@ -20,9 +27,15 @@ import {
   pushSubscriptionRecordSchema,
   runEventSchema,
   runRecordSchema,
+  serverMcpBindingRecordSchema,
+  serverSyncChangeSchema,
+  syncedEntityPageSchema,
+  pushSyncChangesResponseSchema,
   runInputRequestSchema,
   scheduleRecordSchema,
   supportGrantRecordSchema,
+  teamRecordSchema,
+  teamMemberRecordSchema,
   taskDefinitionSchema,
   totpRecoveryCodesSchema,
   totpSetupSchema,
@@ -30,27 +43,45 @@ import {
   versionResponseSchema,
   type CapabilityCatalog,
   type ApprovalRequest,
+  type ApplyProjectMergeRequest,
   type AuthSessionRecord,
   type CreateRunRequest,
+  type CreateProjectRequest,
+  type CreateThreadMessageRequest,
   type DesktopSession,
   type DesktopStreamTicket,
   type ExecutorTarget,
   type ExecutorRecord,
   type PersonalDeviceRemoteControlMode,
+  type InvitationSecret,
   type RunEvent,
   type RunArtifact,
   type PushConfiguration,
   type PushSubscriptionRecord,
   type ProjectRecord,
+  type ProjectMergeReview,
+  type ProjectVersion,
+  type ProviderProfile,
   type QuotaScopeType,
   type QuotaStatus,
   type PasskeyRecord,
   type OperationsSnapshot,
+  type PullSyncChangesResponse,
+  type MessageRecord,
   type RunRecord,
+  type ServerMcpBindingRecord,
+  type SetServerMcpBindingRequest,
+  type PushSyncChangesResponse,
   type RunInputRequest,
   type ScheduleRecord,
+  type ServerSyncChange,
+  type SyncedEntityPage,
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
+  type TeamRecord,
+  type TeamMemberRecord,
+  type TeamRole,
+  type SyncChange,
   type TaskDefinition,
   type TotpRecoveryCodes,
   type TotpSetup,
@@ -59,6 +90,9 @@ import {
   type ReauthenticationGrant,
   type TerminalSessionTicket,
   type ThreadRecord,
+  type ThreadMessageRun,
+  type UpdateProjectRequest,
+  type UpdateThreadRequest,
 } from './contracts'
 import { createPasskey, webauthnAvailableForOrigin } from './webauthn'
 
@@ -149,6 +183,194 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return projectRecordSchema.array().parse(await this.#request('/api/v1/projects'))
   }
 
+  async createProject(request: CreateProjectRequest): Promise<ProjectRecord> {
+    return projectRecordSchema.parse(await this.#request('/api/v1/projects', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
+  async listProjectVersions(projectId: string): Promise<ProjectVersion[]> {
+    return projectVersionSchema.array().parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/versions`,
+    ))
+  }
+
+  async applyProjectVersion(
+    projectId: string,
+    versionId: string,
+    expectedProjectRevision: number,
+    expectedCurrentVersionId: string | null,
+  ): Promise<ProjectVersion> {
+    return projectVersionSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/apply`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          expected_project_revision: expectedProjectRevision,
+          expected_current_version_id: expectedCurrentVersionId,
+        }),
+      },
+    ))
+  }
+
+  async reviewProjectMerge(
+    projectId: string,
+    baseVersionId: string,
+    currentVersionId: string,
+    resultVersionId: string,
+  ): Promise<ProjectMergeReview> {
+    const query = new URLSearchParams({
+      base_version_id: baseVersionId,
+      current_version_id: currentVersionId,
+      result_version_id: resultVersionId,
+    })
+    return projectMergeReviewSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/merge-review?${query.toString()}`,
+    ))
+  }
+
+  async applyProjectMerge(
+    projectId: string,
+    request: ApplyProjectMergeRequest,
+  ): Promise<ProjectVersion> {
+    return projectVersionSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/merge-apply`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
+  }
+
+  async listTeams(): Promise<TeamRecord[]> {
+    return teamRecordSchema.array().parse(await this.#request('/api/v1/teams'))
+  }
+
+  async createTeam(name: string): Promise<TeamRecord> {
+    return teamRecordSchema.parse(await this.#request('/api/v1/teams', {
+      method: 'POST', body: JSON.stringify({ name }),
+    }))
+  }
+
+  async createInvitation(email: string): Promise<InvitationSecret> {
+    return invitationSecretSchema.parse(await this.#request('/api/v1/auth/invitations', {
+      method: 'POST', body: JSON.stringify({ email, expires_at: null }),
+    }))
+  }
+
+  async listTeamMembers(teamId: string): Promise<TeamMemberRecord[]> {
+    return teamMemberRecordSchema.array().parse(await this.#request(
+      `/api/v1/teams/${encodeURIComponent(teamId)}/members`,
+    ))
+  }
+
+  async setTeamMember(teamId: string, userId: string, role: Exclude<TeamRole, 'owner'>): Promise<void> {
+    await this.#request(`/api/v1/teams/${encodeURIComponent(teamId)}/members`, {
+      method: 'POST', body: JSON.stringify({ user_id: userId, role }),
+    }, false)
+  }
+
+  async removeTeamMember(teamId: string, userId: string): Promise<void> {
+    await this.#request(
+      `/api/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async listProviderProfiles(): Promise<ProviderProfile[]> {
+    return providerProfileSchema.array().parse(
+      await this.#request('/api/v1/provider-profiles'),
+    )
+  }
+
+  async createProviderProfile(request: {
+    team_id: string | null
+    name: string
+    provider_kind: string
+    model_defaults: unknown
+    api_key: string | null
+  }): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request('/api/v1/provider-profiles', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
+  async updateProviderProfile(profileId: string, request: {
+    expected_revision: number
+    name: string
+    provider_kind: string
+    model_defaults: unknown
+  }): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async setProviderProfileSecret(
+    profileId: string,
+    expectedRevision: number,
+    apiKey: string | null,
+  ): Promise<ProviderProfile> {
+    return providerProfileSchema.parse(await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}/secret`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ expected_revision: expectedRevision, api_key: apiKey }),
+      },
+    ))
+  }
+
+  async deleteProviderProfile(profileId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/provider-profiles/${encodeURIComponent(profileId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async listServerMcpBindings(projectId: string): Promise<ServerMcpBindingRecord[]> {
+    return serverMcpBindingRecordSchema.array().parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings`,
+    ))
+  }
+
+  async setServerMcpBinding(
+    projectId: string,
+    mcpEntityId: string,
+    request: SetServerMcpBindingRequest,
+  ): Promise<ServerMcpBindingRecord> {
+    return serverMcpBindingRecordSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings/${encodeURIComponent(mcpEntityId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteServerMcpBinding(
+    projectId: string,
+    mcpEntityId: string,
+    expectedRevision: number,
+  ): Promise<void> {
+    await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/mcp-bindings/${encodeURIComponent(mcpEntityId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectRecord> {
+    return projectRecordSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteProject(projectId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}?expected_revision=${Math.max(0, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
   async createThread(projectId: string, title: string): Promise<ThreadRecord> {
     return threadRecordSchema.parse(await this.#request('/api/v1/threads', {
       method: 'POST',
@@ -161,9 +383,74 @@ export class RemoteRuntimeClient implements RuntimeClient {
     }))
   }
 
+  async updateThread(threadId: string, request: UpdateThreadRequest): Promise<ThreadRecord> {
+    return threadRecordSchema.parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`,
+      { method: 'PUT', body: JSON.stringify(request) },
+    ))
+  }
+
+  async deleteThread(threadId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}?expected_revision=${Math.max(0, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async createThreadMessage(
+    threadId: string,
+    request: CreateThreadMessageRequest,
+  ): Promise<ThreadMessageRun> {
+    return threadMessageRunSchema.parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
+  }
+
+  async listThreadMessages(threadId: string, limit = 100): Promise<MessageRecord[]> {
+    return messageRecordSchema.array().parse(await this.#request(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?limit=${Math.max(1, Math.min(1_000, limit))}`,
+    ))
+  }
+
   async listProjectThreads(projectId: string): Promise<ThreadRecord[]> {
     return threadRecordSchema.array().parse(await this.#request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/threads`,
+    ))
+  }
+
+  async pushSyncChanges(changes: SyncChange[]): Promise<PushSyncChangesResponse> {
+    return pushSyncChangesResponseSchema.parse(await this.#request('/api/v1/sync/changes', {
+      method: 'POST', body: JSON.stringify({ changes }),
+    }))
+  }
+
+  async pullSyncChanges(after = 0, limit = 200): Promise<PullSyncChangesResponse> {
+    return pullSyncChangesResponseSchema.parse(await this.#request(
+      `/api/v1/sync/changes?after=${Math.max(0, Math.trunc(after))}&limit=${Math.max(1, Math.min(1_000, Math.trunc(limit)))}`,
+    ))
+  }
+
+  subscribeSyncEvents(
+    afterCursor: number,
+    onEvent: (event: ServerSyncChange) => void,
+    onError?: (error: Error) => void,
+  ): Unsubscribe {
+    const controller = new AbortController()
+    void this.#consumeSyncEvents(afterCursor, controller.signal, onEvent, onError)
+    return () => controller.abort()
+  }
+
+  async listSyncedEntities(
+    entityType: string,
+    after?: string | null,
+    limit = 200,
+  ): Promise<SyncedEntityPage> {
+    const query = new URLSearchParams({ limit: String(Math.max(1, Math.min(1_000, limit))) })
+    if (after) query.set('after', after)
+    return syncedEntityPageSchema.parse(await this.#request(
+      `/api/v1/sync/entities/${encodeURIComponent(entityType)}?${query.toString()}`,
     ))
   }
 
@@ -216,12 +503,60 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return response.blob()
   }
 
-  async listTasks(): Promise<TaskDefinition[]> {
-    return taskDefinitionSchema.array().parse(await this.#request('/api/v1/tasks'))
+  async listTasks(projectId: string): Promise<TaskDefinition[]> {
+    return taskDefinitionSchema.array().parse(await this.#request(
+      `/api/v1/tasks?project_id=${encodeURIComponent(projectId)}`,
+    ))
   }
 
-  async listSchedules(): Promise<ScheduleRecord[]> {
-    return scheduleRecordSchema.array().parse(await this.#request('/api/v1/schedules'))
+  async createTask(request: {
+    project_id: string
+    name: string
+    instructions: string
+    required_capabilities: string[]
+    default_target: ExecutorTarget | null
+    config: unknown
+    release: boolean
+  }): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request('/api/v1/tasks', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
+  async createTaskVersion(taskId: string, request: {
+    base_revision: number
+    name: string
+    instructions: string
+    required_capabilities: string[]
+    default_target: ExecutorTarget | null
+    config: unknown
+    release: boolean
+  }): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/versions`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
+  }
+
+  async releaseTaskVersion(taskId: string, revision: number): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/release`,
+      { method: 'POST', body: JSON.stringify({ revision }) },
+    ))
+  }
+
+  async deleteTask(taskId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
+  }
+
+  async listSchedules(projectId: string): Promise<ScheduleRecord[]> {
+    return scheduleRecordSchema.array().parse(await this.#request(
+      `/api/v1/schedules?project_id=${encodeURIComponent(projectId)}`,
+    ))
   }
 
   async listAuthSessions(): Promise<AuthSessionRecord[]> {
@@ -603,6 +938,41 @@ export class RemoteRuntimeClient implements RuntimeClient {
         if (signal.aborted) return
         const error = cause instanceof Error ? cause : new Error(String(cause))
         onError?.(error)
+      }
+      await abortableDelay(this.#reconnectDelayMs, signal)
+    }
+  }
+
+  async #consumeSyncEvents(
+    initialCursor: number,
+    signal: AbortSignal,
+    onEvent: (event: ServerSyncChange) => void,
+    onError?: (error: Error) => void,
+  ): Promise<void> {
+    let cursor = Math.max(0, Math.trunc(initialCursor))
+    while (!signal.aborted) {
+      try {
+        const token = await this.#accessToken()
+        const response = await this.#fetch(`${this.#baseUrl}/api/v1/sync/events`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'text/event-stream',
+            'last-event-id': String(cursor),
+          },
+          signal,
+        })
+        if (!response.ok) throw await RuntimeHttpError.fromResponse(response)
+        if (!response.body) throw new Error('The server returned an empty sync event stream')
+        for await (const frame of parseSse(response.body, signal)) {
+          if (frame.data === '' || frame.data === 'keep-alive') continue
+          const event = serverSyncChangeSchema.parse(JSON.parse(frame.data))
+          if (event.cursor <= cursor) continue
+          cursor = event.cursor
+          onEvent(event)
+        }
+      } catch (cause) {
+        if (signal.aborted) return
+        onError?.(cause instanceof Error ? cause : new Error(String(cause)))
       }
       await abortableDelay(this.#reconnectDelayMs, signal)
     }

@@ -27,6 +27,7 @@ import { useBackendDefaultsStore } from './stores/backendDefaultsStore'
 import ProviderFallbackApprovalDialog from './components/ProviderFallbackApprovalDialog'
 import { reconcileDurableLocalRuns } from './runtime/localDaemonChat'
 import { reconcileDurableLocalEntities } from './runtime/localDaemonEntities'
+import LocalDaemonSyncMonitor from './components/LocalDaemonSyncMonitor'
 import './App.css'
 
 const CoworkView = lazy(() => import('./components/CoworkView'))
@@ -370,6 +371,7 @@ function DesktopApp() {
       <AppRoutes />
       <BackendSetupDialog />
       <ProviderFallbackApprovalDialog />
+      <LocalDaemonSyncMonitor />
     </BrowserRouter>
   )
 }

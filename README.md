@@ -70,6 +70,20 @@ physical release gates before exposing it to untrusted users. Start with the
 The distributed stack is currently suitable for trusted development and pilot
 networks, not public multi-tenant production.
 
+## Choose Your Deployment
+
+| What you need | Install | Start here |
+| --- | --- | --- |
+| Offline/local work with Ollama, vLLM or hosted APIs | Desktop app only | [Setup guide](docs/SETUP.md#standalone-desktop) |
+| Runs that continue after the laptop is closed | Desktop plus Linux Compose server | [Server deployment](docs/SERVER_DEPLOYMENT.md) |
+| Web and Android control | Compose server plus the relevant client | [Android setup](clients/android/README.md) |
+| Real Microsoft Office and Windows UI automation | Managed Windows executor pool | [Executor setup](agents/cowork-device-agent/README.md#managed-windows-executor) |
+
+The server is optional. Connecting a desktop later does not upload private
+project files automatically, and a Run never changes executor after it starts.
+For the complete decision tree, component prerequisites and verification steps,
+read [Setup and deployment selection](docs/SETUP.md).
+
 ## Quick Start
 
 ### Prerequisites
@@ -87,7 +101,7 @@ networks, not public multi-tenant production.
 
 ```powershell
 cd app
-npm install
+npm ci
 npm run tauri dev
 ```
 
@@ -223,21 +237,30 @@ npm run smoke:desktop
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
+- [Setup and deployment selection](docs/SETUP.md)
+- [Development setup and test matrix](docs/DEVELOPMENT.md)
 - [Ollama configuration](docs/OLLAMA_CONFIGURATION.md)
 - [Linux installation](docs/LINUX_INSTALLATION.md)
 - [Desktop control and computer use](docs/DESKTOP_CONTROL_AND_COMPUTER_USE.md)
 - [Developer browser and GitHub workbench](docs/DEVELOPER_BROWSER_AND_GITHUB.md)
+- [Distributed architecture](docs/DISTRIBUTED_ARCHITECTURE.md)
+- [Server deployment and operations](docs/SERVER_DEPLOYMENT.md)
+- [Distributed implementation status](docs/DISTRIBUTED_IMPLEMENTATION_STATUS.md)
+- [Local daemon](agents/cowork-local-daemon/README.md)
+- [Personal and managed executors](agents/cowork-device-agent/README.md)
+- [Android client](clients/android/README.md)
 
 ## Release Workflow
 
 The GitHub Actions workflow in `.github/workflows/release.yml` builds Windows x64 and Linux x64 packages, then publishes one GitHub Release only after every required job succeeds.
 
 ```powershell
-git tag v0.3.0
-git push origin v0.3.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-Release conditions are fail-closed: the tag must be valid `v`-prefixed SemVer, already exist, match the shared npm/Cargo/Tauri version, and point to a commit contained in `main`. Windows verification, Linux compilation and package smoke tests, vulnerability audits, updater signatures, and the `release` environment (including any configured protection rules) must all pass before publication. Stable tags cannot be manually marked as prereleases; prerelease tags use a SemVer suffix such as `v0.3.0-beta.1`.
+Release conditions are fail-closed: the tag must be valid `v`-prefixed SemVer, already exist, match the shared npm/Cargo/Tauri version, and point to a commit contained in `main`. Windows verification, Linux compilation and package smoke tests, vulnerability audits, updater signatures, and the `release` environment (including any configured protection rules) must all pass before publication. Stable tags cannot be manually marked as prereleases; prerelease tags use a SemVer suffix such as `vX.Y.Z-beta.1`.
 
 The release includes a Windows NSIS installer plus Linux AppImage, DEB, and RPM packages. It also contains a cross-platform signed `latest.json`, CycloneDX SBOM, third-party notices, combined provenance, SHA-256 sums, and GitHub attestations. Update signing is mandatory and uses `LOCALAI_COWORK_UPDATER_PRIVATE_KEY` plus the optional `LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD`; keep the private key recoverable because installed apps trust it for future releases. Authenticode signing uses the `LOCALAI_COWORK_CODESIGN_*` secrets (with the legacy `OPEN_COWORK_*` names accepted during migration). Repositories that explicitly set `LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE=true` may publish an unsigned Windows installer only with a prominent warning asset and release notice; incomplete signing configuration still blocks publication.
 

@@ -72,7 +72,7 @@ async function download(url, destination) {
   await pipeline(response.body, createWriteStream(destination))
 }
 
-async function verifyHandshake(binary, codexHome) {
+async function verifyProtocol(binary, codexHome) {
   await new Promise((resolvePromise, reject) => {
     const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
       env: cleanEnvironment(codexHome),
@@ -95,7 +95,7 @@ async function verifyHandshake(binary, codexHome) {
       child.stdin.end()
       child.kill()
     }
-    const timer = setTimeout(() => finish(new Error('Codex App Server handshake timed out')), 20_000)
+    const timer = setTimeout(() => finish(new Error('Codex App Server protocol verification timed out')), 20_000)
     child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
     child.on('error', (error) => finish(error))
     child.on('exit', (code) => {
@@ -114,14 +114,36 @@ async function verifyHandshake(binary, codexHome) {
             finish(new Error(`Codex App Server returned an incompatible handshake: ${line}`))
             return
           }
-          child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`, () => finish())
+          child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`)
+          child.stdin.write(`${JSON.stringify({
+            method: 'thread/start',
+            id: 2,
+            params: {
+              cwd: codexHome,
+              model: null,
+              approvalPolicy: 'untrusted',
+              sandbox: 'read-only',
+              serviceName: 'open_cowork_build',
+              dynamicTools: [],
+            },
+          })}\n`)
+        }
+        if (message.id === 2) {
+          if (message.error || typeof message.result?.thread?.id !== 'string') {
+            finish(new Error(`Codex App Server returned an incompatible thread/start response: ${line}`))
+            return
+          }
+          finish()
         }
       }
     })
     child.stdin.write(`${JSON.stringify({
       method: 'initialize',
       id: 1,
-      params: { clientInfo: { name: 'open_cowork_build', title: 'OpenCowork build verification', version: '0.3.0' } },
+      params: {
+        clientInfo: { name: 'open_cowork_build', title: 'OpenCowork build verification', version: '0.3.0' },
+        capabilities: { experimentalApi: true },
+      },
     })}\n`)
   })
 }
@@ -197,7 +219,7 @@ try {
   if (process.platform !== 'win32') chmodSync(destinationBinary, 0o755)
   const versionOutput = run(destinationBinary, ['--version'], { env: cleanEnvironment(codexHome), windowsHide: true })
   if (!versionOutput.includes(VERSION)) throw new Error(`Codex version check failed: ${versionOutput}`)
-  await verifyHandshake(destinationBinary, codexHome)
+  await verifyProtocol(destinationBinary, codexHome)
 
   const binaryHash = sha256(destinationBinary)
   const binarySize = statSync(destinationBinary).size

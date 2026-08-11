@@ -285,6 +285,34 @@ impl ObjectStore {
         )
     }
 
+    pub(crate) fn seal_for_team(
+        &self,
+        team_id: Uuid,
+        plaintext: &[u8],
+    ) -> Result<SealedValue, ApiError> {
+        let encrypted = self.encrypt(KeyScope::Team(team_id), plaintext)?;
+        Ok(SealedValue {
+            ciphertext: encrypted.ciphertext,
+            encrypted_data_key: encrypted.wrapped_data_key,
+            nonce: encrypted.nonce,
+            wrap_nonce: encrypted.wrap_nonce,
+        })
+    }
+
+    pub(crate) fn open_for_team(
+        &self,
+        team_id: Uuid,
+        sealed: &SealedValue,
+    ) -> Result<Vec<u8>, ApiError> {
+        self.decrypt(
+            KeyScope::Team(team_id),
+            &sealed.ciphertext,
+            &sealed.encrypted_data_key,
+            &sealed.nonce,
+            &sealed.wrap_nonce,
+        )
+    }
+
     fn encrypt(&self, scope: KeyScope, plaintext: &[u8]) -> Result<EncryptedChunk, ApiError> {
         let mut data_key = [0_u8; 32];
         let mut nonce = [0_u8; 12];
@@ -2556,8 +2584,13 @@ async fn resume_snapshot_runs(state: &AppState, manifest_id: Uuid) -> Result<(),
                     .all(|required| server.contains(required.0.as_str()))
             }
             target => {
-                db::target_has_executor(&state.pool, target, &run.spec.required_capabilities)
-                    .await?
+                db::target_has_executor(
+                    &state.pool,
+                    target,
+                    &run.spec.required_capabilities,
+                    &run.spec.input,
+                )
+                .await?
             }
         };
         db::transition_run(

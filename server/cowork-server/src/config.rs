@@ -219,12 +219,15 @@ impl Config {
             model_name: env_or("COWORK_MODEL_NAME", "gpt-5-mini"),
             model_input_cost_micros_per_million,
             model_output_cost_micros_per_million,
-            server_capabilities: env_or("COWORK_SERVER_CAPABILITIES", "model.external")
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(Capability::from)
-                .collect(),
+            server_capabilities: env_or(
+                "COWORK_SERVER_CAPABILITIES",
+                "model.external,tool.mcp.invoke",
+            )
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(Capability::from)
+            .collect(),
             runner_url,
             runner_signing_key,
             object_store,

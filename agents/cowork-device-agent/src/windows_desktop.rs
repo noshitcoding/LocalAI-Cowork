@@ -694,7 +694,7 @@ mod linux {
         }
 
         #[tokio::test]
-        async fn xvfb_personal_linux_viewer_receives_a_tight_jpeg_frame() {
+        async fn xvfb_personal_linux_viewer_streams_sustained_tight_jpeg_frames() {
             let required = env::var("COWORK_REQUIRE_LINUX_DESKTOP_TEST").as_deref() == Ok("1");
             if !available() {
                 assert!(
@@ -733,19 +733,60 @@ mod linux {
                 .send(Message::Binary(encodings.into()))
                 .await
                 .unwrap();
-            let mut request = vec![3, 0, 0, 0, 0, 0];
-            request.extend(320_u16.to_be_bytes());
-            request.extend(200_u16.to_be_bytes());
-            client.send(Message::Binary(request.into())).await.unwrap();
-            let update = binary(client.next().await.unwrap().unwrap()).to_vec();
+            let frame_count = env::var("COWORK_LINUX_DESKTOP_SOAK_FRAMES")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(3);
+            assert!((1..=1_000).contains(&frame_count));
+            let mut total_bytes = 0_usize;
+            for frame_index in 0..frame_count {
+                let mut request = vec![3, u8::from(frame_index > 0), 0, 0, 0, 0];
+                request.extend(320_u16.to_be_bytes());
+                request.extend(200_u16.to_be_bytes());
+                client.send(Message::Binary(request.into())).await.unwrap();
+                let message = timeout(Duration::from_secs(20), client.next())
+                    .await
+                    .expect("Linux desktop frame timed out")
+                    .expect("Linux desktop stream closed")
+                    .expect("Linux desktop stream failed");
+                let update = binary(message);
+                assert_tight_jpeg_update(&update);
+                total_bytes = total_bytes
+                    .checked_add(update.len())
+                    .expect("Linux desktop stream byte count overflowed");
+            }
+            assert!(total_bytes >= frame_count * 20);
+            let _ = client.close(None).await;
+            server.abort();
+        }
+
+        fn assert_tight_jpeg_update(update: &[u8]) {
             assert!(update.len() > 20);
             assert_eq!(
                 i32::from_be_bytes(update[12..16].try_into().unwrap()),
                 ENCODING_TIGHT
             );
             assert_eq!(update[16], 0x90);
-            let _ = client.close(None).await;
-            server.abort();
+            let (jpeg_length, compact_length_bytes) = decode_compact_length(&update[17..]);
+            let jpeg = &update[17 + compact_length_bytes..];
+            assert_eq!(jpeg.len(), jpeg_length);
+            assert!(jpeg.starts_with(&[0xff, 0xd8]));
+            assert!(jpeg.ends_with(&[0xff, 0xd9]));
+        }
+
+        fn decode_compact_length(bytes: &[u8]) -> (usize, usize) {
+            assert!(!bytes.is_empty());
+            let mut value = usize::from(bytes[0] & 0x7f);
+            if bytes[0] & 0x80 == 0 {
+                return (value, 1);
+            }
+            assert!(bytes.len() >= 2);
+            value |= usize::from(bytes[1] & 0x7f) << 7;
+            if bytes[1] & 0x80 == 0 {
+                return (value, 2);
+            }
+            assert!(bytes.len() >= 3);
+            (value | (usize::from(bytes[2]) << 14), 3)
         }
 
         fn binary(message: Message) -> Vec<u8> {

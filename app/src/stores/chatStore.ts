@@ -151,6 +151,22 @@ type ChatState = {
 
 type DbMessage = { id: string; role: string; content: string; timestamp: number }
 
+type DbThread = {
+  id: string
+  title: string
+  created_at?: string
+  createdAt?: string
+  updated_at?: string
+  updatedAt?: string
+  provider_settings_json?: string | null
+  providerSettingsJson?: string | null
+  permission_config_json?: string | null
+  permissionConfigJson?: string | null
+  runner?: string | null
+  crew_id?: string | null
+  crewId?: string | null
+}
+
 const loadedThreadMessages = new Set<string>()
 const databaseBackedThreadIds = new Set<string>()
 const loadingThreadMessages = new Map<string, Promise<void>>()
@@ -331,21 +347,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   loadFromDb: async () => {
     try {
-      type DbThread = {
-        id: string
-        title: string
-        created_at?: string
-        createdAt?: string
-        updated_at?: string
-        updatedAt?: string
-        provider_settings_json?: string | null
-        providerSettingsJson?: string | null
-        permission_config_json?: string | null
-        permissionConfigJson?: string | null
-        runner?: string | null
-        crew_id?: string | null
-        crewId?: string | null
-      }
       const dbThreads = await invoke<DbThread[]>('db_list_threads')
       dbThreads.forEach((thread) => databaseBackedThreadIds.add(thread.id))
       const currentActiveThreadId = get().activeThreadId
@@ -652,6 +653,38 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setActiveThread: async (id) => {
     set({ activeThreadId: id })
     if (!id) return
+    if (isTauriRuntime()) {
+      try {
+        const persisted = (await invoke<DbThread[]>('db_list_threads'))
+          .find((thread) => thread.id === id)
+        if (persisted) {
+          set((state) => ({
+            threads: state.threads.map((thread) => (
+              thread.id === id
+                ? {
+                    ...thread,
+                    title: persisted.title,
+                    createdAt: parseTimestamp(persisted.created_at ?? persisted.createdAt),
+                    updatedAt: parseTimestamp(persisted.updated_at ?? persisted.updatedAt),
+                    providerSettings: parseThreadProviderSettings(
+                      persisted.provider_settings_json ?? persisted.providerSettingsJson,
+                    ),
+                    permissionConfig: parsePermissionConfig(
+                      persisted.permission_config_json ?? persisted.permissionConfigJson ?? '{}',
+                    ),
+                    runner: persisted.runner === 'crew' ? 'crew' : 'model',
+                    crewId: persisted.runner === 'crew'
+                      ? (persisted.crew_id ?? persisted.crewId ?? null)
+                      : null,
+                  }
+                : thread
+            )),
+          }))
+        }
+      } catch (error) {
+        console.warn('[chatStore] persisted thread metadata refresh failed', error)
+      }
+    }
     await get().ensureThreadLoaded(id)
   },
 

@@ -6,6 +6,8 @@ RUN apt-get update \
     && groupadd --system --gid 10001 cowork \
     && useradd --system --uid 10001 --gid cowork --create-home --home-dir /workspace cowork
 
+COPY deploy/sandboxes/core/mcp-tool.py /opt/cowork/mcp-tool.py
+
 USER 10001:10001
 WORKDIR /workspace
 CMD ["/bin/bash"]

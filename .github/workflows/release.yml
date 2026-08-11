@@ -473,6 +473,9 @@ jobs:
           - name: sandbox-gui
             image: open-cowork-sandbox-gui
             dockerfile: deploy/sandboxes/gui/Dockerfile
+          - name: sandbox-crew
+            image: open-cowork-sandbox-crew
+            dockerfile: deploy/sandboxes/crew/Dockerfile
 
     steps:
       - name: Checkout validated source

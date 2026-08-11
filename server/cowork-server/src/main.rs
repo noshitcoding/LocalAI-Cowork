@@ -6,13 +6,16 @@ mod desktop;
 mod error;
 mod executor_ws;
 mod governance;
+mod mcp_bindings;
 mod oidc;
 mod operations;
 mod organization;
 mod passkey;
+mod providers;
 mod push;
 mod routes;
 mod storage;
+mod sync;
 mod terminal;
 mod worker;
 mod workflow;
@@ -175,23 +178,66 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         .route("/version", get(routes::version))
         .route("/capabilities", get(routes::capabilities))
         .route(
+            "/sync/changes",
+            post(sync::push_changes).get(sync::pull_changes),
+        )
+        .route("/sync/events", get(sync::change_events))
+        .route("/sync/entities/{entity_type}", get(sync::list_entities))
+        .route(
             "/teams",
             post(organization::create_team).get(organization::list_teams),
         )
         .route(
             "/teams/{team_id}/members",
-            post(organization::set_team_member),
+            post(organization::set_team_member).get(organization::list_team_members),
+        )
+        .route(
+            "/teams/{team_id}/members/{user_id}",
+            axum::routing::delete(organization::remove_team_member),
         )
         .route(
             "/projects",
             post(organization::create_project).get(organization::list_projects),
         )
-        .route("/projects/{project_id}", get(organization::get_project))
+        .route(
+            "/projects/{project_id}",
+            get(organization::get_project)
+                .put(organization::update_project)
+                .delete(organization::delete_project),
+        )
         .route(
             "/projects/{project_id}/members",
             post(organization::set_project_member),
         )
+        .route(
+            "/projects/{project_id}/mcp-bindings",
+            get(mcp_bindings::list),
+        )
+        .route(
+            "/projects/{project_id}/mcp-bindings/{mcp_entity_id}",
+            put(mcp_bindings::set).delete(mcp_bindings::delete),
+        )
+        .route(
+            "/provider-profiles",
+            post(providers::create).get(providers::list),
+        )
+        .route(
+            "/provider-profiles/{profile_id}",
+            put(providers::update).delete(providers::delete),
+        )
+        .route(
+            "/provider-profiles/{profile_id}/secret",
+            put(providers::set_secret),
+        )
         .route("/threads", post(organization::create_thread))
+        .route(
+            "/threads/{thread_id}",
+            put(organization::update_thread).delete(organization::delete_thread),
+        )
+        .route(
+            "/threads/{thread_id}/messages",
+            post(routes::create_thread_message).get(routes::list_thread_messages),
+        )
         .route(
             "/projects/{project_id}/threads",
             get(organization::list_project_threads),
@@ -200,7 +246,10 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
             "/tasks",
             post(workflow::create_task).get(workflow::list_tasks),
         )
-        .route("/tasks/{task_id}", get(workflow::get_task))
+        .route(
+            "/tasks/{task_id}",
+            get(workflow::get_task).delete(workflow::delete_task),
+        )
         .route(
             "/tasks/{task_id}/versions",
             post(workflow::create_task_version),
@@ -339,6 +388,14 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         .route(
             "/agent/executors/{executor_id}/heartbeat",
             post(routes::heartbeat_executor),
+        )
+        .route(
+            "/agent/executors/{executor_id}/sync/changes",
+            get(sync::agent_pull_changes).post(sync::agent_push_changes),
+        )
+        .route(
+            "/agent/executors/{executor_id}/sync/entities/{entity_type}",
+            get(sync::agent_list_entities),
         )
         .route(
             "/agent/executors/{executor_id}/claim",

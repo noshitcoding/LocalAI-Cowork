@@ -22,10 +22,17 @@ import RemoteTerminal from '../components/RemoteTerminal'
 import RunArtifactPanel from '../components/RunArtifactPanel'
 import RunInterventionPanel from '../components/RunInterventionPanel'
 import RemoteRunComposer from '../components/RemoteRunComposer'
+import RemoteThreadMessages from '../components/RemoteThreadMessages'
 import RemoteScheduleManager from '../components/RemoteScheduleManager'
+import RemoteTaskManager from '../components/RemoteTaskManager'
+import RemoteProviderProfileManager from '../components/RemoteProviderProfileManager'
+import RemoteOrganizationManager from '../components/RemoteOrganizationManager'
+import RemoteProjectVersionManager from '../components/RemoteProjectVersionManager'
 import RemoteSecuritySettings from '../components/RemoteSecuritySettings'
 import RemoteGovernancePanel from '../components/RemoteGovernancePanel'
 import RemoteDeviceSettings from '../components/RemoteDeviceSettings'
+import RemoteMetadataManager from '../components/RemoteMetadataManager'
+import ServerMcpBindingManager from '../components/ServerMcpBindingManager'
 import type { DesktopSession, RunEvent, RunRecord } from '../runtime/contracts'
 import { nativePasskeyAvailable } from '../runtime/nativePasskey'
 import { webauthnAvailableForOrigin } from '../runtime/webauthn'
@@ -33,10 +40,11 @@ import { oidcEnabled } from '../runtime/oidc'
 import { remoteDeviceId, remoteRuntimeClient, useRemoteRuntimeStore } from '../stores/remoteRuntimeStore'
 import {
   EMPTY_MOBILE_OFFLINE_STATE,
+  createOfflineThreadMessageOperation,
+  flushMobileOutbox,
   loadMobileOfflineState,
   saveMobileOfflineState,
   type MobileOfflineState,
-  type MobileOutboxOperation,
 } from './mobileOfflineStore'
 import { hasMobilePin, setMobilePin, unlockWithBiometrics, verifyMobilePin } from './mobileSecure'
 import { androidPushBuildConfigured, consumeAndroidPushEvents, enableAndroidPush } from './mobilePush'
@@ -66,7 +74,12 @@ export default function MobileApp() {
   const [serverUrl, setServerUrl] = useState(account.serverUrl)
   const [email, setEmail] = useState(account.email)
   const [password, setPassword] = useState('')
+  const [accountPasswordConfirmation, setAccountPasswordConfirmation] = useState('')
   const [secondFactor, setSecondFactor] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'bootstrap' | 'invitation'>('login')
+  const [displayName, setDisplayName] = useState('')
+  const [bootstrapToken, setBootstrapToken] = useState('')
+  const [invitationToken, setInvitationToken] = useState('')
   const [online, setOnline] = useState(navigator.onLine)
   const [offline, setOffline] = useState<MobileOfflineState>(EMPTY_MOBILE_OFFLINE_STATE)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
@@ -77,7 +90,9 @@ export default function MobileApp() {
   const [pushStatus, setPushStatus] = useState<'idle' | 'enabling' | 'enabled'>('idle')
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [interventionReloadKey, setInterventionReloadKey] = useState(0)
+  const [messageReloadKey, setMessageReloadKey] = useState(0)
   const [ssoEnabled, setSsoEnabled] = useState(false)
+  const [offlineReply, setOfflineReply] = useState('')
   const offlineRef = useRef(offline)
   const fileInput = useRef<HTMLInputElement>(null)
   const cameraInput = useRef<HTMLInputElement>(null)
@@ -161,19 +176,15 @@ export default function MobileApp() {
   const flushOutbox = useCallback(async () => {
     const current = offlineRef.current
     if (!client || !online || current.outbox.length === 0) return
-    const remaining: MobileOutboxOperation[] = []
-    for (const operation of current.outbox) {
-      try {
-        if (operation.kind === 'cancel_run') await client.cancelRun(operation.runId)
-      } catch (cause) {
-        remaining.push({
-          ...operation,
-          attempts: operation.attempts + 1,
-          lastError: messageOf(cause),
-        })
-      }
-    }
-    persist({ ...offlineRef.current, outbox: remaining })
+    const { remaining, createdRuns } = await flushMobileOutbox(client, current.outbox)
+    persist({
+      ...offlineRef.current,
+      runs: [
+        ...createdRuns,
+        ...offlineRef.current.runs.filter((run) => !createdRuns.some((created) => created.spec.id === run.spec.id)),
+      ],
+      outbox: remaining,
+    })
   }, [client, online, persist])
 
   useEffect(() => {
@@ -207,6 +218,7 @@ export default function MobileApp() {
         void client.listDesktopSessions(selectedRunId).then(setSessions).catch(() => undefined)
       }
       if (['approval_requested', 'approval_resolved', 'input_requested', 'input_received'].includes(event.kind)) setInterventionReloadKey((value) => value + 1)
+      if (event.kind === 'completed') setMessageReloadKey((value) => value + 1)
       if (['state_changed', 'completed', 'failed'].includes(event.kind)) void refreshRuns()
     }, () => setOnline(false))
   }, [client, online, refreshRuns, selectedRunId])
@@ -253,11 +265,24 @@ export default function MobileApp() {
     setBusy(true)
     setError(null)
     try {
-      await account.login(serverUrl, email, password, secondFactor)
+      if (authMode !== 'login' && password !== accountPasswordConfirmation) {
+        throw new Error('Password confirmation does not match')
+      }
+      if (authMode === 'bootstrap') {
+        await account.bootstrap(serverUrl, email, displayName, password, bootstrapToken)
+      } else if (authMode === 'invitation') {
+        await account.acceptInvitation(serverUrl, email, displayName, password, invitationToken)
+      } else {
+        await account.login(serverUrl, email, password, secondFactor)
+      }
       setPassword('')
+      setAccountPasswordConfirmation('')
       setSecondFactor('')
+      setBootstrapToken('')
+      setInvitationToken('')
     } catch (cause) {
       setPassword('')
+      setAccountPasswordConfirmation('')
       setSecondFactor('')
       setError(messageOf(cause))
     } finally {
@@ -305,6 +330,21 @@ export default function MobileApp() {
         }],
       })
     }
+  }
+
+  const queueOfflineReply = (event: FormEvent) => {
+    event.preventDefault()
+    if (!selectedRun || !offlineReply.trim()) return
+    const operation = createOfflineThreadMessageOperation(selectedRun, offlineReply)
+    persist({ ...offlineRef.current, outbox: [...offlineRef.current.outbox, operation] })
+    setOfflineReply('')
+  }
+
+  const discardOutboxOperation = (operationId: string) => {
+    persist({
+      ...offlineRef.current,
+      outbox: offlineRef.current.outbox.filter((operation) => operation.id !== operationId),
+    })
   }
 
   const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -368,15 +408,20 @@ export default function MobileApp() {
     return (
       <main className="mobile-login-screen">
         <div className="mobile-brand"><Server size={32} /><h1>Open Cowork</h1></div>
-        <p>Connect this phone to one canonical Open Cowork server.</p>
+        <p>{authMode === 'bootstrap' ? 'Set up the first server administrator.' : authMode === 'invitation' ? 'Create the account invited to this server.' : 'Connect this phone to one canonical Open Cowork server.'}</p>
         <form onSubmit={login}>
           <label>Server URL<input type="url" value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://cowork.example.com" required /></label>
           <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label>
-          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
-          <label>Authenticator / recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only when enabled" /></label>
-          <button type="submit" disabled={busy || account.status === 'restoring'}>{account.status === 'restoring' ? 'Restoring…' : 'Connect'}</button>
-          {(webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button type="button" disabled={busy || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={18} /> Sign in with passkey</button> : null}
-          {ssoEnabled ? <button type="button" disabled={busy || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={18} /> Sign in with SSO</button> : null}
+          {authMode !== 'login' ? <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoComplete="name" required /></label> : null}
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={authMode === 'login' ? undefined : 12} required /></label>
+          {authMode !== 'login' ? <label>Confirm password<input type="password" value={accountPasswordConfirmation} onChange={(event) => setAccountPasswordConfirmation(event.target.value)} autoComplete="new-password" minLength={12} required /></label> : null}
+          {authMode === 'login' ? <label>Authenticator / recovery code<input value={secondFactor} onChange={(event) => setSecondFactor(event.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="Only when enabled" /></label> : null}
+          {authMode === 'bootstrap' ? <label>Bootstrap token<input type="password" value={bootstrapToken} onChange={(event) => setBootstrapToken(event.target.value)} autoComplete="off" minLength={16} required /></label> : null}
+          {authMode === 'invitation' ? <label>Invitation token<input value={invitationToken} onChange={(event) => setInvitationToken(event.target.value)} autoComplete="off" minLength={32} required /></label> : null}
+          <button type="submit" disabled={busy || account.status === 'restoring'}>{account.status === 'restoring' ? 'Restoring…' : authMode === 'bootstrap' ? 'Create administrator' : authMode === 'invitation' ? 'Create account' : 'Connect'}</button>
+          {authMode === 'login' && (webauthnAvailableForOrigin(serverUrl) || nativePasskeyAvailable()) ? <button type="button" disabled={busy || !serverUrl || !email} onClick={() => { void loginPasskey() }}><Fingerprint size={18} /> Sign in with passkey</button> : null}
+          {authMode === 'login' && ssoEnabled ? <button type="button" disabled={busy || !serverUrl} onClick={() => { void loginOidc() }}><KeyRound size={18} /> Sign in with SSO</button> : null}
+          <div className="mobile-auth-modes"><button type="button" aria-pressed={authMode === 'login'} onClick={() => setAuthMode('login')}>Sign in</button><button type="button" aria-pressed={authMode === 'invitation'} onClick={() => setAuthMode('invitation')}>Invitation</button><button type="button" aria-pressed={authMode === 'bootstrap'} onClick={() => setAuthMode('bootstrap')}>First admin</button></div>
         </form>
         {offline.runs.length > 0 ? <small>{offline.runs.length} cached runs remain available after sign-out.</small> : null}
         {(error || account.error) ? <div className="mobile-error" role="alert">{error ?? account.error}</div> : null}
@@ -407,6 +452,36 @@ export default function MobileApp() {
             <input ref={cameraInput} className="mobile-hidden-input" type="file" accept="image/*" capture="environment" onChange={(event) => { void uploadAttachment(event) }} />
           </div>
         </section>
+        <RemoteThreadMessages
+          client={online ? client : null}
+          threadId={selectedRun.spec.thread_id}
+          reloadKey={messageReloadKey}
+          initialMessages={offline.messages[selectedRun.spec.thread_id]}
+          replyContext={online ? selectedRun : undefined}
+          onLoaded={(messages) => persist({
+            ...offlineRef.current,
+            messages: { ...offlineRef.current.messages, [selectedRun.spec.thread_id]: messages },
+          })}
+          onRunCreated={(run) => {
+            persist({
+              ...offlineRef.current,
+              runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)],
+            })
+            setSelectedRunId(run.spec.id)
+            setMessageReloadKey((value) => value + 1)
+          }}
+        />
+        {!online ? (
+          <section className="mobile-offline-reply">
+            <h2>Queue a reply</h2>
+            <p>It will start a new durable run on this thread after connectivity returns.</p>
+            <form onSubmit={queueOfflineReply}>
+              <textarea aria-label="Offline reply" value={offlineReply} onChange={(event) => setOfflineReply(event.target.value)} rows={4} placeholder="Continue this work when I am online again…" required />
+              <button type="submit" disabled={!offlineReply.trim()}><ListRestart size={16} /> Add to outbox</button>
+            </form>
+            <small>{offline.outbox.filter((operation) => operation.kind === 'thread_message' && operation.threadId === selectedRun.spec.thread_id).length} queued for this thread</small>
+          </section>
+        ) : null}
         {online ? <RunInterventionPanel client={client} runId={selectedRun.spec.id} refreshKey={interventionReloadKey} onResolved={refreshRuns} /> : null}
         {activeSession && online ? <RemoteDesktopViewer client={client} runId={selectedRun.spec.id} session={activeSession} onSessionChanged={() => client.listDesktopSessions(selectedRun.spec.id).then(setSessions)} /> : null}
         {terminalOpen && online ? <RemoteTerminal client={client} runId={selectedRun.spec.id} onClose={() => setTerminalOpen(false)} /> : null}
@@ -429,11 +504,18 @@ export default function MobileApp() {
       {!online ? <div className="mobile-offline-banner"><CloudOff size={16} /> Offline cache</div> : null}
       {online && androidPushBuildConfigured() && pushStatus !== 'enabled' ? <button className="mobile-push-banner" type="button" disabled={pushStatus === 'enabling'} onClick={() => { void enableNotifications() }}><Bell size={16} /> {pushStatus === 'enabling' ? 'Enabling notifications…' : 'Enable private run notifications'}</button> : null}
       {offline.outbox.length > 0 ? <div className="mobile-outbox"><ListRestart size={16} /> {offline.outbox.length} queued action{offline.outbox.length === 1 ? '' : 's'}</div> : null}
+      {offline.outbox.length > 0 ? <section className="mobile-outbox-list"><strong>Encrypted outbox</strong>{offline.outbox.map((operation) => <article key={operation.id}><span><b>{operation.kind === 'cancel_run' ? 'Cancel run' : 'Thread reply'}</b><small>{operation.kind === 'cancel_run' ? operation.runId : operation.request.content && typeof operation.request.content === 'object' && 'text' in operation.request.content ? String(operation.request.content.text) : operation.threadId}</small>{operation.lastError ? <em>{operation.lastError}</em> : null}</span><button type="button" aria-label={`Discard queued ${operation.kind.replaceAll('_', ' ')}`} onClick={() => discardOutboxOperation(operation.id)}>Discard</button></article>)}</section> : null}
       <section className="mobile-run-list">
         <div className="mobile-section-heading"><h1>Runs</h1><button type="button" disabled={!online || busy} onClick={() => { void refreshRuns() }}><RefreshCw size={16} /> Sync</button></div>
         {online ? <RemoteSecuritySettings compact client={client} /> : null}
         {online ? <RemoteGovernancePanel compact client={client} currentUserId={account.userId ?? ''} /> : null}
         {online ? <RemoteDeviceSettings compact client={client} /> : null}
+        {online ? <RemoteOrganizationManager compact client={client} currentUserId={account.userId ?? ''} /> : null}
+        {online ? <RemoteProjectVersionManager compact client={client} /> : null}
+        {online ? <RemoteMetadataManager compact client={client} /> : null}
+        {online ? <ServerMcpBindingManager compact client={client} /> : null}
+        {online ? <RemoteProviderProfileManager compact client={client} /> : null}
+        {online ? <RemoteTaskManager compact client={client} onRunCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {online ? <RemoteScheduleManager compact client={client} /> : null}
         {online ? <RemoteRunComposer compact client={client} onCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {offline.runs.length === 0 ? <div className="mobile-empty"><Server size={28} /><p>No cached runs yet.</p></div> : offline.runs.map((run) => <button type="button" key={run.spec.id} onClick={() => setSelectedRunId(run.spec.id)}><span><strong>{runLabel(run)}</strong><small>{new Date(run.spec.created_at).toLocaleString()}</small></span><em className={`mobile-state state-${run.state}`}>{run.state.replaceAll('_', ' ')}</em></button>)}

@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -12,6 +13,10 @@ use cowork_contracts::{
     SandboxRunResult, SandboxRunSpec,
 };
 use cowork_runtime::{
+    crew::{
+        apply_crew_agent_tool_policy, crew_protocol_run_event_kind,
+        prepare_crew_request_with_agent_models, CrewModelConfig,
+    },
     AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
     ToolOutput,
 };
@@ -24,7 +29,12 @@ use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-use crate::{config::Config, db, desktop, governance, storage, workflow};
+use crate::{
+    config::Config,
+    db, desktop, governance,
+    mcp_bindings::{self, ResolvedServerMcpBinding},
+    providers, storage, workflow,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -32,16 +42,25 @@ type HmacSha256 = Hmac<Sha256>;
 struct WorkerRuntime {
     http: Client,
     agent: Option<Arc<AgentRuntime>>,
+    default_crew_model: Option<Arc<CrewModelConfig>>,
     runner: Option<RunnerConfig>,
     desktop_runner: Option<desktop::RunnerControl>,
     object_store: Option<storage::ObjectStore>,
     model_pricing: Option<ModelPricing>,
+    server_capabilities: Vec<Capability>,
 }
 
 #[derive(Clone, Copy)]
 struct ModelPricing {
     input_micros_per_million: u64,
     output_micros_per_million: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CrewUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
 }
 
 #[derive(Clone)]
@@ -77,6 +96,15 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
             })
             .transpose()?
             .map(Arc::new),
+        default_crew_model: config.model_base_url.clone().map(|base_url| {
+            Arc::new(CrewModelConfig {
+                base_url,
+                api_key: config.model_api_key.clone(),
+                model: config.model_name.clone(),
+                timeout: Duration::from_secs(24 * 60 * 60),
+                verify_tls_certificates: true,
+            })
+        }),
         runner: config
             .runner_url
             .clone()
@@ -100,6 +128,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
                     output_micros_per_million,
                 },
             ),
+        server_capabilities: config.server_capabilities.clone(),
     };
 
     if runtime.agent.is_none() && runtime.runner.is_none() {
@@ -173,9 +202,6 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
                 }
             }
         }
-        if runtime.agent.is_none() && runtime.runner.is_none() {
-            continue;
-        }
         match db::claim_server_run(
             &pool,
             config.worker_id,
@@ -236,6 +262,15 @@ async fn execute_run(
     });
     let outcome = if lease.run.spec.input.get("sandbox").is_some() {
         execute_sandbox_run(pool, worker_id, lease_duration, runtime, &lease).await
+    } else if lease
+        .run
+        .spec
+        .input
+        .get("task_runner")
+        .and_then(Value::as_str)
+        == Some("crew")
+    {
+        execute_crew_run(pool, worker_id, runtime, &lease).await
     } else {
         execute_agent_run(pool, worker_id, runtime, &lease).await
     };
@@ -308,18 +343,443 @@ async fn execute_agent_run(
     runtime: &WorkerRuntime,
     lease: &RunLease,
 ) -> Result<Value> {
-    let agent = runtime
-        .agent
+    let selected_agent = if let Some(profile_id) = lease.run.spec.model_profile_id {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        Some(AgentRuntime::new(AgentModelConfig {
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            model: profile.model,
+            timeout: profile.timeout,
+            max_steps: profile.max_steps,
+            verify_tls_certificates: profile.verify_tls_certificates,
+        })?)
+    } else {
+        None
+    };
+    let agent = selected_agent
         .as_ref()
+        .or(runtime.agent.as_deref())
         .context("the server model provider is not configured")?;
+    let mcp_bindings = mcp_bindings::resolve_server_bindings_for_run(
+        pool,
+        runtime.object_store.as_ref(),
+        lease.run.spec.project_id,
+        &lease.run.spec.input,
+    )
+    .await?;
     let host = ServerRuntimeHost {
         pool,
         worker_id,
         runtime,
         lease,
+        mcp_bindings,
     };
     let result = agent.execute(&lease.run.spec, &host).await?;
     Ok(serde_json::to_value(result)?)
+}
+
+async fn execute_crew_run(
+    pool: &PgPool,
+    worker_id: Uuid,
+    runtime: &WorkerRuntime,
+    lease: &RunLease,
+) -> Result<Value> {
+    let model = if let Some(profile_id) = lease.run.spec.model_profile_id {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        CrewModelConfig {
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            model: profile.model,
+            timeout: profile.timeout,
+            verify_tls_certificates: profile.verify_tls_certificates,
+        }
+    } else {
+        runtime
+            .default_crew_model
+            .as_deref()
+            .context("the server Crew model provider is not configured")?
+            .clone()
+    };
+    let definition = lease
+        .run
+        .spec
+        .input
+        .get("crew_definition")
+        .cloned()
+        .context("the Crew run has no frozen crew_definition")?;
+    let mut profile_models = HashMap::new();
+    let mut profile_secrets = Vec::new();
+    for profile_id in providers::crew_profile_ids_for_server(&lease.run.spec.input)? {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        if let Some(secret) = profile.api_key.clone().filter(|value| !value.is_empty()) {
+            profile_secrets.push(secret);
+        }
+        profile_models.insert(
+            profile_id.to_string(),
+            CrewModelConfig {
+                base_url: profile.base_url,
+                api_key: profile.api_key,
+                model: profile.model,
+                timeout: profile.timeout,
+                verify_tls_certificates: profile.verify_tls_certificates,
+            },
+        );
+    }
+    let mcp_bindings = mcp_bindings::resolve_server_bindings_for_run(
+        pool,
+        runtime.object_store.as_ref(),
+        lease.run.spec.project_id,
+        &lease.run.spec.input,
+    )
+    .await?;
+    let mut request = prepare_crew_request_with_agent_models(
+        definition,
+        &lease.run.spec,
+        &model,
+        &profile_models,
+    )?;
+    let mut secret_redactions = model.api_key.clone().into_iter().collect::<Vec<_>>();
+    secret_redactions.extend(profile_secrets);
+    secret_redactions.extend(inject_crew_mcp_context(
+        &mut request,
+        &mcp_bindings,
+        lease.run.spec.creator_user_id,
+        &runtime.server_capabilities,
+    )?);
+    let longest_model_timeout = profile_models
+        .values()
+        .map(|profile| profile.timeout)
+        .max()
+        .unwrap_or(model.timeout)
+        .max(model.timeout);
+    let timeout_seconds = longest_model_timeout
+        .as_secs()
+        .saturating_add(60)
+        .clamp(60, 24 * 60 * 60);
+    let spec = SandboxRunSpec {
+        schema_version: cowork_contracts::SCHEMA_VERSION,
+        run_id: lease.run.spec.id,
+        image: SandboxImage::Crew,
+        argv: vec![
+            "python3".to_owned(),
+            "/opt/cowork/crew-runtime/main.py".to_owned(),
+            "execute".to_owned(),
+        ],
+        environment: Default::default(),
+        stdin_base64: Some(STANDARD.encode(serde_json::to_vec(&request)?)),
+        network: SandboxNetwork::FilteredEgress,
+        limits: SandboxLimits {
+            memory_bytes: 4 * 1024 * 1024 * 1024,
+            cpu_nanos: 2_000_000_000,
+            pids: 512,
+            timeout_seconds,
+            tmpfs_bytes: 1024 * 1024 * 1024,
+            output_bytes: 32 * 1024 * 1024,
+        },
+    };
+    governance::ensure_model_quota_for_run(pool, lease.run.spec.id).await?;
+    workflow::create_worker_checkpoint(
+        pool,
+        worker_id,
+        lease.run.spec.id,
+        lease.lease_token,
+        false,
+        json!({
+            "phase":"crew_dispatched",
+            "adapter":"crewai",
+            "crew_id":lease.run.spec.input.get("crew_id"),
+            "crew_revision":lease.run.spec.input.get("crew_revision"),
+        }),
+    )
+    .await?;
+    db::append_leased_event(
+        pool,
+        lease.run.spec.id,
+        worker_id,
+        lease.lease_token,
+        None,
+        RunEventKind::ModelStarted,
+        json!({"adapter":"crewai","runtime":"sandbox","model":model.model}),
+    )
+    .await?;
+
+    let result = send_runner_job(runtime, &spec).await?;
+    let stderr = redact_secrets(&result.stderr, &secret_redactions);
+    if result.timed_out {
+        bail!("Crew runtime exceeded its configured timeout");
+    }
+    if result.exit_code != Some(0) {
+        bail!(
+            "Crew runtime failed with exit code {:?}: {}",
+            result.exit_code,
+            truncate(stderr.trim(), 8_000)
+        );
+    }
+
+    let mut response = None;
+    let mut emitted_events = 0_usize;
+    for line in result.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let mut value: Value =
+            serde_json::from_str(line).context("Crew runtime returned invalid JSON")?;
+        redact_secret_values(&mut value, &secret_redactions);
+        if value.get("localAiCoworkEvent").is_some() {
+            if emitted_events < 1_000 && serde_json::to_vec(&value)?.len() <= 1024 * 1024 {
+                let event_kind = crew_protocol_run_event_kind(&value);
+                db::append_leased_event(
+                    pool,
+                    lease.run.spec.id,
+                    worker_id,
+                    lease.lease_token,
+                    None,
+                    event_kind,
+                    json!({"adapter":"crewai","crew_event":value}),
+                )
+                .await?;
+                emitted_events += 1;
+            }
+        } else {
+            if response.replace(value).is_some() {
+                bail!("Crew runtime returned more than one response");
+            }
+        }
+    }
+    let response = response.context("Crew runtime returned no response")?;
+    let status = response
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("failed");
+    let usage = crew_usage(&response);
+    if let Some(usage) = usage {
+        let cost_micros = runtime
+            .model_pricing
+            .map(|pricing| model_cost_micros(pricing, usage.prompt_tokens, usage.completion_tokens))
+            .unwrap_or(0);
+        governance::record_model_usage_for_run(
+            pool,
+            lease.run.spec.id,
+            usage.total_tokens,
+            cost_micros,
+        )
+        .await?;
+    }
+    if status != "completed" {
+        if usage.is_some() {
+            db::append_leased_event(
+                pool,
+                lease.run.spec.id,
+                worker_id,
+                lease.lease_token,
+                None,
+                RunEventKind::Warning,
+                json!({
+                    "code":"crew_usage_recorded_after_failure",
+                    "adapter":"crewai",
+                    "status":status,
+                    "usage":response.get("usage").cloned().unwrap_or(Value::Null),
+                }),
+            )
+            .await?;
+        }
+        bail!(
+            "Crew runtime ended in state {status}: {}",
+            response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown CrewAI error")
+        );
+    }
+    let content = response
+        .get("taskResults")
+        .or_else(|| response.get("task_results"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("output").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    db::append_leased_event(
+        pool,
+        lease.run.spec.id,
+        worker_id,
+        lease.lease_token,
+        None,
+        RunEventKind::ModelCompleted,
+        json!({
+            "adapter":"crewai",
+            "content":content,
+            "task_count":response.get("taskResults").and_then(Value::as_array).map_or(0, Vec::len),
+            "event_count":emitted_events,
+            "usage":response.get("usage").cloned().unwrap_or(Value::Null),
+        }),
+    )
+    .await?;
+    Ok(json!({"content":content,"crew_response":response}))
+}
+
+fn redact_secrets(value: &str, secrets: &[String]) -> String {
+    let mut secrets = secrets
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .collect::<Vec<_>>();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets
+        .into_iter()
+        .fold(value.to_owned(), |redacted, secret| {
+            redacted.replace(secret.as_str(), "[REDACTED]")
+        })
+}
+
+fn crew_usage(response: &Value) -> Option<CrewUsage> {
+    let usage = response.get("usage")?.as_object()?;
+    let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let completion_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
+    let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+    let prompt_tokens = prompt_tokens.unwrap_or(0);
+    let completion_tokens = completion_tokens.unwrap_or(0);
+    let reported_total = total_tokens.unwrap_or(0);
+    Some(CrewUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: reported_total.max(prompt_tokens.saturating_add(completion_tokens)),
+    })
+}
+
+fn redact_secret_values(value: &mut Value, secrets: &[String]) {
+    match value {
+        Value::String(text) => *text = redact_secrets(text, secrets),
+        Value::Array(values) => {
+            for value in values {
+                redact_secret_values(value, secrets);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                redact_secret_values(value, secrets);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn inject_crew_mcp_context(
+    request: &mut Value,
+    bindings: &[ResolvedServerMcpBinding],
+    creator_user_id: Uuid,
+    capabilities: &[Capability],
+) -> Result<Vec<String>> {
+    let agents = request
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
+        .context("the prepared Crew request must contain agents")?;
+    let mut requested_names = BTreeSet::new();
+    let mut agent_access = Vec::with_capacity(agents.len());
+    for agent in agents {
+        let agent = agent
+            .as_object_mut()
+            .context("prepared Crew agents must be objects")?;
+        let agent_id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("prepared Crew agents require an id")?
+            .to_owned();
+        let allowed_tools = apply_crew_agent_tool_policy(agent, |required| {
+            capabilities
+                .iter()
+                .any(|capability| capability.0 == required)
+        })?;
+        let mut allowed_names = BTreeSet::new();
+        if let Some(values) = agent.get("mcpServerNames") {
+            for value in values
+                .as_array()
+                .context("prepared Crew agent mcpServerNames must be an array")?
+            {
+                let name = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .context("prepared Crew agent MCP names must be strings")?;
+                allowed_names.insert(name.to_owned());
+                requested_names.insert(name.to_owned());
+            }
+        }
+        agent_access.push(json!({
+            "agentId":agent_id,
+            "allowedTools":allowed_tools,
+            "blockedTools":[],
+            "allowedMcpServerNames":allowed_names,
+            "blockedMcpServerNames":[],
+            "delegationAllowed":false,
+            "gatewayHints":[],
+        }));
+    }
+
+    let by_name = bindings
+        .iter()
+        .map(|binding| (binding.name.as_str(), binding))
+        .collect::<BTreeMap<_, _>>();
+    let resolved_names = by_name
+        .keys()
+        .map(|name| (*name).to_owned())
+        .collect::<BTreeSet<_>>();
+    if requested_names != resolved_names {
+        bail!("resolved Crew MCP bindings do not match the prepared agent allowlists");
+    }
+
+    let mut executor_bindings = Vec::with_capacity(requested_names.len());
+    let mut secrets = Vec::new();
+    for name in &requested_names {
+        let binding = by_name
+            .get(name.as_str())
+            .with_context(|| format!("Crew MCP binding {name:?} was not resolved"))?;
+        secrets.extend(binding.secret_values());
+        executor_bindings.push(binding.sandbox_value());
+    }
+    let request = request
+        .as_object_mut()
+        .context("the prepared Crew request must be an object")?;
+    request.insert(
+        "executorMcpBindings".to_owned(),
+        Value::Array(executor_bindings),
+    );
+    request.insert(
+        "governance".to_owned(),
+        json!({
+            "subject":format!("server-run:{creator_user_id}"),
+            "subjectRoles":["runner"],
+            "policyStrict":true,
+            "denyRules":[],
+            "pendingApprovalTypes":[],
+            "agentAccess":agent_access,
+        }),
+    );
+    Ok(secrets)
 }
 
 struct ServerRuntimeHost<'a> {
@@ -327,6 +787,7 @@ struct ServerRuntimeHost<'a> {
     worker_id: Uuid,
     runtime: &'a WorkerRuntime,
     lease: &'a RunLease,
+    mcp_bindings: Vec<ResolvedServerMcpBinding>,
 }
 
 #[async_trait]
@@ -371,6 +832,23 @@ impl RuntimeHost for ServerRuntimeHost<'_> {
                 tool_definition("OfficePreview", "Render the first page or all pages of an Office document/PDF to PNG review artifacts.", json!({"type":"object","properties":{"path":{"type":"string"},"all_pages":{"type":"boolean"},"dpi":{"type":"integer","minimum":72,"maximum":200}},"required":["path"],"additionalProperties":false}), Some("office.libreoffice"), false),
                 tool_definition("DesktopOpenOffice", "Open an Office document in the persistent visible LibreOffice desktop for observation or manual takeover.", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}), Some("desktop.linux"), false),
             ]);
+            if !self.mcp_bindings.is_empty() {
+                let names = self
+                    .mcp_bindings
+                    .iter()
+                    .map(|binding| binding.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tools.push(tool_definition(
+                    "MCPTool",
+                    &format!(
+                        "Call a tool on an encrypted project-bound Linux MCP server. Available servers: {names}"
+                    ),
+                    json!({"type":"object","properties":{"server_name":{"type":"string"},"tool_name":{"type":"string"},"arguments":{"type":"object"}},"required":["server_name","tool_name"],"additionalProperties":false}),
+                    Some("tool.mcp.invoke"),
+                    true,
+                ));
+            }
         }
         tools
     }
@@ -465,6 +943,7 @@ impl RuntimeHost for ServerRuntimeHost<'_> {
                 | "BrowserClick"
                 | "BrowserFill"
                 | "BrowserUpload"
+                | "MCPTool"
         );
         let policy = self.tool_policy().await?;
         if mutating && policy == "read_only" {
@@ -574,6 +1053,7 @@ impl ServerRuntimeHost<'_> {
         let mut network = SandboxNetwork::None;
         let mut limits = SandboxLimits::default();
         let mut image = SandboxImage::Core;
+        let mut secret_redactions = Vec::new();
         let argv = match invocation.name.as_str() {
             "Read" => {
                 let path = validated_workspace_path(argument("path")?)?;
@@ -684,6 +1164,43 @@ impl ServerRuntimeHost<'_> {
                     "--show-error".to_owned(),
                     url.to_owned(),
                 ]
+            }
+            "MCPTool" => {
+                let server_name = argument("server_name")?;
+                let tool_name = argument("tool_name")?;
+                if tool_name.trim().is_empty()
+                    || tool_name.len() > 1024
+                    || tool_name.chars().any(char::is_control)
+                {
+                    bail!("MCP tool name is missing or invalid");
+                }
+                let binding = self
+                    .mcp_bindings
+                    .iter()
+                    .find(|binding| binding.name == server_name)
+                    .with_context(|| {
+                        format!("MCP server {server_name:?} is not bound to this Linux executor")
+                    })?;
+                let arguments = invocation
+                    .arguments
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if !arguments.is_object() {
+                    bail!("MCPTool arguments must be an object");
+                }
+                let payload = json!({
+                    "server": binding.sandbox_value(),
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "timeout_seconds": 120,
+                });
+                secret_redactions.extend(binding.secret_values());
+                stdin_base64 = Some(STANDARD.encode(serde_json::to_vec(&payload)?));
+                network = SandboxNetwork::FilteredEgress;
+                limits.timeout_seconds = 150;
+                limits.output_bytes = 8 * 1024 * 1024;
+                vec!["python3".to_owned(), "/opt/cowork/mcp-tool.py".to_owned()]
             }
             name if name.starts_with("Browser") => {
                 let action = match name {
@@ -799,23 +1316,32 @@ impl ServerRuntimeHost<'_> {
             limits,
         };
         let result = send_runner_job(self.runtime, &spec).await?;
-        let failed = result.timed_out || result.exit_code != Some(0);
-        let content = if failed {
-            format!("stdout:\n{}\nstderr:\n{}", result.stdout, result.stderr)
-        } else if result.stderr.is_empty() {
-            result.stdout.clone()
+        let stdout = redact_secrets(&result.stdout, &secret_redactions);
+        let stderr = redact_secrets(&result.stderr, &secret_redactions);
+        let structured = if invocation.name.starts_with("Browser")
+            || invocation.name.starts_with("Office")
+            || invocation.name == "MCPTool"
+        {
+            serde_json::from_str::<Value>(&stdout).unwrap_or(Value::Null)
         } else {
-            format!("{}\n[stderr]\n{}", result.stdout, result.stderr)
+            Value::Null
+        };
+        let failed = result.timed_out
+            || result.exit_code != Some(0)
+            || (invocation.name == "MCPTool"
+                && structured.get("success").and_then(Value::as_bool) != Some(true));
+        let content = if failed {
+            format!("stdout:\n{stdout}\nstderr:\n{stderr}")
+        } else if invocation.name == "MCPTool" {
+            serde_json::to_string_pretty(structured.get("result").unwrap_or(&structured))?
+        } else if stderr.is_empty() {
+            stdout.clone()
+        } else {
+            format!("{stdout}\n[stderr]\n{stderr}")
         };
         // Browser and Office adapters emit structured diagnostics even when an
         // operation fails. Persisting those artifacts is essential for review
         // and must not depend on a zero exit code.
-        let structured =
-            if invocation.name.starts_with("Browser") || invocation.name.starts_with("Office") {
-                serde_json::from_str::<Value>(&result.stdout).unwrap_or(Value::Null)
-            } else {
-                Value::Null
-            };
         if let Some(artifacts) = structured.get("artifacts").and_then(Value::as_array) {
             for path in artifacts.iter().filter_map(Value::as_str) {
                 let payload = if let Some(store) = &self.runtime.object_store {
@@ -1163,5 +1689,115 @@ mod tests {
         };
         assert_eq!(model_cost_micros(pricing, 500_000, 250_000), 3_000_000);
         assert_eq!(model_cost_micros(pricing, 1, 0), 2);
+    }
+
+    #[test]
+    fn crew_protocol_values_are_recursively_redacted() {
+        let mut value = json!({
+            "message":"provider rejected secret-value",
+            "nested":[{"detail":"secret-value"}],
+        });
+        redact_secret_values(&mut value, &["secret-value".to_owned()]);
+        assert_eq!(value["message"], "provider rejected [REDACTED]");
+        assert_eq!(value["nested"][0]["detail"], "[REDACTED]");
+        assert!(!value.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn crew_mcp_context_is_agent_scoped_and_returns_secret_redactions() {
+        let creator_user_id = Uuid::new_v4();
+        let mut request = json!({
+            "agents":[
+                {"id":"researcher","tools":["read_file","office_workflow"],"mcpServerNames":["Docs"]},
+                {"id":"reviewer","mcpServerNames":[]}
+            ]
+        });
+        let bindings = vec![ResolvedServerMcpBinding {
+            name: "Docs".to_owned(),
+            transport: "stdio".to_owned(),
+            command: "/opt/cowork/bin/docs-mcp".to_owned(),
+            args: vec!["--stdio".to_owned()],
+            environment: BTreeMap::from([("DOCS_TOKEN".to_owned(), "crew-secret".to_owned())]),
+            url: String::new(),
+            headers: BTreeMap::new(),
+        }];
+
+        let secrets = inject_crew_mcp_context(
+            &mut request,
+            &bindings,
+            creator_user_id,
+            &[Capability::from("files"), Capability::from("office.ooxml")],
+        )
+        .unwrap();
+
+        assert_eq!(secrets, vec!["crew-secret"]);
+        assert_eq!(
+            request["executorMcpBindings"][0]["command"],
+            "/opt/cowork/bin/docs-mcp"
+        );
+        assert_eq!(request["executorMcpBindings"][0]["transport"], "stdio");
+        assert_eq!(
+            request["governance"]["subject"],
+            format!("server-run:{creator_user_id}")
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][0]["allowedMcpServerNames"],
+            json!(["Docs"])
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][1]["allowedMcpServerNames"],
+            json!([])
+        );
+        assert_eq!(
+            request["governance"]["agentAccess"][0]["allowedTools"],
+            json!(["read_file", "office_workflow"])
+        );
+        assert_eq!(request["agents"][0]["allowDelegation"], false);
+    }
+
+    #[test]
+    fn mcp_environment_values_are_redacted_longest_first() {
+        assert_eq!(
+            redact_secrets(
+                "token=secret-value fallback=secret",
+                &["secret".to_owned(), "secret-value".to_owned()],
+            ),
+            "token=[REDACTED] fallback=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn crew_usage_uses_the_reported_total_and_billable_token_split() {
+        assert_eq!(
+            crew_usage(&json!({"usage":{
+                "prompt_tokens":20,
+                "completion_tokens":10,
+                "total_tokens":37,
+                "reasoning_tokens":7,
+            }})),
+            Some(CrewUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 37,
+            })
+        );
+    }
+
+    #[test]
+    fn crew_usage_never_understates_the_reported_billable_split() {
+        assert_eq!(
+            crew_usage(&json!({"usage":{
+                "prompt_tokens":20,
+                "completion_tokens":10,
+                "total_tokens":1,
+            }})),
+            Some(CrewUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            })
+        );
+        assert_eq!(crew_usage(&json!({"usage":{"total_tokens":"30"}})), None);
+        assert_eq!(crew_usage(&json!({})), None);
     }
 }

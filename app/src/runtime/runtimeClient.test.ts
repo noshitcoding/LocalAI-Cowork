@@ -126,4 +126,600 @@ describe('runtime routing', () => {
       { url: `https://cowork.example.test/api/v1/auth/sessions/${session.id}`, method: 'DELETE' },
     ])
   })
+
+  it('updates and deletes projects and threads with optimistic revisions', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000031'
+    const threadId = '10000000-0000-4000-8000-000000000032'
+    const userId = '10000000-0000-4000-8000-000000000033'
+    const now = '2026-08-10T12:00:00Z'
+    const project = {
+      schema_version: 2,
+      id: projectId,
+      revision: 2,
+      etag: `W/"${projectId}:2"`,
+      owner_user_id: userId,
+      team_id: null,
+      privacy: 'private_local',
+      name: 'Updated project',
+      description: '',
+      preferred_executor_target: null,
+      current_version_id: null,
+      policy: {},
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    } as const
+    const thread = {
+      schema_version: 2,
+      id: threadId,
+      revision: 2,
+      etag: `W/"${threadId}:2"`,
+      project_id: projectId,
+      forked_from_thread_id: null,
+      forked_from_message_id: null,
+      title: 'Updated thread',
+      deleted_at: null,
+    } as const
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(String(input).includes('/threads/') ? thread : project), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const projectUpdate = {
+      expected_revision: 1,
+      name: project.name,
+      description: project.description,
+      preferred_executor_target: null,
+      policy: {},
+    }
+    const threadUpdate = { expected_revision: 1, title: thread.title }
+
+    await expect(client.updateProject(projectId, projectUpdate)).resolves.toEqual(project)
+    await expect(client.updateThread(threadId, threadUpdate)).resolves.toEqual(thread)
+    await client.deleteThread(threadId, thread.revision)
+    await client.deleteProject(projectId, project.revision)
+
+    expect(requests).toEqual([
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}`,
+        method: 'PUT',
+        body: projectUpdate,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}`,
+        method: 'PUT',
+        body: threadUpdate,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}?expected_revision=2`,
+        method: 'DELETE',
+        body: undefined,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}?expected_revision=2`,
+        method: 'DELETE',
+        body: undefined,
+      },
+    ])
+  })
+
+  it('creates and lists the durable message/run pair through the thread API', async () => {
+    const threadId = '10000000-0000-4000-8000-000000000011'
+    const projectId = '10000000-0000-4000-8000-000000000012'
+    const runId = '10000000-0000-4000-8000-000000000013'
+    const userId = '10000000-0000-4000-8000-000000000014'
+    const messageId = '10000000-0000-4000-8000-000000000015'
+    const now = '2026-08-10T12:00:00Z'
+    const run = {
+      spec: {
+        schema_version: 2,
+        id: runId,
+        thread_id: threadId,
+        project_id: projectId,
+        project: { id: projectId, revision: 1 },
+        project_privacy: 'team_managed',
+        task: null,
+        creator_user_id: userId,
+        executor_target: { kind: 'server_linux', pool_id: null },
+        required_capabilities: [],
+        input: { prompt: 'hello' },
+        model_profile_id: null,
+        snapshot_id: null,
+        idempotency_key: 'message-run-test',
+        created_at: now,
+      },
+      state: 'queued',
+      revision: 1,
+      etag: `W/"${runId}:1"`,
+      assigned_executor_id: null,
+      lease_expires_at: null,
+      started_at: null,
+      finished_at: null,
+      result: null,
+      error: null,
+      updated_at: now,
+    } as const
+    const message = {
+      schema_version: 2,
+      id: messageId,
+      revision: 1,
+      etag: `W/"${messageId}:1"`,
+      thread_id: threadId,
+      author_user_id: userId,
+      role: 'user',
+      content: { text: 'hello' },
+      run_id: runId,
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+    } as const
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const payload = init?.method === 'POST'
+          ? { schema_version: 2, message, run }
+          : [message]
+        return new Response(JSON.stringify(payload), {
+          status: init?.method === 'POST' ? 201 : 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const request = {
+      content: { text: 'hello' },
+      run: {
+        thread_id: threadId,
+        project_id: projectId,
+        project_revision: 1,
+        project_privacy: 'team_managed' as const,
+        task: null,
+        executor_target: { kind: 'server_linux' as const, pool_id: null },
+        required_capabilities: [],
+        input: { prompt: 'hello' },
+        model_profile_id: null,
+        snapshot_id: null,
+        idempotency_key: 'message-run-test',
+      },
+    }
+
+    await expect(client.createThreadMessage(threadId, request)).resolves.toMatchObject({
+      message: { id: messageId }, run: { spec: { id: runId } },
+    })
+    await expect(client.listThreadMessages(threadId, 10)).resolves.toEqual([message])
+    expect(requests).toEqual([
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}/messages`,
+        method: 'POST',
+        body: request,
+      },
+      {
+        url: `https://cowork.example.test/api/v1/threads/${threadId}/messages?limit=10`,
+        method: 'GET',
+        body: undefined,
+      },
+    ])
+  })
+
+  it('pushes idempotent metadata changes and advances the inbox cursor', async () => {
+    const operationId = '10000000-0000-4000-8000-000000000021'
+    const deviceId = '10000000-0000-4000-8000-000000000022'
+    const entityId = '10000000-0000-4000-8000-000000000023'
+    const timestamp = '2026-08-10T12:00:00Z'
+    const change = {
+      schema_version: 2,
+      operation_id: operationId,
+      device_id: deviceId,
+      entity_type: 'memory',
+      entity_id: entityId,
+      base_revision: 0,
+      operation: 'upsert' as const,
+      payload: { text: 'durable memory' },
+      client_timestamp: timestamp,
+    }
+    const entity = {
+      schema_version: 2,
+      entity_type: 'memory',
+      entity_id: entityId,
+      revision: 1,
+      etag: `W/"${entityId}:1"`,
+      payload: change.payload,
+      tombstone: false,
+      updated_at: timestamp,
+    }
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const payload = init?.method === 'POST'
+          ? { schema_version: 2, results: [{ schema_version: 2, operation_id: operationId, status: 'applied', entity }] }
+          : String(input).includes('/sync/entities/')
+            ? { schema_version: 2, items: [entity], next_after: null, watermark_cursor: 7 }
+          : {
+              schema_version: 2,
+              changes: [{
+                schema_version: 2,
+                cursor: 7,
+                entity_type: 'memory',
+                entity_id: entityId,
+                revision: 1,
+                operation: 'upsert',
+                payload: change.payload,
+                created_at: timestamp,
+              }],
+              next_cursor: 7,
+            }
+        return new Response(JSON.stringify(payload), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.pushSyncChanges([change])).resolves.toMatchObject({
+      results: [{ operation_id: operationId, status: 'applied', entity: { revision: 1 } }],
+    })
+    await expect(client.pullSyncChanges(3, 50)).resolves.toMatchObject({
+      next_cursor: 7,
+      changes: [{ entity_id: entityId, revision: 1 }],
+    })
+    await expect(client.listSyncedEntities('memory', null, 50)).resolves.toMatchObject({
+      items: [{ entity_id: entityId, revision: 1 }], watermark_cursor: 7,
+    })
+    expect(requests).toEqual([
+      {
+        url: 'https://cowork.example.test/api/v1/sync/changes',
+        method: 'POST',
+        body: { changes: [change] },
+      },
+      {
+        url: 'https://cowork.example.test/api/v1/sync/changes?after=3&limit=50',
+        method: 'GET',
+        body: undefined,
+      },
+      {
+        url: 'https://cowork.example.test/api/v1/sync/entities/memory?limit=50',
+        method: 'GET',
+        body: undefined,
+      },
+    ])
+  })
+
+  it('scopes task and schedule listings to the selected project', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000030'
+    const urls: string[] = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input) => {
+        urls.push(String(input))
+        return new Response('[]', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listTasks(projectId)).resolves.toEqual([])
+    await expect(client.listSchedules(projectId)).resolves.toEqual([])
+    expect(urls).toEqual([
+      `https://cowork.example.test/api/v1/tasks?project_id=${projectId}`,
+      `https://cowork.example.test/api/v1/schedules?project_id=${projectId}`,
+    ])
+  })
+
+  it('reviews and applies project versions through optimistic merge endpoints', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000034'
+    const baseId = '10000000-0000-4000-8000-000000000035'
+    const currentId = '10000000-0000-4000-8000-000000000036'
+    const resultId = '10000000-0000-4000-8000-000000000037'
+    const version = {
+      schema_version: 2, id: resultId, project_id: projectId, revision: 3,
+      parent_version_id: baseId, merge_base_version_id: baseId,
+      snapshot_manifest_id: '10000000-0000-4000-8000-000000000038',
+      created_by_run_id: null, created_at: '2026-08-10T12:00:00Z',
+    }
+    const review = {
+      schema_version: 2, project_id: projectId, base_version_id: baseId,
+      current_version_id: currentId, result_version_id: resultId,
+      files: [{
+        path: 'notes.md', renamed_from: null, status: 'text_conflict', base_digest: 'a',
+        current_digest: 'b', result_digest: 'c', auto_mergeable: false,
+        conflict_preview: '<<<<<<< current',
+      }],
+    }
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        const url = String(input)
+        requests.push({
+          url, method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const body = url.includes('/merge-review') ? review
+          : !init?.method || init.method === 'GET' ? [version] : version
+        return new Response(JSON.stringify(body), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listProjectVersions(projectId)).resolves.toEqual([version])
+    await expect(client.applyProjectVersion(projectId, resultId, 7, currentId)).resolves.toEqual(version)
+    await expect(client.reviewProjectMerge(projectId, baseId, currentId, resultId)).resolves.toEqual(review)
+    await expect(client.applyProjectMerge(projectId, {
+      base_version_id: baseId, current_version_id: currentId, result_version_id: resultId,
+      expected_project_revision: 7, resolutions: [{ path: 'notes.md', choice: 'result' }],
+    })).resolves.toEqual(version)
+
+    expect(requests).toEqual([
+      { url: `https://cowork.example.test/api/v1/projects/${projectId}/versions`, method: 'GET' },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/versions/${resultId}/apply`,
+        method: 'POST',
+        body: { expected_project_revision: 7, expected_current_version_id: currentId },
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/merge-review?base_version_id=${baseId}&current_version_id=${currentId}&result_version_id=${resultId}`,
+        method: 'GET',
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/merge-apply`,
+        method: 'POST',
+        body: {
+          base_version_id: baseId, current_version_id: currentId, result_version_id: resultId,
+          expected_project_revision: 7, resolutions: [{ path: 'notes.md', choice: 'result' }],
+        },
+      },
+    ])
+  })
+
+  it('manages server provider profiles without returning secret material', async () => {
+    const profileId = '10000000-0000-4000-8000-000000000040'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const profile = {
+      schema_version: 2,
+      id: profileId,
+      revision: 1,
+      etag: `W/"${profileId}:1"`,
+      owner_user_id: '10000000-0000-4000-8000-000000000041',
+      team_id: null,
+      name: 'Server OpenAI-compatible',
+      provider_kind: 'openai_compatible',
+      model_defaults: {
+        base_url: 'https://models.example.test/v1',
+        model: 'example-model',
+        endpoint_binding: 'server',
+      },
+      has_secret: false,
+      created_at: '2026-08-10T12:00:00Z',
+      updated_at: '2026-08-10T12:00:00Z',
+      deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(init?.method ? profile : [profile]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listProviderProfiles()).resolves.toEqual([profile])
+    await expect(client.createProviderProfile({
+      team_id: null,
+      name: profile.name,
+      provider_kind: profile.provider_kind,
+      model_defaults: profile.model_defaults,
+      api_key: null,
+    })).resolves.toEqual(profile)
+    await expect(client.setProviderProfileSecret(profileId, 1, 'one-time-secret'))
+      .resolves.toEqual(profile)
+    await client.deleteProviderProfile(profileId, 1)
+
+    expect(requests.map(({ url, method }) => ({ url, method }))).toEqual([
+      { url: 'https://cowork.example.test/api/v1/provider-profiles', method: 'GET' },
+      { url: 'https://cowork.example.test/api/v1/provider-profiles', method: 'POST' },
+      {
+        url: `https://cowork.example.test/api/v1/provider-profiles/${profileId}/secret`,
+        method: 'PUT',
+      },
+      {
+        url: `https://cowork.example.test/api/v1/provider-profiles/${profileId}?expected_revision=1`,
+        method: 'DELETE',
+      },
+    ])
+    expect(requests[2].body).toEqual({ expected_revision: 1, api_key: 'one-time-secret' })
+  })
+
+  it('writes MCP secrets only to the encrypted project binding endpoint', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000042'
+    const mcpEntityId = '10000000-0000-4000-8000-000000000043'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const binding = {
+      schema_version: 2,
+      project_id: projectId,
+      mcp_entity_id: mcpEntityId,
+      revision: 1,
+      etag: `W/"${projectId}:${mcpEntityId}:1"`,
+      name: 'Project docs',
+      transport: 'stdio' as const,
+      executable_hint: 'docs-mcp',
+      argument_count: 1,
+      environment_keys: ['MCP_TOKEN'],
+      created_at: '2026-08-11T12:00:00Z',
+      updated_at: '2026-08-11T12:00:00Z',
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input), method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(init?.method === 'PUT' ? binding : [binding]), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listServerMcpBindings(projectId)).resolves.toEqual([binding])
+    await expect(client.setServerMcpBinding(projectId, mcpEntityId, {
+      expected_revision: null,
+      name: 'Project docs',
+      transport: 'stdio',
+      command: '/opt/mcp/docs-mcp',
+      args: ['--stdio'],
+      environment: { MCP_TOKEN: 'one-time-secret' },
+      url: '',
+      headers: {},
+    })).resolves.toEqual(binding)
+    await client.deleteServerMcpBinding(projectId, mcpEntityId, 1)
+
+    expect(requests).toMatchObject([
+      { method: 'GET', url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings` },
+      {
+        method: 'PUT',
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings/${mcpEntityId}`,
+        body: { environment: { MCP_TOKEN: 'one-time-secret' } },
+      },
+      {
+        method: 'DELETE',
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/mcp-bindings/${mcpEntityId}?expected_revision=1`,
+      },
+    ])
+    expect(JSON.stringify(binding)).not.toContain('one-time-secret')
+  })
+
+  it('creates, versions, releases, and deletes reusable server tasks', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000050'
+    const taskId = '10000000-0000-4000-8000-000000000051'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const task = {
+      schema_version: 2, id: taskId, revision: 1, etag: `W/"${taskId}:1"`, project_id: projectId,
+      name: 'Reusable task', instructions: 'Complete the task', required_capabilities: [],
+      default_target: { kind: 'server_linux' as const, pool_id: null }, config: {}, released: true,
+      created_at: '2026-08-10T12:00:00Z', deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input), method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(task), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const fields = {
+      name: task.name, instructions: task.instructions, required_capabilities: [],
+      default_target: task.default_target, config: {}, release: true,
+    }
+    await expect(client.createTask({ project_id: projectId, ...fields })).resolves.toEqual(task)
+    await expect(client.createTaskVersion(taskId, { base_revision: 1, ...fields })).resolves.toEqual(task)
+    await expect(client.releaseTaskVersion(taskId, 1)).resolves.toEqual(task)
+    await client.deleteTask(taskId, 1)
+    expect(requests.map(({ url, method }) => ({ url, method }))).toEqual([
+      { url: 'https://cowork.example.test/api/v1/tasks', method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}/versions`, method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}/release`, method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}?expected_revision=1`, method: 'DELETE' },
+    ])
+  })
+
+  it('lists visible teams for scoped provider profiles', async () => {
+    const team = {
+      schema_version: 2,
+      id: '10000000-0000-4000-8000-000000000060',
+      revision: 1,
+      etag: 'W/"10000000-0000-4000-8000-000000000060:1"',
+      name: 'Example team',
+      owner_user_id: '10000000-0000-4000-8000-000000000061',
+      created_at: '2026-08-10T12:00:00Z',
+      updated_at: '2026-08-10T12:00:00Z',
+      deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async () => new Response(JSON.stringify([team]), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    })
+    await expect(client.listTeams()).resolves.toEqual([team])
+  })
+
+  it('resumes sync SSE from the last durable cursor', async () => {
+    const entityId = '10000000-0000-4000-8000-000000000031'
+    const event = {
+      schema_version: 2,
+      cursor: 9,
+      entity_type: 'memory',
+      entity_id: entityId,
+      revision: 2,
+      operation: 'delete',
+      payload: null,
+      created_at: '2026-08-10T12:00:00Z',
+    }
+    let lastEventId: string | null = null
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test',
+      accessToken: () => 'access-token',
+      reconnectDelayMs: 1,
+      fetch: async (_input, init) => {
+        lastEventId = new Headers(init?.headers).get('last-event-id')
+        const encoded = new TextEncoder().encode(
+          `id: 9\nevent: sync_change\ndata: ${JSON.stringify(event)}\n\n`,
+        )
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoded)
+            controller.close()
+          },
+        }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      },
+    })
+    let resolveEvent!: (value: unknown) => void
+    const received = new Promise((resolve) => { resolveEvent = resolve })
+    const unsubscribe = client.subscribeSyncEvents(4, resolveEvent)
+
+    await expect(received).resolves.toEqual(event)
+    unsubscribe()
+    expect(lastEventId).toBe('4')
+  })
 })

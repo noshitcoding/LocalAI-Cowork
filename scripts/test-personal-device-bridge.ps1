@@ -213,6 +213,13 @@ try {
     project_id = $project.id
     workspace_path = $projectWorkspace
   } | Out-Null
+  $localMemoryId = [Guid]::NewGuid()
+  $localMemory = Invoke-Daemon 'entities.upsert' @{
+    entity_type = 'memory'
+    id = $localMemoryId.ToString()
+    payload = @{ content = 'Created offline before the background agent connected'; scope = 'user' }
+    expected_revision = 0
+  }
 
   $env:COWORK_SERVER_URL = "http://127.0.0.1:$forwardPort"
   $env:COWORK_AGENT_TOKEN_FILE = $agentTokenPath
@@ -246,6 +253,46 @@ try {
   } while (($registered.Count -ne 1 -or -not $registered[0].online -or $bridgeLabel -ne 'enabled') -and (Get-Date) -lt $onlineDeadline)
   if ($registered.Count -ne 1 -or -not $registered[0].online) { throw 'personal device agent did not register online' }
   if ($bridgeLabel -ne 'enabled') { throw 'executor did not advertise the local runtime bridge' }
+
+  $syncDeadline = (Get-Date).AddSeconds(20)
+  do {
+    Start-Sleep -Milliseconds 250
+    $serverMemories = Invoke-Json GET '/sync/entities/memory?limit=100' $null $admin.access_token
+    $serverMemory = @($serverMemories.items | Where-Object { $_.entity_id -eq $localMemoryId.ToString() })
+  } while ($serverMemory.Count -ne 1 -and (Get-Date) -lt $syncDeadline)
+  if ($serverMemory.Count -ne 1 -or $serverMemory[0].payload.content -ne $localMemory.result.payload.content) {
+    throw 'background personal executor did not drain the daemon metadata outbox'
+  }
+
+  $serverSkillId = [Guid]::NewGuid()
+  Invoke-Json POST '/sync/changes' @{
+    changes = @(@{
+      schema_version = 2
+      operation_id = [Guid]::NewGuid().ToString()
+      device_id = $userDeviceId.ToString()
+      entity_type = 'skill'
+      entity_id = $serverSkillId.ToString()
+      base_revision = 0
+      operation = 'upsert'
+      payload = @{ name = 'Created on the server for the daemon inbox'; description = 'background sync' }
+      client_timestamp = (Get-Date).ToUniversalTime().ToString('o')
+    })
+  } $admin.access_token | Out-Null
+  $inboxDeadline = (Get-Date).AddSeconds(20)
+  do {
+    Start-Sleep -Milliseconds 250
+    $daemonSkills = Invoke-Daemon 'entities.list' @{ entity_type = 'skill'; include_tombstones = $true }
+    $daemonSkill = @($daemonSkills | Where-Object { $_.id -eq $serverSkillId.ToString() })
+  } while ($daemonSkill.Count -ne 1 -and (Get-Date) -lt $inboxDeadline)
+  if ($daemonSkill.Count -ne 1 -or $daemonSkill[0].payload.name -ne 'Created on the server for the daemon inbox') {
+    throw 'background personal executor did not apply the server metadata inbox'
+  }
+  $syncPeerId = "http://127.0.0.1:$forwardPort#$deviceId"
+  $syncState = Invoke-Daemon 'sync.state' @{ peer_id = $syncPeerId }
+  $syncConflicts = Invoke-Daemon 'sync.conflicts' @{ peer_id = $syncPeerId }
+  if ($syncState.local_cursor -lt 1 -or $syncState.remote_cursor -lt 1 -or @($syncConflicts).Count -ne 0) {
+    throw 'background metadata cursors did not advance cleanly'
+  }
 
   $run = Invoke-Json POST '/runs' @{
     thread_id = $thread.id
@@ -336,6 +383,9 @@ try {
   Write-Output 'personal_device_no_automatic_apply=ok'
   Write-Output 'personal_device_disconnect_recovery=ok'
   Write-Output 'personal_device_relay_idempotency=ok'
+  Write-Output 'personal_device_metadata_outbox=ok'
+  Write-Output 'personal_device_metadata_inbox=ok'
+  Write-Output 'personal_device_metadata_cursor_persistence=ok'
 } catch {
   foreach ($log in @('server.stdout.log','server.stderr.log','daemon.stdout.log','daemon.stderr.log','agent.stdout.log','agent.stderr.log','model.stdout.log','model.stderr.log','forward-1.stdout.log','forward-1.stderr.log','forward-2.stdout.log','forward-2.stderr.log')) {
     $path = Join-Path $testRoot $log
