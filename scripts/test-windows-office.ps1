@@ -1,4 +1,7 @@
-param([string]$PythonPath = 'python')
+param(
+  [string]$PythonPath = 'python',
+  [string]$AgentPath = ''
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -9,7 +12,17 @@ if ($env:OS -ne 'Windows_NT') {
 }
 
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$adapter = Join-Path $workspace 'agents/cowork-device-agent/src/windows_office.ps1'
+if ([string]::IsNullOrWhiteSpace($AgentPath)) {
+  $agentCandidates = @(
+    (Join-Path $workspace 'target/release/cowork-device-agent.exe'),
+    (Join-Path $workspace 'target/debug/cowork-device-agent.exe')
+  )
+  $AgentPath = $agentCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+}
+if ([string]::IsNullOrWhiteSpace($AgentPath) -or -not (Test-Path -LiteralPath $AgentPath)) {
+  throw 'Build cowork-device-agent first or pass -AgentPath with an existing executable'
+}
+$AgentPath = (Resolve-Path -LiteralPath $AgentPath).Path
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "cowork-windows-office-e2e-$([guid]::NewGuid().ToString('N'))"
 $artifactRoot = Join-Path $testRoot 'artifacts'
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
@@ -21,41 +34,59 @@ function Release-Com($value) {
   }
 }
 
-function Invoke-OfficeAdapter(
+function Invoke-OfficeBridge(
   [string]$application,
   [string]$action,
   [string]$source,
   [string]$output,
   $parameters,
-  [string]$preview = ''
+  [string]$preview = '',
+  [switch]$ExpectFailure
 ) {
-  $env:COWORK_OFFICE_APP = $application
-  $env:COWORK_OFFICE_ACTION = $action
-  $env:COWORK_OFFICE_SOURCE = $source
-  $env:COWORK_OFFICE_OUTPUT = $output
-  $env:COWORK_OFFICE_PREVIEW_OUTPUT = $preview
-  $env:COWORK_OFFICE_PARAMETERS = $parameters | ConvertTo-Json -Compress -Depth 10
-  $stdoutPath = Join-Path $testRoot "$application-$action.stdout.log"
-  $stderrPath = Join-Path $testRoot "$application-$action.stderr.log"
-  $process = Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$adapter`"" `
-    -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+  $invocationId = "$application-$action-$([guid]::NewGuid().ToString('N'))"
+  $stdinPath = Join-Path $testRoot "$invocationId.stdin.json"
+  $stdoutPath = Join-Path $testRoot "$invocationId.stdout.log"
+  $stderrPath = Join-Path $testRoot "$invocationId.stderr.log"
+  $payload = [ordered]@{
+    application = $application
+    action = $action
+    source = $source
+    output = $output
+    preview_output = if ([string]::IsNullOrWhiteSpace($preview)) { $null } else { $preview }
+    parameters = $parameters
+  } | ConvertTo-Json -Compress -Depth 10
+  [IO.File]::WriteAllText($stdinPath, $payload, [Text.UTF8Encoding]::new($false))
+  $process = Start-Process -FilePath $AgentPath `
+    -ArgumentList 'executor-windows-office' `
+    -WorkingDirectory $testRoot `
+    -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath `
+    -RedirectStandardInput $stdinPath
   try {
-    Wait-Process -Id $process.Id -Timeout 90 -ErrorAction Stop
+    Wait-Process -Id $process.Id -Timeout 510 -ErrorAction Stop
   } catch {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
     Get-Process WINWORD,EXCEL,POWERPNT -ErrorAction SilentlyContinue |
       Where-Object { $_.Id -notin $existingOfficeProcessIds } |
       Stop-Process -Force -ErrorAction SilentlyContinue
-    throw "Office adapter timed out for $application/$action; an unexpected dialog or first-run screen may require interactive setup"
+    throw "Office bridge timed out for $application/$action; an unexpected dialog or first-run screen may require interactive setup"
   }
   $process.WaitForExit()
   $process.Refresh()
   $stdout = if (Test-Path -LiteralPath $stdoutPath) { @(Get-Content -LiteralPath $stdoutPath) } else { @() }
   $stderr = if (Test-Path -LiteralPath $stderrPath) { @(Get-Content -LiteralPath $stderrPath) } else { @() }
-  if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) { throw "Office adapter failed for $application/$action (exit $($process.ExitCode))`: $stderr $stdout" }
-  if (@($stdout).Count -eq 0) { throw "Office adapter returned no result for $application/$action`: $stderr" }
-  return ($stdout | Select-Object -Last 1 | ConvertFrom-Json)
+  if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) { throw "Office bridge failed for $application/$action (exit $($process.ExitCode))`: $stderr $stdout" }
+  if (@($stdout).Count -eq 0) { throw "Office bridge returned no result for $application/$action`: $stderr" }
+  $response = $stdout | Select-Object -Last 1 | ConvertFrom-Json
+  if ($ExpectFailure) {
+    if ($response.success -ne $false -or [string]::IsNullOrWhiteSpace([string]$response.error)) {
+      throw "Office bridge unexpectedly accepted $application/$action"
+    }
+    return $response
+  }
+  if ($response.success -ne $true) {
+    throw "Office bridge rejected $application/$action`: $($response.error)"
+  }
+  return $response.result
 }
 
 try {
@@ -70,22 +101,34 @@ try {
 
   $wordOutput = Join-Path $artifactRoot 'word-edited.docx'
   $wordPreview = Join-Path $artifactRoot 'word-edited.pdf'
-  $null = Invoke-OfficeAdapter 'word' 'replace_text' $wordSource $wordOutput `
-    @{ old_text = 'old text'; new_text = 'new text'; replace_all = $true } $wordPreview
+  $null = Invoke-OfficeBridge 'word' 'replace_text' 'source.docx' 'artifacts/word-edited.docx' `
+    @{ old_text = 'old text'; new_text = 'new text'; replace_all = $true } 'artifacts/word-edited.pdf'
 
   $excelOutput = Join-Path $artifactRoot 'excel-edited.xlsx'
   $excelPreview = Join-Path $artifactRoot 'excel-edited.pdf'
-  $null = Invoke-OfficeAdapter 'excel' 'excel_set_cell' $excelSource $excelOutput `
-    @{ sheet = 'Data'; cell = 'C2'; formula = '=SUM(B1:B2)'; number_format = '0' } $excelPreview
+  $null = Invoke-OfficeBridge 'excel' 'excel_set_cell' 'source.xlsx' 'artifacts/excel-edited.xlsx' `
+    @{ sheet = 'Data'; cell = 'C2'; formula = '=SUM(B1:B2)'; number_format = '0' } 'artifacts/excel-edited.pdf'
 
   $chartOutput = Join-Path $artifactRoot 'excel-chart.xlsx'
-  $null = Invoke-OfficeAdapter 'excel' 'excel_add_chart' $excelSource $chartOutput `
+  $null = Invoke-OfficeBridge 'excel' 'excel_add_chart' 'source.xlsx' 'artifacts/excel-chart.xlsx' `
     @{ sheet = 'Data'; range = 'A1:B2'; title = 'E2E chart'; chart_type = 51 }
 
   $powerPointOutput = Join-Path $artifactRoot 'powerpoint-edited.pptx'
   $powerPointPreview = Join-Path $artifactRoot 'powerpoint-edited.pdf'
-  $null = Invoke-OfficeAdapter 'powerpoint' 'powerpoint_add_slide' $powerPointSource $powerPointOutput `
-    @{ layout = 2; title = 'Added by Open Cowork'; body = 'Managed Windows executor' } $powerPointPreview
+  $null = Invoke-OfficeBridge 'powerpoint' 'powerpoint_add_slide' 'source.pptx' 'artifacts/powerpoint-edited.pptx' `
+    @{ layout = 2; title = 'Added by Open Cowork'; body = 'Managed Windows executor' } 'artifacts/powerpoint-edited.pdf'
+
+  $externalFormula = Invoke-OfficeBridge 'excel' 'excel_set_cell' 'source.xlsx' 'artifacts/external-formula.xlsx' `
+    @{ sheet = 'Data'; cell = 'C2'; formula = '=WEBSERVICE("https://example.invalid/data")' } -ExpectFailure
+  if ($externalFormula.error -notmatch 'blocked by policy') {
+    throw "Office bridge did not report its external-formula policy: $($externalFormula.error)"
+  }
+
+  Copy-Item -LiteralPath $wordSource -Destination (Join-Path $testRoot 'active.docm')
+  $activeContent = Invoke-OfficeBridge 'word' 'export_pdf' 'active.docm' 'artifacts/active.pdf' @{} -ExpectFailure
+  if ($activeContent.error -notmatch 'macro-enabled') {
+    throw "Office bridge did not report its active-content policy: $($activeContent.error)"
+  }
 
   foreach ($path in @($wordOutput, $wordPreview, $excelOutput, $excelPreview, $chartOutput, $powerPointOutput, $powerPointPreview)) {
     if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -eq 0) {

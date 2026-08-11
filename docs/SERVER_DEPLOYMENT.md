@@ -614,6 +614,14 @@ Microsoft does not recommend unattended Office server automation. Operate this
 as best-effort interactive RPA on licensed Windows/Microsoft 365 installations
 and run compatibility tests for every supported Office channel.
 
+After preparing the dedicated interactive account and building the agent, run
+`powershell -File scripts/test-windows-office.ps1 -AgentPath <path-to-agent>` in
+that session. The acceptance drives the public Rust bridge (not the private
+PowerShell implementation directly), edits and reopens Word/Excel/PowerPoint
+fixtures, verifies PDF previews and an Excel chart, and proves that active
+formats and external Excel formulas fail closed. Repeat it for every supported
+Microsoft 365/Office update channel before admitting the executor to a pool.
+
 Executor agents use independently revocable, hashed executor credentials from
 files or the platform credential store; they never depend on a user's
 15-minute access token and connect only outbound.
