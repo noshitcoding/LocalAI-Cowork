@@ -291,6 +291,95 @@ export const projectRecordSchema = z.object({
 })
 export type ProjectRecord = z.infer<typeof projectRecordSchema>
 
+export const projectVersionSchema = z.object({
+  schema_version: z.number().int().positive(),
+  id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  parent_version_id: z.string().uuid().nullable(),
+  merge_base_version_id: z.string().uuid().nullable(),
+  snapshot_manifest_id: z.string().uuid(),
+  created_by_run_id: z.string().uuid().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type ProjectVersion = z.infer<typeof projectVersionSchema>
+
+export const createProjectVersionRequestSchema = z.object({
+  snapshot_manifest_id: z.string().uuid(),
+  parent_version_id: z.string().uuid().nullable(),
+  merge_base_version_id: z.string().uuid().nullable(),
+  created_by_run_id: z.string().uuid().nullable(),
+  diff_summary: z.unknown(),
+})
+export type CreateProjectVersionRequest = z.infer<typeof createProjectVersionRequestSchema>
+
+export const applyProjectVersionRequestSchema = z.object({
+  expected_project_revision: z.number().int().positive(),
+  expected_current_version_id: z.string().uuid().nullable(),
+})
+export type ApplyProjectVersionRequest = z.infer<typeof applyProjectVersionRequestSchema>
+
+export const mergeFileStatusSchema = z.enum([
+  'unchanged',
+  'added',
+  'deleted',
+  'current_only',
+  'result_only',
+  'identical_change',
+  'auto_merged',
+  'text_conflict',
+  'binary_conflict',
+  'renamed',
+])
+export type MergeFileStatus = z.infer<typeof mergeFileStatusSchema>
+
+export const mergeFileReviewSchema = z.object({
+  path: z.string(),
+  renamed_from: z.string().nullable(),
+  status: mergeFileStatusSchema,
+  base_digest: z.string().nullable(),
+  current_digest: z.string().nullable(),
+  result_digest: z.string().nullable(),
+  auto_mergeable: z.boolean(),
+  conflict_preview: z.string().nullable(),
+})
+export type MergeFileReview = z.infer<typeof mergeFileReviewSchema>
+
+export const projectMergeReviewSchema = z.object({
+  schema_version: z.number().int().positive(),
+  project_id: z.string().uuid(),
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+  files: z.array(mergeFileReviewSchema),
+})
+export type ProjectMergeReview = z.infer<typeof projectMergeReviewSchema>
+
+export const mergeReviewQuerySchema = z.object({
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+})
+export type MergeReviewQuery = z.infer<typeof mergeReviewQuerySchema>
+
+export const mergeResolutionChoiceSchema = z.enum(['current', 'result', 'delete', 'auto_merged'])
+export type MergeResolutionChoice = z.infer<typeof mergeResolutionChoiceSchema>
+
+export const mergeFileResolutionSchema = z.object({
+  path: z.string(),
+  choice: mergeResolutionChoiceSchema,
+})
+export type MergeFileResolution = z.infer<typeof mergeFileResolutionSchema>
+
+export const applyProjectMergeRequestSchema = z.object({
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+  expected_project_revision: z.number().int().positive(),
+  resolutions: z.array(mergeFileResolutionSchema),
+})
+export type ApplyProjectMergeRequest = z.infer<typeof applyProjectMergeRequestSchema>
+
 export const createProjectRequestSchema = z.object({
   name: z.string(),
   description: z.string(),

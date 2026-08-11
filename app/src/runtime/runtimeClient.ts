@@ -16,7 +16,9 @@ import {
   pullSyncChangesResponseSchema,
   passkeyChallengeSchema,
   passkeyRecordSchema,
+  projectMergeReviewSchema,
   projectRecordSchema,
+  projectVersionSchema,
   providerProfileSchema,
   quotaStatusSchema,
   reauthenticationGrantSchema,
@@ -40,6 +42,7 @@ import {
   versionResponseSchema,
   type CapabilityCatalog,
   type ApprovalRequest,
+  type ApplyProjectMergeRequest,
   type AuthSessionRecord,
   type CreateRunRequest,
   type CreateProjectRequest,
@@ -55,6 +58,8 @@ import {
   type PushConfiguration,
   type PushSubscriptionRecord,
   type ProjectRecord,
+  type ProjectMergeReview,
+  type ProjectVersion,
   type ProviderProfile,
   type QuotaScopeType,
   type QuotaStatus,
@@ -179,6 +184,56 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return projectRecordSchema.parse(await this.#request('/api/v1/projects', {
       method: 'POST', body: JSON.stringify(request),
     }))
+  }
+
+  async listProjectVersions(projectId: string): Promise<ProjectVersion[]> {
+    return projectVersionSchema.array().parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/versions`,
+    ))
+  }
+
+  async applyProjectVersion(
+    projectId: string,
+    versionId: string,
+    expectedProjectRevision: number,
+    expectedCurrentVersionId: string | null,
+  ): Promise<ProjectVersion> {
+    return projectVersionSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/apply`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          expected_project_revision: expectedProjectRevision,
+          expected_current_version_id: expectedCurrentVersionId,
+        }),
+      },
+    ))
+  }
+
+  async reviewProjectMerge(
+    projectId: string,
+    baseVersionId: string,
+    currentVersionId: string,
+    resultVersionId: string,
+  ): Promise<ProjectMergeReview> {
+    const query = new URLSearchParams({
+      base_version_id: baseVersionId,
+      current_version_id: currentVersionId,
+      result_version_id: resultVersionId,
+    })
+    return projectMergeReviewSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/merge-review?${query.toString()}`,
+    ))
+  }
+
+  async applyProjectMerge(
+    projectId: string,
+    request: ApplyProjectMergeRequest,
+  ): Promise<ProjectVersion> {
+    return projectVersionSchema.parse(await this.#request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/merge-apply`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
   }
 
   async listTeams(): Promise<TeamRecord[]> {

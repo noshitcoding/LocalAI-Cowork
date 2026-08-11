@@ -140,9 +140,11 @@ try {
   await expect(serverInput).toHaveAttribute('readonly', '')
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password', { exact: true }).fill(password)
-  const tokenResponse = page.waitForResponse((response) => response.url().endsWith('/auth/native/token'))
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  const tokenBody = await (await tokenResponse).json()
+  const [tokenResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/auth/native/token')),
+    page.locator('form.remote-login-card button[type="submit"]').click(),
+  ])
+  const tokenBody = await tokenResponse.json()
   if ('refresh_token' in tokenBody) throw new Error('browser token response exposed refresh_token')
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
 
@@ -278,7 +280,7 @@ try {
 
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password', { exact: true }).fill(password)
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.locator('form.remote-login-card button[type="submit"]').click()
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible()
   const logoutResponse = page.waitForResponse((response) => response.url().endsWith('/auth/logout'))
   await page.getByRole('button', { name: 'Sign out' }).click()

@@ -13,6 +13,95 @@
       }
     },
     "schemas": {
+      "ApplyProjectMergeRequest": {
+        "$id": "https://schemas.open-cowork.invalid/v2/ApplyProjectMergeRequest.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "base_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "current_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "expected_project_revision": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "resolutions": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "choice": {
+                  "enum": [
+                    "current",
+                    "result",
+                    "delete",
+                    "auto_merged"
+                  ],
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "choice"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "result_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_version_id",
+          "current_version_id",
+          "result_version_id",
+          "expected_project_revision",
+          "resolutions"
+        ],
+        "title": "ApplyProjectMergeRequest",
+        "type": "object"
+      },
+      "ApplyProjectVersionRequest": {
+        "$id": "https://schemas.open-cowork.invalid/v2/ApplyProjectVersionRequest.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "expected_current_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_project_revision": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_project_revision",
+          "expected_current_version_id"
+        ],
+        "title": "ApplyProjectVersionRequest",
+        "type": "object"
+      },
       "ApprovalRequest": {
         "$id": "https://schemas.open-cowork.invalid/v2/ApprovalRequest.schema.json",
         "additionalProperties": false,
@@ -405,6 +494,63 @@
           "attributes"
         ],
         "title": "CapabilityDescriptor",
+        "type": "object"
+      },
+      "CreateProjectVersionRequest": {
+        "$id": "https://schemas.open-cowork.invalid/v2/CreateProjectVersionRequest.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "created_by_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diff_summary": {},
+          "merge_base_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_manifest_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_manifest_id",
+          "parent_version_id",
+          "merge_base_version_id",
+          "created_by_run_id",
+          "diff_summary"
+        ],
+        "title": "CreateProjectVersionRequest",
         "type": "object"
       },
       "DesktopSession": {
@@ -1384,6 +1530,175 @@
         "title": "ListRunsResponse",
         "type": "object"
       },
+      "MergeFileResolution": {
+        "$id": "https://schemas.open-cowork.invalid/v2/MergeFileResolution.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "choice": {
+            "enum": [
+              "current",
+              "result",
+              "delete",
+              "auto_merged"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "choice"
+        ],
+        "title": "MergeFileResolution",
+        "type": "object"
+      },
+      "MergeFileReview": {
+        "$id": "https://schemas.open-cowork.invalid/v2/MergeFileReview.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "auto_mergeable": {
+            "type": "boolean"
+          },
+          "base_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "conflict_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "renamed_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "unchanged",
+              "added",
+              "deleted",
+              "current_only",
+              "result_only",
+              "identical_change",
+              "auto_merged",
+              "text_conflict",
+              "binary_conflict",
+              "renamed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "renamed_from",
+          "status",
+          "base_digest",
+          "current_digest",
+          "result_digest",
+          "auto_mergeable",
+          "conflict_preview"
+        ],
+        "title": "MergeFileReview",
+        "type": "object"
+      },
+      "MergeFileStatus": {
+        "$id": "https://schemas.open-cowork.invalid/v2/MergeFileStatus.schema.json",
+        "enum": [
+          "unchanged",
+          "added",
+          "deleted",
+          "current_only",
+          "result_only",
+          "identical_change",
+          "auto_merged",
+          "text_conflict",
+          "binary_conflict",
+          "renamed"
+        ],
+        "title": "MergeFileStatus",
+        "type": "string"
+      },
+      "MergeResolutionChoice": {
+        "$id": "https://schemas.open-cowork.invalid/v2/MergeResolutionChoice.schema.json",
+        "enum": [
+          "current",
+          "result",
+          "delete",
+          "auto_merged"
+        ],
+        "title": "MergeResolutionChoice",
+        "type": "string"
+      },
+      "MergeReviewQuery": {
+        "$id": "https://schemas.open-cowork.invalid/v2/MergeReviewQuery.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "base_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "current_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "result_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_version_id",
+          "current_version_id",
+          "result_version_id"
+        ],
+        "title": "MergeReviewQuery",
+        "type": "object"
+      },
       "MessageRecord": {
         "$id": "https://schemas.open-cowork.invalid/v2/MessageRecord.schema.json",
         "additionalProperties": false,
@@ -1817,6 +2132,137 @@
         "title": "PasskeyRecord",
         "type": "object"
       },
+      "ProjectMergeReview": {
+        "$id": "https://schemas.open-cowork.invalid/v2/ProjectMergeReview.schema.json",
+        "additionalProperties": false,
+        "properties": {
+          "base_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "current_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "auto_mergeable": {
+                  "type": "boolean"
+                },
+                "base_digest": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "conflict_preview": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "current_digest": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "renamed_from": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "result_digest": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "unchanged",
+                    "added",
+                    "deleted",
+                    "current_only",
+                    "result_only",
+                    "identical_change",
+                    "auto_merged",
+                    "text_conflict",
+                    "binary_conflict",
+                    "renamed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "renamed_from",
+                "status",
+                "base_digest",
+                "current_digest",
+                "result_digest",
+                "auto_mergeable",
+                "conflict_preview"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "result_version_id": {
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
+          },
+          "schema_version": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "project_id",
+          "base_version_id",
+          "current_version_id",
+          "result_version_id",
+          "files"
+        ],
+        "title": "ProjectMergeReview",
+        "type": "object"
+      },
       "ProjectPrivacy": {
         "$id": "https://schemas.open-cowork.invalid/v2/ProjectPrivacy.schema.json",
         "enum": [
@@ -2009,13 +2455,6 @@
         "type": "object"
       },
       "ProjectVersion": {
-        "$defs": {
-          "__schema0": {
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-            "type": "string"
-          }
-        },
         "$id": "https://schemas.open-cowork.invalid/v2/ProjectVersion.schema.json",
         "additionalProperties": false,
         "properties": {
@@ -2027,7 +2466,9 @@
           "created_by_run_id": {
             "anyOf": [
               {
-                "$ref": "#/$defs/__schema0"
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
               },
               {
                 "type": "null"
@@ -2035,12 +2476,16 @@
             ]
           },
           "id": {
-            "$ref": "#/$defs/__schema0"
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
           },
           "merge_base_version_id": {
             "anyOf": [
               {
-                "$ref": "#/$defs/__schema0"
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
               },
               {
                 "type": "null"
@@ -2050,7 +2495,9 @@
           "parent_version_id": {
             "anyOf": [
               {
-                "$ref": "#/$defs/__schema0"
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                "type": "string"
               },
               {
                 "type": "null"
@@ -2058,7 +2505,9 @@
             ]
           },
           "project_id": {
-            "$ref": "#/$defs/__schema0"
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
           },
           "revision": {
             "exclusiveMinimum": 0,
@@ -2071,7 +2520,9 @@
             "type": "integer"
           },
           "snapshot_manifest_id": {
-            "$ref": "#/$defs/__schema0"
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+            "type": "string"
           }
         },
         "required": [
@@ -8104,8 +8555,25 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyProjectMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectVersion"
+                }
+              }
+            },
             "description": "Successful response"
           },
           "400": {
@@ -8137,10 +8605,44 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "base_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "current_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "result_version_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectMergeReview"
+                }
+              }
+            },
             "description": "Successful response"
           },
           "400": {
@@ -8262,6 +8764,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -8313,8 +8825,25 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyProjectVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectVersion"
+                }
+              }
+            },
             "description": "Successful response"
           },
           "400": {

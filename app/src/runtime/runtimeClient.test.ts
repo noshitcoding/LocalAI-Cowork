@@ -431,6 +431,73 @@ describe('runtime routing', () => {
     ])
   })
 
+  it('reviews and applies project versions through optimistic merge endpoints', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000034'
+    const baseId = '10000000-0000-4000-8000-000000000035'
+    const currentId = '10000000-0000-4000-8000-000000000036'
+    const resultId = '10000000-0000-4000-8000-000000000037'
+    const version = {
+      schema_version: 2, id: resultId, project_id: projectId, revision: 3,
+      parent_version_id: baseId, merge_base_version_id: baseId,
+      snapshot_manifest_id: '10000000-0000-4000-8000-000000000038',
+      created_by_run_id: null, created_at: '2026-08-10T12:00:00Z',
+    }
+    const review = {
+      schema_version: 2, project_id: projectId, base_version_id: baseId,
+      current_version_id: currentId, result_version_id: resultId,
+      files: [{
+        path: 'notes.md', renamed_from: null, status: 'text_conflict', base_digest: 'a',
+        current_digest: 'b', result_digest: 'c', auto_mergeable: false,
+        conflict_preview: '<<<<<<< current',
+      }],
+    }
+    const requests: Array<{ url: string; method: string; body?: unknown }> = []
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        const url = String(input)
+        requests.push({
+          url, method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        const body = url.includes('/merge-review') ? review
+          : !init?.method || init.method === 'GET' ? [version] : version
+        return new Response(JSON.stringify(body), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+
+    await expect(client.listProjectVersions(projectId)).resolves.toEqual([version])
+    await expect(client.applyProjectVersion(projectId, resultId, 7, currentId)).resolves.toEqual(version)
+    await expect(client.reviewProjectMerge(projectId, baseId, currentId, resultId)).resolves.toEqual(review)
+    await expect(client.applyProjectMerge(projectId, {
+      base_version_id: baseId, current_version_id: currentId, result_version_id: resultId,
+      expected_project_revision: 7, resolutions: [{ path: 'notes.md', choice: 'result' }],
+    })).resolves.toEqual(version)
+
+    expect(requests).toEqual([
+      { url: `https://cowork.example.test/api/v1/projects/${projectId}/versions`, method: 'GET' },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/versions/${resultId}/apply`,
+        method: 'POST',
+        body: { expected_project_revision: 7, expected_current_version_id: currentId },
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/merge-review?base_version_id=${baseId}&current_version_id=${currentId}&result_version_id=${resultId}`,
+        method: 'GET',
+      },
+      {
+        url: `https://cowork.example.test/api/v1/projects/${projectId}/merge-apply`,
+        method: 'POST',
+        body: {
+          base_version_id: baseId, current_version_id: currentId, result_version_id: resultId,
+          expected_project_revision: 7, resolutions: [{ path: 'notes.md', choice: 'result' }],
+        },
+      },
+    ])
+  })
+
   it('manages server provider profiles without returning secret material', async () => {
     const profileId = '10000000-0000-4000-8000-000000000040'
     const requests: Array<{ url: string; method: string; body: unknown }> = []

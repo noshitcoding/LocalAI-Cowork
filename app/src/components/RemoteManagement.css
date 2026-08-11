@@ -67,6 +67,21 @@
 .remote-invitation-secret small { color: var(--text-secondary); }
 .remote-invitation-secret code { overflow-wrap: anywhere; user-select: all; }
 .remote-invitation-secret button { justify-self: start; }
+.remote-version-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.remote-version-toolbar label,
+.remote-merge-review article label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 10px; text-align: left; }
+.remote-version-toolbar select,
+.remote-merge-review article select { min-height: 36px; border: 1px solid var(--border-color); border-radius: 7px; padding: 7px 9px; background: var(--bg-primary); color: var(--text-primary); }
+.remote-version-toolbar > button { min-width: 36px; min-height: 36px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-tertiary); color: inherit; }
+.remote-version-manager > .remote-management-actions { margin-top: 10px; }
+.remote-merge-review { display: grid; gap: 9px; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+.remote-merge-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.remote-merge-summary small { color: var(--text-secondary); }
+.remote-merge-review .remote-management-list { max-height: 360px; }
+.remote-merge-review .remote-management-list article > span { flex: 1; }
+.remote-merge-review .remote-management-list article pre { max-height: 150px; margin: 5px 0 0; overflow: auto; border-radius: 5px; padding: 7px; background: var(--bg-primary); font-size: 10px; white-space: pre-wrap; }
+.remote-merge-review article.remote-merge-conflict { border-color: var(--warning-color, #b7791f); }
+.remote-inline-success { margin: 10px 0 0; color: var(--success-color, #2f855a); font-size: 11px; }
 .remote-login-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .remote-login-modes button { min-height: 34px; border: 1px solid var(--border-color); border-radius: 7px; background: transparent; color: var(--text-secondary); }
 .remote-login-modes button[aria-pressed="true"] { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 10%, transparent); color: var(--text-primary); }
@@ -80,4 +95,6 @@
   .remote-management-panel form { grid-template-columns: 1fr; }
   .remote-management-panel form > * { grid-column: 1; }
   .remote-organization-grid { grid-template-columns: 1fr; }
+  .remote-version-toolbar { grid-template-columns: 1fr auto; }
+  .remote-version-toolbar label { grid-column: 1 / -1; }
 }

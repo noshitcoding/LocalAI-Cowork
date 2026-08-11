@@ -108,6 +108,9 @@ const responseSchemas = new Map([
   ['get /api/v1/snapshots/{manifest_id}/upload', 'SnapshotUploadSession'],
   ['get /api/v1/projects/{project_id}/versions', 'ProjectVersion'],
   ['post /api/v1/projects/{project_id}/versions', 'ProjectVersion'],
+  ['post /api/v1/projects/{project_id}/versions/{version_id}/apply', 'ProjectVersion'],
+  ['get /api/v1/projects/{project_id}/merge-review', 'ProjectMergeReview'],
+  ['post /api/v1/projects/{project_id}/merge-apply', 'ProjectVersion'],
 ])
 const arrayResponses = new Set([
   'get /api/v1/projects', 'get /api/v1/teams', 'get /api/v1/teams/{team_id}/members',
@@ -119,6 +122,16 @@ const arrayResponses = new Set([
   'get /api/v1/runs/{run_id}/approvals', 'get /api/v1/runs/{run_id}/input-requests',
   'get /api/v1/runs/{run_id}/checkpoints', 'get /api/v1/runs/{run_id}/desktop-sessions',
   'get /api/v1/projects/{project_id}/versions',
+])
+const requestSchemas = new Map([
+  ['post /api/v1/projects/{project_id}/versions', 'CreateProjectVersionRequest'],
+  ['post /api/v1/projects/{project_id}/versions/{version_id}/apply', 'ApplyProjectVersionRequest'],
+  ['post /api/v1/projects/{project_id}/merge-apply', 'ApplyProjectMergeRequest'],
+])
+const queryParameters = new Map([
+  ['get /api/v1/projects/{project_id}/merge-review', [
+    'base_version_id', 'current_version_id', 'result_version_id',
+  ]],
 ])
 
 function schemaRef(name, array = false) {
@@ -141,10 +154,15 @@ function buildOpenApi(routes, schemas) {
         ? { type: 'string' }
         : { type: 'string', format: 'uuid' },
     }))
+    parameters.push(...(queryParameters.get(key) ?? []).map((name) => ({
+      name, in: 'query', required: true, schema: { type: 'string', format: 'uuid' },
+    })))
+    const requestSchema = requestSchemas.get(key)
     paths[route.path][route.method] = {
       operationId: operationId(route.method, route.path),
       tags: [route.group],
       ...(parameters.length ? { parameters } : {}),
+      ...(requestSchema ? { requestBody: { required: true, content: { 'application/json': { schema: schemaRef(requestSchema) } } } } : {}),
       ...(route.group === 'protected' ? { security: [{ bearerAuth: [] }] }
         : route.group === 'agent' ? { security: [{ executorBearerAuth: [] }] } : {}),
       responses: { '200': response, '400': { $ref: '#/components/responses/Error' }, '401': { $ref: '#/components/responses/Error' } },

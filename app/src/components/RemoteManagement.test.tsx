@@ -5,6 +5,7 @@ import type { RunRecord } from '../runtime/contracts'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import RemoteProviderProfileManager from './RemoteProviderProfileManager'
 import RemoteOrganizationManager from './RemoteOrganizationManager'
+import RemoteProjectVersionManager from './RemoteProjectVersionManager'
 import RemoteTaskManager from './RemoteTaskManager'
 
 const projectId = '10000000-0000-4000-8000-000000000070'
@@ -124,5 +125,51 @@ describe('remote task and provider management', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create invitation' }))
     await waitFor(() => expect(createInvitation).toHaveBeenCalledWith('new-member@example.test'))
     expect(await screen.findByText('new-member@example.test')).toBeInTheDocument()
+  })
+
+  it('requires an explicit per-file decision before atomically applying a merge', async () => {
+    const baseId = '10000000-0000-4000-8000-000000000091'
+    const currentId = '10000000-0000-4000-8000-000000000092'
+    const resultId = '10000000-0000-4000-8000-000000000093'
+    const versionedProject = { ...project, current_version_id: currentId }
+    const versions = [
+      { schema_version: 2, id: resultId, project_id: projectId, revision: 3, parent_version_id: baseId, merge_base_version_id: baseId, snapshot_manifest_id: '10000000-0000-4000-8000-000000000094', created_by_run_id: null, created_at: '2026-08-10T12:00:00Z' },
+      { schema_version: 2, id: currentId, project_id: projectId, revision: 2, parent_version_id: baseId, merge_base_version_id: null, snapshot_manifest_id: '10000000-0000-4000-8000-000000000095', created_by_run_id: null, created_at: '2026-08-10T11:00:00Z' },
+      { schema_version: 2, id: baseId, project_id: projectId, revision: 1, parent_version_id: null, merge_base_version_id: null, snapshot_manifest_id: '10000000-0000-4000-8000-000000000096', created_by_run_id: null, created_at: '2026-08-10T10:00:00Z' },
+    ]
+    const reviewProjectMerge = vi.fn(async () => ({
+      schema_version: 2, project_id: projectId, base_version_id: baseId,
+      current_version_id: currentId, result_version_id: resultId,
+      files: [{
+        path: 'report.docx', renamed_from: null, status: 'binary_conflict',
+        base_digest: 'base', current_digest: 'current', result_digest: 'result',
+        auto_mergeable: false, conflict_preview: null,
+      }],
+    }))
+    const applyProjectMerge = vi.fn(async () => ({ ...versions[0], id: crypto.randomUUID(), revision: 4 }))
+    const client = {
+      listProjects: vi.fn(async () => [versionedProject]),
+      listProjectVersions: vi.fn(async () => versions),
+      reviewProjectMerge,
+      applyProjectMerge,
+    } as unknown as RemoteRuntimeClient
+
+    render(<RemoteProjectVersionManager compact client={client} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Versions' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review three-way merge' }))
+    expect(await screen.findByText('report.docx')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Apply merge' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Resolve report.docx' }), {
+      target: { value: 'result' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply merge' }))
+
+    await waitFor(() => expect(applyProjectMerge).toHaveBeenCalledWith(projectId, {
+      base_version_id: baseId,
+      current_version_id: currentId,
+      result_version_id: resultId,
+      expected_project_revision: 3,
+      resolutions: [{ path: 'report.docx', choice: 'result' }],
+    }))
   })
 })
