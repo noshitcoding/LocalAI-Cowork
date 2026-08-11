@@ -479,8 +479,12 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
     digest.update(&seed);
     digest.update(b"\0");
     digest.update(run_id.as_bytes());
-    let hash = digest.finalize();
-    let components = (0..4)
+    let hash: [u8; 32] = digest.finalize().into();
+    Ok(capability_sid_from_hash(&hash))
+}
+
+fn capability_sid_from_hash(hash: &[u8; 32]) -> String {
+    let components = (0..8)
         .map(|index| {
             let offset = index * 4;
             u32::from_le_bytes(
@@ -490,10 +494,14 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
             )
         })
         .collect::<Vec<_>>();
-    Ok(format!(
-        "S-1-5-21-{}-{}-{}-{}",
-        components[0], components[1], components[2], components[3]
-    ))
+    format!(
+        "S-1-15-3-1024-{}",
+        components
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join("-")
+    )
 }
 
 pub fn grant_workspace_access(
@@ -2245,8 +2253,21 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_membership_enforcement, read_ipc_frame, write_ipc_frame, IPC_STDERR, IPC_STDOUT,
+        capability_sid_from_hash, finalize_membership_enforcement, read_ipc_frame, write_ipc_frame,
+        IPC_STDERR, IPC_STDOUT,
     };
+
+    #[test]
+    fn per_run_capability_sid_uses_the_windows_capability_authority() {
+        let mut hash = [0u8; 32];
+        for (index, byte) in hash.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        assert_eq!(
+            capability_sid_from_hash(&hash),
+            "S-1-15-3-1024-50462976-117835012-185207048-252579084-319951120-387323156-454695192-522067228"
+        );
+    }
 
     #[test]
     fn final_safe_membership_accepts_noncanonical_cleanup_results() {
