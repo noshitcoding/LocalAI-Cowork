@@ -263,8 +263,10 @@ test('Windows uninstaller terminates versioned local daemons before cleanup', ()
     join(dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'windows', 'installer-hooks.nsh'),
     'utf8',
   )
-  assert.match(hooks, /taskkill\.exe.*\/F.*\/T.*\/FI\s+"IMAGENAME eq cowork-local-daemon-\*\.exe"/)
-  assert.doesNotMatch(hooks, /\/IM\s+"cowork-local-daemon-\*\.exe"/)
+  assert.match(hooks, /FindFirst \$0 \$1 .*cowork-local-daemon-\*\.exe/)
+  assert.match(hooks, /taskkill\.exe.*\/F.*\/T.*\/IM\s+"\$1"/)
+  assert.match(hooks, /FindNext \$0 \$1/)
+  assert.doesNotMatch(hooks, /taskkill\.exe.*\/IM\s+"cowork-local-daemon-\*\.exe"/)
   assert.ok(hooks.indexOf('taskkill.exe') < hooks.indexOf('RMDir /r'))
 })
 
