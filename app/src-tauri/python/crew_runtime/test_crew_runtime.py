@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -299,6 +300,52 @@ class CrewRuntimeToolTests(unittest.TestCase):
 
 
 class CrewRuntimeTaskTests(unittest.TestCase):
+    def test_usage_metrics_preserve_crewai_reported_counters(self) -> None:
+        usage = crew_runtime.normalize_usage_metrics(SimpleNamespace(
+            total_tokens=37,
+            prompt_tokens=20,
+            cached_prompt_tokens=4,
+            completion_tokens=17,
+            reasoning_tokens=3,
+            cache_creation_tokens=2,
+            successful_requests=5,
+        ))
+
+        self.assertEqual(usage, {
+            "total_tokens": 37,
+            "prompt_tokens": 20,
+            "cached_prompt_tokens": 4,
+            "completion_tokens": 17,
+            "reasoning_tokens": 3,
+            "cache_creation_tokens": 2,
+            "successful_requests": 5,
+        })
+
+    def test_usage_metrics_are_omitted_when_the_adapter_reports_none(self) -> None:
+        self.assertIsNone(crew_runtime.normalize_usage_metrics(None))
+        self.assertIsNone(crew_runtime.normalize_usage_metrics({"total_tokens": "invalid"}))
+
+    def test_usage_metrics_add_artifact_repair_calls(self) -> None:
+        combined = crew_runtime.merge_usage_metrics(
+            crew_runtime.normalize_usage_metrics({
+                "total_tokens": 30,
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "successful_requests": 2,
+            }),
+            crew_runtime.normalize_usage_metrics({
+                "total_tokens": 9,
+                "prompt_tokens": 7,
+                "completion_tokens": 2,
+                "successful_requests": 1,
+            }),
+        )
+
+        self.assertEqual(combined["total_tokens"], 39)
+        self.assertEqual(combined["prompt_tokens"], 27)
+        self.assertEqual(combined["completion_tokens"], 12)
+        self.assertEqual(combined["successful_requests"], 3)
+
     def test_shared_crew_rpm_is_not_divided_into_one_request_agent_limits(self) -> None:
         self.assertEqual(
             crew_runtime.effective_max_rpm(

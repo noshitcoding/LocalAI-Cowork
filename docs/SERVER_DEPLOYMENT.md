@@ -137,6 +137,15 @@ provider, image or capability fails closed. Per-agent provider selection is
 currently a desktop-only feature; a server Crew Run deliberately uses one
 explicit server profile for the whole frozen Crew.
 
+Before dispatch, Crew Runs pass the same user/team token and hard-cost quota
+check as ordinary model Runs. The pinned CrewAI adapter returns its actual
+prompt, completion, reasoning, cache and total-token counters, including any
+artifact-repair kickoff. The worker persists those counters on the Run and
+debits total tokens plus the configured input/output price from the quota
+ledger. If a provider adapter exposes no usage counters, the worker records no
+fabricated estimate; operators should therefore use a provider with usage
+reporting when hard accounting is required.
+
 Runs may also select synchronized skills and memory records by ID. The API
 resolves those records in the run creator's namespace, keeps only the supported
 fields, records each exact revision and stores the result in the immutable Run

@@ -46,6 +46,13 @@ struct ModelPricing {
     output_micros_per_million: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CrewUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+}
+
 #[derive(Clone)]
 struct RunnerConfig {
     url: String,
@@ -422,6 +429,7 @@ async fn execute_crew_run(
             output_bytes: 32 * 1024 * 1024,
         },
     };
+    governance::ensure_model_quota_for_run(pool, lease.run.spec.id).await?;
     workflow::create_worker_checkpoint(
         pool,
         worker_id,
@@ -491,7 +499,38 @@ async fn execute_crew_run(
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("failed");
+    let usage = crew_usage(&response);
+    if let Some(usage) = usage {
+        let cost_micros = runtime
+            .model_pricing
+            .map(|pricing| model_cost_micros(pricing, usage.prompt_tokens, usage.completion_tokens))
+            .unwrap_or(0);
+        governance::record_model_usage_for_run(
+            pool,
+            lease.run.spec.id,
+            usage.total_tokens,
+            cost_micros,
+        )
+        .await?;
+    }
     if status != "completed" {
+        if usage.is_some() {
+            db::append_leased_event(
+                pool,
+                lease.run.spec.id,
+                worker_id,
+                lease.lease_token,
+                None,
+                RunEventKind::Warning,
+                json!({
+                    "code":"crew_usage_recorded_after_failure",
+                    "adapter":"crewai",
+                    "status":status,
+                    "usage":response.get("usage").cloned().unwrap_or(Value::Null),
+                }),
+            )
+            .await?;
+        }
         bail!(
             "Crew runtime ended in state {status}: {}",
             response
@@ -522,6 +561,7 @@ async fn execute_crew_run(
             "content":content,
             "task_count":response.get("taskResults").and_then(Value::as_array).map_or(0, Vec::len),
             "event_count":emitted_events,
+            "usage":response.get("usage").cloned().unwrap_or(Value::Null),
         }),
     )
     .await?;
@@ -533,6 +573,24 @@ fn redact_secret(value: &str, secret: Option<&str>) -> String {
         Some(secret) => value.replace(secret, "[REDACTED]"),
         None => value.to_owned(),
     }
+}
+
+fn crew_usage(response: &Value) -> Option<CrewUsage> {
+    let usage = response.get("usage")?.as_object()?;
+    let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let completion_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
+    let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+    let prompt_tokens = prompt_tokens.unwrap_or(0);
+    let completion_tokens = completion_tokens.unwrap_or(0);
+    let reported_total = total_tokens.unwrap_or(0);
+    Some(CrewUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: reported_total.max(prompt_tokens.saturating_add(completion_tokens)),
+    })
 }
 
 fn redact_secret_value(value: &mut Value, secret: Option<&str>) {
@@ -1408,5 +1466,40 @@ mod tests {
         assert_eq!(value["message"], "provider rejected [REDACTED]");
         assert_eq!(value["nested"][0]["detail"], "[REDACTED]");
         assert!(!value.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn crew_usage_uses_the_reported_total_and_billable_token_split() {
+        assert_eq!(
+            crew_usage(&json!({"usage":{
+                "prompt_tokens":20,
+                "completion_tokens":10,
+                "total_tokens":37,
+                "reasoning_tokens":7,
+            }})),
+            Some(CrewUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 37,
+            })
+        );
+    }
+
+    #[test]
+    fn crew_usage_never_understates_the_reported_billable_split() {
+        assert_eq!(
+            crew_usage(&json!({"usage":{
+                "prompt_tokens":20,
+                "completion_tokens":10,
+                "total_tokens":1,
+            }})),
+            Some(CrewUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            })
+        );
+        assert_eq!(crew_usage(&json!({"usage":{"total_tokens":"30"}})), None);
+        assert_eq!(crew_usage(&json!({})), None);
     }
 }

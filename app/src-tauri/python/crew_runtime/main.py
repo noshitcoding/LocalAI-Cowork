@@ -649,6 +649,89 @@ def parse_int(value: object, fallback: int = 0) -> int:
         return fallback
 
 
+CREW_USAGE_FIELDS = (
+    "total_tokens",
+    "prompt_tokens",
+    "cached_prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cache_creation_tokens",
+    "successful_requests",
+)
+
+
+def normalize_usage_metrics(value: object) -> dict[str, int] | None:
+    """Return CrewAI's reported counters without estimating missing usage."""
+    if value is None:
+        return None
+
+    normalized: dict[str, int] = {}
+    found_counter = False
+    for field in CREW_USAGE_FIELDS:
+        try:
+            raw = value.get(field) if isinstance(value, dict) else getattr(value, field, None)
+        except Exception:
+            raw = None
+        if raw is None or isinstance(raw, bool):
+            normalized[field] = 0
+            continue
+        try:
+            counter = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            normalized[field] = 0
+            continue
+        if counter < 0:
+            normalized[field] = 0
+            continue
+        normalized[field] = counter
+        found_counter = True
+
+    return normalized if found_counter else None
+
+
+def merge_usage_metrics(
+    accumulated: dict[str, int] | None,
+    additional: dict[str, int] | None,
+) -> dict[str, int] | None:
+    if additional is None:
+        return accumulated
+    if accumulated is None:
+        return {field: additional.get(field, 0) for field in CREW_USAGE_FIELDS}
+    return {
+        field: accumulated.get(field, 0) + additional.get(field, 0)
+        for field in CREW_USAGE_FIELDS
+    }
+
+
+def collect_crew_usage(crew: object, output: object | None = None) -> dict[str, int] | None:
+    """Read the pinned CrewOutput/Crew metrics contract, tolerating older adapters."""
+    sources: list[object] = []
+    if output is not None:
+        try:
+            sources.append(output.get("token_usage") if isinstance(output, dict) else getattr(output, "token_usage", None))
+        except Exception:
+            pass
+    for field in ("usage_metrics", "token_usage"):
+        try:
+            sources.append(getattr(crew, field, None))
+        except Exception:
+            pass
+    for source in sources:
+        if (usage := normalize_usage_metrics(source)) is not None:
+            return usage
+
+    # The custom parallel path prepares and executes tasks without Crew.kickoff,
+    # so CrewAI has not populated usage_metrics yet. Its calculator only reads
+    # counters already held by the LLM adapters and does not make model calls.
+    try:
+        calculator = getattr(crew, "calculate_usage_metrics", None)
+        if callable(calculator):
+            return normalize_usage_metrics(calculator())
+    except Exception:
+        pass
+    return None
+
+
 def is_openrouter_free_model(model: str) -> bool:
     return str(model or "").strip().lower().endswith(":free")
 
@@ -2143,6 +2226,7 @@ def execute_definition(payload: dict) -> dict:
     logs: list[dict] = []
     status = "completed"
     error_message = None
+    usage: dict[str, int] | None = None
     runtime_task_id = ordered_task_bindings[0][0].get("id") if ordered_task_bindings else "runtime"
     runtime_agent_id = manager_agent_id or "python-runtime"
     stdout_buffer = LiveCapture(
@@ -2293,6 +2377,8 @@ def execute_definition(payload: dict) -> dict:
             severity="info",
         )
 
+    crew = None
+    crew_output = None
     try:
         crew = Crew(**crew_kwargs)
         record_execution_log(
@@ -2313,7 +2399,8 @@ def execute_definition(payload: dict) -> dict:
             if process_name.lower() == "parallel":
                 execute_parallel_crew(crew, ordered_task_bindings)
             else:
-                crew.kickoff()
+                crew_output = crew.kickoff()
+        usage = merge_usage_metrics(usage, collect_crew_usage(crew, crew_output))
         stdout_buffer.flush()
         stderr_buffer.flush()
         record_execution_log(
@@ -2331,6 +2418,8 @@ def execute_definition(payload: dict) -> dict:
             severity="info",
         )
     except Exception as exc:
+        if crew is not None:
+            usage = merge_usage_metrics(usage, collect_crew_usage(crew, crew_output))
         status = "failed"
         error_message = classify_runtime_error(exc)
         stderr_buffer.write(traceback.format_exc())
@@ -2417,13 +2506,18 @@ def execute_definition(payload: dict) -> dict:
                 )
                 try:
                     with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-                        repair_crew.kickoff()
+                        repair_output_value = repair_crew.kickoff()
+                    usage = merge_usage_metrics(
+                        usage,
+                        collect_crew_usage(repair_crew, repair_output_value),
+                    )
                     stdout_buffer.flush()
                     stderr_buffer.flush()
                     repair_output = extract_task_output(repair_task)
                     if repair_output:
                         repaired_outputs[task_id] = repair_output
                 except Exception as exc:
+                    usage = merge_usage_metrics(usage, collect_crew_usage(repair_crew))
                     stderr_buffer.write(traceback.format_exc())
                     stderr_buffer.flush()
                     record_execution_log(
@@ -2628,13 +2722,16 @@ def execute_definition(payload: dict) -> dict:
 
     mark_recovered_provider_logs(logs, status)
 
-    return {
+    response = {
         "crewId": crew_id,
         "status": status,
         "taskResults": task_results,
         "logs": logs,
         "error": error_message,
     }
+    if usage is not None:
+        response["usage"] = usage
+    return response
 
 
 def main() -> int:
