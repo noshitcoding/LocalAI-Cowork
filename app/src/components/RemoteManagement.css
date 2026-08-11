@@ -41,6 +41,8 @@
 .remote-management-panel form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
 .remote-management-panel form > strong,
 .remote-management-panel form > .remote-management-actions,
+.remote-management-panel form > .remote-metadata-editor-modes,
+.remote-management-panel form > .remote-management-form-hint,
 .remote-management-panel form > label:has(textarea),
 .remote-management-panel form > .remote-management-check { grid-column: 1 / -1; }
 .remote-management-panel form label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 10px; text-align: left; }
@@ -51,6 +53,10 @@
 .remote-run-composer select[multiple] { min-height: 76px; }
 .remote-management-panel form .remote-management-check { display: flex; align-items: center; gap: 7px; }
 .remote-management-panel form .remote-management-check input { width: auto; min-height: 0; }
+.remote-metadata-editor-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.remote-metadata-editor-modes button { min-height: 34px; border: 1px solid var(--border-color); border-radius: 7px; background: transparent; color: var(--text-secondary); }
+.remote-metadata-editor-modes button[aria-pressed="true"] { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 10%, transparent); color: var(--text-primary); }
+.remote-management-form-hint { margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.5; }
 .remote-management-actions button:first-child,
 .remote-management-add { border-color: var(--accent-primary); background: var(--accent-primary); color: var(--text-on-accent); }
 .remote-management-add { margin-top: 10px; }

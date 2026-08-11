@@ -50,6 +50,7 @@ describe('RemoteMetadataManager', () => {
     render(<RemoteMetadataManager compact client={client} />)
     fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Research crew' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced JSON' }))
     fireEvent.change(screen.getByLabelText('Metadata JSON'), {
       target: { value: JSON.stringify({ definition: crewDefinition('Reviewed crew') }) },
     })
@@ -79,6 +80,7 @@ describe('RemoteMetadataManager', () => {
     render(<RemoteMetadataManager compact client={client} />)
     fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Research crew' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced JSON' }))
     fireEvent.change(screen.getByLabelText('Metadata JSON'), {
       target: { value: JSON.stringify({ definition: crewDefinition('Unsafe', { api_key: 'secret' }) }) },
     })
@@ -112,6 +114,7 @@ describe('RemoteMetadataManager', () => {
     render(<RemoteMetadataManager compact client={client} />)
     fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Research crew' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced JSON' }))
     fireEvent.change(screen.getByLabelText('Metadata JSON'), {
       target: { value: JSON.stringify({ definition: crewDefinition('Stale edit') }) },
     })
@@ -144,5 +147,86 @@ describe('RemoteMetadataManager', () => {
       entity_type: 'crew', entity_id: entityId, base_revision: 3,
       operation: 'delete', payload: null,
     }])
+  })
+
+  it('creates a skill through the guided editor without requiring JSON', async () => {
+    const pushSyncChanges = vi.fn(async (changes: unknown[]) => ({
+      schema_version: 2,
+      results: [{ schema_version: 2, operation_id: (changes[0] as { operation_id: string }).operation_id, status: 'applied', entity }],
+    }))
+    const client = {
+      listSyncedEntities: vi.fn(async () => ({
+        schema_version: 2, items: [], next_after: null, watermark_cursor: 0,
+      })),
+      pushSyncChanges,
+    } as unknown as RemoteRuntimeClient
+
+    render(<RemoteMetadataManager compact client={client} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
+    fireEvent.change(screen.getByLabelText('Metadata type'), { target: { value: 'skill' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Add skill' }))
+    expect(screen.queryByLabelText('Metadata JSON')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Skill name'), { target: { value: 'Release checker' } })
+    fireEvent.change(screen.getByLabelText('Skill description'), { target: { value: 'Checks release readiness.' } })
+    fireEvent.change(screen.getByLabelText('Skill prompt template'), { target: { value: 'Review {{input}} before release.' } })
+    fireEvent.change(screen.getByLabelText('Skill trigger pattern'), { target: { value: 'release' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create skill' }))
+
+    await waitFor(() => expect(pushSyncChanges).toHaveBeenCalledTimes(1))
+    expect(pushSyncChanges.mock.calls[0]?.[0]).toMatchObject([{
+      entity_type: 'skill', base_revision: 0, operation: 'upsert',
+      payload: {
+        name: 'Release checker', description: 'Checks release readiness.',
+        prompt_template: 'Review {{input}} before release.', trigger_pattern: 'release',
+        run_mode: 'execute', auto_generated: false,
+      },
+    }])
+  })
+
+  it('preserves advanced crew agents and tasks when guided fields change', async () => {
+    const pushSyncChanges = vi.fn(async (changes: unknown[]) => ({
+      schema_version: 2,
+      results: [{ schema_version: 2, operation_id: (changes[0] as { operation_id: string }).operation_id, status: 'applied', entity }],
+    }))
+    const client = {
+      listSyncedEntities: vi.fn(async () => ({
+        schema_version: 2, items: [entity], next_after: null, watermark_cursor: 3,
+      })),
+      pushSyncChanges,
+    } as unknown as RemoteRuntimeClient
+
+    render(<RemoteMetadataManager compact client={client} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Research crew' }))
+    fireEvent.change(screen.getByLabelText('Crew name'), { target: { value: 'Guided research crew' } })
+    fireEvent.change(screen.getByLabelText('Crew execution guidelines'), { target: { value: 'Cite every source.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(pushSyncChanges).toHaveBeenCalledTimes(1))
+    expect(pushSyncChanges.mock.calls[0]?.[0]).toMatchObject([{
+      payload: { definition: {
+        id: entityId, name: 'Guided research crew', executionGuidelines: 'Cite every source.',
+        agents: [{ id: agentId }], tasks: [{ id: taskId, agentId }],
+      } },
+    }])
+  })
+
+  it('does not leave advanced JSON mode while the document is invalid', async () => {
+    const client = {
+      listSyncedEntities: vi.fn(async () => ({
+        schema_version: 2, items: [entity], next_after: null, watermark_cursor: 3,
+      })),
+    } as unknown as RemoteRuntimeClient
+
+    render(<RemoteMetadataManager compact client={client} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Metadata' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Research crew' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced JSON' }))
+    fireEvent.change(screen.getByLabelText('Metadata JSON'), { target: { value: '{invalid' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Guided' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Fix the advanced JSON')
+    expect(screen.getByLabelText('Metadata JSON')).toHaveValue('{invalid')
+    expect(screen.getByRole('button', { name: 'Advanced JSON' })).toHaveAttribute('aria-pressed', 'true')
   })
 })
