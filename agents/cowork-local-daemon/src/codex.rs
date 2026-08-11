@@ -25,6 +25,15 @@ use super::{
 const CODEX_VERSION: &str = "0.147.0";
 const PROTOCOL_SCHEMA: &str = "app-server-0.147.0";
 const MAX_PROTOCOL_LINE: usize = 16 * 1024 * 1024;
+const CODEX_APPROVAL_POLICY: &str = "untrusted";
+
+fn codex_thread_sandbox(read_only: bool) -> &'static str {
+    if read_only {
+        "read-only"
+    } else {
+        "workspace-write"
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -210,8 +219,8 @@ async fn execute_codex_inner(
             json!({
                 "cwd": cwd,
                 "model": model,
-                "approvalPolicy": "unlessTrusted",
-                "sandbox": if read_only { "readOnly" } else { "workspaceWrite" },
+                "approvalPolicy": CODEX_APPROVAL_POLICY,
+                "sandbox": codex_thread_sandbox(read_only),
                 "serviceName": "open_cowork_daemon",
                 "dynamicTools": host.tools().into_iter().map(|tool| json!({
                     "type":"function",
@@ -236,7 +245,7 @@ async fn execute_codex_inner(
                 "threadId": thread_id,
                 "input": [{"type":"text","text":prompt}],
                 "cwd": cwd,
-                "approvalPolicy": "unlessTrusted",
+                "approvalPolicy": CODEX_APPROVAL_POLICY,
                 "sandboxPolicy": if read_only {
                     json!({"type":"readOnly","networkAccess":false})
                 } else {
@@ -603,5 +612,12 @@ mod tests {
         for item_type in ["agentMessage", "reasoning", "plan", "contextCompaction"] {
             assert!(!is_codex_tool_item(item_type));
         }
+    }
+
+    #[test]
+    fn pinned_codex_protocol_values_match_the_bundled_app_server() {
+        assert_eq!(CODEX_APPROVAL_POLICY, "untrusted");
+        assert_eq!(codex_thread_sandbox(true), "read-only");
+        assert_eq!(codex_thread_sandbox(false), "workspace-write");
     }
 }

@@ -56,6 +56,49 @@ function Assert-ManifestArchive {
     }
 }
 
+function Invoke-LocalDaemonRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Token,
+        [Parameter(Mandatory = $true)][string]$Method,
+        [Parameter(Mandatory = $true)][object]$Params
+    )
+
+    $pipeUser = $env:USERNAME -replace '[^A-Za-z0-9]', '_'
+    $pipe = [System.IO.Pipes.NamedPipeClientStream]::new(
+        '.',
+        "open-cowork-$pipeUser",
+        [System.IO.Pipes.PipeDirection]::InOut,
+        [System.IO.Pipes.PipeOptions]::None
+    )
+    $reader = $null
+    $writer = $null
+    try {
+        $pipe.Connect(5000)
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        $writer = [System.IO.StreamWriter]::new($pipe, $utf8, 4096, $true)
+        $writer.NewLine = "`n"
+        $writer.AutoFlush = $true
+        $reader = [System.IO.StreamReader]::new($pipe, $utf8, $false, 4096, $true)
+        $request = @{
+            id = [Guid]::NewGuid().ToString()
+            token = $Token
+            method = $Method
+            params = $Params
+        } | ConvertTo-Json -Compress -Depth 20
+        $writer.WriteLine($request)
+        $response = $reader.ReadLine() | ConvertFrom-Json
+        if ($response.error) {
+            throw "$($response.error.code): $($response.error.message)"
+        }
+        return $response.result
+    }
+    finally {
+        if ($reader) { $reader.Dispose() }
+        if ($writer) { $writer.Dispose() }
+        $pipe.Dispose()
+    }
+}
+
 try {
     $install = Start-Process `
         -FilePath $resolvedInstaller `
@@ -264,12 +307,14 @@ try {
         $daemonSuffix = ([string]$daemonManifest.sha256).Substring(0, 16)
         $provisionedDaemon = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\bin\cowork-local-daemon-$daemonSuffix.exe"
         $daemonTokenPath = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\ipc-token.txt"
+        $daemonUserPath = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\user-id.txt"
         $daemonDevicePath = Join-Path $env:LOCALAPPDATA "OpenCowork\daemon\device-id.txt"
         $daemonDeadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $daemonDeadline) {
             if (
                 (Test-Path -LiteralPath $provisionedDaemon -PathType Leaf) -and
                 (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf) -and
+                (Test-Path -LiteralPath $daemonUserPath -PathType Leaf) -and
                 (Test-Path -LiteralPath $daemonDevicePath -PathType Leaf)
             ) {
                 break
@@ -279,6 +324,7 @@ try {
         if (
             -not (Test-Path -LiteralPath $provisionedDaemon -PathType Leaf) -or
             -not (Test-Path -LiteralPath $daemonTokenPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $daemonUserPath -PathType Leaf) -or
             -not (Test-Path -LiteralPath $daemonDevicePath -PathType Leaf)
         ) {
             throw "Installed app did not provision its local daemon binary and credentials."
@@ -287,10 +333,37 @@ try {
             throw "Provisioned local daemon failed its integrity check."
         }
         $daemonToken = (Get-Content -LiteralPath $daemonTokenPath -Raw).Trim()
+        $daemonUser = (Get-Content -LiteralPath $daemonUserPath -Raw).Trim()
         $daemonDevice = (Get-Content -LiteralPath $daemonDevicePath -Raw).Trim()
         $parsedDaemonDevice = [Guid]::Empty
-        if ($daemonToken.Length -lt 64 -or -not [Guid]::TryParse($daemonDevice, [ref]$parsedDaemonDevice)) {
+        $contractUuidPattern = '^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$'
+        if (
+            $daemonToken.Length -lt 64 -or
+            -not [Guid]::TryParse($daemonDevice, [ref]$parsedDaemonDevice) -or
+            $daemonUser -notmatch $contractUuidPattern
+        ) {
             throw "Installed app provisioned invalid daemon credentials."
+        }
+        $daemonHealth = $null
+        $daemonHealthDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $daemonHealthDeadline) {
+            try {
+                $daemonHealth = Invoke-LocalDaemonRequest -Token $daemonToken -Method 'health' -Params @{}
+                break
+            }
+            catch {
+                Start-Sleep -Milliseconds 250
+            }
+        }
+        if (
+            -not $daemonHealth -or
+            $daemonHealth.status -ne 'ok' -or
+            [string]$daemonHealth.daemon_version -ne $ExpectedVersion -or
+            [string]$daemonHealth.device_id -ne $daemonDevice -or
+            [string]$daemonHealth.user_id -ne $daemonUser -or
+            [string]$daemonHealth.user_id -notmatch $contractUuidPattern
+        ) {
+            throw "Installed daemon health response violates the runtime identity contract."
         }
         $loginCommand = (Get-ItemProperty `
             -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `

@@ -11,7 +11,7 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.3.3",
+          "@id": "pkg:cargo/app@0.3.4",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -19,7 +19,7 @@
           ]
         },
         {
-          "@id": "pkg:cargo/open-cowork-android@0.3.3",
+          "@id": "pkg:cargo/open-cowork-android@0.3.4",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -89,7 +89,7 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/cowork-server@0.3.3",
+          "@id": "pkg:cargo/cowork-server@0.3.4",
           "subcomponents": [
             {
               "@id": "pkg:cargo/rsa@0.9.10"

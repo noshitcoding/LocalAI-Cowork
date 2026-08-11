@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "open-cowork-android"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde_json",
  "tauri",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-mobile-push"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "tauri",
@@ -3587,7 +3587,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-mobile-secure"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "tauri",
