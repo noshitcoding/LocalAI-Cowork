@@ -146,10 +146,19 @@ try {
   if (!Array.isArray(tabs.tabs) || tabs.tabs.length !== 2 || !tabs.tabs.some((tab) => tab.url === `${origin}/review`)) {
     throw new Error(`visible Chromium multi-tab state regressed: ${JSON.stringify(tabs)}`)
   }
+  const visibleInspected = await runTool({ action: 'inspect', visible: true, max_chars: 10_000 })
+  if (!visibleInspected.text.includes('Open Cowork Browser Baseline')) {
+    throw new Error(`visible Chromium rendered content regressed: ${JSON.stringify(visibleInspected)}`)
+  }
   const visibleScreenshot = await runTool({ action: 'screenshot', visible: true, path: 'artifacts/browser/visible-baseline.png' })
   const visiblePng = await readFile(workspacePath(visibleScreenshot.screenshot))
-  if (visiblePng.length < 10_000 || !visiblePng.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-    throw new Error('visible Chromium screenshot is not a populated PNG')
+  const visibleWidth = visiblePng.length >= 24 ? visiblePng.readUInt32BE(16) : 0
+  const visibleHeight = visiblePng.length >= 24 ? visiblePng.readUInt32BE(20) : 0
+  if (visiblePng.length < 1_024
+      || !visiblePng.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      || visibleWidth < 640
+      || visibleHeight < 480) {
+    throw new Error(`visible Chromium screenshot regressed: bytes=${visiblePng.length}, geometry=${visibleWidth}x${visibleHeight}`)
   }
 
   const eventLogs = navigate.artifacts.filter((artifact) => artifact.endsWith('-events.json'))
@@ -163,6 +172,7 @@ try {
     browser_visual_acceptance: 'ok',
     headless_screenshot_bytes: png.length,
     visible_screenshot_bytes: visiblePng.length,
+    visible_screenshot_geometry: `${visibleWidth}x${visibleHeight}`,
     visible_tabs: tabs.tabs.length,
   }))
 } finally {
