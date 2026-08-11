@@ -8,6 +8,8 @@ param(
 
     [switch]$SkipRuntimeBootstrap,
 
+    [switch]$SkipNativeSandbox,
+
     [switch]$UninstallAfterVerification
 )
 
@@ -205,6 +207,49 @@ try {
         )
     }
 
+    if (-not $SkipNativeSandbox) {
+        $sandboxResultPath = Join-Path $env:TEMP ("lacowork-native-sandbox-{0}.json" -f [Guid]::NewGuid())
+        $sandboxAppData = Join-Path $env:APPDATA "io.noshitcoding.opencowork"
+        try {
+            $sandboxSmoke = Start-Process `
+                -FilePath $appExecutable `
+                -ArgumentList @(
+                    "--lacowork-native-sandbox-smoke",
+                    ('"' + $sandboxAppData + '"'),
+                    ('"' + $sandboxResultPath + '"')
+                ) `
+                -Wait `
+                -PassThru
+            $sandboxResult = $null
+            if (Test-Path -LiteralPath $sandboxResultPath -PathType Leaf) {
+                $sandboxResult = Get-Content -LiteralPath $sandboxResultPath -Raw | ConvertFrom-Json
+            }
+            if ($sandboxSmoke.ExitCode -ne 0 -or -not $sandboxResult -or $sandboxResult.ok -ne $true) {
+                $detail = if ($sandboxResult -and $sandboxResult.error) {
+                    [string]$sandboxResult.error
+                }
+                else {
+                    "the installed app returned no structured sandbox result"
+                }
+                throw "Installed native Windows sandbox smoke failed: $detail"
+            }
+            if (
+                $sandboxResult.setupReady -ne $true -or
+                $sandboxResult.repeatedSetupReady -ne $true -or
+                $sandboxResult.account -ne "LACoworkOnline" -or
+                $sandboxResult.group -ne "LACoworkSandbox" -or
+                $sandboxResult.executionStatus -ne "completed" -or
+                $sandboxResult.identityVerified -ne $true -or
+                $sandboxResult.markerWritten -ne $true
+            ) {
+                throw "Installed native Windows sandbox smoke returned an incomplete result."
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $sandboxResultPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     if (-not $SkipRuntimeBootstrap) {
         $runtimeRoot = Join-Path $env:APPDATA "io.noshitcoding.opencowork\crew-runtime"
         $runtimePython = Join-Path $runtimeRoot "venv\Scripts\python.exe"
@@ -294,7 +339,7 @@ try {
 
     $successMessage = (
         "Installer runtime smoke passed for Local AI Cowork {0} " +
-        "(Codex {1}, daemon {2}, Python {3}, CrewAI {4}, automatic bootstrap verified: {5})."
+        "(Codex {1}, daemon {2}, Python {3}, CrewAI {4}, automatic bootstrap verified: {5}, native sandbox verified: {6})."
     )
     Write-Host (
         $successMessage -f
@@ -303,7 +348,8 @@ try {
         $daemonManifest.version,
         $manifest.python.version,
         $manifest.smoke.crewaiVersion,
-        (-not $SkipRuntimeBootstrap)
+        (-not $SkipRuntimeBootstrap),
+        (-not $SkipNativeSandbox)
     )
 }
 finally {

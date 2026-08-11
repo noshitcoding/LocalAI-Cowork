@@ -1,0 +1,99 @@
+name: open-cowork-release-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact origin/main commit to build and verify without publishing'
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: desktop-release-candidate-${{ inputs.sha }}
+  cancel-in-progress: false
+
+jobs:
+  windows-installer:
+    name: Build and verify Windows x64 candidate
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    env:
+      TAURI_BUILD_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate immutable main candidate
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ inputs.sha }}
+        run: |
+          if ($env:CANDIDATE_SHA -notmatch '^[a-f0-9]{40}$') {
+            throw "Release candidate must be an exact lowercase 40-character commit SHA."
+          }
+          $checkedOut = (git rev-parse HEAD).Trim()
+          if ($checkedOut -ne $env:CANDIDATE_SHA) {
+            throw "Checked-out candidate does not match the requested SHA."
+          }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor $checkedOut origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release candidates must already be contained in origin/main."
+          }
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Python for the bundled CrewAI runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: app/src-tauri/python/crew_runtime/requirements.lock
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Install locked frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build unsigned candidate installer
+        working-directory: app
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'localai-cowork-candidate-target'
+          npm run installer
+
+      - name: Verify installed runtime and native sandbox
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath app\package.json -Raw | ConvertFrom-Json).version
+          .\app\scripts\installer-crew-runtime-smoke.ps1 `
+            -InstallerPath dist-installers\LocalAI-Cowork-Setup.exe `
+            -ExpectedVersion $version `
+            -UninstallAfterVerification
+
+      - name: Upload short-lived candidate installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: LocalAI-Cowork-Windows-candidate-${{ inputs.sha }}
+          path: dist-installers/LocalAI-Cowork-Setup.exe
+          if-no-files-found: error
+          retention-days: 3

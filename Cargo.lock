@@ -741,7 +741,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cowork-contracts"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "serde",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "cowork-device-agent"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "cowork-local-daemon"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "cowork-runner"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "cowork-runtime"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "cowork-server"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",

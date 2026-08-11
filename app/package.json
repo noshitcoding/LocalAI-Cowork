@@ -1,7 +1,7 @@
 {
   "name": "localai-cowork",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.3",
   "description": "Open-source, local-first AI coworker for Windows and Linux with Ollama, MCP, tasks, approvals, and tools.",
   "type": "module",
   "license": "Apache-2.0",
@@ -40,7 +40,7 @@
     "supply-chain:release": "node ./scripts/supply-chain.mjs release",
     "tauri": "tauri",
     "test": "vitest",
-    "test:scripts": "node --test ./scripts/create-updater-manifest.test.mjs ./scripts/process-utils.test.mjs ./scripts/supply-chain.test.mjs ./scripts/verify-codex-bundle.test.mjs",
+    "test:scripts": "node --test ./scripts/create-updater-manifest.test.mjs ./scripts/installer-native-sandbox.test.mjs ./scripts/process-utils.test.mjs ./scripts/release-metadata.test.mjs ./scripts/supply-chain.test.mjs ./scripts/verify-codex-bundle.test.mjs",
     "test:ci": "vitest run",
     "test:gateway": "node ../scripts/test-gateway-e2e.mjs",
     "test:browser-session": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/test-browser-session.ps1",
