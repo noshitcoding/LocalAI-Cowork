@@ -188,7 +188,11 @@ async fn serve_api(pool: PgPool, config: Config) -> Result<()> {
         )
         .route(
             "/teams/{team_id}/members",
-            post(organization::set_team_member),
+            post(organization::set_team_member).get(organization::list_team_members),
+        )
+        .route(
+            "/teams/{team_id}/members/{user_id}",
+            axum::routing::delete(organization::remove_team_member),
         )
         .route(
             "/projects",

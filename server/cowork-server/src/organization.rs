@@ -7,8 +7,8 @@ use chrono::Utc;
 use cowork_contracts::{
     CreateExecutorPoolRequest, CreateProjectRequest, CreateTeamRequest, CreateThreadRequest,
     ExecutorKind, ExecutorPool, ExecutorTarget, GrantExecutorPoolRequest, ProjectPrivacy,
-    ProjectRecord, ProjectRole, SetProjectMemberRequest, SetTeamMemberRequest, TeamRecord,
-    TeamRole, ThreadRecord, UpdateProjectRequest, UpdateThreadRequest, SCHEMA_VERSION,
+    ProjectRecord, ProjectRole, SetProjectMemberRequest, SetTeamMemberRequest, TeamMemberRecord,
+    TeamRecord, TeamRole, ThreadRecord, UpdateProjectRequest, UpdateThreadRequest, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -124,6 +124,63 @@ pub async fn set_team_member(
     .execute(&mut *tx)
     .await?;
     sync::publish_team_provider_profiles_for_user_tx(&mut tx, team_id, request.user_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_team_members(
+    State(state): State<AppState>,
+    Path(team_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Vec<TeamMemberRecord>>, ApiError> {
+    ensure_team_member(&state.pool, principal.user_id, team_id).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT member.team_id, member.user_id, member.role, member.created_at,
+               account.email, account.display_name
+        FROM team_members member
+        JOIN users account ON account.id = member.user_id AND account.deleted_at IS NULL
+        WHERE member.team_id = $1
+        ORDER BY CASE member.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+                 lower(account.display_name), member.user_id
+        "#,
+    )
+    .bind(team_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(
+        rows.iter()
+            .map(row_to_team_member)
+            .collect::<Result<_, _>>()?,
+    ))
+}
+
+pub async fn remove_team_member(
+    State(state): State<AppState>,
+    Path((team_id, user_id)): Path<(Uuid, Uuid)>,
+    Extension(principal): Extension<Principal>,
+) -> Result<StatusCode, ApiError> {
+    ensure_team_admin(&state.pool, principal.user_id, team_id).await?;
+    let mut tx = state.pool.begin().await?;
+    let role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("team member {user_id} was not found")))?;
+    if role == "owner" {
+        return Err(ApiError::Unprocessable(
+            "team ownership transfer requires a dedicated ownership operation".to_owned(),
+        ));
+    }
+    sqlx::query("DELETE FROM team_members WHERE team_id = $1 AND user_id = $2")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sync::publish_team_provider_profile_tombstones_for_user_tx(&mut tx, team_id, user_id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1106,6 +1163,23 @@ pub(crate) async fn ensure_team_admin(
     }
 }
 
+async fn ensure_team_member(pool: &PgPool, user_id: Uuid, team_id: Uuid) -> Result<(), ApiError> {
+    let member = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2)",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    if member {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized(
+            "team membership is required".to_owned(),
+        ))
+    }
+}
+
 async fn ensure_pool_admin(pool: &PgPool, user_id: Uuid, pool_id: Uuid) -> Result<(), ApiError> {
     if db::user_is_platform_admin(pool, user_id).await? {
         return Ok(());
@@ -1134,6 +1208,18 @@ fn row_to_team(row: &PgRow) -> Result<TeamRecord, ApiError> {
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
         deleted_at: row.try_get("deleted_at")?,
+    })
+}
+
+fn row_to_team_member(row: &PgRow) -> Result<TeamMemberRecord, ApiError> {
+    Ok(TeamMemberRecord {
+        schema_version: SCHEMA_VERSION,
+        team_id: row.try_get("team_id")?,
+        user_id: row.try_get("user_id")?,
+        role: parse_team_role(row.try_get("role")?)?,
+        email: row.try_get("email")?,
+        display_name: row.try_get("display_name")?,
+        created_at: row.try_get("created_at")?,
     })
 }
 
@@ -1253,6 +1339,17 @@ fn team_role_name(role: TeamRole) -> &'static str {
         TeamRole::Owner => "owner",
         TeamRole::Admin => "admin",
         TeamRole::Member => "member",
+    }
+}
+
+fn parse_team_role(value: &str) -> Result<TeamRole, ApiError> {
+    match value {
+        "owner" => Ok(TeamRole::Owner),
+        "admin" => Ok(TeamRole::Admin),
+        "member" => Ok(TeamRole::Member),
+        other => Err(ApiError::Internal(anyhow::anyhow!(
+            "unknown team role {other}"
+        ))),
     }
 }
 

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { RunRecord } from '../runtime/contracts'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 import RemoteProviderProfileManager from './RemoteProviderProfileManager'
+import RemoteOrganizationManager from './RemoteOrganizationManager'
 import RemoteTaskManager from './RemoteTaskManager'
 
 const projectId = '10000000-0000-4000-8000-000000000070'
@@ -74,5 +75,31 @@ describe('remote task and provider management', () => {
     })
     expect((createProviderProfile.mock.calls[0]?.[0] as { model_defaults: unknown }).model_defaults)
       .not.toHaveProperty('endpoint_binding')
+  })
+
+  it('creates a private local-first project from the remote clients', async () => {
+    const createProject = vi.fn(async (_request: unknown) => project)
+    const client = {
+      listTeams: vi.fn(async () => []),
+      listProjects: vi.fn(async () => []),
+      createProject,
+    } as unknown as RemoteRuntimeClient
+    render(<RemoteOrganizationManager compact client={client} currentUserId={project.owner_user_id} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Project name' }), {
+      target: { value: 'Offline research' },
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Description' }), {
+      target: { value: 'Files remain on the personal device' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith({
+      name: 'Offline research',
+      description: 'Files remain on the personal device',
+      privacy: 'private_local',
+      team_id: null,
+      preferred_executor_target: null,
+      policy: { tool_policy: 'autonomous' },
+    }))
   })
 })

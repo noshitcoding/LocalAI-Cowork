@@ -31,6 +31,7 @@ import {
   scheduleRecordSchema,
   supportGrantRecordSchema,
   teamRecordSchema,
+  teamMemberRecordSchema,
   taskDefinitionSchema,
   totpRecoveryCodesSchema,
   totpSetupSchema,
@@ -40,6 +41,7 @@ import {
   type ApprovalRequest,
   type AuthSessionRecord,
   type CreateRunRequest,
+  type CreateProjectRequest,
   type CreateThreadMessageRequest,
   type DesktopSession,
   type DesktopStreamTicket,
@@ -67,6 +69,8 @@ import {
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
   type TeamRecord,
+  type TeamMemberRecord,
+  type TeamRole,
   type SyncChange,
   type TaskDefinition,
   type TotpRecoveryCodes,
@@ -169,8 +173,40 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return projectRecordSchema.array().parse(await this.#request('/api/v1/projects'))
   }
 
+  async createProject(request: CreateProjectRequest): Promise<ProjectRecord> {
+    return projectRecordSchema.parse(await this.#request('/api/v1/projects', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
   async listTeams(): Promise<TeamRecord[]> {
     return teamRecordSchema.array().parse(await this.#request('/api/v1/teams'))
+  }
+
+  async createTeam(name: string): Promise<TeamRecord> {
+    return teamRecordSchema.parse(await this.#request('/api/v1/teams', {
+      method: 'POST', body: JSON.stringify({ name }),
+    }))
+  }
+
+  async listTeamMembers(teamId: string): Promise<TeamMemberRecord[]> {
+    return teamMemberRecordSchema.array().parse(await this.#request(
+      `/api/v1/teams/${encodeURIComponent(teamId)}/members`,
+    ))
+  }
+
+  async setTeamMember(teamId: string, userId: string, role: Exclude<TeamRole, 'owner'>): Promise<void> {
+    await this.#request(`/api/v1/teams/${encodeURIComponent(teamId)}/members`, {
+      method: 'POST', body: JSON.stringify({ user_id: userId, role }),
+    }, false)
+  }
+
+  async removeTeamMember(teamId: string, userId: string): Promise<void> {
+    await this.#request(
+      `/api/v1/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+      false,
+    )
   }
 
   async listProviderProfiles(): Promise<ProviderProfile[]> {

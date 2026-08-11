@@ -249,6 +249,20 @@ export const teamRecordSchema = z.object({
 })
 export type TeamRecord = z.infer<typeof teamRecordSchema>
 
+export const teamRoleSchema = z.enum(['owner', 'admin', 'member'])
+export type TeamRole = z.infer<typeof teamRoleSchema>
+
+export const teamMemberRecordSchema = z.object({
+  schema_version: z.number().int(),
+  team_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  role: teamRoleSchema,
+  email: z.string().email(),
+  display_name: z.string(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type TeamMemberRecord = z.infer<typeof teamMemberRecordSchema>
+
 export const projectRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),
@@ -267,6 +281,16 @@ export const projectRecordSchema = z.object({
   deleted_at: z.string().datetime({ offset: true }).nullable(),
 })
 export type ProjectRecord = z.infer<typeof projectRecordSchema>
+
+export const createProjectRequestSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  privacy: projectPrivacySchema,
+  team_id: z.string().uuid().nullable(),
+  preferred_executor_target: executorTargetSchema.nullable(),
+  policy: z.unknown(),
+})
+export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>
 
 export const updateProjectRequestSchema = z.object({
   expected_revision: z.number().int().positive(),

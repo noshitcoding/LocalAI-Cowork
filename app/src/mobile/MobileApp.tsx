@@ -26,6 +26,7 @@ import RemoteThreadMessages from '../components/RemoteThreadMessages'
 import RemoteScheduleManager from '../components/RemoteScheduleManager'
 import RemoteTaskManager from '../components/RemoteTaskManager'
 import RemoteProviderProfileManager from '../components/RemoteProviderProfileManager'
+import RemoteOrganizationManager from '../components/RemoteOrganizationManager'
 import RemoteSecuritySettings from '../components/RemoteSecuritySettings'
 import RemoteGovernancePanel from '../components/RemoteGovernancePanel'
 import RemoteDeviceSettings from '../components/RemoteDeviceSettings'
@@ -458,6 +459,7 @@ export default function MobileApp() {
         {online ? <RemoteSecuritySettings compact client={client} /> : null}
         {online ? <RemoteGovernancePanel compact client={client} currentUserId={account.userId ?? ''} /> : null}
         {online ? <RemoteDeviceSettings compact client={client} /> : null}
+        {online ? <RemoteOrganizationManager compact client={client} currentUserId={account.userId ?? ''} /> : null}
         {online ? <RemoteProviderProfileManager compact client={client} /> : null}
         {online ? <RemoteTaskManager compact client={client} onRunCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {online ? <RemoteScheduleManager compact client={client} /> : null}

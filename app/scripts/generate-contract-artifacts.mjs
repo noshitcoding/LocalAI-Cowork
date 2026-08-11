@@ -81,6 +81,8 @@ const responseSchemas = new Map([
   ['post /api/v1/agent/executors/{executor_id}/sync/changes', 'PushSyncChangesResponse'],
   ['get /api/v1/agent/executors/{executor_id}/sync/entities/{entity_type}', 'SyncedEntityPage'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
+  ['get /api/v1/teams', 'TeamRecord'], ['post /api/v1/teams', 'TeamRecord'],
+  ['get /api/v1/teams/{team_id}/members', 'TeamMemberRecord'],
   ['get /api/v1/provider-profiles', 'ProviderProfile'], ['post /api/v1/provider-profiles', 'ProviderProfile'],
   ['put /api/v1/provider-profiles/{profile_id}', 'ProviderProfile'],
   ['put /api/v1/provider-profiles/{profile_id}/secret', 'ProviderProfile'],
@@ -107,7 +109,8 @@ const responseSchemas = new Map([
   ['post /api/v1/projects/{project_id}/versions', 'ProjectVersion'],
 ])
 const arrayResponses = new Set([
-  'get /api/v1/projects', 'get /api/v1/provider-profiles', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/projects', 'get /api/v1/teams', 'get /api/v1/teams/{team_id}/members',
+  'get /api/v1/provider-profiles', 'get /api/v1/tasks', 'get /api/v1/schedules',
   'get /api/v1/projects/{project_id}/threads',
   'get /api/v1/threads/{thread_id}/messages',
   'get /api/v1/auth/sessions',

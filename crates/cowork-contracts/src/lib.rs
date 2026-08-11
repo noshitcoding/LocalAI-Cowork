@@ -852,6 +852,17 @@ pub struct TeamRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamMemberRecord {
+    pub schema_version: u16,
+    pub team_id: Uuid,
+    pub user_id: Uuid,
+    pub role: TeamRole,
+    pub email: String,
+    pub display_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTeamRequest {
     pub name: String,
 }

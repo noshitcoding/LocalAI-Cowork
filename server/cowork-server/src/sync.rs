@@ -2386,6 +2386,23 @@ pub(crate) async fn publish_team_provider_profiles_for_user_tx(
     Ok(())
 }
 
+pub(crate) async fn publish_team_provider_profile_tombstones_for_user_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    let profile_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM provider_profiles WHERE team_id = $1 AND deleted_at IS NULL ORDER BY id",
+    )
+    .bind(team_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for profile_id in profile_ids {
+        publish_server_tombstone_tx(tx, user_id, "provider_profile", profile_id).await?;
+    }
+    Ok(())
+}
+
 fn provider_profile_sync_payload(row: &PgRow) -> Result<Value, ApiError> {
     let defaults: Value = row.try_get("model_defaults")?;
     let value = |key: &str| defaults.get(key).cloned().unwrap_or(Value::Null);

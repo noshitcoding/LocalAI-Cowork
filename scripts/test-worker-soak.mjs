@@ -356,6 +356,35 @@ if (!backfilledTeamProfile || backfilledTeamProfile.tombstone
     || backfilledTeamProfile.payload?.model !== 'team-model-v1') {
   throw new Error(`existing team profile was not backfilled to the new member: ${JSON.stringify(memberProfileSnapshot)}`)
 }
+const teamMembers = await request(`/teams/${team.id}/members`, { token })
+if (!teamMembers.some((member) => member.user_id === memberSession.user_id && member.role === 'member')) {
+  throw new Error(`new team member is missing from team administration: ${JSON.stringify(teamMembers)}`)
+}
+await expectRequestStatus(`/teams/${team.id}/members/${session.user_id}`, 422, {
+  method: 'DELETE', token,
+})
+await request(`/teams/${team.id}/members/${memberSession.user_id}`, { method: 'DELETE', token })
+const removedMemberProfiles = await request('/provider-profiles', { token: memberSession.access_token })
+if (removedMemberProfiles.some((profile) => profile.id === teamProfile.id)) {
+  throw new Error(`removed member can still list a team profile: ${JSON.stringify(removedMemberProfiles)}`)
+}
+const removedMemberSnapshot = await request('/sync/entities/provider_profile?limit=1000', {
+  token: memberSession.access_token,
+})
+const revokedTeamProfile = removedMemberSnapshot.items?.find((item) => item.entity_id === teamProfile.id)
+if (!revokedTeamProfile?.tombstone) {
+  throw new Error(`team profile was not revoked from the removed member: ${JSON.stringify(removedMemberSnapshot)}`)
+}
+await request(`/teams/${team.id}/members`, {
+  method: 'POST', token, body: { user_id: memberSession.user_id, role: 'member' },
+})
+const restoredMemberSnapshot = await request('/sync/entities/provider_profile?limit=1000', {
+  token: memberSession.access_token,
+})
+const restoredTeamProfile = restoredMemberSnapshot.items?.find((item) => item.entity_id === teamProfile.id)
+if (!restoredTeamProfile || restoredTeamProfile.tombstone) {
+  throw new Error(`re-added member did not regain the team profile: ${JSON.stringify(restoredMemberSnapshot)}`)
+}
 const project = await request('/projects', {
   method: 'POST',
   token,
@@ -540,7 +569,7 @@ if (entityChanges.length !== 2
     || pulledSync.next_cursor < entityChanges[1].cursor) {
   throw new Error(`sync cursor feed is incomplete or unordered: ${JSON.stringify(pulledSync)}`)
 }
-const streamedSync = await firstSyncEvent(token, 0)
+const streamedSync = await firstSyncEvent(token, Math.max(0, entityChanges[0].cursor - 1))
 if (streamedSync.entity_id !== syncEntityId || streamedSync.cursor !== entityChanges[0].cursor) {
   throw new Error(`sync SSE did not resume from its durable cursor: ${JSON.stringify(streamedSync)}`)
 }
