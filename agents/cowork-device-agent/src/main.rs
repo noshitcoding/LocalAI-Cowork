@@ -56,6 +56,9 @@ const SNAPSHOT_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EXECUTOR_MCP_BINDINGS: usize = 64;
 const MAX_EXECUTOR_MCP_FILE_BYTES: u64 = 512 * 1024;
 const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_OFFICE_BRIDGE_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_OFFICE_STDOUT_BYTES: usize = 64 * 1024;
+const MAX_OFFICE_STDERR_BYTES: usize = 256 * 1024;
 const LATEST_HTTP_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_HTTP_MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
 
@@ -295,6 +298,24 @@ struct ChatResponseMessage {
     content: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OfficeRequest {
+    application: String,
+    #[serde(default = "default_office_action")]
+    action: String,
+    source: String,
+    output: String,
+    #[serde(default)]
+    preview_output: Option<String>,
+    #[serde(default)]
+    parameters: Value,
+}
+
+fn default_office_action() -> String {
+    "export_pdf".to_owned()
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ChatUsage {
     #[serde(default)]
@@ -317,6 +338,12 @@ async fn main() -> Result<()> {
             bail!("executor-mcp-tool does not accept additional arguments");
         }
         return run_executor_mcp_tool_bridge().await;
+    }
+    if env::args().nth(1).as_deref() == Some("executor-windows-office") {
+        if env::args().nth(2).is_some() {
+            bail!("executor-windows-office does not accept additional arguments");
+        }
+        return run_executor_windows_office_bridge().await;
     }
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
@@ -2078,6 +2105,70 @@ async fn executor_mcp_tool_bridge_response(input: &[u8], workspace: &Path) -> Va
     }
 }
 
+async fn run_executor_windows_office_bridge() -> Result<()> {
+    use std::io::Read as _;
+
+    let mut input = Vec::new();
+    let stdin = std::io::stdin();
+    std::io::Read::take(stdin.lock(), (MAX_OFFICE_BRIDGE_INPUT_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    let workspace = env::current_dir()?;
+    let response = if input.len() > MAX_OFFICE_BRIDGE_INPUT_BYTES {
+        json!({
+            "success":false,
+            "result":null,
+            "error":format!("Microsoft Office bridge input exceeds {MAX_OFFICE_BRIDGE_INPUT_BYTES} bytes"),
+        })
+    } else {
+        executor_windows_office_bridge_response(&input, &workspace).await
+    };
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    std::io::Write::write_all(&mut stdout, &serde_json::to_vec(&response)?)?;
+    std::io::Write::write_all(&mut stdout, b"\n")?;
+    std::io::Write::flush(&mut stdout)?;
+    Ok(())
+}
+
+async fn executor_windows_office_bridge_response(input: &[u8], workspace: &Path) -> Value {
+    let result = async {
+        let request: OfficeRequest =
+            serde_json::from_slice(input).context("invalid Microsoft Office bridge JSON")?;
+        execute_windows_office_request(workspace, &request).await
+    }
+    .await;
+    match result {
+        Ok(result) => json!({"success":true,"result":result,"error":null}),
+        Err(error) => {
+            let workspace = workspace.to_string_lossy();
+            json!({
+                "success":false,
+                "result":null,
+                "error":format!("{error:#}").replace(workspace.as_ref(), "[WORKSPACE]"),
+            })
+        }
+    }
+}
+
+async fn read_bounded_bridge_bytes<R: AsyncRead + Unpin>(
+    mut reader: R,
+    limit: usize,
+) -> Result<(Vec<u8>, bool)> {
+    let mut stored = Vec::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(stored.len());
+        stored.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    Ok((stored, truncated))
+}
+
 async fn invoke_executor_mcp(
     binding: &ExecutorMcpBinding,
     tool_name: &str,
@@ -3119,62 +3210,53 @@ fn supports_windows_office(config: &Config) -> bool {
 }
 
 #[cfg(windows)]
-async fn execute_windows_office(
-    client: &ControlPlaneClient,
-    config: &Config,
-    lease: &RunLease,
-) -> Result<Value> {
-    #[derive(Deserialize, Serialize)]
-    struct OfficeRequest {
-        application: String,
-        #[serde(default = "default_office_action")]
-        action: String,
-        source: String,
-        output: String,
-        #[serde(default)]
-        preview_output: Option<String>,
-        #[serde(default)]
-        parameters: Value,
+async fn execute_windows_office_request(run_root: &Path, request: &OfficeRequest) -> Result<Value> {
+    let supported_action = match request.application.as_str() {
+        "word" => matches!(
+            request.action.as_str(),
+            "export_pdf" | "replace_text" | "word_append_paragraph" | "word_format_text"
+        ),
+        "excel" => matches!(
+            request.action.as_str(),
+            "export_pdf"
+                | "replace_text"
+                | "excel_set_cell"
+                | "excel_format_range"
+                | "excel_add_chart"
+        ),
+        "powerpoint" => matches!(
+            request.action.as_str(),
+            "export_pdf" | "replace_text" | "powerpoint_add_slide" | "powerpoint_format_text"
+        ),
+        _ => bail!("application must be word, excel, or powerpoint"),
+    };
+    if !supported_action {
+        bail!(
+            "unsupported Microsoft Office action {} for {}",
+            request.action,
+            request.application
+        );
+    }
+    if !request.parameters.is_object() {
+        bail!("Microsoft Office action parameters must be an object");
     }
 
-    fn default_office_action() -> String {
-        "export_pdf".to_owned()
+    let canonical_root = tokio::fs::canonicalize(run_root)
+        .await
+        .context("Microsoft Office workspace is unavailable")?;
+    if !tokio::fs::metadata(&canonical_root).await?.is_dir() {
+        bail!("Microsoft Office workspace is not a directory");
     }
-
-    if !supports_windows_office(config) {
-        bail!("this executor does not advertise office.microsoft");
+    let source = safe_run_path(run_root, &request.source)?;
+    let source_metadata = tokio::fs::symlink_metadata(&source)
+        .await
+        .context("Office source file does not exist in the run workspace")?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+        bail!("Office source must be a regular non-symlink file");
     }
-    let request: OfficeRequest = serde_json::from_value(
-        lease
-            .run
-            .spec
-            .input
-            .get("windows_office")
-            .cloned()
-            .context("windows_office input is missing")?,
-    )?;
-    if !matches!(
-        request.application.as_str(),
-        "word" | "excel" | "powerpoint"
-    ) {
-        bail!("application must be word, excel, or powerpoint");
-    }
-    let run_root = materialize_run_workspace(client, config, lease).await?;
-    let source = safe_run_path(&run_root, &request.source)?;
-    let output = safe_run_path(&run_root, &request.output)?;
-    let preview_output = request
-        .preview_output
-        .as_deref()
-        .map(|path| safe_run_path(&run_root, path))
-        .transpose()?;
-    if !source.is_file() {
-        bail!("Office source file does not exist in the run workspace");
-    }
-    if output.exists() {
-        bail!("Office output already exists; refusing to overwrite it");
-    }
-    if !request.output.replace('\\', "/").starts_with("artifacts/") {
-        bail!("Office output must stay below the artifacts directory");
+    let source = tokio::fs::canonicalize(&source).await?;
+    if !source.starts_with(&canonical_root) {
+        bail!("Office source escaped the run workspace");
     }
     let source_extension = normalized_extension(&source)?;
     if is_active_office_extension(&source_extension) {
@@ -3189,6 +3271,11 @@ async fn execute_windows_office(
     if !expected_source.contains(&source_extension.as_str()) {
         bail!("Office source extension does not match the selected application");
     }
+
+    if !request.output.starts_with("artifacts/") {
+        bail!("Office output must stay below the artifacts directory");
+    }
+    let output = safe_run_path(run_root, &request.output)?;
     let output_extension = normalized_extension(&output)?;
     if request.action == "export_pdf" {
         if output_extension != "pdf" {
@@ -3205,44 +3292,37 @@ async fn execute_windows_office(
             bail!("edited Office output must use the modern non-macro format .{expected_output}");
         }
     }
-    if !matches!(
-        request.action.as_str(),
-        "export_pdf"
-            | "replace_text"
-            | "word_append_paragraph"
-            | "word_format_text"
-            | "excel_set_cell"
-            | "excel_format_range"
-            | "excel_add_chart"
-            | "powerpoint_add_slide"
-            | "powerpoint_format_text"
-    ) {
-        bail!("unsupported Microsoft Office action {}", request.action);
-    }
-    if let Some(parent) = output.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    prepare_new_office_output(run_root, &canonical_root, &output).await?;
+
+    let preview_output = request
+        .preview_output
+        .as_deref()
+        .map(|relative| {
+            if request.action == "export_pdf" {
+                bail!("Office PDF exports cannot request a second preview output");
+            }
+            if !relative.starts_with("artifacts/") {
+                bail!("Office preview output must stay below the artifacts directory");
+            }
+            let path = safe_run_path(run_root, relative)?;
+            if normalized_extension(&path)? != "pdf" {
+                bail!("Office preview output must use the .pdf extension");
+            }
+            Ok(path)
+        })
+        .transpose()?;
+    if preview_output.as_ref() == Some(&output) {
+        bail!("Office output and preview output must be different paths");
     }
     if let Some(preview) = &preview_output {
-        if normalized_extension(preview)? != "pdf"
-            || !request
-                .preview_output
-                .as_deref()
-                .unwrap_or_default()
-                .starts_with("artifacts/")
-        {
-            bail!("Office preview output must be a PDF below artifacts/");
-        }
-        if preview.exists() {
-            bail!("Office preview output already exists; refusing to overwrite it");
-        }
-        if let Some(parent) = preview.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        prepare_new_office_output(run_root, &canonical_root, preview).await?;
     }
 
     let mut command = tokio::process::Command::new("powershell.exe");
     command
         .kill_on_drop(true)
+        .current_dir(&canonical_root)
+        .env_clear()
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -3266,24 +3346,195 @@ async fn execute_windows_office(
         .env(
             "COWORK_OFFICE_PARAMETERS",
             serde_json::to_string(&request.parameters)?,
-        );
-    let result = match tokio::time::timeout(Duration::from_secs(8 * 60), command.output()).await {
-        Ok(result) => result.context("failed to start the interactive Office adapter")?,
-        Err(_) => {
-            cleanup_office_processes().await;
-            bail!("Office automation timed out, likely because an unexpected dialog requires manual review");
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for name in [
+        "SystemRoot",
+        "WINDIR",
+        "PATH",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+    ] {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.creation_flags(0x0800_0000);
+    let mut child = command
+        .spawn()
+        .context("failed to start the interactive Office adapter")?;
+    let process_job = match ManagedMcpProcessJob::attach(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error).context("failed to isolate the Office adapter process tree");
         }
     };
-    if !result.status.success() {
-        cleanup_office_processes().await;
+    let stdout = child
+        .stdout
+        .take()
+        .context("Office adapter stdout is missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Office adapter stderr is missing")?;
+    let stdout_task = tokio::spawn(read_bounded_bridge_bytes(stdout, MAX_OFFICE_STDOUT_BYTES));
+    let stderr_task = tokio::spawn(read_bounded_bridge_bytes(stderr, MAX_OFFICE_STDERR_BYTES));
+    let status = match tokio::time::timeout(Duration::from_secs(8 * 60), child.wait()).await {
+        Ok(result) => result.context("failed to wait for the interactive Office adapter")?,
+        Err(_) => {
+            let _ = child.kill().await;
+            process_job.close();
+            let _ = child.wait().await;
+            cleanup_office_processes().await;
+            bail!(
+                "Office automation timed out, likely because an unexpected dialog requires manual review"
+            );
+        }
+    };
+    process_job.close();
+    cleanup_office_processes().await;
+    let (stdout, stdout_truncated) = stdout_task
+        .await
+        .context("Office adapter stdout reader failed")??;
+    let (stderr, stderr_truncated) = stderr_task
+        .await
+        .context("Office adapter stderr reader failed")??;
+    if stdout_truncated {
+        bail!("Office adapter stdout exceeded {MAX_OFFICE_STDOUT_BYTES} bytes");
+    }
+    if !status.success() {
+        let suffix = if stderr_truncated {
+            " [stderr truncated]"
+        } else {
+            ""
+        };
         bail!(
-            "Office automation failed: {}",
-            String::from_utf8_lossy(&result.stderr)
+            "Office automation failed: {}{suffix}",
+            String::from_utf8_lossy(&stderr)
                 .chars()
                 .take(4_000)
                 .collect::<String>()
         );
     }
+    serde_json::from_slice::<Value>(&stdout).context("Office adapter returned invalid JSON")?;
+    validate_generated_office_output(&canonical_root, &output).await?;
+    if let Some(preview) = &preview_output {
+        validate_generated_office_output(&canonical_root, preview).await?;
+    }
+
+    Ok(json!({
+        "application":request.application,
+        "action":request.action,
+        "source":request.source,
+        "output":request.output,
+        "preview_output":request.preview_output,
+    }))
+}
+
+#[cfg(not(windows))]
+async fn execute_windows_office_request(
+    _run_root: &Path,
+    _request: &OfficeRequest,
+) -> Result<Value> {
+    bail!("Microsoft Office automation is only available on managed Windows executors")
+}
+
+#[cfg(windows)]
+async fn prepare_new_office_output(
+    run_root: &Path,
+    canonical_root: &Path,
+    output: &Path,
+) -> Result<()> {
+    match tokio::fs::symlink_metadata(output).await {
+        Ok(_) => bail!("Office output already exists; refusing to overwrite it"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to inspect Office output"),
+    }
+    let parent = output.parent().context("Office output has no parent")?;
+    let relative_parent = parent
+        .strip_prefix(run_root)
+        .context("Office output parent escaped the workspace")?;
+    let mut current = run_root.to_path_buf();
+    for component in relative_parent.components() {
+        let Component::Normal(component) = component else {
+            bail!("Office output parent is not normalized");
+        };
+        current.push(component);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    bail!("Office output parent must contain only real directories");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&current).await?;
+            }
+            Err(error) => return Err(error).context("failed to inspect Office output parent"),
+        }
+        let canonical = tokio::fs::canonicalize(&current).await?;
+        if !canonical.starts_with(canonical_root) {
+            bail!("Office output parent escaped the workspace");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn validate_generated_office_output(canonical_root: &Path, output: &Path) -> Result<()> {
+    let metadata = tokio::fs::symlink_metadata(output)
+        .await
+        .context("Office adapter did not create its requested output")?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("Office adapter output must be a regular non-symlink file");
+    }
+    let canonical = tokio::fs::canonicalize(output).await?;
+    if !canonical.starts_with(canonical_root) {
+        bail!("Office adapter output escaped the workspace");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn execute_windows_office(
+    client: &ControlPlaneClient,
+    config: &Config,
+    lease: &RunLease,
+) -> Result<Value> {
+    if !supports_windows_office(config) {
+        bail!("this executor does not advertise office.microsoft");
+    }
+    let request: OfficeRequest = serde_json::from_value(
+        lease
+            .run
+            .spec
+            .input
+            .get("windows_office")
+            .cloned()
+            .context("windows_office input is missing")?,
+    )?;
+    if !matches!(
+        request.application.as_str(),
+        "word" | "excel" | "powerpoint"
+    ) {
+        bail!("application must be word, excel, or powerpoint");
+    }
+    let run_root = materialize_run_workspace(client, config, lease).await?;
+    let office_result = execute_windows_office_request(&run_root, &request).await?;
+    let output = safe_run_path(&run_root, &request.output)?;
+    let preview_output = request
+        .preview_output
+        .as_deref()
+        .map(|path| safe_run_path(&run_root, path))
+        .transpose()?;
     let mut artifacts = Vec::new();
     for (path, workspace_path) in std::iter::once((&output, request.output.as_str())).chain(
         preview_output
@@ -3304,10 +3555,7 @@ async fn execute_windows_office(
         );
     }
     Ok(json!({
-        "application": request.application,
-        "action": request.action,
-        "source": request.source,
-        "output": request.output,
+        "office":office_result,
         "artifacts": artifacts
     }))
 }

@@ -251,6 +251,19 @@ pub(crate) async fn execute_managed_run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if config
+        .capabilities
+        .iter()
+        .any(|capability| capability.name.0 == "office.microsoft")
+    {
+        command.env(
+            "COWORK_WINDOWS_OFFICE_COMMAND_JSON",
+            serde_json::to_string(&vec![
+                env::current_exe()?.to_string_lossy().into_owned(),
+                "executor-windows-office".to_owned(),
+            ])?,
+        );
+    }
     configure_minimal_windows_environment(&mut command);
     #[cfg(windows)]
     command.creation_flags(0x0800_0000);

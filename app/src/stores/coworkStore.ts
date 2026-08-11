@@ -189,13 +189,16 @@ const CLAUDE_TOOL_CAPABILITIES: ClaudeToolCapability[] = [
   { id: 'web_fetch', label: 'Web Fetch', description: 'load the contents of a URL' },
   { id: 'web_search', label: 'Web Search', description: 'Web search over search queries' },
   { id: 'office_workflow', label: 'Office / PowerPoint', description: 'Create PPTX and DOCX artifacts' },
+  { id: 'microsoft_office', label: 'Microsoft Office (Windows pool)', description: 'Automate installed Word, Excel, and PowerPoint on a managed Windows executor' },
   { id: 'todo', label: 'Task/Todo', description: 'Maintain todo list and work plan' },
   { id: 'delegate_task', label: 'Delegate task', description: 'Delegate tasks to other crew members' },
   { id: 'ask_user', label: 'Ask questions', description: 'Gezielte Ask questions for Klarheit' },
   { id: 'mcp', label: 'MCP Tools', description: 'Use MCP servers and tools' },
 ]
 
-const DEFAULT_ENABLED_CLAUDE_TOOLS = CLAUDE_TOOL_CAPABILITIES.map((tool) => tool.id)
+const DEFAULT_ENABLED_CLAUDE_TOOLS = CLAUDE_TOOL_CAPABILITIES
+  .filter((tool) => tool.id !== 'microsoft_office')
+  .map((tool) => tool.id)
 
 const TOOL_PRESET_MAP: Record<ClaudeToolPreset, string[]> = {
   default: DEFAULT_ENABLED_CLAUDE_TOOLS,

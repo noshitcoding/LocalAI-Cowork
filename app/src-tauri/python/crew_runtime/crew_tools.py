@@ -199,6 +199,8 @@ def _canonical_tool_id(value: str) -> str:
         "generate_office_workflow": "office_workflow",
         "pptx_template_workflow": "office_workflow",
         "docx_template_workflow": "office_workflow",
+        "microsoftoffice": "microsoft_office",
+        "office_microsoft": "microsoft_office",
     }
     return aliases.get(normalized, normalized)
 
@@ -1102,6 +1104,127 @@ class OfficeWorkflowTool(BaseTool):
         return _safe_result("office_workflow", execute)
 
 
+class MicrosoftOfficeInput(BaseModel):
+    application: Literal["word", "excel", "powerpoint"]
+    action: Literal[
+        "export_pdf",
+        "replace_text",
+        "word_append_paragraph",
+        "word_format_text",
+        "excel_set_cell",
+        "excel_format_range",
+        "excel_add_chart",
+        "powerpoint_add_slide",
+        "powerpoint_format_text",
+    ] = "export_pdf"
+    source: str = Field(description="Existing Word, Excel, or PowerPoint file inside the workspace")
+    output: str = Field(description="New output path below artifacts/")
+    preview_output: str | None = Field(
+        default=None,
+        description="Optional new PDF preview path below artifacts/ for editing actions",
+    )
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class MicrosoftOfficeTool(BaseTool):
+    name: str = "microsoft_office"
+    description: str = (
+        "Use installed Microsoft Word, Excel, or PowerPoint on a managed Windows executor to export PDF, "
+        "replace or format content, edit cells, create charts, or add slides. Macros and active content are blocked."
+    )
+    args_schema: type[BaseModel] = MicrosoftOfficeInput
+    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
+
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
+        super().__init__()
+        self._roots = roots
+        self._deny_rules = deny_rules
+        self._root = _primary_workspace_root(roots)
+
+    def _relative_workspace_path(self, path: Path, field: str) -> str:
+        try:
+            return path.relative_to(self._root).as_posix()
+        except ValueError as error:
+            raise ValueError(f"{field} must stay inside the primary run workspace") from error
+
+    def _run(
+        self,
+        application: str,
+        source: str,
+        output: str,
+        action: str = "export_pdf",
+        preview_output: str | None = None,
+        parameters: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            source_path = _resolve_workspace_path(
+                self._roots,
+                source,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Microsoft Office source does not exist: {source}")
+            output_path = _resolve_workspace_path(
+                self._roots,
+                output,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            source_relative = self._relative_workspace_path(source_path, "source")
+            output_relative = self._relative_workspace_path(output_path, "output")
+            if not output_relative.startswith("artifacts/"):
+                raise ValueError("Microsoft Office output must stay below artifacts/")
+            preview_relative = None
+            if preview_output:
+                preview_path = _resolve_workspace_path(
+                    self._roots,
+                    preview_output,
+                    allow_root=False,
+                    tool="microsoft_office",
+                    deny_rules=self._deny_rules,
+                )
+                preview_relative = self._relative_workspace_path(preview_path, "preview_output")
+                if not preview_relative.startswith("artifacts/"):
+                    raise ValueError("Microsoft Office preview output must stay below artifacts/")
+            payload = {
+                "application": application,
+                "action": action,
+                "source": source_relative,
+                "output": output_relative,
+                "preview_output": preview_relative,
+                "parameters": {} if parameters is None else parameters,
+            }
+            completed = subprocess.run(
+                _windows_office_command(),
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=510,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"Microsoft Office adapter exited with {completed.returncode}: "
+                    f"{completed.stderr.strip() or completed.stdout.strip()}"
+                )
+            response = json.loads(completed.stdout)
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"Microsoft Office action failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("microsoft_office", execute)
+
+
 class McpToolInput(BaseModel):
     server_name: str = Field(description="Exact executor-bound MCP server name")
     tool_name: str = Field(description="Tool name exposed by the selected MCP server")
@@ -1207,13 +1330,13 @@ def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
     return value
 
 
-def _mcp_tool_command() -> list[str]:
-    configured = os.environ.get("COWORK_MCP_TOOL_COMMAND_JSON")
+def _bridge_command(variable: str, fallback: list[str] | None = None) -> list[str]:
+    configured = os.environ.get(variable)
     if configured:
         try:
             command = json.loads(configured)
         except ValueError as error:
-            raise ValueError("COWORK_MCP_TOOL_COMMAND_JSON must be valid JSON") from error
+            raise ValueError(f"{variable} must be valid JSON") from error
         if (
             not isinstance(command, list)
             or not 1 <= len(command) <= 8
@@ -1226,11 +1349,21 @@ def _mcp_tool_command() -> list[str]:
             )
         ):
             raise ValueError(
-                "COWORK_MCP_TOOL_COMMAND_JSON must contain 1 to 8 bounded command arguments"
+                f"{variable} must contain 1 to 8 bounded command arguments"
             )
         return command
+    if fallback is None:
+        raise RuntimeError(f"{variable} is not configured by this executor")
+    return fallback
+
+
+def _mcp_tool_command() -> list[str]:
     tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
-    return [sys.executable, tool_path]
+    return _bridge_command("COWORK_MCP_TOOL_COMMAND_JSON", [sys.executable, tool_path])
+
+
+def _windows_office_command() -> list[str]:
+    return _bridge_command("COWORK_WINDOWS_OFFICE_COMMAND_JSON")
 
 
 class McpTool(BaseTool):
@@ -1325,6 +1458,7 @@ TOOL_FACTORIES = {
     "bash": lambda roots, deny_rules: BashTool(roots, deny_rules),
     "todo": lambda roots, deny_rules: TodoTool(),
     "office_workflow": lambda roots, deny_rules: OfficeWorkflowTool(roots, deny_rules),
+    "microsoft_office": lambda roots, deny_rules: MicrosoftOfficeTool(roots, deny_rules),
 }
 
 

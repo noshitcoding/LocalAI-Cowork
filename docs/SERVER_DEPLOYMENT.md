@@ -518,11 +518,41 @@ are recursively redacted, and model deltas, usage, checkpoints and changed
 workspace snapshots enter the normal durable Run model.
 
 The frozen Crew definition is also the routing contract for its tools. Enabled
-agents derive `files`, `shell`, `web.fetch`, and `office.ooxml` requirements
-from their selected tools before a Run is queued. The pinned runtime receives
-only that exact per-agent allowlist; unsupported tools or an executor that lacks
-one of those capabilities fail closed. Delegation is disabled in both the
-governance record and the effective CrewAI agent configuration.
+agents derive `files`, `shell`, `web.fetch`, `office.ooxml`, and
+`office.microsoft` requirements from their selected tools before a Run is
+queued. The pinned runtime receives only that exact per-agent allowlist;
+unsupported tools or an executor that lacks one of those capabilities fail
+closed. Delegation is disabled in both the governance record and the effective
+CrewAI agent configuration.
+
+### Microsoft Office from CrewAI
+
+Crew authors choose between two separate tools. `office_workflow` creates DOCX
+or PPTX deterministically with Python/OOXML and requires `office.ooxml`.
+`microsoft_office` controls the installed Word, Excel, or PowerPoint application
+and requires `office.microsoft`; it is not enabled in new generic tool profiles
+by default. Selecting it therefore routes the Run only to a capable member of
+the chosen managed Windows pool.
+
+For each call, the Python adapter invokes
+`cowork-device-agent.exe executor-windows-office` through a validated JSON
+argument vector without a shell. The one-shot bridge accepts a bounded JSON
+request on stdin and reuses the interactive COM adapter. Source and output paths
+must be normalized paths inside the Run workspace, outputs must be new files
+below `artifacts/`, output parents may not contain symlinks, active/macro-enabled
+formats remain blocked, editing actions save only non-macro OOXML, and Excel
+formulas containing external links, data sources, or active-call functions are
+rejected. The bridge runs in a kill-on-close Job Object with a minimal
+environment, bounded stdout/stderr, and an eight-minute deadline, then cleans
+Word, Excel, PowerPoint, and the dedicated account's clipboard. It returns only
+workspace-relative paths; the normal Run snapshot and artifact pipeline
+publishes the result for review.
+
+Supported operations are PDF export and cross-application text replacement,
+Word paragraph append/text formatting, Excel cell/range/chart changes, and
+PowerPoint slide creation/text formatting. Editing operations may request an
+additional PDF preview. Because Office is interactive, unexpected modal dialogs
+still require the managed desktop takeover flow or cause a bounded failure.
 
 ### Executor-local MCP on Windows
 

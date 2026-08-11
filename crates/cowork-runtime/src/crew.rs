@@ -92,6 +92,7 @@ fn crew_tool_capability(tool: &str) -> Result<Option<&'static str>> {
         "bash" => Ok(Some("shell")),
         "web_fetch" | "web_search" => Ok(Some("web.fetch")),
         "office_workflow" => Ok(Some("office.ooxml")),
+        "microsoft_office" => Ok(Some("office.microsoft")),
         _ => bail!("Crew tool {tool:?} is not supported by the pinned runtime"),
     }
 }
@@ -108,6 +109,7 @@ fn canonical_crew_tool_id(value: &str) -> String {
         "generate_office_workflow" | "pptx_template_workflow" | "docx_template_workflow" => {
             "office_workflow".to_owned()
         }
+        "microsoftoffice" | "office_microsoft" => "microsoft_office".to_owned(),
         _ => normalized,
     }
 }
@@ -388,7 +390,7 @@ mod tests {
     fn crew_tool_capabilities_are_derived_from_enabled_agents() {
         let capabilities = required_crew_tool_capabilities(&json!({
             "agents":[
-                {"id":"writer","tools":["read_file","office_workflow","todo"]},
+                {"id":"writer","tools":["read_file","office_workflow","microsoft_office","todo"]},
                 {"id":"researcher","tools":["web_search","bash","read"]},
                 {"id":"disabled","enabled":false,"tools":["unsupported_tool"]}
             ]
@@ -399,6 +401,7 @@ mod tests {
             vec![
                 Capability::from("files"),
                 Capability::from("office.ooxml"),
+                Capability::from("office.microsoft"),
                 Capability::from("web.fetch"),
                 Capability::from("shell"),
             ]

@@ -194,6 +194,69 @@ class CrewRuntimeToolTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     crew_tools._mcp_tool_command()
 
+    def test_managed_windows_office_tool_uses_shell_free_executor_bridge(self) -> None:
+        self.agent["tools"].append("microsoft_office")
+        self.request["governance"]["agentAccess"][0]["allowedTools"].append(
+            "microsoft_office"
+        )
+        (self.root / "source.docx").write_bytes(b"test document placeholder")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({
+                "success": True,
+                "result": {
+                    "application": "word",
+                    "action": "replace_text",
+                    "output": "artifacts/result.docx",
+                },
+                "error": None,
+            }),
+            stderr="",
+        )
+        bridge_command = [
+            "C:/Open Cowork/cowork-device-agent.exe",
+            "executor-windows-office",
+        ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"COWORK_WINDOWS_OFFICE_COMMAND_JSON": json.dumps(bridge_command)},
+            ),
+            mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run,
+        ):
+            result = self._tools()["microsoft_office"]._run(
+                application="word",
+                action="replace_text",
+                source="source.docx",
+                output="artifacts/result.docx",
+                preview_output="artifacts/result.pdf",
+                parameters={"old_text": "old", "new_text": "new"},
+            )
+
+        self.assertIn('"application": "word"', result)
+        self.assertEqual(run.call_args.args[0], bridge_command)
+        self.assertEqual(run.call_args.kwargs["cwd"], self.root.resolve())
+        self.assertEqual(run.call_args.kwargs["timeout"], 510)
+        sent = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(sent["source"], "source.docx")
+        self.assertEqual(sent["output"], "artifacts/result.docx")
+        self.assertEqual(sent["preview_output"], "artifacts/result.pdf")
+        self.assertEqual(sent["parameters"], {"old_text": "old", "new_text": "new"})
+
+    def test_managed_windows_office_command_is_required_and_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                crew_tools._windows_office_command()
+        for invalid in ["{}", "[]", '["agent.exe", ""]', '["bad\\u0000arg"]']:
+            with mock.patch.dict(
+                os.environ,
+                {"COWORK_WINDOWS_OFFICE_COMMAND_JSON": invalid},
+            ):
+                with self.assertRaises(ValueError):
+                    crew_tools._windows_office_command()
+
     def test_executor_bound_streamable_http_mcp_keeps_headers_and_redacts_values(self) -> None:
         bindings = crew_tools._executor_mcp_bindings({
             "executorMcpBindings": [{
