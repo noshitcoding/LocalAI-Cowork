@@ -322,6 +322,24 @@ jobs:
             open-cowork-sandbox-gui:ci \
             /opt/cowork/office-venv/bin/python /opt/cowork/test-office-visual.py
 
+      - name: Exercise headless and visible Chromium artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+            --tmpfs /workspace:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 256 \
+            --memory 2g \
+            --cpus 2 \
+            --mount type=bind,source="${PWD}/deploy/sandboxes/gui/test-browser-visual.mjs",target=/opt/cowork/test-browser-visual.mjs,readonly \
+            open-cowork-sandbox-gui:ci \
+            node /opt/cowork/test-browser-visual.mjs
+
   web-cross-browser:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
