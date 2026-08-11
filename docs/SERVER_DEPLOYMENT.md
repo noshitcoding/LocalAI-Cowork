@@ -551,8 +551,12 @@ publishes the result for review.
 Supported operations are PDF export and cross-application text replacement,
 Word paragraph append/text formatting, Excel cell/range/chart changes, and
 PowerPoint slide creation/text formatting. Editing operations may request an
-additional PDF preview. Because Office is interactive, unexpected modal dialogs
-still require the managed desktop takeover flow or cause a bounded failure.
+additional PDF preview. The Crew artifact contract verifies only new DOCX,
+PPTX, XLSX, or PDF results below `artifacts/`; source-document mentions are not
+mistaken for outputs, and a missing real-Office result is never silently replaced
+with a deterministic OOXML fallback. Because Office is interactive, unexpected
+modal dialogs still require the managed desktop takeover flow or cause a bounded
+failure.
 
 ### Executor-local MCP on Windows
 

@@ -1705,7 +1705,7 @@ def extract_task_output(task_obj) -> str | None:
 
 
 OFFICE_ARTIFACT_PATTERN = re.compile(
-    r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:pptx|docx))"
+    r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:pptx|docx|xlsx|pdf))"
 )
 EDIT_ARTIFACT_PATTERN = re.compile(
     r"(?i)(?P<path>(?:[A-Za-z]:[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:md|py|json|csv|txt|ts|tsx|js|jsx|rs))"
@@ -1714,7 +1714,7 @@ EDIT_ARTIFACT_PATTERN = re.compile(
 
 def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if not tools.intersection({"office_workflow", "microsoft_office"}):
         return []
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1731,8 +1731,10 @@ def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payl
             candidate = root / candidate
         resolved = candidate.resolve(strict=False)
         try:
-            resolved.relative_to(root)
+            relative = resolved.relative_to(root)
         except ValueError:
+            continue
+        if not relative.parts or relative.parts[0].lower() != "artifacts":
             continue
         if resolved not in seen:
             paths.append(resolved)
@@ -1809,14 +1811,23 @@ def build_artifact_repair_description(
             relative_paths.append(path.name)
     context = "\n\n".join(context_outputs)
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    repair_contract = (
-        "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
-        "sections_json must be a JSON array of objects with title plus body or bullets. "
-        "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
-        if "office_workflow" in tools
-        else "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
-        "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
-    )
+    if "microsoft_office" in tools:
+        repair_contract = (
+            "Immediately call microsoft_office with the application, action, existing workspace source, exact artifacts/ "
+            "output path, optional PDF preview path, and required action parameters from the original task. "
+            "Do not return a proposed call as text. The task succeeds only after the bridge reports success."
+        )
+    elif "office_workflow" in tools:
+        repair_contract = (
+            "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
+            "sections_json must be a JSON array of objects with title plus body or bullets. "
+            "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
+        )
+    else:
+        repair_contract = (
+            "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
+            "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
+        )
     return (
         f"{build_task_description(request, task_payload, agent_payload)}\n\n"
         "ARTIFACT REPAIR REQUIRED:\n"
@@ -1840,7 +1851,7 @@ def deterministic_office_fallback(
     if not missing:
         return None
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if "office_workflow" not in tools or "microsoft_office" in tools:
         return None
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1910,7 +1921,7 @@ def resolve_process(process_name: str):
 
 def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payload: dict) -> list[Path]:
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if not tools.intersection({"office_workflow", "microsoft_office"}):
         return []
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)
@@ -1927,8 +1938,10 @@ def expected_office_artifact_paths(request: dict, task_payload: dict, agent_payl
             candidate = root / candidate
         resolved = candidate.resolve(strict=False)
         try:
-            resolved.relative_to(root)
+            relative = resolved.relative_to(root)
         except ValueError:
+            continue
+        if not relative.parts or relative.parts[0].lower() != "artifacts":
             continue
         if resolved not in seen:
             paths.append(resolved)
@@ -2005,14 +2018,23 @@ def build_artifact_repair_description(
             relative_paths.append(path.name)
     context = "\n\n".join(context_outputs)
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    repair_contract = (
-        "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
-        "sections_json must be a JSON array of objects with title plus body or bullets. "
-        "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
-        if "office_workflow" in tools
-        else "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
-        "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
-    )
+    if "microsoft_office" in tools:
+        repair_contract = (
+            "Immediately call microsoft_office with the application, action, existing workspace source, exact artifacts/ "
+            "output path, optional PDF preview path, and required action parameters from the original task. "
+            "Do not return a proposed call as text. The task succeeds only after the bridge reports success."
+        )
+    elif "office_workflow" in tools:
+        repair_contract = (
+            "Immediately call office_workflow. Pass exactly output_path, title, and sections_json. "
+            "sections_json must be a JSON array of objects with title plus body or bullets. "
+            "Do not explain the schema, emit XML, or return a proposed call. The task succeeds only after the tool returns Created."
+        )
+    else:
+        repair_contract = (
+            "Immediately call edit_file for every missing path, then use read_file or bash to verify it. "
+            "Do not return code, XML, JSON tool syntax, or a proposed call as plain text. The task succeeds only after the file exists."
+        )
     return (
         f"{build_task_description(request, task_payload, agent_payload)}\n\n"
         "ARTIFACT REPAIR REQUIRED:\n"
@@ -2036,7 +2058,7 @@ def deterministic_office_fallback(
     if not missing:
         return None
     tools = {str(value or "").strip().lower().replace("-", "_") for value in agent_payload.get("tools") or []}
-    if "office_workflow" not in tools:
+    if "office_workflow" not in tools or "microsoft_office" in tools:
         return None
 
     root = Path(str(request.get("cwd") or Path.cwd())).expanduser().resolve(strict=False)

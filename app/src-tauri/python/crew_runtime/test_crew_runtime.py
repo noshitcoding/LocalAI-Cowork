@@ -859,6 +859,38 @@ class CrewRuntimeTaskTests(unittest.TestCase):
             expected[0].write_bytes(b"valid-artifact")
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), [])
 
+    def test_required_microsoft_office_outputs_include_xlsx_and_pdf_but_not_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source.xlsx").write_bytes(b"source")
+            request = {"cwd": str(root)}
+            agent = {"tools": ["microsoft_office"]}
+            task = {
+                "description": (
+                    "Open source.xlsx with Microsoft Office, update cell C2, save "
+                    "artifacts/reviewed.xlsx and render artifacts/reviewed.pdf."
+                ),
+                "expectedOutput": "Both artifacts/reviewed.xlsx and artifacts/reviewed.pdf.",
+            }
+
+            expected = crew_runtime.expected_office_artifact_paths(request, task, agent)
+
+            self.assertEqual(expected, [
+                root.resolve(strict=False) / "artifacts" / "reviewed.xlsx",
+                root.resolve(strict=False) / "artifacts" / "reviewed.pdf",
+            ])
+            repair = crew_runtime.build_artifact_repair_description(
+                request,
+                task,
+                agent,
+                expected,
+                [],
+            )
+            self.assertIn("Immediately call microsoft_office", repair)
+            self.assertIsNone(
+                crew_runtime.deterministic_office_fallback(request, task, agent, expected)
+            )
+
     def test_required_edit_artifact_must_exist_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
