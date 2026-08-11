@@ -1,0 +1,66 @@
+.remote-management-panel {
+  min-width: min(700px, calc(100vw - 32px));
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.remote-server-header .remote-management-panel {
+  position: absolute;
+  z-index: 46;
+  top: 50px;
+  right: 18px;
+  max-height: calc(100dvh - 70px);
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+}
+
+.remote-management-panel > header,
+.remote-management-panel > header > div,
+.remote-management-actions,
+.remote-management-list article > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.remote-management-panel > header { justify-content: space-between; margin-bottom: 10px; }
+.remote-management-panel > header > button { border: 0; padding: 5px; background: transparent; color: inherit; }
+.remote-management-hint { margin: 0 0 10px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.remote-management-list { display: grid; max-height: 280px; gap: 7px; overflow: auto; }
+.remote-management-list > p { margin: 8px 0; color: var(--text-secondary); }
+.remote-management-list article { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border-color); border-radius: 8px; padding: 9px; }
+.remote-management-list article > span { display: grid; min-width: 0; gap: 3px; }
+.remote-management-list article strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-management-list article small { color: var(--text-secondary); font-size: 10px; }
+.remote-management-list article button,
+.remote-management-add,
+.remote-management-actions button { display: inline-flex; min-height: 34px; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--border-color); border-radius: 7px; padding: 6px 9px; background: var(--bg-tertiary); color: inherit; }
+.remote-management-panel form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+.remote-management-panel form > strong,
+.remote-management-panel form > .remote-management-actions,
+.remote-management-panel form > label:has(textarea),
+.remote-management-panel form > .remote-management-check { grid-column: 1 / -1; }
+.remote-management-panel form label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 10px; text-align: left; }
+.remote-management-panel form input,
+.remote-management-panel form select,
+.remote-management-panel form textarea { box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border-color); border-radius: 7px; padding: 7px 9px; background: var(--bg-primary); color: var(--text-primary); }
+.remote-management-panel form textarea { resize: vertical; }
+.remote-management-panel form .remote-management-check { display: flex; align-items: center; gap: 7px; }
+.remote-management-panel form .remote-management-check input { width: auto; min-height: 0; }
+.remote-management-actions button:first-child,
+.remote-management-add { border-color: var(--accent-primary); background: var(--accent-primary); color: var(--text-on-accent); }
+.remote-management-add { margin-top: 10px; }
+.remote-management-panel .remote-inline-error { margin-top: 10px; }
+
+@media (max-width: 760px) {
+  .remote-server-header .remote-management-panel {
+    position: fixed;
+    inset: max(12px, env(safe-area-inset-top)) 12px auto;
+    max-height: calc(100dvh - 24px);
+  }
+  .remote-management-panel form { grid-template-columns: 1fr; }
+  .remote-management-panel form > * { grid-column: 1; }
+}

@@ -763,6 +763,39 @@ const serverSchedule = await request('/schedules', {
 const latestPrivateProject = (await request('/projects', { token }))
   .find((item) => item.id === syncedProjectId)
 if (!latestPrivateProject) throw new Error('materialized private project disappeared before reverse projection')
+const draftTask = await request('/tasks', {
+  method: 'POST',
+  token,
+  body: {
+    project_id: syncedProjectId,
+    name: 'Unreleased task reference must be rejected',
+    instructions: 'This draft must never be accepted as a frozen run task.',
+    required_capabilities: [],
+    default_target: { kind: 'server_linux', pool_id: null },
+    config: {},
+    release: false,
+  },
+})
+await expectRequestStatus(`/threads/${serverThread.id}/messages`, 422, {
+  method: 'POST',
+  token,
+  body: {
+    content: { text: 'Attempt to execute an unreleased task' },
+    run: {
+      thread_id: serverThread.id,
+      project_id: syncedProjectId,
+      project_revision: latestPrivateProject.revision,
+      project_privacy: 'private_local',
+      task: { id: draftTask.id, revision: draftTask.revision },
+      executor_target: { kind: 'server_linux', pool_id: null },
+      required_capabilities: [],
+      input: sandboxInput('unreleased-task-must-not-run'),
+      model_profile_id: null,
+      snapshot_id: null,
+      idempotency_key: `unreleased-task-${randomUUID()}`,
+    },
+  },
+})
 const serverMessageRun = await request(`/threads/${serverThread.id}/messages`, {
   method: 'POST',
   token,
@@ -773,7 +806,7 @@ const serverMessageRun = await request(`/threads/${serverThread.id}/messages`, {
       project_id: syncedProjectId,
       project_revision: latestPrivateProject.revision,
       project_privacy: 'private_local',
-      task: null,
+      task: { id: serverTask.id, revision: serverTask.revision },
       executor_target: { kind: 'server_linux', pool_id: null },
       required_capabilities: [],
       input: sandboxInput('server-originated-private-message'),
@@ -839,6 +872,7 @@ const roundTripThread = roundTripThreads.find((item) => (
 if (!roundTripThread) {
   throw new Error(`server-created thread did not round-trip through device sync: ${JSON.stringify(roundTripThreads)}`)
 }
+const taskBeforeDeviceRoundTrip = await request(`/tasks/${serverTask.id}`, { token })
 await request('/sync/changes', {
   method: 'POST',
   token,
@@ -849,13 +883,13 @@ await request('/sync/changes', {
   })] },
 })
 const roundTripTask = await request(`/tasks/${serverTask.id}`, { token })
-const projectedTaskCanonicalRevision = projectedTask.payload?.canonical_revision
-if (!Number.isInteger(projectedTaskCanonicalRevision)
-    || roundTripTask.revision !== projectedTaskCanonicalRevision + 1
+if (roundTripTask.revision !== taskBeforeDeviceRoundTrip.revision + 1
     || roundTripTask.name !== 'Edited offline after server creation'
     || !roundTripTask.released) {
   throw new Error(`server-created task did not round-trip through device sync: ${JSON.stringify(roundTripTask)}`)
 }
+const profileBeforeDeviceRoundTrip = (await request('/provider-profiles', { token }))
+  .find((item) => item.id === serverProfile.id)
 await request('/sync/changes', {
   method: 'POST',
   token,
@@ -869,14 +903,15 @@ await request('/sync/changes', {
 })
 const roundTripProfile = (await request('/provider-profiles', { token }))
   .find((item) => item.id === serverProfile.id)
-const projectedProfileCanonicalRevision = projectedProfile.payload?.canonical_revision
-if (!roundTripProfile || !Number.isInteger(projectedProfileCanonicalRevision)
-    || roundTripProfile.revision !== projectedProfileCanonicalRevision + 1
+if (!profileBeforeDeviceRoundTrip || !roundTripProfile
+    || roundTripProfile.revision !== profileBeforeDeviceRoundTrip.revision + 1
     || roundTripProfile.model_defaults?.model !== 'server-model-v2'
     || roundTripProfile.model_defaults?.base_url !== 'https://models.example.test/v1'
     || roundTripProfile.model_defaults?.endpoint_binding !== 'server') {
   throw new Error(`server-created provider profile did not round-trip safely: ${JSON.stringify(roundTripProfile)}`)
 }
+const scheduleBeforeDeviceRoundTrip = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
+  .find((item) => item.id === serverSchedule.id)
 await request('/sync/changes', {
   method: 'POST',
   token,
@@ -889,9 +924,8 @@ await request('/sync/changes', {
 })
 const roundTripSchedule = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
   .find((item) => item.id === serverSchedule.id)
-const projectedScheduleCanonicalRevision = projectedSchedule.payload?.canonical_revision
-if (!roundTripSchedule || !Number.isInteger(projectedScheduleCanonicalRevision)
-    || roundTripSchedule.revision !== projectedScheduleCanonicalRevision + 1
+if (!scheduleBeforeDeviceRoundTrip || !roundTripSchedule
+    || roundTripSchedule.revision !== scheduleBeforeDeviceRoundTrip.revision + 1
     || roundTripSchedule.timezone !== 'UTC'
     || roundTripSchedule.input?.prompt !== 'Edited offline schedule metadata') {
   throw new Error(`server-created schedule did not round-trip through device sync: ${JSON.stringify(roundTripSchedule)}`)
@@ -922,6 +956,43 @@ if (updatedServerSchedule.revision !== roundTripSchedule.revision + 1
     || updatedServerSchedule.input?.prompt !== 'Updated through canonical schedule API') {
   throw new Error(`canonical schedule update lost its optimistic revision: ${JSON.stringify(updatedServerSchedule)}`)
 }
+const taskCascadeSchedule = await request('/schedules', {
+  method: 'POST', token, body: {
+    task_id: serverTask.id,
+    project_id: syncedProjectId,
+    thread_id: serverThread.id,
+    cron: '0 14 * * *',
+    timezone: 'UTC',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: {},
+    model_profile_id: null,
+    enabled: false,
+  },
+})
+const providerCascadeTask = await request('/tasks', {
+  method: 'POST', token, body: {
+    project_id: syncedProjectId,
+    name: 'Task retained while its provider is deleted',
+    instructions: 'Keep the task and block only its provider-bound schedule.',
+    required_capabilities: [],
+    default_target: { kind: 'server_linux', pool_id: null },
+    config: {},
+    release: true,
+  },
+})
+const providerCascadeSchedule = await request('/schedules', {
+  method: 'POST', token, body: {
+    task_id: providerCascadeTask.id,
+    project_id: syncedProjectId,
+    thread_id: serverThread.id,
+    cron: '0 15 * * *',
+    timezone: 'UTC',
+    executor_target: { kind: 'server_linux', pool_id: null },
+    input: {},
+    model_profile_id: serverProfile.id,
+    enabled: false,
+  },
+})
 await request(`/schedules/${serverSchedule.id}`, { method: 'DELETE', token })
 const scheduleSnapshotAfterCanonicalDelete = await request('/sync/entities/schedule?limit=1000', { token })
 const deletedProjectedSchedule = scheduleSnapshotAfterCanonicalDelete.items
@@ -941,6 +1012,18 @@ const deletedProjectedTask = taskSnapshotAfterCanonicalDelete.items
 if (!deletedProjectedTask?.tombstone) {
   throw new Error(`server task deletion did not reach the device snapshot: ${JSON.stringify(taskSnapshotAfterCanonicalDelete)}`)
 }
+const taskCascadeAfterDelete = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
+  .find((item) => item.id === taskCascadeSchedule.id)
+if (!taskCascadeAfterDelete || taskCascadeAfterDelete.enabled
+    || taskCascadeAfterDelete.blocked_reason !== 'task deleted') {
+  throw new Error(`task deletion did not block its dependent schedule: ${JSON.stringify(taskCascadeAfterDelete)}`)
+}
+const taskCascadeProjection = (await request('/sync/entities/schedule?limit=1000', { token })).items
+  .find((item) => item.entity_id === taskCascadeSchedule.id)
+if (!taskCascadeProjection || taskCascadeProjection.tombstone
+    || taskCascadeProjection.payload?.blocked_reason !== 'task deleted') {
+  throw new Error(`task-dependent schedule update did not reach device sync: ${JSON.stringify(taskCascadeProjection)}`)
+}
 await expectRequestStatus(
   `/provider-profiles/${serverProfile.id}?expected_revision=${serverProfile.revision}`,
   409,
@@ -958,6 +1041,18 @@ const deletedProjectedProfile = profileSnapshotAfterCanonicalDelete.items
   .find((item) => item.entity_id === serverProfile.id)
 if (!deletedProjectedProfile?.tombstone) {
   throw new Error(`server provider deletion did not reach the device snapshot: ${JSON.stringify(profileSnapshotAfterCanonicalDelete)}`)
+}
+const providerCascadeAfterDelete = (await request(`/schedules?project_id=${syncedProjectId}`, { token }))
+  .find((item) => item.id === providerCascadeSchedule.id)
+if (!providerCascadeAfterDelete || providerCascadeAfterDelete.enabled
+    || providerCascadeAfterDelete.blocked_reason !== 'model profile was deleted') {
+  throw new Error(`provider deletion did not block its dependent schedule: ${JSON.stringify(providerCascadeAfterDelete)}`)
+}
+const providerCascadeProjection = (await request('/sync/entities/schedule?limit=1000', { token })).items
+  .find((item) => item.entity_id === providerCascadeSchedule.id)
+if (!providerCascadeProjection || providerCascadeProjection.tombstone
+    || providerCascadeProjection.payload?.blocked_reason !== 'model profile was deleted') {
+  throw new Error(`provider-dependent schedule update did not reach device sync: ${JSON.stringify(providerCascadeProjection)}`)
 }
 const beforeCanonicalCrud = await request('/sync/changes?after=0&limit=1000', { token })
 const updatedServerThread = await request(`/threads/${serverThread.id}`, {

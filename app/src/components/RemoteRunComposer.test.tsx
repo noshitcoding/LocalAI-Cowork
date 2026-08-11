@@ -34,6 +34,7 @@ describe('RemoteRunComposer thread continuation', () => {
         deleted_at: null,
       }]),
       capabilities: vi.fn(async () => ({ schema_version: 2, server_linux: [], executors: [] })),
+      listProviderProfiles: vi.fn(async () => []),
       createThread,
       createThreadMessage,
     } as unknown as RemoteRuntimeClient

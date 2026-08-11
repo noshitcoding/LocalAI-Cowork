@@ -30,6 +30,7 @@ import {
   runInputRequestSchema,
   scheduleRecordSchema,
   supportGrantRecordSchema,
+  teamRecordSchema,
   taskDefinitionSchema,
   totpRecoveryCodesSchema,
   totpSetupSchema,
@@ -65,6 +66,7 @@ import {
   type SyncedEntityPage,
   type SetQuotaLimitsRequest,
   type SupportGrantRecord,
+  type TeamRecord,
   type SyncChange,
   type TaskDefinition,
   type TotpRecoveryCodes,
@@ -165,6 +167,10 @@ export class RemoteRuntimeClient implements RuntimeClient {
 
   async listProjects(): Promise<ProjectRecord[]> {
     return projectRecordSchema.array().parse(await this.#request('/api/v1/projects'))
+  }
+
+  async listTeams(): Promise<TeamRecord[]> {
+    return teamRecordSchema.array().parse(await this.#request('/api/v1/teams'))
   }
 
   async listProviderProfiles(): Promise<ProviderProfile[]> {
@@ -370,6 +376,50 @@ export class RemoteRuntimeClient implements RuntimeClient {
     return taskDefinitionSchema.array().parse(await this.#request(
       `/api/v1/tasks?project_id=${encodeURIComponent(projectId)}`,
     ))
+  }
+
+  async createTask(request: {
+    project_id: string
+    name: string
+    instructions: string
+    required_capabilities: string[]
+    default_target: ExecutorTarget | null
+    config: unknown
+    release: boolean
+  }): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request('/api/v1/tasks', {
+      method: 'POST', body: JSON.stringify(request),
+    }))
+  }
+
+  async createTaskVersion(taskId: string, request: {
+    base_revision: number
+    name: string
+    instructions: string
+    required_capabilities: string[]
+    default_target: ExecutorTarget | null
+    config: unknown
+    release: boolean
+  }): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/versions`,
+      { method: 'POST', body: JSON.stringify(request) },
+    ))
+  }
+
+  async releaseTaskVersion(taskId: string, revision: number): Promise<TaskDefinition> {
+    return taskDefinitionSchema.parse(await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/release`,
+      { method: 'POST', body: JSON.stringify({ revision }) },
+    ))
+  }
+
+  async deleteTask(taskId: string, expectedRevision: number): Promise<void> {
+    await this.#request(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}?expected_revision=${Math.max(1, Math.trunc(expectedRevision))}`,
+      { method: 'DELETE' },
+      false,
+    )
   }
 
   async listSchedules(projectId: string): Promise<ScheduleRecord[]> {

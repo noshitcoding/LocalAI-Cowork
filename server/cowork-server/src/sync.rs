@@ -1345,6 +1345,12 @@ async fn materialize_task(
     }
     if operation == SyncOperation::Delete {
         if tracked {
+            let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM schedules WHERE task_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(task_id)
+            .fetch_all(&mut **tx)
+            .await?;
             sqlx::query(
                 "UPDATE task_definitions SET released = FALSE, deleted_at = COALESCE(deleted_at, now()) WHERE id = $1",
             )
@@ -1357,6 +1363,9 @@ async fn materialize_task(
             .bind(task_id)
             .execute(&mut **tx)
             .await?;
+            for schedule_id in schedule_ids {
+                publish_canonical_schedule_tx(tx, schedule_id).await?;
+            }
         }
         return Ok(());
     }
@@ -1506,6 +1515,12 @@ async fn materialize_provider_profile(
     }
     if operation == SyncOperation::Delete {
         if tracked {
+            let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM schedules WHERE model_profile_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+            )
+            .bind(profile_id)
+            .fetch_all(&mut **tx)
+            .await?;
             sqlx::query(
                 r#"
                 UPDATE provider_profiles
@@ -1534,6 +1549,9 @@ async fn materialize_provider_profile(
             .bind(profile_id)
             .execute(&mut **tx)
             .await?;
+            for schedule_id in schedule_ids {
+                publish_canonical_schedule_tx(tx, schedule_id).await?;
+            }
         }
         return Ok(());
     }

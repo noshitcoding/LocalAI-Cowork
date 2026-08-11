@@ -24,6 +24,8 @@ import RunInterventionPanel from '../components/RunInterventionPanel'
 import RemoteRunComposer from '../components/RemoteRunComposer'
 import RemoteThreadMessages from '../components/RemoteThreadMessages'
 import RemoteScheduleManager from '../components/RemoteScheduleManager'
+import RemoteTaskManager from '../components/RemoteTaskManager'
+import RemoteProviderProfileManager from '../components/RemoteProviderProfileManager'
 import RemoteSecuritySettings from '../components/RemoteSecuritySettings'
 import RemoteGovernancePanel from '../components/RemoteGovernancePanel'
 import RemoteDeviceSettings from '../components/RemoteDeviceSettings'
@@ -456,6 +458,8 @@ export default function MobileApp() {
         {online ? <RemoteSecuritySettings compact client={client} /> : null}
         {online ? <RemoteGovernancePanel compact client={client} currentUserId={account.userId ?? ''} /> : null}
         {online ? <RemoteDeviceSettings compact client={client} /> : null}
+        {online ? <RemoteProviderProfileManager compact client={client} /> : null}
+        {online ? <RemoteTaskManager compact client={client} onRunCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {online ? <RemoteScheduleManager compact client={client} /> : null}
         {online ? <RemoteRunComposer compact client={client} onCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {offline.runs.length === 0 ? <div className="mobile-empty"><Server size={28} /><p>No cached runs yet.</p></div> : offline.runs.map((run) => <button type="button" key={run.spec.id} onClick={() => setSelectedRunId(run.spec.id)}><span><strong>{runLabel(run)}</strong><small>{new Date(run.spec.created_at).toLocaleString()}</small></span><em className={`mobile-state state-${run.state}`}>{run.state.replaceAll('_', ' ')}</em></button>)}

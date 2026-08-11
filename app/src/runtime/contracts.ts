@@ -236,6 +236,19 @@ export const runInputRequestSchema = z.object({
 })
 export type RunInputRequest = z.infer<typeof runInputRequestSchema>
 
+export const teamRecordSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  name: z.string(),
+  owner_user_id: z.string().uuid(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type TeamRecord = z.infer<typeof teamRecordSchema>
+
 export const projectRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),

@@ -14,6 +14,8 @@ import RunInterventionPanel from './RunInterventionPanel'
 import RemoteRunComposer from './RemoteRunComposer'
 import RemoteThreadMessages from './RemoteThreadMessages'
 import RemoteScheduleManager from './RemoteScheduleManager'
+import RemoteTaskManager from './RemoteTaskManager'
+import RemoteProviderProfileManager from './RemoteProviderProfileManager'
 import RemoteSecuritySettings from './RemoteSecuritySettings'
 import RemoteGovernancePanel from './RemoteGovernancePanel'
 import RemoteDeviceSettings from './RemoteDeviceSettings'
@@ -217,7 +219,9 @@ export default function RemoteServerView() {
         <div><Server size={20} /><span><strong>{account.serverUrl}</strong><small>{account.email}</small></span></div>
         <div>
           <RemoteRunComposer client={client} onCreated={(run) => { setRuns((current) => [run, ...current.filter((item) => item.spec.id !== run.spec.id)]); setSelectedRunId(run.spec.id) }} />
+          <RemoteTaskManager client={client} onRunCreated={(run) => { setRuns((current) => [run, ...current.filter((item) => item.spec.id !== run.spec.id)]); setSelectedRunId(run.spec.id) }} />
           <RemoteScheduleManager client={client} />
+          <RemoteProviderProfileManager client={client} />
           <RemoteSecuritySettings client={client} />
           <RemoteGovernancePanel client={client} currentUserId={account.userId ?? ''} />
           <RemoteDeviceSettings client={client} />

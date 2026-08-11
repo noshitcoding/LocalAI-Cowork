@@ -92,6 +92,7 @@ body:has(.mobile-login-screen) {
 .mobile-run-list > .remote-schedule-manager { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
 .mobile-run-list > .remote-security-settings { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
 .mobile-run-list > .remote-governance-panel { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-management-panel { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
 .mobile-run-list > .remote-governance-panel form { grid-template-columns: 1fr; }
 .mobile-run-list > .remote-governance-panel form > * { grid-column: 1; }
 .mobile-run-list > .remote-run-composer > header button { min-height: 38px; }
@@ -105,11 +106,15 @@ body:has(.mobile-login-screen) {
 .mobile-run-list > .remote-governance-panel input,
 .mobile-run-list > .remote-governance-panel select,
 .mobile-run-list > .remote-governance-panel textarea { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
+.mobile-run-list > .remote-management-panel input,
+.mobile-run-list > .remote-management-panel select,
+.mobile-run-list > .remote-management-panel textarea { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
 .mobile-run-list > .remote-run-composer form button { display: flex; align-items: center; justify-content: center; gap: 7px; background: #1ea88f; border-color: #34c5aa; color: #04120f; font-weight: 750; }
 .mobile-run-list > .remote-schedule-manager > header button,
 .mobile-run-list > .remote-schedule-manager button { min-height: 42px; }
 .mobile-run-list > .remote-security-settings button { min-height: 42px; }
 .mobile-run-list > .remote-governance-panel button { min-height: 42px; }
+.mobile-run-list > .remote-management-panel button { min-height: 42px; }
 .mobile-run-list > .remote-device-settings .remote-device-list li { grid-template-columns: 1fr; align-items: stretch; }
 .mobile-run-list > button { display: flex; min-height: 78px; align-items: center; justify-content: space-between; gap: 12px; margin: 0 12px 9px; text-align: left; }
 .mobile-run-list > button > span { display: grid; min-width: 0; gap: 5px; }

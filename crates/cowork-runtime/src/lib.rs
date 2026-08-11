@@ -277,12 +277,26 @@ fn initial_messages(run: &RunSpec) -> Vec<ModelMessage> {
             format!("{base_system}\n\nCurrent project instructions:\n{instructions}")
         })
         .unwrap_or_else(|| base_system.to_owned());
-    let prompt = run
+    let run_prompt = run
         .input
         .get("prompt")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| run.input.to_string());
+    let prompt = run
+        .input
+        .get("task_instructions")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|instructions| {
+            if run_prompt.trim() == instructions {
+                run_prompt.clone()
+            } else {
+                format!("{instructions}\n\nRun input:\n{run_prompt}")
+            }
+        })
+        .unwrap_or(run_prompt);
     let mut messages = vec![ModelMessage::system(&system)];
     if let Some(history) = run.input.get("messages").and_then(Value::as_array) {
         for item in history {
@@ -534,6 +548,7 @@ mod tests {
                     {"role": "user", "content": "earlier question"},
                     {"role": "assistant", "content": "earlier answer"}
                 ],
+                "task_instructions": "frozen task instructions",
                 "prompt": "current question"
             }),
             model_profile_id: None,
@@ -559,7 +574,9 @@ mod tests {
         );
         assert_eq!(
             messages[3].content,
-            Some(Value::String("current question".to_owned()))
+            Some(Value::String(
+                "frozen task instructions\n\nRun input:\ncurrent question".to_owned()
+            ))
         );
     }
 

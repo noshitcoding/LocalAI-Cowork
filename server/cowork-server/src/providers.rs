@@ -207,6 +207,12 @@ pub async fn delete(
     let scope = profile_scope(&state.pool, profile_id).await?;
     ensure_profile_admin(&state.pool, principal.user_id, scope).await?;
     let mut tx = state.pool.begin().await?;
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE model_profile_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(profile_id)
+    .fetch_all(&mut *tx)
+    .await?;
     let row = sqlx::query(
         r#"
         UPDATE provider_profiles
@@ -246,6 +252,9 @@ pub async fn delete(
         row.try_get("team_id")?,
     )
     .await?;
+    for schedule_id in schedule_ids {
+        sync::publish_canonical_schedule_tx(&mut tx, schedule_id).await?;
+    }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

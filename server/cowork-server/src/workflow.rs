@@ -1470,6 +1470,10 @@ fn scheduled_input(
         .entry("prompt".to_owned())
         .or_insert_with(|| Value::String(instructions.to_owned()));
     object.insert(
+        "task_instructions".to_owned(),
+        Value::String(instructions.to_owned()),
+    );
+    object.insert(
         "_schedule".to_owned(),
         json!({
             "schedule_id": schedule_id,
@@ -1946,5 +1950,21 @@ mod tests {
         let remaining = expiry - Utc::now();
         assert!(remaining > Duration::days(6));
         assert!(remaining <= Duration::days(7) + Duration::seconds(1));
+    }
+
+    #[test]
+    fn scheduled_input_keeps_task_instructions_with_an_explicit_prompt() {
+        let due = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+        let input = scheduled_input(
+            json!({"prompt": "today's customer input"}),
+            "released task instructions",
+            Uuid::new_v4(),
+            due,
+            due,
+            1,
+            false,
+        );
+        assert_eq!(input["prompt"], "today's customer input");
+        assert_eq!(input["task_instructions"], "released task instructions");
     }
 }

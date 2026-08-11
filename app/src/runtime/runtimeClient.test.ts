@@ -497,6 +497,66 @@ describe('runtime routing', () => {
     expect(requests[2].body).toEqual({ expected_revision: 1, api_key: 'one-time-secret' })
   })
 
+  it('creates, versions, releases, and deletes reusable server tasks', async () => {
+    const projectId = '10000000-0000-4000-8000-000000000050'
+    const taskId = '10000000-0000-4000-8000-000000000051'
+    const requests: Array<{ url: string; method: string; body: unknown }> = []
+    const task = {
+      schema_version: 2, id: taskId, revision: 1, etag: `W/"${taskId}:1"`, project_id: projectId,
+      name: 'Reusable task', instructions: 'Complete the task', required_capabilities: [],
+      default_target: { kind: 'server_linux' as const, pool_id: null }, config: {}, released: true,
+      created_at: '2026-08-10T12:00:00Z', deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input), method: init?.method ?? 'GET',
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        })
+        if (init?.method === 'DELETE') return new Response(null, { status: 204 })
+        return new Response(JSON.stringify(task), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const fields = {
+      name: task.name, instructions: task.instructions, required_capabilities: [],
+      default_target: task.default_target, config: {}, release: true,
+    }
+    await expect(client.createTask({ project_id: projectId, ...fields })).resolves.toEqual(task)
+    await expect(client.createTaskVersion(taskId, { base_revision: 1, ...fields })).resolves.toEqual(task)
+    await expect(client.releaseTaskVersion(taskId, 1)).resolves.toEqual(task)
+    await client.deleteTask(taskId, 1)
+    expect(requests.map(({ url, method }) => ({ url, method }))).toEqual([
+      { url: 'https://cowork.example.test/api/v1/tasks', method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}/versions`, method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}/release`, method: 'POST' },
+      { url: `https://cowork.example.test/api/v1/tasks/${taskId}?expected_revision=1`, method: 'DELETE' },
+    ])
+  })
+
+  it('lists visible teams for scoped provider profiles', async () => {
+    const team = {
+      schema_version: 2,
+      id: '10000000-0000-4000-8000-000000000060',
+      revision: 1,
+      etag: 'W/"10000000-0000-4000-8000-000000000060:1"',
+      name: 'Example team',
+      owner_user_id: '10000000-0000-4000-8000-000000000061',
+      created_at: '2026-08-10T12:00:00Z',
+      updated_at: '2026-08-10T12:00:00Z',
+      deleted_at: null,
+    }
+    const client = new RemoteRuntimeClient({
+      baseUrl: 'https://cowork.example.test', accessToken: () => 'access-token',
+      fetch: async () => new Response(JSON.stringify([team]), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }),
+    })
+    await expect(client.listTeams()).resolves.toEqual([team])
+  })
+
   it('resumes sync SSE from the last durable cursor', async () => {
     const entityId = '10000000-0000-4000-8000-000000000031'
     const event = {
