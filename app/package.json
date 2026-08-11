@@ -1,7 +1,7 @@
 {
   "name": "localai-cowork",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Open-source, local-first AI coworker for Windows and Linux with Ollama, MCP, tasks, approvals, and tools.",
   "type": "module",
   "license": "Apache-2.0",

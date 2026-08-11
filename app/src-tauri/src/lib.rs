@@ -8089,6 +8089,16 @@ fn run_scheduled_codex_turn(
     )
 }
 
+const CODEX_APPROVAL_POLICY: &str = "untrusted";
+
+fn codex_thread_sandbox(permission_mode: &str) -> &'static str {
+    if permission_mode == "plan" {
+        "read-only"
+    } else {
+        "workspace-write"
+    }
+}
+
 fn run_codex_turn(
     app: &tauri::AppHandle,
     database: &Database,
@@ -8143,7 +8153,7 @@ fn run_codex_turn(
                 "threadId": thread_id,
                 "input": [{ "type": "text", "text": prompt }],
                 "cwd": cwd,
-                "approvalPolicy": "unlessTrusted",
+                "approvalPolicy": CODEX_APPROVAL_POLICY,
                 "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
                 "model": model,
                 "effort": reasoning_effort
@@ -13753,6 +13763,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_protocol_values_match_the_bundled_app_server() {
+        assert_eq!(CODEX_APPROVAL_POLICY, "untrusted");
+        assert_eq!(codex_thread_sandbox("plan"), "read-only");
+        assert_eq!(codex_thread_sandbox("bypass"), "workspace-write");
+    }
+
+    #[test]
     fn run_authorization_without_native_setup_is_explicitly_read_only_and_empty_by_default() {
         let database = Arc::new(Database::open_in_memory().unwrap());
         database
@@ -15485,18 +15502,14 @@ fn codex_thread_open_impl(
         }
     }
 
-    let sandbox = if request.permission_mode == "plan" {
-        "readOnly"
-    } else {
-        "workspaceWrite"
-    };
+    let sandbox = codex_thread_sandbox(&request.permission_mode);
     let result = runtime.request(
         &profile.id,
         "thread/start",
         Some(serde_json::json!({
             "cwd": request.cwd,
             "model": request.model,
-            "approvalPolicy": "unlessTrusted",
+            "approvalPolicy": CODEX_APPROVAL_POLICY,
             "sandbox": sandbox,
             "serviceName": "open_cowork",
             "dynamicTools": request.dynamic_tools
@@ -15569,7 +15582,7 @@ fn codex_turn_start(
             "threadId": request.thread_id,
             "input": [{ "type": "text", "text": request.prompt }],
             "cwd": request.cwd,
-            "approvalPolicy": "unlessTrusted",
+            "approvalPolicy": CODEX_APPROVAL_POLICY,
             "sandboxPolicy": sandbox_policy,
             "model": request.model,
             "effort": request.reasoning_effort
