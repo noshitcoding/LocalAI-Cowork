@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env, fs,
+    net::{IpAddr, SocketAddr},
     path::{Component, Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -24,7 +25,11 @@ use cowork_runtime::{
     ToolOutput,
 };
 use futures_util::{SinkExt, StreamExt};
-use reqwest::{Client, Method};
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue as ReqwestHeaderValue, ACCEPT, CONTENT_TYPE},
+    redirect::Policy,
+    Client, Method, Url,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -43,12 +48,15 @@ use tokio_tungstenite::{
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+mod network_safety;
 mod windows_desktop;
 
 const SNAPSHOT_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_EXECUTOR_MCP_BINDINGS: usize = 64;
 const MAX_EXECUTOR_MCP_FILE_BYTES: u64 = 512 * 1024;
 const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+const LATEST_HTTP_MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+const SUPPORTED_HTTP_MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
 
 #[derive(Debug)]
 struct LeaseExecution {
@@ -84,15 +92,39 @@ struct Config {
     mcp_bindings: Vec<ExecutorMcpBinding>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ExecutorMcpTransport {
+    #[default]
+    Stdio,
+    StreamableHttp,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutorMcpBinding {
     name: String,
+    #[serde(default)]
+    transport: ExecutorMcpTransport,
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     environment: BTreeMap<String, String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+}
+
+impl ExecutorMcpBinding {
+    fn secret_values(&self) -> impl Iterator<Item = &String> {
+        match self.transport {
+            ExecutorMcpTransport::Stdio => self.environment.values(),
+            ExecutorMcpTransport::StreamableHttp => self.headers.values(),
+        }
+    }
 }
 
 struct ManagedMcpProcessJob {
@@ -1669,7 +1701,7 @@ async fn execute_managed_mcp_run(
     let before = inventory_workspace(&workspace).await?;
     let mut secrets = bindings
         .iter()
-        .flat_map(|binding| binding.environment.values())
+        .flat_map(|binding| binding.secret_values())
         .filter(|value| !value.is_empty())
         .cloned()
         .collect::<Vec<_>>();
@@ -1888,6 +1920,22 @@ async fn invoke_executor_mcp(
     if !arguments.is_object() {
         bail!("MCP tool arguments must be an object");
     }
+    match binding.transport {
+        ExecutorMcpTransport::Stdio => {
+            invoke_executor_stdio_mcp(binding, tool_name, arguments, workspace).await
+        }
+        ExecutorMcpTransport::StreamableHttp => {
+            invoke_executor_http_mcp(binding, tool_name, arguments).await
+        }
+    }
+}
+
+async fn invoke_executor_stdio_mcp(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+    workspace: &Path,
+) -> Result<Value> {
     let mut command = tokio::process::Command::new(&binding.command);
     command
         .args(&binding.args)
@@ -1985,6 +2033,386 @@ async fn invoke_executor_mcp(
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
     protocol
+}
+
+struct ExecutorHttpMcpClient {
+    client: Client,
+    url: Url,
+    headers: HeaderMap,
+    session_id: Option<String>,
+    protocol_version: String,
+    initialized: bool,
+}
+
+impl ExecutorHttpMcpClient {
+    async fn new(binding: &ExecutorMcpBinding, allow_insecure_test: bool) -> Result<Self> {
+        let url = validate_executor_http_endpoint(&binding.url, allow_insecure_test)?;
+        let headers = validate_executor_http_headers(&binding.headers)?;
+        let host = url
+            .host_str()
+            .context("executor MCP HTTP endpoint has no hostname")?
+            .to_owned();
+        let port = url
+            .port_or_known_default()
+            .context("executor MCP HTTP endpoint has no port")?;
+        let mut addresses = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .with_context(|| format!("failed to resolve executor MCP endpoint {host:?}"))?
+            .collect::<Vec<SocketAddr>>();
+        addresses.sort_unstable();
+        addresses.dedup();
+        if addresses.is_empty()
+            || (!allow_insecure_test
+                && addresses
+                    .iter()
+                    .any(|address| !network_safety::is_public_destination(address.ip())))
+        {
+            bail!("executor MCP endpoint did not resolve exclusively to public addresses");
+        }
+        let client = Client::builder()
+            .redirect(Policy::none())
+            .https_only(!allow_insecure_test)
+            .no_proxy()
+            .timeout(Duration::from_secs(120))
+            .resolve_to_addrs(&host, &addresses)
+            .build()
+            .context("failed to construct the executor MCP HTTP client")?;
+        Ok(Self {
+            client,
+            url,
+            headers,
+            session_id: None,
+            protocol_version: LATEST_HTTP_MCP_PROTOCOL_VERSION.to_owned(),
+            initialized: false,
+        })
+    }
+
+    fn request(&self, method: Method, accept: &'static str) -> reqwest::RequestBuilder {
+        let mut request = self
+            .client
+            .request(method, self.url.clone())
+            .headers(self.headers.clone())
+            .header(ACCEPT, accept);
+        if let Some(session_id) = &self.session_id {
+            request = request.header("mcp-session-id", session_id);
+        }
+        if self.initialized {
+            request = request.header("mcp-protocol-version", &self.protocol_version);
+        }
+        request
+    }
+
+    async fn post(&mut self, payload: Value, expects_response: bool) -> Result<Value> {
+        let request_id = payload.get("id").and_then(Value::as_u64);
+        let encoded = serde_json::to_vec(&payload)?;
+        if encoded.len() > MAX_MCP_MESSAGE_BYTES {
+            bail!("MCP HTTP request exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+        }
+        let mut response = self
+            .request(Method::POST, "application/json, text/event-stream")
+            .header(CONTENT_TYPE, "application/json")
+            .body(encoded)
+            .send()
+            .await
+            .context("executor MCP HTTP request failed")?;
+        if !expects_response {
+            if response.status() != reqwest::StatusCode::ACCEPTED {
+                bail!(
+                    "executor MCP HTTP notification returned status {}, expected 202",
+                    response.status()
+                );
+            }
+            let _ = read_executor_http_body(&mut response).await?;
+            return Ok(Value::Null);
+        }
+        if !response.status().is_success() {
+            bail!(
+                "executor MCP HTTP endpoint returned status {}",
+                response.status()
+            );
+        }
+        if self.session_id.is_none() {
+            if let Some(session_id) = response.headers().get("mcp-session-id") {
+                let session_id = session_id
+                    .to_str()
+                    .context("executor MCP endpoint returned a non-ASCII session ID")?;
+                if session_id.is_empty()
+                    || session_id.len() > 1_024
+                    || !session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+                {
+                    bail!("executor MCP endpoint returned an invalid session ID");
+                }
+                self.session_id = Some(session_id.to_owned());
+            }
+        }
+        let request_id = request_id.context("executor MCP response request has no JSON-RPC ID")?;
+        let (mut message, mut last_event_id, mut retry_ms) =
+            parse_executor_http_response(response, request_id).await?;
+        for _ in 0..4 {
+            if let Some(message) = message {
+                return unwrap_executor_http_rpc(message);
+            }
+            let Some(event_id) = last_event_id.as_deref() else {
+                break;
+            };
+            if retry_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(retry_ms.min(5_000))).await;
+            }
+            let response = self
+                .request(Method::GET, "text/event-stream")
+                .header("last-event-id", event_id)
+                .send()
+                .await
+                .context("executor MCP SSE resume failed")?;
+            if !response.status().is_success() {
+                bail!(
+                    "executor MCP SSE resume returned status {}",
+                    response.status()
+                );
+            }
+            let parsed = parse_executor_http_response(response, request_id).await?;
+            message = parsed.0;
+            if parsed.1.is_some() {
+                last_event_id = parsed.1;
+            }
+            retry_ms = parsed.2;
+        }
+        bail!("executor MCP SSE stream ended before its JSON-RPC response")
+    }
+
+    async fn close(&self) {
+        if self.session_id.is_none() {
+            return;
+        }
+        let request = self
+            .request(Method::DELETE, "application/json, text/event-stream")
+            .send();
+        let _ = tokio::time::timeout(Duration::from_secs(5), request).await;
+    }
+}
+
+async fn invoke_executor_http_mcp(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<Value> {
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        invoke_executor_http_mcp_with_policy(binding, tool_name, arguments, false),
+    )
+    .await
+    .context("executor MCP HTTP protocol timed out")?
+}
+
+async fn invoke_executor_http_mcp_with_policy(
+    binding: &ExecutorMcpBinding,
+    tool_name: &str,
+    arguments: Value,
+    allow_insecure_test: bool,
+) -> Result<Value> {
+    let mut client = ExecutorHttpMcpClient::new(binding, allow_insecure_test).await?;
+    let result = async {
+        let initialized = client
+            .post(
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":1,
+                    "method":"initialize",
+                    "params":{
+                        "protocolVersion":LATEST_HTTP_MCP_PROTOCOL_VERSION,
+                        "clientInfo":{
+                            "name":"Open Cowork managed Windows executor",
+                            "version":env!("CARGO_PKG_VERSION")
+                        },
+                        "capabilities":{}
+                    }
+                }),
+                true,
+            )
+            .await?;
+        let protocol_version = initialized
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .context("executor MCP HTTP initialize response omitted protocolVersion")?;
+        if !SUPPORTED_HTTP_MCP_PROTOCOL_VERSIONS.contains(&protocol_version) {
+            bail!("executor MCP HTTP server negotiated unsupported protocol {protocol_version:?}");
+        }
+        client.protocol_version = protocol_version.to_owned();
+        client.initialized = true;
+        client
+            .post(
+                json!({
+                    "jsonrpc":"2.0",
+                    "method":"notifications/initialized",
+                    "params":{}
+                }),
+                false,
+            )
+            .await?;
+        let result = client
+            .post(
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":2,
+                    "method":"tools/call",
+                    "params":{"name":tool_name,"arguments":arguments}
+                }),
+                true,
+            )
+            .await?;
+        Ok(json!({
+            "server_name":binding.name,
+            "tool_name":tool_name,
+            "protocol_version":protocol_version,
+            "result":result,
+        }))
+    }
+    .await;
+    client.close().await;
+    result
+}
+
+async fn read_executor_http_body(response: &mut reqwest::Response) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > MAX_MCP_MESSAGE_BYTES {
+            bail!("MCP HTTP response exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn parse_executor_http_response(
+    mut response: reqwest::Response,
+    request_id: u64,
+) -> Result<(Option<Value>, Option<String>, u64)> {
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if content_type == "application/json" || content_type.ends_with("+json") {
+        let body = read_executor_http_body(&mut response).await?;
+        let message: Value =
+            serde_json::from_slice(&body).context("executor MCP HTTP JSON response is invalid")?;
+        if message.get("id").and_then(Value::as_u64) != Some(request_id) {
+            bail!("executor MCP HTTP response has the wrong JSON-RPC ID");
+        }
+        return Ok((Some(message), None, 0));
+    }
+    if content_type != "text/event-stream" {
+        bail!("executor MCP HTTP endpoint returned unsupported content type {content_type:?}");
+    }
+    let mut pending = Vec::new();
+    let mut total_bytes = 0_usize;
+    let mut last_event_id = None;
+    let mut retry_ms = 0_u64;
+    while let Some(chunk) = response.chunk().await? {
+        total_bytes = total_bytes.saturating_add(chunk.len());
+        if total_bytes > MAX_MCP_MESSAGE_BYTES {
+            bail!("MCP HTTP response exceeds {MAX_MCP_MESSAGE_BYTES} bytes");
+        }
+        pending.extend_from_slice(&chunk);
+        while let Some((event_end, separator_end)) = executor_sse_event_boundary(&pending) {
+            let event = pending[..event_end].to_vec();
+            pending.drain(..separator_end);
+            if let Some(message) =
+                parse_executor_sse_event(&event, request_id, &mut last_event_id, &mut retry_ms)?
+            {
+                return Ok((Some(message), last_event_id, retry_ms));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        if let Some(message) =
+            parse_executor_sse_event(&pending, request_id, &mut last_event_id, &mut retry_ms)?
+        {
+            return Ok((Some(message), last_event_id, retry_ms));
+        }
+    }
+    Ok((None, last_event_id, retry_ms))
+}
+
+fn executor_sse_event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
+    let lf = bytes.windows(2).position(|window| window == b"\n\n");
+    let crlf = bytes.windows(4).position(|window| window == b"\r\n\r\n");
+    match (lf, crlf) {
+        (Some(left), Some(right)) if left <= right => Some((left, left + 2)),
+        (Some(_), Some(right)) => Some((right, right + 4)),
+        (Some(left), None) => Some((left, left + 2)),
+        (None, Some(right)) => Some((right, right + 4)),
+        (None, None) => None,
+    }
+}
+
+fn parse_executor_sse_event(
+    event: &[u8],
+    request_id: u64,
+    last_event_id: &mut Option<String>,
+    retry_ms: &mut u64,
+) -> Result<Option<Value>> {
+    let event = std::str::from_utf8(event).context("executor MCP SSE response is not UTF-8")?;
+    let mut data = Vec::new();
+    for line in event.lines() {
+        if line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "data" => data.push(value),
+            "id" if !value.contains('\0') => {
+                if value.is_empty() {
+                    *last_event_id = None;
+                } else if value.len() > 1_024
+                    || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+                {
+                    bail!("executor MCP SSE event ID is invalid");
+                } else {
+                    *last_event_id = Some(value.to_owned());
+                }
+            }
+            "retry" => {
+                if let Ok(value) = value.parse::<u64>() {
+                    *retry_ms = value.min(5_000);
+                }
+            }
+            _ => {}
+        }
+    }
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let message: Value = serde_json::from_str(&data.join("\n"))
+        .context("executor MCP SSE event contains invalid JSON")?;
+    if message.get("id").and_then(Value::as_u64) == Some(request_id)
+        && (message.get("result").is_some() || message.get("error").is_some())
+    {
+        return Ok(Some(message));
+    }
+    if message.get("id").is_some() && message.get("method").is_some() {
+        bail!("executor MCP HTTP server requests are not supported by this one-shot client");
+    }
+    Ok(None)
+}
+
+fn unwrap_executor_http_rpc(message: Value) -> Result<Value> {
+    if let Some(error) = message.get("error") {
+        let detail = error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| error.to_string());
+        bail!(
+            "executor MCP server rejected request: {}",
+            detail.chars().take(2_000).collect::<String>()
+        );
+    }
+    Ok(message.get("result").cloned().unwrap_or(Value::Null))
 }
 
 async fn executor_mcp_request<W, R>(
@@ -3161,6 +3589,9 @@ fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBindi
         .with_context(|| format!("failed to read COWORK_MCP_BINDINGS_FILE {path}"))?;
     let bindings = parse_executor_mcp_bindings(kind, &bytes)?;
     for binding in &bindings {
+        if binding.transport == ExecutorMcpTransport::StreamableHttp {
+            continue;
+        }
         let command = Path::new(&binding.command);
         if !command.is_absolute() {
             bail!("managed Windows MCP commands must use absolute executable paths");
@@ -3197,6 +3628,7 @@ fn parse_executor_mcp_bindings(
     for binding in &mut bindings {
         binding.name = binding.name.trim().to_owned();
         binding.command = binding.command.trim().to_owned();
+        binding.url = binding.url.trim().to_owned();
         if binding.name.is_empty()
             || binding.name.len() > 256
             || binding.name.chars().any(char::is_control)
@@ -3204,38 +3636,130 @@ fn parse_executor_mcp_bindings(
         {
             bail!("executor MCP binding names must be unique valid strings of at most 256 bytes");
         }
-        let normalized_command = binding.command.to_ascii_lowercase();
-        if binding.command.is_empty()
-            || binding.command.len() > 32 * 1024
-            || binding.command.chars().any(|character| character == '\0')
-            || !(normalized_command.ends_with(".exe") || normalized_command.ends_with(".com"))
-        {
-            bail!("executor MCP binding commands must be direct .exe or .com executables");
-        }
-        if binding.args.len() > 256
-            || binding
-                .args
-                .iter()
-                .any(|argument| argument.len() > 64 * 1024 || argument.contains('\0'))
-        {
-            bail!("executor MCP binding arguments exceed the safety limits");
-        }
-        if binding.environment.len() > 64
-            || binding.environment.iter().any(|(key, value)| {
-                key.is_empty()
-                    || key.len() > 256
-                    || key.chars().any(|character| {
-                        character == '=' || character == '\0' || character.is_control()
+        match binding.transport {
+            ExecutorMcpTransport::Stdio => {
+                if !binding.url.is_empty() || !binding.headers.is_empty() {
+                    bail!("stdio executor MCP bindings may not contain an HTTP URL or headers");
+                }
+                let normalized_command = binding.command.to_ascii_lowercase();
+                if binding.command.is_empty()
+                    || binding.command.len() > 32 * 1024
+                    || binding.command.chars().any(|character| character == '\0')
+                    || !(normalized_command.ends_with(".exe")
+                        || normalized_command.ends_with(".com"))
+                {
+                    bail!("executor MCP binding commands must be direct .exe or .com executables");
+                }
+                if binding.args.len() > 256
+                    || binding
+                        .args
+                        .iter()
+                        .any(|argument| argument.len() > 64 * 1024 || argument.contains('\0'))
+                {
+                    bail!("executor MCP binding arguments exceed the safety limits");
+                }
+                if binding.environment.len() > 64
+                    || binding.environment.iter().any(|(key, value)| {
+                        key.is_empty()
+                            || key.len() > 256
+                            || key.chars().any(|character| {
+                                character == '=' || character == '\0' || character.is_control()
+                            })
+                            || value.len() > 64 * 1024
+                            || value.contains('\0')
                     })
-                    || value.len() > 64 * 1024
-                    || value.contains('\0')
-            })
-        {
-            bail!("executor MCP binding environment exceeds the safety limits");
+                {
+                    bail!("executor MCP binding environment exceeds the safety limits");
+                }
+            }
+            ExecutorMcpTransport::StreamableHttp => {
+                if !binding.command.is_empty()
+                    || !binding.args.is_empty()
+                    || !binding.environment.is_empty()
+                {
+                    bail!("streamable HTTP executor MCP bindings may not contain stdio fields");
+                }
+                validate_executor_http_endpoint(&binding.url, false)?;
+                validate_executor_http_headers(&binding.headers)?;
+            }
         }
     }
     bindings.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(bindings)
+}
+
+fn validate_executor_http_endpoint(endpoint: &str, allow_insecure_test: bool) -> Result<Url> {
+    let url = Url::parse(endpoint).context("invalid executor MCP HTTP endpoint")?;
+    let valid_scheme = url.scheme() == "https" || (allow_insecure_test && url.scheme() == "http");
+    if !valid_scheme
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (!allow_insecure_test && url.port_or_known_default() != Some(443))
+    {
+        bail!("executor MCP HTTP endpoints require HTTPS port 443 without userinfo, query, or fragment");
+    }
+    if !allow_insecure_test {
+        let host = url.host_str().unwrap_or_default().trim_end_matches('.');
+        let lower_host = host.to_ascii_lowercase();
+        if host.parse::<IpAddr>().is_ok()
+            || matches!(lower_host.as_str(), "localhost" | "localhost.localdomain")
+            || [".localhost", ".local", ".internal", ".home.arpa"]
+                .iter()
+                .any(|suffix| lower_host.ends_with(suffix))
+        {
+            bail!("executor MCP HTTP endpoints must use a public DNS hostname");
+        }
+    }
+    Ok(url)
+}
+
+fn validate_executor_http_headers(headers: &BTreeMap<String, String>) -> Result<HeaderMap> {
+    if headers.len() > 64 {
+        bail!("executor MCP HTTP bindings support at most 64 headers");
+    }
+    let mut result = HeaderMap::new();
+    let mut names = HashSet::new();
+    for (name, value) in headers {
+        let lower_name = name.to_ascii_lowercase();
+        if name.is_empty()
+            || name.len() > 256
+            || value.len() > 64 * 1024
+            || !names.insert(lower_name.clone())
+            || is_reserved_executor_mcp_header(&lower_name)
+        {
+            bail!("executor MCP HTTP header is invalid, duplicated, or reserved");
+        }
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .context("executor MCP HTTP header name is invalid")?;
+        let value = ReqwestHeaderValue::from_str(value)
+            .context("executor MCP HTTP header value is invalid")?;
+        result.insert(name, value);
+    }
+    Ok(result)
+}
+
+fn is_reserved_executor_mcp_header(name: &str) -> bool {
+    matches!(
+        name,
+        "accept"
+            | "connection"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "http-proxy"
+            | "https-proxy"
+            | "mcp-protocol-version"
+            | "mcp-session-id"
+            | "origin"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
 
 fn required(name: &str) -> Result<String> {
@@ -3511,6 +4035,248 @@ mod tests {
     }
 
     #[test]
+    fn managed_windows_streamable_http_bindings_are_transport_safe() {
+        let bindings = parse_executor_mcp_bindings(
+            ExecutorKind::ManagedWindows,
+            br#"[{
+                "name":"Remote Docs",
+                "transport":"streamable_http",
+                "url":"https://mcp.example.com/mcp",
+                "headers":{"Authorization":"Bearer executor-http-secret"}
+            }]"#,
+        )
+        .unwrap();
+        assert_eq!(bindings[0].transport, ExecutorMcpTransport::StreamableHttp);
+        assert_eq!(bindings[0].url, "https://mcp.example.com/mcp");
+        assert_eq!(
+            redact_executor_secrets(
+                "credential=Bearer executor-http-secret",
+                &bindings[0].secret_values().cloned().collect::<Vec<_>>(),
+            ),
+            "credential=[REDACTED]"
+        );
+
+        let invalid: &[&[u8]] = &[
+            br#"[{"name":"Remote","transport":"streamable_http","url":"http://mcp.example.com/mcp"}]"#,
+            br#"[{"name":"Remote","transport":"streamable_http","url":"https://127.0.0.1/mcp"}]"#,
+            br#"[{"name":"Remote","transport":"streamable_http","url":"https://service.internal/mcp"}]"#,
+            br#"[{"name":"Remote","transport":"streamable_http","url":"https://mcp.example.com:8443/mcp"}]"#,
+            br#"[{"name":"Remote","transport":"streamable_http","url":"https://mcp.example.com/mcp?token=unsafe"}]"#,
+            br#"[{"name":"Remote","transport":"streamable_http","url":"https://mcp.example.com/mcp","headers":{"MCP-Session-Id":"override"}}]"#,
+        ];
+        for invalid in invalid {
+            assert!(parse_executor_mcp_bindings(ExecutorKind::ManagedWindows, invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn managed_windows_sse_parser_matches_responses_and_rejects_server_requests() {
+        let mut event_id = None;
+        let mut retry_ms = 0;
+        let response = parse_executor_sse_event(
+            b"id: event-7\nretry: 120\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":\"ok\"}}\n",
+            2,
+            &mut event_id,
+            &mut retry_ms,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["result"]["content"], "ok");
+        assert_eq!(event_id.as_deref(), Some("event-7"));
+        assert_eq!(retry_ms, 120);
+        assert!(parse_executor_sse_event(
+            b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"roots/list\",\"params\":{}}\n",
+            2,
+            &mut None,
+            &mut 0,
+        )
+        .is_err());
+        assert!(parse_executor_sse_event(b"id: invalid\x7f\n", 2, &mut None, &mut 0,).is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_windows_streamable_http_executes_session_bound_persistent_sse() {
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        async fn handle_fixture(
+            mut socket: tokio::net::TcpStream,
+            records: Arc<StdMutex<Vec<Value>>>,
+        ) {
+            let mut request = Vec::new();
+            let header_end = loop {
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index + 4;
+                }
+                let mut chunk = [0_u8; 4096];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "fixture connection closed before HTTP headers");
+                request.extend_from_slice(&chunk[..read]);
+                assert!(request.len() <= MAX_MCP_MESSAGE_BYTES);
+            };
+            let head = std::str::from_utf8(&request[..header_end]).unwrap();
+            let mut lines = head.split("\r\n");
+            let request_line = lines.next().unwrap();
+            let http_method = request_line.split_whitespace().next().unwrap().to_owned();
+            let mut headers = HashMap::new();
+            for line in lines.filter(|line| !line.is_empty()) {
+                if let Some((name, value)) = line.split_once(':') {
+                    headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+                }
+            }
+            let content_length = headers
+                .get("content-length")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let mut chunk = [0_u8; 4096];
+                let read = socket.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "fixture connection closed before HTTP body");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let message = if content_length == 0 {
+                Value::Null
+            } else {
+                serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap()
+            };
+            let rpc_method = message
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or(http_method.as_str())
+                .to_owned();
+            records.lock().unwrap().push(json!({
+                "method":rpc_method,
+                "session":headers.get("mcp-session-id"),
+                "protocol":headers.get("mcp-protocol-version"),
+                "token":headers.get("x-test-token"),
+            }));
+
+            let (status, content_type, body, session, persistent_sse) = match rpc_method.as_str() {
+                "initialize" => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":message["id"],
+                        "result":{
+                            "protocolVersion":"2025-11-25",
+                            "capabilities":{"tools":{}}
+                        }
+                    }))
+                    .unwrap(),
+                    true,
+                    false,
+                ),
+                "notifications/initialized" => {
+                    ("202 Accepted", "application/json", Vec::new(), false, false)
+                }
+                "tools/call" => (
+                    "200 OK",
+                    "text/event-stream",
+                    format!(
+                        "id: windows-event\ndata: {}\n\n",
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":message["id"],
+                            "result":{
+                                "content":[{"type":"text","text":"Windows HTTP fixture"}],
+                                "structuredContent":message["params"]["arguments"],
+                                "isError":false
+                            }
+                        })
+                    )
+                    .into_bytes(),
+                    false,
+                    true,
+                ),
+                "DELETE" => ("200 OK", "application/json", b"{}".to_vec(), false, false),
+                other => panic!("unexpected fixture method {other}"),
+            };
+            let mut response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nConnection: close\r\n"
+            );
+            if session {
+                response.push_str("MCP-Session-Id: windows-fixture-session\r\n");
+            }
+            if !persistent_sse {
+                response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+            }
+            response.push_str("\r\n");
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+            socket.flush().await.unwrap();
+            if persistent_sse {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let records = Arc::new(StdMutex::new(Vec::new()));
+        let server_records = records.clone();
+        let server = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            for _ in 0..4 {
+                let (socket, _) = listener.accept().await.unwrap();
+                let records = server_records.clone();
+                handlers.push(tokio::spawn(handle_fixture(socket, records)));
+            }
+            for handler in handlers {
+                handler.await.unwrap();
+            }
+        });
+        let binding = ExecutorMcpBinding {
+            name: "HTTP fixture".to_owned(),
+            transport: ExecutorMcpTransport::StreamableHttp,
+            command: String::new(),
+            args: Vec::new(),
+            environment: BTreeMap::new(),
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: BTreeMap::from([("X-Test-Token".to_owned(), "executor-secret".to_owned())]),
+        };
+        let started = std::time::Instant::now();
+        let response = invoke_executor_http_mcp_with_policy(
+            &binding,
+            "lookup",
+            json!({"query":"hello"}),
+            true,
+        )
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+        server.await.unwrap();
+
+        assert_eq!(response["protocol_version"], "2025-11-25");
+        assert_eq!(
+            response["result"]["structuredContent"],
+            json!({"query":"hello"})
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "client waited for persistent SSE closure: {elapsed:?}"
+        );
+        let records = records.lock().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["method"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                "DELETE"
+            ]
+        );
+        assert!(records[0]["session"].is_null());
+        assert!(records[0]["protocol"].is_null());
+        for record in records.iter().skip(1) {
+            assert_eq!(record["session"], "windows-fixture-session");
+            assert_eq!(record["protocol"], "2025-11-25");
+            assert_eq!(record["token"], "executor-secret");
+        }
+    }
+
+    #[test]
     fn selected_executor_mcp_names_are_exact_deduplicated_and_sorted() {
         assert_eq!(
             selected_executor_mcp_names(&json!({
@@ -3594,6 +4360,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 "#;
         let binding = ExecutorMcpBinding {
             name: "fixture".to_owned(),
+            transport: ExecutorMcpTransport::Stdio,
             command: "powershell.exe".to_owned(),
             args: vec![
                 "-NoProfile".to_owned(),
@@ -3605,6 +4372,8 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
                 "MCP_TEST_SECRET".to_owned(),
                 "executor-only-value".to_owned(),
             )]),
+            url: String::new(),
+            headers: BTreeMap::new(),
         };
 
         let response = invoke_executor_mcp(&binding, "fixture_tool", json!({}), &workspace)

@@ -198,8 +198,8 @@ gives each agent only its own allowlist, and recursively redacts provider and
 MCP environment/header secrets again before any Crew event or response is
 persisted. Static authorization headers are supported; OAuth discovery/dynamic
 registration and the legacy HTTP+SSE transport are not. Managed Windows uses
-the executor-local stdio configuration described below. Streamable HTTP and
-Crew MCP on managed Windows remain separate compatibility work and must not be
+the executor-local stdio or Streamable HTTP configuration described below.
+Crew MCP on managed Windows remains separate compatibility work and must not be
 advertised as available.
 
 Runs may also select synchronized skills and memory records by ID. The API
@@ -503,39 +503,53 @@ post-run health gate.
 ### Executor-local MCP on Windows
 
 A managed Windows executor can additionally run stdio MCP servers installed on
-that dedicated VM/PC. Copy
+that dedicated VM/PC or call a remote Streamable HTTP MCP endpoint. Copy
 `agents/cowork-device-agent/mcp-bindings.example.json` outside the checkout,
 replace its placeholder, and set `COWORK_MCP_BINDINGS_FILE` to the absolute
 path. Protect the file with a Windows ACL readable only by Administrators and
 the dedicated executor account. The file is deliberately local to the
-executor; neither its commands nor its environment values are synchronized to
-the control plane.
+executor; neither its commands/URLs nor its environment/header values are
+synchronized to the control plane.
 
-Each JSON entry has `name`, `command`, optional `args`, and optional
-`environment`. `name` must exactly match the name of synchronized MCP metadata
-selected in the Run. The command must be an absolute path to a reviewed,
-already installed `.exe` or `.com`; batch and command files are rejected so it
-is started directly without `cmd.exe` or PowerShell command-line
-interpretation. The executable itself must be a regular non-symlink file. The
-child receives only a small Windows process baseline and its binding-specific
-environment, so it does not inherit the executor token, model key, or unrelated
-`COWORK_*` values. It and all descendants are attached to a kill-on-close
-Windows Job Object. Configure a model endpoint with `COWORK_MODEL_BASE_URL` and,
-when needed, `COWORK_MODEL_API_KEY_FILE`.
+Each JSON entry has `name` and optional `transport` (default `stdio`). `name`
+must exactly match the name of synchronized MCP metadata selected in the Run.
+A stdio entry additionally has `command`, optional `args`, and optional
+`environment`. The command must be an absolute path to a reviewed, already
+installed `.exe` or `.com`; batch and command files are rejected so it is
+started directly without `cmd.exe` or PowerShell command-line interpretation.
+The executable itself must be a regular non-symlink file. The child receives
+only a small Windows process baseline and its binding-specific environment, so
+it does not inherit the executor token, model key, or unrelated `COWORK_*`
+values. It and all descendants are attached to a kill-on-close Windows Job
+Object.
+
+A `streamable_http` entry instead has `url` and optional static `headers`. It
+uses the stable MCP 2025-11-25 transport with JSON/SSE responses, session and
+protocol headers, bounded SSE resume, best-effort session deletion, no
+redirects and normal TLS certificate verification. Only HTTPS port 443 and a
+public DNS hostname are accepted. Immediately before connecting, the agent
+resolves and pins the complete address set; if any answer is private, loopback,
+link-local, carrier-grade NAT, documentation, benchmark, multicast or reserved,
+the invocation fails. Automatic system proxies are disabled so they cannot
+bypass that pinned resolution. The administrator should still enforce the same
+public-egress-only rule with Windows Firewall or endpoint policy as a second
+boundary. URL queries and protocol/hop-by-hop header overrides are rejected;
+put static credentials in headers. Configure a model endpoint with
+`COWORK_MODEL_BASE_URL` and, when needed, `COWORK_MODEL_API_KEY_FILE`.
 
 On registration, the agent adds `tool.mcp.invoke` and publishes only the bound
 server names. The server will queue and lease a selected MCP Run only to an
 executor in the chosen pool that advertises every exact name. Tool responses,
 events, checkpoints, errors, and final model content are recursively redacted
-for all configured environment values. A disconnect after an unsafe MCP
+for all configured environment or header values. A disconnect after an unsafe MCP
 checkpoint interrupts the Run for manual review instead of starting the tool a
 second time. Changed workspace files are uploaded as the normal review-only
 result snapshot.
 
-This first Windows adapter supports local stdio servers only. It does not yet
-support streamable HTTP or Crew MCP. The dedicated Windows account and process
-boundary are not a network sandbox: use host firewall/endpoint policy when an
-MCP server must be denied private-network access.
+The Windows adapter does not yet support Crew MCP. The dedicated Windows account
+and process boundary are not a general network sandbox; the HTTP adapter's
+destination pinning protects its own calls, while host firewall/endpoint policy
+must constrain stdio MCP child processes and provide defense in depth.
 
 Microsoft does not recommend unattended Office server automation. Operate this
 as best-effort interactive RPA on licensed Windows/Microsoft 365 installations

@@ -473,7 +473,7 @@ jobs:
       - name: Validate encrypted executor-bound MCP bindings
         shell: bash
         env:
-          DATABASE_URL: postgres://cowork:server-mcp-ci-postgres@127.0.0.1:15435/cowork_server_mcp_ci
+          COWORK_TEST_DATABASE_PASSWORD: server-mcp-ci-postgres
           COWORK_MODE: api
           COWORK_LISTEN_ADDR: 127.0.0.1:18101
           COWORK_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
@@ -489,6 +489,7 @@ jobs:
           COWORK_TEST_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
         run: |
           set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_DATABASE_PASSWORD}@127.0.0.1:15435/cowork_server_mcp_ci"
           test_root="$(mktemp -d)"
           ./target/debug/cowork-server >"${test_root}/server.log" 2>&1 &
           server_pid=$!
