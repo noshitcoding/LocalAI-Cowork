@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Local AI Cowork",
-  "version": "0.3.0",
+  "version": "0.3.3",
   "identifier": "io.noshitcoding.opencowork",
   "build": {
     "beforeDevCommand": "npm run prepare:crew-runtime && npm run prepare:codex-runtime && npm run prepare:local-daemon && npm run dev:tauri",

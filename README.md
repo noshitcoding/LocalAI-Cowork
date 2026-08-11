@@ -27,6 +27,7 @@ The project is early. Windows is the most mature target, while Linux x86_64 is r
 - Local desktop app built with Tauri, React, TypeScript, and Rust
 - Chat workspace with persistent sessions, message history, and streaming output
 - Local Ollama support with health checks, model selection, and configurable timeouts
+- Local Codex app-server accounts plus reusable OpenAI-compatible provider profiles
 - OpenAI-compatible and OpenRouter profile support
 - MCP server management with probing and tool execution
 - File and folder context for chat tasks

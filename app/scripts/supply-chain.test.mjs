@@ -258,6 +258,18 @@ test('installer tool discovery preserves a single vswhere path as an array eleme
   assert.doesNotMatch(installerScript, /&\s+\$vswhereCandidates\[0\]/)
 })
 
+test('Windows uninstaller terminates versioned local daemons before cleanup', () => {
+  const hooks = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'windows', 'installer-hooks.nsh'),
+    'utf8',
+  )
+  assert.match(hooks, /FindFirst \$0 \$1 .*cowork-local-daemon-\*\.exe/)
+  assert.match(hooks, /taskkill\.exe.*\/F.*\/T.*\/IM\s+"\$1"/)
+  assert.match(hooks, /FindNext \$0 \$1/)
+  assert.doesNotMatch(hooks, /taskkill\.exe.*\/IM\s+"cowork-local-daemon-\*\.exe"/)
+  assert.ok(hooks.indexOf('taskkill.exe') < hooks.indexOf('RMDir /r'))
+})
+
 test('inventory checks all licenses but excludes dev-only npm packages from release components', () => {
   const { root, cargoMetadata, manifestPath, requirementsPath, lockPath } = fixture()
   try {

@@ -8,6 +8,8 @@ param(
 
     [switch]$SkipRuntimeBootstrap,
 
+    [switch]$SkipNativeSandbox,
+
     [switch]$UninstallAfterVerification
 )
 
@@ -131,7 +133,7 @@ try {
     $daemonManifestPath = Join-Path $daemonRoot "manifest.json"
     $daemonManifest = Get-Content -LiteralPath $daemonManifestPath -Raw | ConvertFrom-Json
     if (
-        $daemonManifest.schemaVersion -ne 1 -or
+        $daemonManifest.schemaVersion -ne 2 -or
         $daemonManifest.target -ne "windows-x64" -or
         $daemonManifest.binary -ne "cowork-local-daemon.exe" -or
         $daemonManifest.version -ne $ExpectedVersion -or
@@ -142,6 +144,19 @@ try {
     $packagedDaemon = Join-Path $daemonRoot $daemonManifest.binary
     if ((Get-Sha256 -Path $packagedDaemon) -ne [string]$daemonManifest.sha256) {
         throw "Installed local daemon SHA-256 does not match its manifest."
+    }
+    $daemonFiles = @($daemonManifest.files)
+    $pdfiumManifest = @($daemonFiles | Where-Object { $_.name -eq "pdfium.dll" })
+    if (
+        $daemonFiles.Count -ne 1 -or
+        $pdfiumManifest.Count -ne 1 -or
+        [string]$pdfiumManifest[0].sha256 -notmatch '^[a-f0-9]{64}$'
+    ) {
+        throw "Installed local daemon sidecar manifest is incompatible."
+    }
+    $packagedPdfium = Join-Path $daemonRoot $pdfiumManifest[0].name
+    if ((Get-Sha256 -Path $packagedPdfium) -ne [string]$pdfiumManifest[0].sha256) {
+        throw "Installed pdfium.dll SHA-256 does not match its manifest."
     }
 
     $manifestPath = Join-Path $installRoot "python\crew_runtime\runtime-bundle-manifest.json"
@@ -190,6 +205,49 @@ try {
             $ExpectedVersion,
             $installedProduct.DisplayVersion
         )
+    }
+
+    if (-not $SkipNativeSandbox) {
+        $sandboxResultPath = Join-Path $env:TEMP ("lacowork-native-sandbox-{0}.json" -f [Guid]::NewGuid())
+        $sandboxAppData = Join-Path $env:APPDATA "io.noshitcoding.opencowork"
+        try {
+            $sandboxSmoke = Start-Process `
+                -FilePath $appExecutable `
+                -ArgumentList @(
+                    "--lacowork-native-sandbox-smoke",
+                    ('"' + $sandboxAppData + '"'),
+                    ('"' + $sandboxResultPath + '"')
+                ) `
+                -Wait `
+                -PassThru
+            $sandboxResult = $null
+            if (Test-Path -LiteralPath $sandboxResultPath -PathType Leaf) {
+                $sandboxResult = Get-Content -LiteralPath $sandboxResultPath -Raw | ConvertFrom-Json
+            }
+            if ($sandboxSmoke.ExitCode -ne 0 -or -not $sandboxResult -or $sandboxResult.ok -ne $true) {
+                $detail = if ($sandboxResult -and $sandboxResult.error) {
+                    [string]$sandboxResult.error
+                }
+                else {
+                    "the installed app returned no structured sandbox result"
+                }
+                throw "Installed native Windows sandbox smoke failed: $detail"
+            }
+            if (
+                $sandboxResult.setupReady -ne $true -or
+                $sandboxResult.repeatedSetupReady -ne $true -or
+                $sandboxResult.account -ne "LACoworkOnline" -or
+                $sandboxResult.group -ne "LACoworkSandbox" -or
+                $sandboxResult.executionStatus -ne "completed" -or
+                $sandboxResult.identityVerified -ne $true -or
+                $sandboxResult.markerWritten -ne $true
+            ) {
+                throw "Installed native Windows sandbox smoke returned an incomplete result."
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $sandboxResultPath -Force -ErrorAction SilentlyContinue
+        }
     }
 
     if (-not $SkipRuntimeBootstrap) {
@@ -281,7 +339,7 @@ try {
 
     $successMessage = (
         "Installer runtime smoke passed for Local AI Cowork {0} " +
-        "(Codex {1}, daemon {2}, Python {3}, CrewAI {4}, automatic bootstrap verified: {5})."
+        "(Codex {1}, daemon {2}, Python {3}, CrewAI {4}, automatic bootstrap verified: {5}, native sandbox verified: {6})."
     )
     Write-Host (
         $successMessage -f
@@ -290,7 +348,8 @@ try {
         $daemonManifest.version,
         $manifest.python.version,
         $manifest.smoke.crewaiVersion,
-        (-not $SkipRuntimeBootstrap)
+        (-not $SkipRuntimeBootstrap),
+        (-not $SkipNativeSandbox)
     )
 }
 finally {
