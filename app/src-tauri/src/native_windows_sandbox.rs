@@ -479,8 +479,12 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
     digest.update(&seed);
     digest.update(b"\0");
     digest.update(run_id.as_bytes());
-    let hash = digest.finalize();
-    let components = (0..4)
+    let hash: [u8; 32] = digest.finalize().into();
+    Ok(capability_sid_from_hash(&hash))
+}
+
+fn capability_sid_from_hash(hash: &[u8; 32]) -> String {
+    let components = (0..8)
         .map(|index| {
             let offset = index * 4;
             u32::from_le_bytes(
@@ -490,10 +494,14 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
             )
         })
         .collect::<Vec<_>>();
-    Ok(format!(
-        "S-1-5-21-{}-{}-{}-{}",
-        components[0], components[1], components[2], components[3]
-    ))
+    format!(
+        "S-1-15-3-1024-{}",
+        components
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join("-")
+    )
 }
 
 fn icacls_sid_grant(sid: &str, permissions: &str) -> String {
@@ -2256,9 +2264,19 @@ fn wide(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_membership_enforcement, icacls_sid_grant, read_ipc_frame, write_ipc_frame,
-        IPC_STDERR, IPC_STDOUT,
+        capability_sid_from_hash, finalize_membership_enforcement, icacls_sid_grant,
+        read_ipc_frame, write_ipc_frame, IPC_STDERR, IPC_STDOUT,
     };
+
+    #[test]
+    fn per_run_sid_uses_the_windows_capability_authority() {
+        let sid = capability_sid_from_hash(&[1u8; 32]);
+        assert_eq!(
+            sid,
+            "S-1-15-3-1024-16843009-16843009-16843009-16843009-16843009-16843009-16843009-16843009"
+        );
+        assert_eq!(sid.split('-').count(), 13);
+    }
 
     #[test]
     fn icacls_grants_use_literal_sids_instead_of_account_names() {

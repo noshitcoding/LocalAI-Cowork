@@ -18,6 +18,8 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
   assert.match(nativeSandbox, /SANDBOX_ACCOUNT\.to_ascii_lowercase\(\)/)
   assert.match(nativeSandbox, /local_principal_sid_string\(SANDBOX_GROUP, "sandbox group"\)/)
   assert.match(nativeSandbox, /icacls_sid_grant\(&sandbox_group_sid,/)
+  assert.match(nativeSandbox, /"S-1-15-3-1024-\{\}"/)
+  assert.doesNotMatch(nativeSandbox, /"S-1-5-21-\{\}-\{\}-\{\}-\{\}"/)
   assert.doesNotMatch(nativeSandbox, /format!\("\{\}:\(OI\)\(CI\)[A-Z]+", SANDBOX_GROUP\)/)
   assert.doesNotMatch(nativeSandbox, /SYSTEM:\(OI\)\(CI\)F/)
   assert.match(installerSmoke, /--lacowork-native-sandbox-smoke/)
