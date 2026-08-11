@@ -37,7 +37,9 @@ describe('ServerMcpBindingManager', () => {
     fireEvent.change(screen.getByLabelText('MCP sandbox command'), { target: { value: '/opt/mcp/docs-mcp' } })
     fireEvent.change(screen.getByLabelText('MCP arguments JSON'), { target: { value: '["--stdio"]' } })
     fireEvent.change(screen.getByLabelText('MCP environment JSON'), { target: { value: '{"MCP_TOKEN":"one-time-secret"}' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted binding' }))
+    const submit = screen.getByRole('button', { name: 'Create encrypted binding' })
+    await waitFor(() => expect(submit).toBeEnabled())
+    fireEvent.click(submit)
 
     await waitFor(() => expect(setServerMcpBinding).toHaveBeenCalledWith(
       projectId,
@@ -86,7 +88,9 @@ describe('ServerMcpBindingManager', () => {
     fireEvent.change(screen.getByLabelText('MCP binding transport'), { target: { value: 'streamable_http' } })
     fireEvent.change(screen.getByLabelText('MCP HTTPS endpoint'), { target: { value: 'https://mcp.example.com/mcp' } })
     fireEvent.change(screen.getByLabelText('MCP credential headers JSON'), { target: { value: '{"Authorization":"Bearer one-time-secret"}' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted binding' }))
+    const submit = screen.getByRole('button', { name: 'Create encrypted binding' })
+    await waitFor(() => expect(submit).toBeEnabled())
+    fireEvent.click(submit)
 
     await waitFor(() => expect(setServerMcpBinding).toHaveBeenCalledWith(
       projectId,
