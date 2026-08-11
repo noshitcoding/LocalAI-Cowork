@@ -155,13 +155,21 @@ class CrewRuntimeToolTests(unittest.TestCase):
             stderr="",
         )
 
-        with mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run:
+        bridge_command = ["C:/Open Cowork/cowork-device-agent.exe", "executor-mcp-tool"]
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"COWORK_MCP_TOOL_COMMAND_JSON": json.dumps(bridge_command)},
+            ),
+            mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run,
+        ):
             tools = self._tools()
             result = tools["mcp_tool"]._run("Allowed MCP", "lookup", {"query": "hello"})
 
         self.assertIn("authorized=[REDACTED]", result)
         self.assertNotIn("executor-secret-value", result)
         self.assertNotIn('quote"secret', result)
+        self.assertEqual(run.call_args.args[0], bridge_command)
         sent = json.loads(run.call_args.kwargs["input"])
         self.assertEqual(sent["server"]["environment"]["MCP_TOKEN"], "executor-secret-value")
         self.assertEqual(sent["tool_name"], "lookup")
@@ -171,6 +179,20 @@ class CrewRuntimeToolTests(unittest.TestCase):
         )
         denied = tools["mcp_tool"]._run("Blocked MCP", "lookup", {})
         self.assertIn("not allowed", denied)
+
+    def test_executor_mcp_command_override_is_shell_free_and_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"COWORK_MCP_TOOL_COMMAND_JSON": json.dumps(["agent.exe", "executor-mcp-tool"])},
+        ):
+            self.assertEqual(
+                crew_tools._mcp_tool_command(),
+                ["agent.exe", "executor-mcp-tool"],
+            )
+        for invalid in ["{}", "[]", '["agent.exe", ""]', '["agent.exe", "bad\\u0000arg"]']:
+            with mock.patch.dict(os.environ, {"COWORK_MCP_TOOL_COMMAND_JSON": invalid}):
+                with self.assertRaises(ValueError):
+                    crew_tools._mcp_tool_command()
 
     def test_executor_bound_streamable_http_mcp_keeps_headers_and_redacts_values(self) -> None:
         bindings = crew_tools._executor_mcp_bindings({

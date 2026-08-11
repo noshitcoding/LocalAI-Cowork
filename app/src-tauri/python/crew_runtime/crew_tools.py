@@ -1207,6 +1207,32 @@ def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
     return value
 
 
+def _mcp_tool_command() -> list[str]:
+    configured = os.environ.get("COWORK_MCP_TOOL_COMMAND_JSON")
+    if configured:
+        try:
+            command = json.loads(configured)
+        except ValueError as error:
+            raise ValueError("COWORK_MCP_TOOL_COMMAND_JSON must be valid JSON") from error
+        if (
+            not isinstance(command, list)
+            or not 1 <= len(command) <= 8
+            or any(
+                not isinstance(argument, str)
+                or not argument.strip()
+                or len(argument) > 32_768
+                or "\0" in argument
+                for argument in command
+            )
+        ):
+            raise ValueError(
+                "COWORK_MCP_TOOL_COMMAND_JSON must contain 1 to 8 bounded command arguments"
+            )
+        return command
+    tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
+    return [sys.executable, tool_path]
+
+
 class McpTool(BaseTool):
     name: str = "mcp_tool"
     description: str = "Call a tool on an executor-bound MCP server."
@@ -1256,9 +1282,8 @@ class McpTool(BaseTool):
                 "arguments": normalized_arguments,
                 "timeout_seconds": 120,
             }
-            tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
             completed = subprocess.run(
-                [sys.executable, tool_path],
+                _mcp_tool_command(),
                 cwd=self._root,
                 env=_subprocess_environment(),
                 input=json.dumps(payload, ensure_ascii=False),

@@ -48,6 +48,7 @@ use tokio_tungstenite::{
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
+mod crew;
 mod network_safety;
 mod windows_desktop;
 
@@ -90,9 +91,10 @@ struct Config {
     workspace_root: PathBuf,
     local_daemon: Option<LocalDaemonClient>,
     mcp_bindings: Vec<ExecutorMcpBinding>,
+    crew_runtime: Option<crew::CrewRuntimeConfig>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ExecutorMcpTransport {
     #[default]
@@ -100,7 +102,7 @@ enum ExecutorMcpTransport {
     StreamableHttp,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutorMcpBinding {
     name: String,
@@ -291,6 +293,12 @@ struct ChatResponseMessage {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if env::args().nth(1).as_deref() == Some("executor-mcp-tool") {
+        if env::args().nth(2).is_some() {
+            bail!("executor-mcp-tool does not accept additional arguments");
+        }
+        return run_executor_mcp_tool_bridge().await;
+    }
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -298,6 +306,9 @@ async fn main() -> Result<()> {
         )
         .init();
     let config = Config::from_env()?;
+    if let Some(runtime) = &config.crew_runtime {
+        crew::verify_runtime(runtime).await?;
+    }
     let client = ControlPlaneClient {
         http: Client::builder()
             .timeout(Duration::from_secs(20 * 60))
@@ -401,12 +412,24 @@ impl Config {
                     attributes: BTreeMap::new(),
                 })
                 .collect();
-        if kind == ExecutorKind::ManagedWindows
-            && capabilities
-                .iter()
-                .any(|capability| capability.name.0 == "crew.python")
+        let advertises_crew = capabilities
+            .iter()
+            .any(|capability| capability.name.0 == "crew.python");
+        let crew_runtime = crew::runtime_from_env(kind, advertises_crew, model_base_url.is_some())?;
+        if let Some(capability) = capabilities
+            .iter_mut()
+            .find(|capability| capability.name.0 == "crew.python")
         {
-            bail!("managed Windows executors do not currently support crew.python");
+            if kind == ExecutorKind::ManagedWindows {
+                capability.attributes.insert(
+                    "adapter".to_owned(),
+                    Value::String("pinned_python".to_owned()),
+                );
+                capability.attributes.insert(
+                    "crewai_version".to_owned(),
+                    Value::String(crew::EXPECTED_CREWAI_VERSION.to_owned()),
+                );
+            }
         }
         let mcp_capability = capabilities
             .iter_mut()
@@ -510,6 +533,7 @@ impl Config {
             )),
             local_daemon,
             mcp_bindings,
+            crew_runtime,
         })
     }
 }
@@ -1628,6 +1652,17 @@ async fn execute_lease(
     lease: &RunLease,
 ) -> Result<LeaseExecution> {
     if config.kind == ExecutorKind::ManagedWindows
+        && lease
+            .run
+            .spec
+            .input
+            .get("task_runner")
+            .and_then(Value::as_str)
+            == Some("crew")
+    {
+        return crew::execute_managed_run(client, config, lease).await;
+    }
+    if config.kind == ExecutorKind::ManagedWindows
         && lease.run.spec.input.get("windows_office").is_some()
     {
         return Ok(LeaseExecution {
@@ -1657,16 +1692,6 @@ async fn execute_managed_mcp_run(
     config: &Config,
     lease: &RunLease,
 ) -> Result<LeaseExecution> {
-    if lease
-        .run
-        .spec
-        .input
-        .get("task_runner")
-        .and_then(Value::as_str)
-        == Some("crew")
-    {
-        bail!("Crew MCP execution is not available on managed Windows executors");
-    }
     let selected = selected_executor_mcp_names(&lease.run.spec.input)?;
     let bindings = config
         .mcp_bindings
@@ -1906,6 +1931,91 @@ fn selected_executor_mcp_names(input: &Value) -> Result<Vec<String>> {
     }
     names.sort();
     Ok(names)
+}
+
+async fn run_executor_mcp_tool_bridge() -> Result<()> {
+    use std::io::Read as _;
+
+    let mut input = Vec::new();
+    let stdin = std::io::stdin();
+    std::io::Read::take(stdin.lock(), (MAX_MCP_MESSAGE_BYTES + 1) as u64)
+        .read_to_end(&mut input)?;
+    let mut response = if input.len() > MAX_MCP_MESSAGE_BYTES {
+        json!({
+            "success":false,
+            "server_name":null,
+            "tool_name":null,
+            "result":null,
+            "error":format!("MCP bridge input exceeds {MAX_MCP_MESSAGE_BYTES} bytes"),
+        })
+    } else {
+        executor_mcp_tool_bridge_response(&input, &env::current_dir()?).await
+    };
+    let secrets = serde_json::from_slice::<Value>(&input)
+        .ok()
+        .and_then(|value| value.get("server").cloned())
+        .into_iter()
+        .flat_map(|server| {
+            ["environment", "headers"]
+                .into_iter()
+                .filter_map(move |key| server.get(key).and_then(Value::as_object).cloned())
+                .flat_map(|values| values.into_values())
+        })
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    redact_executor_secret_value(&mut response, &secrets);
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    std::io::Write::write_all(&mut stdout, &serde_json::to_vec(&response)?)?;
+    std::io::Write::write_all(&mut stdout, b"\n")?;
+    std::io::Write::flush(&mut stdout)?;
+    Ok(())
+}
+
+async fn executor_mcp_tool_bridge_response(input: &[u8], workspace: &Path) -> Value {
+    #[derive(Deserialize)]
+    struct Request {
+        server: ExecutorMcpBinding,
+        tool_name: String,
+        #[serde(default)]
+        arguments: Value,
+    }
+
+    let result = async {
+        let request: Request = serde_json::from_slice(input).context("invalid MCP bridge JSON")?;
+        let bytes = serde_json::to_vec(&[request.server])?;
+        let bindings = parse_executor_mcp_bindings(ExecutorKind::ManagedWindows, &bytes)?;
+        validate_executor_mcp_command_files(&bindings)?;
+        let binding = bindings
+            .first()
+            .context("MCP bridge request did not contain a binding")?;
+        let tool_name = request.tool_name.trim();
+        let response = invoke_executor_mcp(binding, tool_name, request.arguments, workspace).await?;
+        let result = response.get("result").cloned().unwrap_or(Value::Null);
+        let is_error = result.get("isError").and_then(Value::as_bool) == Some(true);
+        Ok::<_, anyhow::Error>(json!({
+            "success":!is_error,
+            "server_name":binding.name,
+            "tool_name":tool_name,
+            "protocol_version":response
+                .get("protocol_version")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "result":result,
+            "error":if is_error { Value::String("MCP tool returned isError=true".to_owned()) } else { Value::Null },
+        }))
+    }
+    .await;
+    match result {
+        Ok(response) => response,
+        Err(error) => json!({
+            "success":false,
+            "server_name":null,
+            "tool_name":null,
+            "result":null,
+            "error":format!("{error:#}"),
+        }),
+    }
 }
 
 async fn invoke_executor_mcp(
@@ -3588,7 +3698,12 @@ fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBindi
     let bytes = fs::read(&path)
         .with_context(|| format!("failed to read COWORK_MCP_BINDINGS_FILE {path}"))?;
     let bindings = parse_executor_mcp_bindings(kind, &bytes)?;
-    for binding in &bindings {
+    validate_executor_mcp_command_files(&bindings)?;
+    Ok(bindings)
+}
+
+fn validate_executor_mcp_command_files(bindings: &[ExecutorMcpBinding]) -> Result<()> {
+    for binding in bindings {
         if binding.transport == ExecutorMcpTransport::StreamableHttp {
             continue;
         }
@@ -3606,7 +3721,7 @@ fn load_executor_mcp_bindings(kind: ExecutorKind) -> Result<Vec<ExecutorMcpBindi
             bail!("managed Windows MCP commands must reference regular non-symlink files");
         }
     }
-    Ok(bindings)
+    Ok(())
 }
 
 fn parse_executor_mcp_bindings(

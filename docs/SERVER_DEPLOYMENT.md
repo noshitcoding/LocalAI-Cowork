@@ -198,9 +198,9 @@ gives each agent only its own allowlist, and recursively redacts provider and
 MCP environment/header secrets again before any Crew event or response is
 persisted. Static authorization headers are supported; OAuth discovery/dynamic
 registration and the legacy HTTP+SSE transport are not. Managed Windows uses
-the executor-local stdio or Streamable HTTP configuration described below.
-Crew MCP on managed Windows remains separate compatibility work and must not be
-advertised as available.
+the executor-local stdio or Streamable HTTP configuration described below; its
+pinned Crew adapter applies the same exact per-agent MCP allowlists and routes
+the actual call back through the hardened Rust executor adapter.
 
 Runs may also select synchronized skills and memory records by ID. The API
 resolves those records in the run creator's namespace, keeps only the supported
@@ -490,7 +490,7 @@ dedicated Windows account. Configure:
 - canonical HTTPS `COWORK_SERVER_URL`
 - an executor ID and admin-created pool ID
 - an agent token
-- `COWORK_AGENT_CAPABILITIES=office.microsoft,desktop.windows`
+- `COWORK_AGENT_CAPABILITIES=model.external,office.microsoft,desktop.windows`
 - a dedicated `COWORK_AGENT_WORKSPACE_ROOT`
 
 Start its supervisor at machine startup and the interactive component at
@@ -499,6 +499,23 @@ adapter performs Word/Excel/PowerPoint editing and export through COM and GUI
 automation with visible applications, forced macro disablement, dialog
 detection, live desktop streaming, single-run concurrency, cleanup, and a
 post-run health gate.
+
+To execute frozen Crew definitions on the Windows pool, prepare the release's
+pinned CrewAI runtime under the dedicated account and additionally configure:
+
+- append `crew.python` to `COWORK_AGENT_CAPABILITIES`
+- the model endpoint in `COWORK_MODEL_BASE_URL`, plus
+  `COWORK_MODEL_API_KEY_FILE` when required
+- absolute regular non-symlink files in `COWORK_CREW_PYTHON` and
+  `COWORK_CREW_SCRIPT`
+
+Before registering `crew.python`, the agent runs the adapter's status contract
+and requires runtime schema 2 plus CrewAI 1.15.8. Each Run starts that adapter
+without a shell, with a minimal Windows environment, inside a kill-on-close Job
+Object containing its descendants. Output is limited to 32 MiB, individual
+lines and stderr are bounded, execution has a hard timeout, provider/MCP secrets
+are recursively redacted, and model deltas, usage, checkpoints and changed
+workspace snapshots enter the normal durable Run model.
 
 ### Executor-local MCP on Windows
 
@@ -546,10 +563,15 @@ checkpoint interrupts the Run for manual review instead of starting the tool a
 second time. Changed workspace files are uploaded as the normal review-only
 result snapshot.
 
-The Windows adapter does not yet support Crew MCP. The dedicated Windows account
-and process boundary are not a general network sandbox; the HTTP adapter's
-destination pinning protects its own calls, while host firewall/endpoint policy
-must constrain stdio MCP child processes and provide defense in depth.
+Crew MCP does not execute the binding through the Python network stack. The
+adapter launches `cowork-device-agent.exe executor-mcp-tool` by a validated JSON
+argument vector; that one-shot process receives the selected binding through
+stdin and reuses the Rust stdio/Streamable HTTP implementation, including
+direct executable launch, Job Object cleanup, TLS verification, public-DNS
+validation, DNS pinning, proxy disabling and bounded MCP session handling. The
+dedicated Windows account and process boundary are still not a general network
+sandbox; host firewall/endpoint policy must constrain arbitrary stdio MCP child
+processes and provide defense in depth.
 
 Microsoft does not recommend unattended Office server automation. Operate this
 as best-effort interactive RPA on licensed Windows/Microsoft 365 installations

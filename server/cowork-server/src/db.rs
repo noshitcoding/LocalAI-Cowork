@@ -1481,7 +1481,12 @@ fn supports_run(
     if registration.kind != ExecutorKind::ManagedWindows {
         return true;
     }
-    if input.get("task_runner").and_then(Value::as_str) == Some("crew") {
+    if input.get("task_runner").and_then(Value::as_str) == Some("crew")
+        && !registration
+            .capabilities
+            .iter()
+            .any(|descriptor| descriptor.name.0 == "crew.python")
+    {
         return false;
     }
     let selected = input
@@ -1715,6 +1720,23 @@ mod tests {
             &registration(ExecutorKind::ManagedWindows, &["CRM"]),
             &required,
             &input,
+        ));
+        let mut crew_executor = registration(ExecutorKind::ManagedWindows, &["Docs"]);
+        crew_executor.capabilities.push(CapabilityDescriptor {
+            schema_version: SCHEMA_VERSION,
+            name: Capability::from("crew.python"),
+            version: "test".to_owned(),
+            attributes: BTreeMap::new(),
+        });
+        assert!(supports_run(
+            &crew_executor,
+            &required,
+            &json!({
+                "task_runner":"crew",
+                "frozen_runtime_context":{"mcp_metadata":[
+                    {"definition":{"name":"Docs"}}
+                ]}
+            }),
         ));
         assert!(!supports_run(
             &registration(ExecutorKind::ManagedWindows, &["Docs"]),
