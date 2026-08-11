@@ -304,6 +304,58 @@ const session = await request('/auth/bootstrap', {
 })
 const token = session.access_token
 const team = await request('/teams', { method: 'POST', token, body: { name: 'Worker soak team' } })
+const teamProfile = await request('/provider-profiles', {
+  method: 'POST',
+  token,
+  body: {
+    team_id: team.id,
+    name: 'Existing shared team profile',
+    provider_kind: 'openai_compatible',
+    model_defaults: {
+      base_url: 'https://team-models.example.test/v1',
+      model: 'team-model-v1',
+      auth_mode: 'none',
+      timeout_ms: 600000,
+      max_steps: 64,
+      verify_tls_certificates: true,
+    },
+    api_key: null,
+  },
+})
+await expectRequestStatus(`/teams/${team.id}/members`, 422, {
+  method: 'POST',
+  token,
+  body: { user_id: session.user_id, role: 'member' },
+})
+const invitation = await request('/auth/invitations', {
+  method: 'POST', token, body: { email: 'worker-soak-member@opencowork.invalid', expires_at: null },
+})
+const memberSession = await request('/auth/invitations/accept', {
+  method: 'POST',
+  body: {
+    token: invitation.token,
+    display_name: 'Worker Soak Member',
+    password: 'Worker-Soak-Member-Password-42!',
+    device_id: randomUUID(),
+  },
+})
+await request(`/teams/${team.id}/members`, {
+  method: 'POST',
+  token,
+  body: { user_id: memberSession.user_id, role: 'member' },
+})
+const memberProfiles = await request('/provider-profiles', { token: memberSession.access_token })
+if (!memberProfiles.some((profile) => profile.id === teamProfile.id && profile.team_id === team.id)) {
+  throw new Error(`new team member cannot list the existing team profile: ${JSON.stringify(memberProfiles)}`)
+}
+const memberProfileSnapshot = await request('/sync/entities/provider_profile?limit=1000', {
+  token: memberSession.access_token,
+})
+const backfilledTeamProfile = memberProfileSnapshot.items?.find((item) => item.entity_id === teamProfile.id)
+if (!backfilledTeamProfile || backfilledTeamProfile.tombstone
+    || backfilledTeamProfile.payload?.model !== 'team-model-v1') {
+  throw new Error(`existing team profile was not backfilled to the new member: ${JSON.stringify(memberProfileSnapshot)}`)
+}
 const project = await request('/projects', {
   method: 'POST',
   token,

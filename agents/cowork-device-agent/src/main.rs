@@ -1231,6 +1231,9 @@ async fn apply_remote_entity(
         entity.payload,
     )
     .await?;
+    let local_payload = entity
+        .payload
+        .map(|payload| sync_payload_for_local(entity.entity_type, payload));
     daemon
         .call(
             "sync.apply_remote",
@@ -1241,7 +1244,7 @@ async fn apply_remote_entity(
                     "entity_type": entity.entity_type,
                     "entity_id": local_entity_id,
                     "revision": entity.revision,
-                    "payload": entity.payload,
+                    "payload": local_payload,
                     "tombstone": entity.tombstone,
                     "updated_at": entity.updated_at,
                 },
@@ -1249,6 +1252,27 @@ async fn apply_remote_entity(
         )
         .await?;
     Ok(())
+}
+
+fn sync_payload_for_local(entity_type: &str, payload: &Value) -> Value {
+    let Some(mut payload) = payload.as_object().cloned() else {
+        return payload.clone();
+    };
+    payload.remove("_cowork_local_entity_id");
+    if entity_type == "schedule" {
+        if let Some(local_profile_id) = payload
+            .remove("_cowork_local_model_profile_id")
+            .and_then(|value| value.as_str().map(str::to_owned))
+        {
+            payload.insert(
+                "model_profile_id".to_owned(),
+                Value::String(local_profile_id),
+            );
+        }
+    } else {
+        payload.remove("_cowork_local_model_profile_id");
+    }
+    Value::Object(payload)
 }
 
 async fn local_entity_id_for_remote(
@@ -2656,6 +2680,25 @@ mod tests {
             payload["model_profile_id"],
             stable_sync_entity_id(user_id, "provider_profile", "default-openai-compatible")
                 .to_string()
+        );
+        assert_eq!(
+            sync_payload_for_local("schedule", &payload),
+            json!({"model_profile_id": "default-openai-compatible"})
+        );
+    }
+
+    #[test]
+    fn remote_metadata_strips_internal_legacy_identity() {
+        assert_eq!(
+            sync_payload_for_local(
+                "provider_profile",
+                &json!({
+                    "name": "Local Ollama",
+                    "model": "llama3.1:8b",
+                    "_cowork_local_entity_id": "default-ollama"
+                }),
+            ),
+            json!({"name": "Local Ollama", "model": "llama3.1:8b"})
         );
     }
 

@@ -2342,24 +2342,7 @@ pub(crate) async fn publish_canonical_provider_profile_tx(
     let Some(row) = row else {
         return Ok(false);
     };
-    let defaults: Value = row.try_get("model_defaults")?;
-    let value = |key: &str| defaults.get(key).cloned().unwrap_or(Value::Null);
-    let payload = serde_json::json!({
-        "name": row.try_get::<String, _>("name")?,
-        "provider": "openai-compatible",
-        "provider_kind": row.try_get::<String, _>("provider_kind")?,
-        "preset": value("preset"),
-        "auth_mode": value("auth_mode"),
-        "model": value("model"),
-        "timeout_ms": value("timeout_ms"),
-        "verify_tls_certificates": value("verify_tls_certificates"),
-        "context_window": value("context_window"),
-        "temperature": value("temperature"),
-        "endpoint_binding": value("endpoint_binding"),
-        "has_api_key": row.try_get::<Option<Vec<u8>>, _>("encrypted_secret")?.is_some(),
-        "canonical_revision": row.try_get::<i64, _>("revision")?,
-        "source": "server"
-    });
+    let payload = provider_profile_sync_payload(&row)?;
     if let Some(user_id) = row.try_get::<Option<Uuid>, _>("owner_user_id")? {
         publish_server_entity_tx(tx, user_id, "provider_profile", profile_id, payload).await?;
         remember_materialization(tx, user_id, "provider_profile", profile_id).await?;
@@ -2376,6 +2359,52 @@ pub(crate) async fn publish_canonical_provider_profile_tx(
         }
     }
     Ok(true)
+}
+
+pub(crate) async fn publish_team_provider_profiles_for_user_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    team_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    let rows = sqlx::query(
+        "SELECT * FROM provider_profiles WHERE team_id = $1 AND deleted_at IS NULL ORDER BY id",
+    )
+    .bind(team_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        let profile_id: Uuid = row.try_get("id")?;
+        publish_server_entity_tx(
+            tx,
+            user_id,
+            "provider_profile",
+            profile_id,
+            provider_profile_sync_payload(&row)?,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn provider_profile_sync_payload(row: &PgRow) -> Result<Value, ApiError> {
+    let defaults: Value = row.try_get("model_defaults")?;
+    let value = |key: &str| defaults.get(key).cloned().unwrap_or(Value::Null);
+    Ok(serde_json::json!({
+        "name": row.try_get::<String, _>("name")?,
+        "provider": "openai-compatible",
+        "provider_kind": row.try_get::<String, _>("provider_kind")?,
+        "preset": value("preset"),
+        "auth_mode": value("auth_mode"),
+        "model": value("model"),
+        "timeout_ms": value("timeout_ms"),
+        "verify_tls_certificates": value("verify_tls_certificates"),
+        "context_window": value("context_window"),
+        "temperature": value("temperature"),
+        "endpoint_binding": value("endpoint_binding"),
+        "has_api_key": row.try_get::<Option<Vec<u8>>, _>("encrypted_secret")?.is_some(),
+        "canonical_revision": row.try_get::<i64, _>("revision")?,
+        "source": "server"
+    }))
 }
 
 pub(crate) async fn publish_provider_profile_tombstones_tx(

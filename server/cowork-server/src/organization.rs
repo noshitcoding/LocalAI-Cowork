@@ -87,6 +87,31 @@ pub async fn set_team_member(
             "team ownership transfer requires a dedicated ownership operation".to_owned(),
         ));
     }
+    let mut tx = state.pool.begin().await?;
+    let target_role = sqlx::query_scalar::<_, String>(
+        "SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(team_id)
+    .bind(request.user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if target_role.as_deref() == Some("owner") {
+        return Err(ApiError::Unprocessable(
+            "team ownership transfer requires a dedicated ownership operation".to_owned(),
+        ));
+    }
+    let user_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(request.user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !user_exists {
+        return Err(ApiError::NotFound(format!(
+            "user {} was not found",
+            request.user_id
+        )));
+    }
     sqlx::query(
         r#"
         INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)
@@ -96,8 +121,10 @@ pub async fn set_team_member(
     .bind(team_id)
     .bind(request.user_id)
     .bind(team_role_name(request.role))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+    sync::publish_team_provider_profiles_for_user_tx(&mut tx, team_id, request.user_id).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
