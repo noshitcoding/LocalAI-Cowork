@@ -571,6 +571,23 @@ def resolve_agent_provider(agent_payload: dict) -> str:
     return str(agent_payload.get("providerKind") or "ollama").strip() or "ollama"
 
 
+def resolve_agent_provider_config(request: dict, agent_payload: dict) -> dict:
+    provider_configs = request.get("providerConfigs") or {}
+    profile_id = str(agent_payload.get("providerProfileId") or "").strip()
+    if profile_id:
+        by_profile = provider_configs.get("byProfile") or {}
+        config = by_profile.get(profile_id)
+        if not isinstance(config, dict):
+            raise ValueError(f"Provider profile {profile_id} was not injected for this Crew agent.")
+        return config
+    provider = resolve_agent_provider(agent_payload)
+    if provider == "openai-compatible":
+        return provider_configs.get("openAICompatible") or {}
+    if provider == "openrouter":
+        return provider_configs.get("openRouter") or {}
+    return {}
+
+
 def resolve_provider_model_from_catalog(configured_model: object, models: object) -> str:
     configured = str(configured_model or "").strip()
     normalized_models: list[str] = []
@@ -614,12 +631,10 @@ def resolve_agent_model_label(request: dict, agent_payload: dict) -> str:
     if model_override:
         return model_override
 
-    provider_configs = request.get("providerConfigs") or {}
+    config = resolve_agent_provider_config(request, agent_payload)
     if provider == "openai-compatible":
-        config = provider_configs.get("openAICompatible") or {}
         return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
     if provider == "openrouter":
-        config = provider_configs.get("openRouter") or {}
         return resolve_provider_model_from_catalog(config.get("model"), config.get("models")) or "-"
 
     request_config = request.get("config") or {}
@@ -746,7 +761,7 @@ def openrouter_model_id(model: str) -> str:
 def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) -> None:
     invalid_models: list[str] = []
     free_models: list[str] = []
-    has_openrouter_agent = False
+    openrouter_agents: list[dict] = []
 
     for agent_payload in agent_payloads:
         if not isinstance(agent_payload, dict):
@@ -754,7 +769,7 @@ def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) 
         provider = resolve_agent_provider(agent_payload)
         if provider != "openrouter":
             continue
-        has_openrouter_agent = True
+        openrouter_agents.append(agent_payload)
         model = resolve_agent_model_label(payload, agent_payload)
         model_id = openrouter_model_id(model)
         if model_id in RETIRED_OPENROUTER_MODELS:
@@ -762,14 +777,14 @@ def validate_runtime_provider_models(payload: dict, agent_payloads: list[dict]) 
         elif is_openrouter_free_model(model):
             free_models.append(model)
 
-    if has_openrouter_agent:
-        provider_configs = payload.get("providerConfigs") or {}
-        openrouter_config = provider_configs.get("openRouter") or {}
-        if not str(openrouter_config.get("apiKey") or "").strip():
-            raise ValueError(
-                "OpenRouter API key is missing. Add it to the default OpenRouter LLM profile "
-                "or this Crew's OpenRouter provider profile before starting the Crew."
-            )
+    if any(
+        not str(resolve_agent_provider_config(payload, agent).get("apiKey") or "").strip()
+        for agent in openrouter_agents
+    ):
+        raise ValueError(
+            "OpenRouter API key is missing. Add it to the default OpenRouter LLM profile "
+            "or this Crew's OpenRouter provider profile before starting the Crew."
+        )
 
     if invalid_models:
         raise ValueError(
@@ -995,13 +1010,7 @@ def normalize_openai_compatible_base_url(base_url: object) -> str:
 
 def resolve_agent_timeout_ms(request: dict, agent: dict) -> int:
     request_config = request.get("config") or {}
-    provider_configs = request.get("providerConfigs") or {}
-    provider = resolve_agent_provider(agent)
-    provider_config: dict = {}
-    if provider == "openrouter":
-        provider_config = provider_configs.get("openRouter") or {}
-    elif provider == "openai-compatible":
-        provider_config = provider_configs.get("openAICompatible") or {}
+    provider_config = resolve_agent_provider_config(request, agent)
 
     fallback = parse_int(request_config.get("timeoutMs"), 600_000)
     return max(1_000, parse_int(provider_config.get("timeoutMs"), fallback))
@@ -1357,10 +1366,10 @@ def build_llm(request: dict, agent: dict):
     provider = resolve_agent_provider(agent)
     model_override = str(agent.get("modelOverride") or "").strip()
     request_config = request.get("config") or {}
-    provider_configs = request.get("providerConfigs") or {}
+    provider_config = resolve_agent_provider_config(request, agent)
 
     if provider == "openai-compatible":
-        config = provider_configs.get("openAICompatible") or {}
+        config = provider_config
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         configured_model = model_override or resolve_provider_model_from_catalog(
             config.get("model"), config.get("models")
@@ -1382,7 +1391,7 @@ def build_llm(request: dict, agent: dict):
         return LLM(**llm_kwargs)
 
     if provider == "openrouter":
-        config = provider_configs.get("openRouter") or {}
+        config = provider_config
         configure_litellm_tls_verification(config.get("verifyTlsCertificates"))
         configured_model = model_override or resolve_provider_model_from_catalog(
             config.get("model"), config.get("models")

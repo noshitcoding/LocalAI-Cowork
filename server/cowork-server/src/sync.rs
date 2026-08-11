@@ -1611,7 +1611,8 @@ async fn freeze_crew_definition_for_run(
             definition,
         )
     };
-    let definition = sanitized_crew_definition(definition, crew_id)?;
+    let mut definition = sanitized_crew_definition(definition, crew_id)?;
+    canonicalize_crew_provider_profile_references(pool, user_id, &mut definition).await?;
     let mut object = input
         .as_object()
         .cloned()
@@ -1645,7 +1646,6 @@ fn sanitized_crew_definition(definition: Value, expected_id: &str) -> Result<Val
         "managerReviewGuidelines",
         "shareAllTaskOutputs",
         "sharedOutputCharLimit",
-        "agents",
         "tasks",
         "process",
         "managerAgentId",
@@ -1675,29 +1675,57 @@ fn sanitized_crew_definition(definition: Value, expected_id: &str) -> Result<Val
                 .map(|value| ((*key).to_owned(), value.clone()))
         })
         .collect::<serde_json::Map<_, _>>();
-    sanitized.insert(
-        "agents".to_owned(),
-        sanitized_crew_array(
-            object.get("agents"),
-            "agents",
-            &[
-                "id",
-                "name",
-                "role",
-                "goal",
-                "backstory",
-                "skillsMarkdown",
-                "personalityId",
-                "tools",
-                "mcpServerNames",
-                "enabled",
-                "allowDelegation",
-                "verbose",
-                "maxIterations",
-                "maxRpm",
-            ],
-        )?,
-    );
+    if let Some(selection) = object.get("defaultBackendSelection") {
+        sanitized.insert(
+            "defaultBackendSelection".to_owned(),
+            sanitized_crew_backend_selection(selection, "defaultBackendSelection")?,
+        );
+    }
+    let mut agents = sanitized_crew_array(
+        object.get("agents"),
+        "agents",
+        &[
+            "id",
+            "name",
+            "role",
+            "goal",
+            "backstory",
+            "skillsMarkdown",
+            "personalityId",
+            "modelOverride",
+            "backendSelection",
+            "tools",
+            "mcpServerNames",
+            "enabled",
+            "allowDelegation",
+            "verbose",
+            "maxIterations",
+            "maxRpm",
+        ],
+    )?;
+    for agent in agents
+        .as_array_mut()
+        .expect("sanitized Crew agents are always an array")
+    {
+        let agent = agent
+            .as_object_mut()
+            .expect("sanitized Crew agents are always objects");
+        if let Some(selection) = agent.get("backendSelection").cloned() {
+            agent.insert(
+                "backendSelection".to_owned(),
+                sanitized_crew_backend_selection(&selection, "agent backendSelection")?,
+            );
+        }
+        if agent
+            .get("modelOverride")
+            .is_some_and(|value| value.as_str().is_none_or(|value| value.len() > 4_096))
+        {
+            return Err(ApiError::Unprocessable(
+                "Crew agent modelOverride must be a string of at most 4096 characters".to_owned(),
+            ));
+        }
+    }
+    sanitized.insert("agents".to_owned(), agents);
     sanitized.insert(
         "tasks".to_owned(),
         sanitized_crew_array(
@@ -1723,6 +1751,204 @@ fn sanitized_crew_definition(definition: Value, expected_id: &str) -> Result<Val
         )));
     }
     Ok(Value::Object(sanitized))
+}
+
+fn sanitized_crew_backend_selection(value: &Value, label: &str) -> Result<Value, ApiError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| ApiError::Unprocessable(format!("Crew {label} must be an object")))?;
+    let backend = object
+        .get("backend")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("openai-compatible");
+    let mut sanitized = serde_json::Map::new();
+    sanitized.insert("backend".to_owned(), Value::String(backend.to_owned()));
+    match backend {
+        "openai-compatible" => {
+            let profile_id = object
+                .get("profileId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 200)
+                .ok_or_else(|| {
+                    ApiError::Unprocessable(format!(
+                        "Crew {label} requires an OpenAI-compatible profileId of at most 200 characters"
+                    ))
+                })?;
+            sanitized.insert("profileId".to_owned(), Value::String(profile_id.to_owned()));
+            copy_optional_crew_selection_string(object, &mut sanitized, "model", 4_096, label)?;
+        }
+        "codex" => {
+            copy_optional_crew_selection_string(
+                object,
+                &mut sanitized,
+                "authProfileId",
+                200,
+                label,
+            )?;
+            copy_optional_crew_selection_string(object, &mut sanitized, "model", 4_096, label)?;
+            copy_optional_crew_selection_string(
+                object,
+                &mut sanitized,
+                "reasoningEffort",
+                100,
+                label,
+            )?;
+        }
+        _ => {
+            return Err(ApiError::Unprocessable(format!(
+                "Crew {label} backend must be openai-compatible or codex"
+            )))
+        }
+    }
+    Ok(Value::Object(sanitized))
+}
+
+fn copy_optional_crew_selection_string(
+    source: &serde_json::Map<String, Value>,
+    target: &mut serde_json::Map<String, Value>,
+    key: &str,
+    max_len: usize,
+    label: &str,
+) -> Result<(), ApiError> {
+    let Some(value) = source.get(key) else {
+        return Ok(());
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| ApiError::Unprocessable(format!("Crew {label} {key} must be a string")))?;
+    let value = value.trim();
+    if value.len() > max_len {
+        return Err(ApiError::Unprocessable(format!(
+            "Crew {label} {key} exceeds {max_len} characters"
+        )));
+    }
+    if !value.is_empty() {
+        target.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    Ok(())
+}
+
+async fn canonicalize_crew_provider_profile_references(
+    pool: &PgPool,
+    user_id: Uuid,
+    definition: &mut Value,
+) -> Result<(), ApiError> {
+    let references = crew_provider_profile_references(definition)?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    if references.len() > 64 {
+        return Err(ApiError::Unprocessable(
+            "a Crew may select at most 64 provider profiles".to_owned(),
+        ));
+    }
+    let rows = sqlx::query(
+        r#"
+        SELECT entity_id, payload
+        FROM sync_entities
+        WHERE user_id = $1 AND entity_type = 'provider_profile' AND NOT tombstone
+          AND (
+            entity_id::text = ANY($2)
+            OR payload ->> '_cowork_local_entity_id' = ANY($2)
+          )
+        "#,
+    )
+    .bind(user_id)
+    .bind(&references)
+    .fetch_all(pool)
+    .await?;
+    let mut canonical = std::collections::HashMap::new();
+    for row in rows {
+        let entity_id: Uuid = row.try_get("entity_id")?;
+        let payload: Value = row.try_get("payload")?;
+        canonical.insert(entity_id.to_string(), entity_id.to_string());
+        if let Some(local_id) = payload
+            .get("_cowork_local_entity_id")
+            .and_then(Value::as_str)
+        {
+            canonical.insert(local_id.to_owned(), entity_id.to_string());
+        }
+    }
+    for reference in &references {
+        if !canonical.contains_key(reference) {
+            if let Ok(profile_id) = reference.parse::<Uuid>() {
+                canonical.insert(reference.clone(), profile_id.to_string());
+            } else {
+                return Err(ApiError::Unprocessable(format!(
+                    "Crew provider profile {reference} is unavailable or deleted"
+                )));
+            }
+        }
+    }
+    rewrite_crew_profile_references(definition, &canonical);
+    Ok(())
+}
+
+fn crew_provider_profile_references(definition: &Value) -> Result<Vec<String>, ApiError> {
+    let mut references = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let default = definition.get("defaultBackendSelection");
+    let agents = definition
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::Unprocessable("Crew definition requires agents".to_owned()))?;
+    for selection in default.into_iter().chain(
+        agents
+            .iter()
+            .filter_map(|agent| agent.get("backendSelection")),
+    ) {
+        if selection.get("backend").and_then(Value::as_str) != Some("openai-compatible") {
+            continue;
+        }
+        let profile_id = selection
+            .get("profileId")
+            .and_then(Value::as_str)
+            .expect("sanitized OpenAI-compatible Crew selections have profileId");
+        if seen.insert(profile_id.to_owned()) {
+            references.push(profile_id.to_owned());
+        }
+    }
+    Ok(references)
+}
+
+fn rewrite_crew_profile_references(
+    definition: &mut Value,
+    canonical: &std::collections::HashMap<String, String>,
+) {
+    let Some(object) = definition.as_object_mut() else {
+        return;
+    };
+    if let Some(selection) = object
+        .get_mut("defaultBackendSelection")
+        .and_then(Value::as_object_mut)
+    {
+        rewrite_crew_profile_reference(selection, canonical);
+    }
+    if let Some(agents) = object.get_mut("agents").and_then(Value::as_array_mut) {
+        for agent in agents {
+            if let Some(selection) = agent
+                .get_mut("backendSelection")
+                .and_then(Value::as_object_mut)
+            {
+                rewrite_crew_profile_reference(selection, canonical);
+            }
+        }
+    }
+}
+
+fn rewrite_crew_profile_reference(
+    selection: &mut serde_json::Map<String, Value>,
+    canonical: &std::collections::HashMap<String, String>,
+) {
+    let Some(profile_id) = selection.get("profileId").and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(canonical_id) = canonical.get(profile_id) {
+        selection.insert("profileId".to_owned(), Value::String(canonical_id.clone()));
+    }
 }
 
 fn sanitized_crew_array(
@@ -3187,12 +3413,25 @@ mod tests {
     }
 
     #[test]
-    fn frozen_crew_definitions_drop_all_provider_configuration() {
+    fn frozen_crew_definitions_keep_secret_free_provider_routing_only() {
+        let default_profile = Uuid::new_v4().to_string();
+        let agent_profile = Uuid::new_v4().to_string();
         let sanitized = sanitized_crew_definition(
             serde_json::json!({
                 "id":"researchers",
                 "name":"Research crew",
-                "agents":[{"id":"agent","name":"Agent","apiKey":"nested-secret"}],
+                "defaultBackendSelection":{
+                    "backend":"openai-compatible",
+                    "profileId":default_profile,
+                    "model":"default-model",
+                    "apiKey":"nested-secret"
+                },
+                "agents":[{"id":"agent","name":"Agent","modelOverride":"agent-model","backendSelection":{
+                    "backend":"openai-compatible",
+                    "profileId":agent_profile,
+                    "model":"agent-profile-model",
+                    "headers":{"Authorization":"nested-secret"}
+                },"apiKey":"nested-secret"}],
                 "tasks":[{"id":"task","agentId":"agent","credential":"nested-secret"}],
                 "providerConfigs":{"openAICompatible":{"apiKey":"never-persist"}},
                 "config":{"apiKey":"never-persist-either"}
@@ -3203,8 +3442,56 @@ mod tests {
         assert_eq!(sanitized["id"], "researchers");
         assert!(sanitized.get("providerConfigs").is_none());
         assert!(sanitized.get("config").is_none());
+        assert_eq!(
+            sanitized["defaultBackendSelection"]["profileId"],
+            default_profile
+        );
+        assert_eq!(
+            sanitized["agents"][0]["backendSelection"]["profileId"],
+            agent_profile
+        );
+        assert_eq!(sanitized["agents"][0]["modelOverride"], "agent-model");
         assert!(!sanitized.to_string().contains("never-persist"));
         assert!(!sanitized.to_string().contains("nested-secret"));
+    }
+
+    #[test]
+    fn crew_provider_references_are_deduplicated_and_rewritten() {
+        let first = "local-fast".to_owned();
+        let second = "local-deep".to_owned();
+        let first_uuid = Uuid::new_v4().to_string();
+        let second_uuid = Uuid::new_v4().to_string();
+        let mut definition = serde_json::json!({
+            "defaultBackendSelection":{"backend":"openai-compatible","profileId":first},
+            "agents":[
+                {"id":"inherit"},
+                {"id":"same","backendSelection":{"backend":"openai-compatible","profileId":"local-fast"}},
+                {"id":"deep","backendSelection":{"backend":"openai-compatible","profileId":second}}
+            ]
+        });
+        assert_eq!(
+            crew_provider_profile_references(&definition).unwrap(),
+            vec!["local-fast", "local-deep"]
+        );
+        rewrite_crew_profile_references(
+            &mut definition,
+            &std::collections::HashMap::from([
+                ("local-fast".to_owned(), first_uuid.clone()),
+                ("local-deep".to_owned(), second_uuid.clone()),
+            ]),
+        );
+        assert_eq!(
+            definition["defaultBackendSelection"]["profileId"],
+            first_uuid
+        );
+        assert_eq!(
+            definition["agents"][1]["backendSelection"]["profileId"],
+            first_uuid
+        );
+        assert_eq!(
+            definition["agents"][2]["backendSelection"]["profileId"],
+            second_uuid
+        );
     }
 
     #[test]

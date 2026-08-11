@@ -198,6 +198,14 @@ async fn prepare_run(
         &request.executor_target,
     )
     .await?;
+    providers::ensure_crew_profiles_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        &request.input,
+        &request.executor_target,
+    )
+    .await?;
     let now = Utc::now();
     let run_id = Uuid::new_v4();
     let initial_state = initial_run_state(state, &request).await?;

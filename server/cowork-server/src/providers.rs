@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -286,6 +286,72 @@ pub(crate) async fn ensure_profile_for_target(
         )));
     }
     Ok(())
+}
+
+pub(crate) async fn ensure_crew_profiles_for_target(
+    pool: &PgPool,
+    user_id: Uuid,
+    project_id: Uuid,
+    input: &Value,
+    target: &ExecutorTarget,
+) -> Result<(), ApiError> {
+    if !matches!(target, ExecutorTarget::ServerLinux { .. }) {
+        return Ok(());
+    }
+    for profile_id in crew_profile_ids_for_server(input)? {
+        ensure_profile_for_target(pool, user_id, project_id, Some(profile_id), target).await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn crew_profile_ids_for_server(input: &Value) -> Result<Vec<Uuid>, ApiError> {
+    let Some(definition) = input.get("crew_definition") else {
+        return Ok(Vec::new());
+    };
+    let agents = definition
+        .get("agents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::Unprocessable("the frozen Crew definition requires agents".to_owned())
+        })?;
+    let default_selection = definition.get("defaultBackendSelection");
+    let mut profile_ids = Vec::new();
+    let mut seen = HashSet::new();
+    for agent in agents {
+        if agent.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(selection) = agent.get("backendSelection").or(default_selection) else {
+            continue;
+        };
+        let backend = selection
+            .get("backend")
+            .and_then(Value::as_str)
+            .unwrap_or("openai-compatible");
+        if backend != "openai-compatible" {
+            return Err(ApiError::Unprocessable(format!(
+                "Crew backend {backend} is unavailable to Linux server executors"
+            )));
+        }
+        let profile_id = selection
+            .get("profileId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ApiError::Unprocessable(
+                    "an OpenAI-compatible Crew backend is missing profileId".to_owned(),
+                )
+            })?
+            .parse::<Uuid>()
+            .map_err(|_| {
+                ApiError::Unprocessable(
+                    "Crew provider profile references must be canonical UUIDs".to_owned(),
+                )
+            })?;
+        if seen.insert(profile_id) {
+            profile_ids.push(profile_id);
+        }
+    }
+    Ok(profile_ids)
 }
 
 pub(crate) async fn resolve_server_provider(
@@ -707,5 +773,47 @@ mod tests {
         .unwrap();
         assert_eq!(kind, "openai_compatible");
         assert_eq!(defaults["endpoint_binding"], "per_device");
+    }
+
+    #[test]
+    fn extracts_effective_server_crew_profiles_without_duplicates() {
+        let default_profile = Uuid::new_v4();
+        let override_profile = Uuid::new_v4();
+        let input = json!({
+            "crew_definition":{
+                "defaultBackendSelection":{
+                    "backend":"openai-compatible",
+                    "profileId":default_profile
+                },
+                "agents":[
+                    {"id":"inherit"},
+                    {"id":"same","backendSelection":{
+                        "backend":"openai-compatible",
+                        "profileId":default_profile
+                    }},
+                    {"id":"override","backendSelection":{
+                        "backend":"openai-compatible",
+                        "profileId":override_profile
+                    }},
+                    {"id":"disabled","enabled":false,"backendSelection":{
+                        "backend":"codex"
+                    }}
+                ]
+            }
+        });
+        assert_eq!(
+            crew_profile_ids_for_server(&input).unwrap(),
+            vec![default_profile, override_profile]
+        );
+        let unsupported = json!({
+            "crew_definition":{
+                "defaultBackendSelection":{"backend":"codex"},
+                "agents":[{"id":"active"}]
+            }
+        });
+        assert!(crew_profile_ids_for_server(&unsupported)
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable to Linux server"));
     }
 }

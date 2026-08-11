@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -14,8 +14,8 @@ use cowork_contracts::{
 };
 use cowork_runtime::{
     crew::{
-        apply_crew_agent_tool_policy, crew_protocol_run_event_kind, prepare_crew_request,
-        CrewModelConfig,
+        apply_crew_agent_tool_policy, crew_protocol_run_event_kind,
+        prepare_crew_request_with_agent_models, CrewModelConfig,
     },
     AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
     ToolOutput,
@@ -421,6 +421,31 @@ async fn execute_crew_run(
         .get("crew_definition")
         .cloned()
         .context("the Crew run has no frozen crew_definition")?;
+    let mut profile_models = HashMap::new();
+    let mut profile_secrets = Vec::new();
+    for profile_id in providers::crew_profile_ids_for_server(&lease.run.spec.input)? {
+        let profile = providers::resolve_server_provider(
+            pool,
+            runtime.object_store.as_ref(),
+            lease.run.spec.creator_user_id,
+            lease.run.spec.project_id,
+            profile_id,
+        )
+        .await?;
+        if let Some(secret) = profile.api_key.clone().filter(|value| !value.is_empty()) {
+            profile_secrets.push(secret);
+        }
+        profile_models.insert(
+            profile_id.to_string(),
+            CrewModelConfig {
+                base_url: profile.base_url,
+                api_key: profile.api_key,
+                model: profile.model,
+                timeout: profile.timeout,
+                verify_tls_certificates: profile.verify_tls_certificates,
+            },
+        );
+    }
     let mcp_bindings = mcp_bindings::resolve_server_bindings_for_run(
         pool,
         runtime.object_store.as_ref(),
@@ -428,16 +453,27 @@ async fn execute_crew_run(
         &lease.run.spec.input,
     )
     .await?;
-    let mut request = prepare_crew_request(definition, &lease.run.spec, &model)?;
+    let mut request = prepare_crew_request_with_agent_models(
+        definition,
+        &lease.run.spec,
+        &model,
+        &profile_models,
+    )?;
     let mut secret_redactions = model.api_key.clone().into_iter().collect::<Vec<_>>();
+    secret_redactions.extend(profile_secrets);
     secret_redactions.extend(inject_crew_mcp_context(
         &mut request,
         &mcp_bindings,
         lease.run.spec.creator_user_id,
         &runtime.server_capabilities,
     )?);
-    let timeout_seconds = model
-        .timeout
+    let longest_model_timeout = profile_models
+        .values()
+        .map(|profile| profile.timeout)
+        .max()
+        .unwrap_or(model.timeout)
+        .max(model.timeout);
+    let timeout_seconds = longest_model_timeout
         .as_secs()
         .saturating_add(60)
         .clamp(60, 24 * 60 * 60);

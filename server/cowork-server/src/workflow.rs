@@ -1372,6 +1372,15 @@ async fn prepare_scheduled_run(
     let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
         .await
         .map_err(block)?;
+    providers::ensure_crew_profiles_for_target(
+        pool,
+        creator_user_id,
+        schedule.project_id,
+        &input,
+        &schedule.executor_target,
+    )
+    .await
+    .map_err(block)?;
     apply_frozen_crew_capabilities(&mut required_capabilities, &input).map_err(block)?;
     mcp_bindings::ensure_crew_mcp_selection(&input).map_err(block)?;
     if mcp_bindings::run_selects_mcp(&input) {

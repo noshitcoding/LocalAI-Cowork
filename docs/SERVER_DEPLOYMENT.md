@@ -50,12 +50,14 @@ password contains URI-reserved characters, percent-encode it in
 `database_url.txt`.
 
 Configure `COWORK_MODEL_BASE_URL`, `COWORK_MODEL_NAME` and optionally
-`COWORK_MODEL_API_KEY` for server model runs. Ordinary agent calls keep this key
-inside the worker. A Crew run receives its selected server provider credential
-only in the signed, schema-checked stdin of its dedicated sandbox process. The
-credential is never written into the frozen Run, an event, an artifact, a
-browser response, or the sandbox workspace; protocol output is recursively
-redacted before persistence.
+`COWORK_MODEL_API_KEY` for server model runs and as the fallback for Crew
+agents without an explicit synchronized provider profile. Ordinary agent calls
+keep this key inside the worker. A Crew run receives the fallback plus only the
+distinct server-bound profiles referenced by its enabled agents, and receives
+their credentials only in the signed, schema-checked stdin of its dedicated
+sandbox process. Credentials are never written into the frozen Run, an event,
+an artifact, a browser response, or the sandbox workspace; protocol output is
+recursively redacted before persistence.
 
 Set `COWORK_PUBLIC_ORIGIN` to the one canonical HTTPS origin, without a path,
 and `COWORK_WEBAUTHN_RP_ID` to its stable relying-party domain. For example:
@@ -129,13 +131,16 @@ sandbox images exist.
 
 Server Crew tasks freeze the released task configuration and the current
 secret-free synchronized Crew definition before they enter the queue. The
-worker then applies the Run's server-bound model profile (or the configured
-server default) to every enabled Crew agent and dispatches CrewAI 1.15.8 through
-the filtered-egress sandbox. Disabled agents and their tasks are removed from
-the request, unsafe dispatch is checkpointed, and a missing definition,
-provider, image or capability fails closed. Per-agent provider selection is
-currently a desktop-only feature; a server Crew Run deliberately uses one
-explicit server profile for the whole frozen Crew.
+server canonicalizes each selected profile reference, checks that it belongs to
+the Run owner or project team and is server-bound, and rejects an unavailable
+profile before queueing. At dispatch the worker resolves each distinct profile
+once and CrewAI selects its endpoint, model, timeout and credential per enabled
+agent. Agents without a profile inherit the Run's server-bound model profile or
+the configured server default. Disabled agents and their tasks are removed
+from the request, unsafe dispatch is checkpointed, and a missing definition,
+provider, image or capability fails closed. Personal-device and managed-Windows
+Crews continue to use their executor-local fallback profile until their local
+profile maps implement the same versioned per-agent contract.
 
 Before dispatch, Crew Runs pass the same user/team token and hard-cost quota
 check as ordinary model Runs. The pinned CrewAI adapter returns its actual

@@ -1,4 +1,7 @@
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use cowork_contracts::{Capability, RunEventKind, RunSpec};
@@ -123,15 +126,35 @@ fn canonical_crew_tool_id(value: &str) -> String {
 }
 
 pub fn prepare_crew_request(
+    definition: Value,
+    run: &RunSpec,
+    model: &CrewModelConfig,
+) -> Result<Value> {
+    prepare_crew_request_internal(definition, run, model, &HashMap::new(), false)
+}
+
+pub fn prepare_crew_request_with_agent_models(
+    definition: Value,
+    run: &RunSpec,
+    model: &CrewModelConfig,
+    profile_models: &HashMap<String, CrewModelConfig>,
+) -> Result<Value> {
+    prepare_crew_request_internal(definition, run, model, profile_models, true)
+}
+
+fn prepare_crew_request_internal(
     mut definition: Value,
     run: &RunSpec,
     model: &CrewModelConfig,
+    profile_models: &HashMap<String, CrewModelConfig>,
+    honor_profile_selections: bool,
 ) -> Result<Value> {
     let request = definition
         .as_object_mut()
         .context("the frozen Crew definition must be an object")?;
     let crew_id = required_string(request, "id")?;
     required_string(request, "name")?;
+    let default_selection = request.remove("defaultBackendSelection");
 
     let agents = request
         .get_mut("agents")
@@ -145,14 +168,41 @@ pub fn prepare_crew_request(
             .context("Crew agents must be objects")?;
         let id = required_string(agent, "id")?;
         active_agent_ids.insert(id);
+        let agent_selection = agent.remove("backendSelection");
+        let selection = honor_profile_selections
+            .then(|| agent_selection.or_else(|| default_selection.clone()))
+            .flatten();
+        let (profile_id, selected_model) = crew_backend_selection(selection.as_ref())?;
+        let selected_config = if let Some(profile_id) = profile_id.as_deref() {
+            Some(profile_models.get(profile_id).with_context(|| {
+                format!("Crew provider profile {profile_id} was not resolved before dispatch")
+            })?)
+        } else {
+            None
+        };
+        let existing_model = honor_profile_selections
+            .then(|| {
+                agent
+                    .get("modelOverride")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .flatten();
+        let effective_model = selected_model
+            .or(existing_model)
+            .unwrap_or_else(|| selected_config.unwrap_or(model).model.clone());
         agent.insert(
             "providerKind".to_owned(),
             Value::String("openai-compatible".to_owned()),
         );
-        agent.insert(
-            "modelOverride".to_owned(),
-            Value::String(model.model.clone()),
-        );
+        agent.insert("modelOverride".to_owned(), Value::String(effective_model));
+        if let Some(profile_id) = profile_id {
+            agent.insert("providerProfileId".to_owned(), Value::String(profile_id));
+        } else {
+            agent.remove("providerProfileId");
+        }
     }
     if active_agent_ids.is_empty() {
         bail!("the frozen Crew definition has no enabled agents");
@@ -188,17 +238,14 @@ pub fn prepare_crew_request(
     }
 
     let timeout_ms = u64::try_from(model.timeout.as_millis()).unwrap_or(u64::MAX);
-    let provider = json!({
-        "baseUrl": model.base_url,
-        "apiKey": model.api_key.as_deref().unwrap_or("localai-cowork"),
-        "model": model.model,
-        "models": [model.model],
-        "timeoutMs": timeout_ms,
-        "verifyTlsCertificates": model.verify_tls_certificates,
-    });
+    let provider = crew_provider_json(model);
+    let profile_providers = profile_models
+        .iter()
+        .map(|(profile_id, model)| (profile_id.clone(), crew_provider_json(model)))
+        .collect::<Map<_, _>>();
     request.insert(
         "providerConfigs".to_owned(),
-        json!({"openAICompatible": provider}),
+        json!({"openAICompatible": provider, "byProfile": profile_providers}),
     );
     request.insert(
         "config".to_owned(),
@@ -259,6 +306,49 @@ pub fn prepare_crew_request(
 
     request.insert("id".to_owned(), Value::String(crew_id));
     Ok(definition)
+}
+
+fn crew_provider_json(model: &CrewModelConfig) -> Value {
+    let timeout_ms = u64::try_from(model.timeout.as_millis()).unwrap_or(u64::MAX);
+    json!({
+        "baseUrl": model.base_url,
+        "apiKey": model.api_key.as_deref().unwrap_or("localai-cowork"),
+        "model": model.model,
+        "models": [model.model],
+        "timeoutMs": timeout_ms,
+        "verifyTlsCertificates": model.verify_tls_certificates,
+    })
+}
+
+fn crew_backend_selection(selection: Option<&Value>) -> Result<(Option<String>, Option<String>)> {
+    let Some(selection) = selection else {
+        return Ok((None, None));
+    };
+    let object = selection
+        .as_object()
+        .context("Crew backendSelection must be an object")?;
+    let backend = object
+        .get("backend")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("openai-compatible");
+    if backend != "openai-compatible" {
+        bail!("Crew backend {backend:?} is unavailable to this executor");
+    }
+    let profile_id = required_string(object, "profileId")?;
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.len() > 4_096 {
+                bail!("Crew backendSelection model exceeds 4096 characters");
+            }
+            Ok(value.to_owned())
+        })
+        .transpose()?;
+    Ok((Some(profile_id), model))
 }
 
 fn required_string(object: &Map<String, Value>, key: &str) -> Result<String> {
@@ -369,6 +459,88 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("[preference/tone] Be concise."));
+    }
+
+    #[test]
+    fn prepares_distinct_authorized_provider_profiles_per_agent() {
+        let spec = run(json!({"prompt":"Compare two independent reviews"}));
+        let fallback = CrewModelConfig {
+            base_url: "https://fallback.example.test/v1".to_owned(),
+            api_key: Some("fallback-secret".to_owned()),
+            model: "fallback-model".to_owned(),
+            timeout: Duration::from_secs(30),
+            verify_tls_certificates: true,
+        };
+        let profiles = HashMap::from([
+            (
+                "11111111-1111-4111-8111-111111111111".to_owned(),
+                CrewModelConfig {
+                    base_url: "https://fast.example.test/v1".to_owned(),
+                    api_key: Some("fast-secret".to_owned()),
+                    model: "fast-default".to_owned(),
+                    timeout: Duration::from_secs(10),
+                    verify_tls_certificates: true,
+                },
+            ),
+            (
+                "22222222-2222-4222-8222-222222222222".to_owned(),
+                CrewModelConfig {
+                    base_url: "https://deep.example.test/v1".to_owned(),
+                    api_key: Some("deep-secret".to_owned()),
+                    model: "deep-default".to_owned(),
+                    timeout: Duration::from_secs(90),
+                    verify_tls_certificates: false,
+                },
+            ),
+        ]);
+        let request = prepare_crew_request_with_agent_models(
+            json!({
+                "id":"reviewers",
+                "name":"Reviewers",
+                "defaultBackendSelection":{
+                    "backend":"openai-compatible",
+                    "profileId":"11111111-1111-4111-8111-111111111111"
+                },
+                "agents":[
+                    {"id":"fast","enabled":true,"modelOverride":"legacy-fast"},
+                    {"id":"deep","enabled":true,"backendSelection":{
+                        "backend":"openai-compatible",
+                        "profileId":"22222222-2222-4222-8222-222222222222",
+                        "model":"deep-agent-model"
+                    }}
+                ],
+                "tasks":[
+                    {"id":"fast-task","agentId":"fast"},
+                    {"id":"deep-task","agentId":"deep"}
+                ]
+            }),
+            &spec,
+            &fallback,
+            &profiles,
+        )
+        .unwrap();
+        assert_eq!(
+            request["agents"][0]["providerProfileId"],
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(request["agents"][0]["modelOverride"], "legacy-fast");
+        assert_eq!(
+            request["agents"][1]["providerProfileId"],
+            "22222222-2222-4222-8222-222222222222"
+        );
+        assert_eq!(request["agents"][1]["modelOverride"], "deep-agent-model");
+        assert_eq!(
+            request["providerConfigs"]["byProfile"]["11111111-1111-4111-8111-111111111111"]
+                ["baseUrl"],
+            "https://fast.example.test/v1"
+        );
+        assert_eq!(
+            request["providerConfigs"]["byProfile"]["22222222-2222-4222-8222-222222222222"]
+                ["apiKey"],
+            "deep-secret"
+        );
+        assert!(request.get("defaultBackendSelection").is_none());
+        assert!(request["agents"][1].get("backendSelection").is_none());
     }
 
     #[test]

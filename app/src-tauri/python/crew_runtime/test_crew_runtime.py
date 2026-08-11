@@ -716,6 +716,61 @@ class CrewRuntimeTaskTests(unittest.TestCase):
         )
         self.assertEqual(llm.model, "openai/RedHatAI/gemma-4-31B-it-FP8-block")
 
+    def test_agent_profile_selects_an_isolated_provider_configuration(self) -> None:
+        request = {
+            "config": {"timeoutMs": 60_000},
+            "providerConfigs": {
+                "openAICompatible": {
+                    "baseUrl": "https://fallback.example.test/v1",
+                    "model": "fallback-model",
+                    "apiKey": "fallback-key",
+                    "timeoutMs": 60_000,
+                },
+                "byProfile": {
+                    "profile-fast": {
+                        "baseUrl": "https://fast.example.test/v1",
+                        "model": "fast-model",
+                        "apiKey": "fast-key",
+                        "timeoutMs": 15_000,
+                    },
+                    "profile-deep": {
+                        "baseUrl": "https://deep.example.test/v1",
+                        "model": "deep-model",
+                        "apiKey": "deep-key",
+                        "timeoutMs": 180_000,
+                    },
+                },
+            },
+        }
+        fast_agent = {
+            "id": "fast",
+            "providerKind": "openai-compatible",
+            "providerProfileId": "profile-fast",
+            "tools": [],
+        }
+        deep_agent = {
+            "id": "deep",
+            "providerKind": "openai-compatible",
+            "providerProfileId": "profile-deep",
+            "modelOverride": "deep-agent-model",
+            "tools": [],
+        }
+
+        fast_llm = crew_runtime.build_llm(request, fast_agent)
+        deep_llm = crew_runtime.build_llm(request, deep_agent)
+
+        self.assertEqual(fast_llm.base_url, "https://fast.example.test/v1")
+        self.assertEqual(fast_llm.model, "openai/fast-model")
+        self.assertEqual(fast_llm.timeout, 15)
+        self.assertEqual(deep_llm.base_url, "https://deep.example.test/v1")
+        self.assertEqual(deep_llm.model, "openai/deep-agent-model")
+        self.assertEqual(deep_llm.timeout, 180)
+        with self.assertRaisesRegex(ValueError, "was not injected"):
+            crew_runtime.resolve_agent_provider_config(
+                request,
+                {"providerKind": "openai-compatible", "providerProfileId": "missing"},
+            )
+
     def test_model_does_not_exist_is_classified_as_model_not_found(self) -> None:
         classified = crew_runtime.classify_runtime_error(
             RuntimeError("The model `stale/model` does not exist.")
