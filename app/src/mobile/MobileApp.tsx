@@ -31,6 +31,7 @@ import RemoteProjectVersionManager from '../components/RemoteProjectVersionManag
 import RemoteSecuritySettings from '../components/RemoteSecuritySettings'
 import RemoteGovernancePanel from '../components/RemoteGovernancePanel'
 import RemoteDeviceSettings from '../components/RemoteDeviceSettings'
+import RemoteMetadataManager from '../components/RemoteMetadataManager'
 import type { DesktopSession, RunEvent, RunRecord } from '../runtime/contracts'
 import { nativePasskeyAvailable } from '../runtime/nativePasskey'
 import { webauthnAvailableForOrigin } from '../runtime/webauthn'
@@ -510,6 +511,7 @@ export default function MobileApp() {
         {online ? <RemoteDeviceSettings compact client={client} /> : null}
         {online ? <RemoteOrganizationManager compact client={client} currentUserId={account.userId ?? ''} /> : null}
         {online ? <RemoteProjectVersionManager compact client={client} /> : null}
+        {online ? <RemoteMetadataManager compact client={client} /> : null}
         {online ? <RemoteProviderProfileManager compact client={client} /> : null}
         {online ? <RemoteTaskManager compact client={client} onRunCreated={(run) => { const next = { ...offlineRef.current, runs: [run, ...offlineRef.current.runs.filter((item) => item.spec.id !== run.spec.id)] }; persist(next); setSelectedRunId(run.spec.id) }} /> : null}
         {online ? <RemoteScheduleManager compact client={client} /> : null}

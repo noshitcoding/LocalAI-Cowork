@@ -21,6 +21,7 @@ import RemoteGovernancePanel from './RemoteGovernancePanel'
 import RemoteDeviceSettings from './RemoteDeviceSettings'
 import RemoteOrganizationManager from './RemoteOrganizationManager'
 import RemoteProjectVersionManager from './RemoteProjectVersionManager'
+import RemoteMetadataManager from './RemoteMetadataManager'
 
 const LocalSyncConflicts = lazy(() => import('./LocalSyncConflicts'))
 
@@ -257,6 +258,7 @@ export default function RemoteServerView() {
         <div>
           <RemoteOrganizationManager client={client} currentUserId={account.userId ?? ''} />
           <RemoteProjectVersionManager client={client} />
+          <RemoteMetadataManager client={client} />
           <RemoteRunComposer client={client} onCreated={(run) => { setRuns((current) => [run, ...current.filter((item) => item.spec.id !== run.spec.id)]); setSelectedRunId(run.spec.id) }} />
           <RemoteTaskManager client={client} onRunCreated={(run) => { setRuns((current) => [run, ...current.filter((item) => item.spec.id !== run.spec.id)]); setSelectedRunId(run.spec.id) }} />
           <RemoteScheduleManager client={client} />
