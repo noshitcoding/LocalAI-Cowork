@@ -1,7 +1,7 @@
 use std::{collections::HashSet, time::Duration};
 
 use anyhow::{bail, Context, Result};
-use cowork_contracts::RunSpec;
+use cowork_contracts::{Capability, RunSpec};
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,105 @@ pub struct CrewModelConfig {
     pub model: String,
     pub timeout: Duration,
     pub verify_tls_certificates: bool,
+}
+
+pub fn apply_crew_agent_tool_policy<F>(
+    agent: &mut Map<String, Value>,
+    has_capability: F,
+) -> Result<Vec<String>>
+where
+    F: Fn(&str) -> bool,
+{
+    agent.insert("allowDelegation".to_owned(), Value::Bool(false));
+    let mut allowed = Vec::new();
+    for tool in crew_agent_tool_ids(agent)? {
+        if matches!(tool.as_str(), "delegate_task" | "mcp") {
+            continue;
+        }
+        if let Some(required) = crew_tool_capability(&tool)? {
+            if !has_capability(required) {
+                bail!("Crew tool {tool:?} requires executor capability {required:?}");
+            }
+        }
+        allowed.push(tool);
+    }
+    Ok(allowed)
+}
+
+pub fn required_crew_tool_capabilities(definition: &Value) -> Result<Vec<Capability>> {
+    let agents = definition
+        .get("agents")
+        .and_then(Value::as_array)
+        .context("the frozen Crew definition must contain agents")?;
+    let mut required = Vec::new();
+    let mut seen = HashSet::new();
+    for agent in agents {
+        if agent.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let agent = agent.as_object().context("Crew agents must be objects")?;
+        for tool in crew_agent_tool_ids(agent)? {
+            if let Some(capability) = crew_tool_capability(&tool)? {
+                if seen.insert(capability) {
+                    required.push(Capability::from(capability));
+                }
+            }
+        }
+    }
+    Ok(required)
+}
+
+fn crew_agent_tool_ids(agent: &Map<String, Value>) -> Result<Vec<String>> {
+    let Some(tools) = agent.get("tools") else {
+        return Ok(Vec::new());
+    };
+    let tools = tools
+        .as_array()
+        .context("Crew agent tools must be an array")?;
+    if tools.len() > 64 {
+        bail!("Crew agents may select at most 64 tools");
+    }
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for value in tools {
+        let tool = value
+            .as_str()
+            .map(canonical_crew_tool_id)
+            .filter(|value| !value.is_empty() && value.len() <= 100)
+            .context("Crew agent tool names must be strings of at most 100 characters")?;
+        if seen.insert(tool.clone()) {
+            result.push(tool);
+        }
+    }
+    Ok(result)
+}
+
+fn crew_tool_capability(tool: &str) -> Result<Option<&'static str>> {
+    match tool {
+        "todo" | "delegate_task" | "mcp" => Ok(None),
+        "read_file" | "edit_file" | "create_directory" | "move_path" | "copy_path" | "glob"
+        | "grep" => Ok(Some("files")),
+        "bash" => Ok(Some("shell")),
+        "web_fetch" | "web_search" => Ok(Some("web.fetch")),
+        "office_workflow" => Ok(Some("office.ooxml")),
+        _ => bail!("Crew tool {tool:?} is not supported by the pinned runtime"),
+    }
+}
+
+fn canonical_crew_tool_id(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+    match normalized.as_str() {
+        "shell" | "bashtool" => "bash".to_owned(),
+        "read" | "filereadtool" => "read_file".to_owned(),
+        "edit" | "write" | "fileedittool" => "edit_file".to_owned(),
+        "webfetch" => "web_fetch".to_owned(),
+        "websearch" => "web_search".to_owned(),
+        "mcp_call" => "mcp".to_owned(),
+        "generate_office_workflow" | "pptx_template_workflow" | "docx_template_workflow" => {
+            "office_workflow".to_owned()
+        }
+        _ => normalized,
+    }
 }
 
 pub fn prepare_crew_request(
@@ -260,5 +359,49 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("[preference/tone] Be concise."));
+    }
+
+    #[test]
+    fn crew_tool_policy_is_capability_bound_and_disables_delegation() {
+        let mut agent = json!({
+            "allowDelegation":true,
+            "tools":["read", "websearch", "office_workflow", "todo", "read", "mcp"]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let capabilities = ["files", "web.fetch", "office.ooxml"];
+        let allowed =
+            apply_crew_agent_tool_policy(&mut agent, |required| capabilities.contains(&required))
+                .unwrap();
+        assert_eq!(
+            allowed,
+            vec!["read_file", "web_search", "office_workflow", "todo"]
+        );
+        assert_eq!(agent["allowDelegation"], false);
+
+        let mut shell_agent = json!({"tools":["bash"]}).as_object().unwrap().clone();
+        assert!(apply_crew_agent_tool_policy(&mut shell_agent, |_| false).is_err());
+    }
+
+    #[test]
+    fn crew_tool_capabilities_are_derived_from_enabled_agents() {
+        let capabilities = required_crew_tool_capabilities(&json!({
+            "agents":[
+                {"id":"writer","tools":["read_file","office_workflow","todo"]},
+                {"id":"researcher","tools":["web_search","bash","read"]},
+                {"id":"disabled","enabled":false,"tools":["unsupported_tool"]}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::from("files"),
+                Capability::from("office.ooxml"),
+                Capability::from("web.fetch"),
+                Capability::from("shell"),
+            ]
+        );
     }
 }

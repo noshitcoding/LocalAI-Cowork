@@ -190,6 +190,8 @@ impl ManagedMcpProcessJob {
             Ok(Self {})
         }
     }
+
+    fn close(self) {}
 }
 
 #[cfg(windows)]

@@ -166,6 +166,7 @@ async fn prepare_run(
     }
     request.input =
         sync::freeze_runtime_context_for_run(&state.pool, principal.user_id, request.input).await?;
+    workflow::apply_frozen_crew_capabilities(&mut request.required_capabilities, &request.input)?;
     mcp_bindings::ensure_crew_mcp_selection(&request.input)?;
     if mcp_bindings::run_selects_mcp(&request.input) {
         if matches!(

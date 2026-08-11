@@ -13,7 +13,7 @@ use cowork_contracts::{
     SandboxRunResult, SandboxRunSpec,
 };
 use cowork_runtime::{
-    crew::{prepare_crew_request, CrewModelConfig},
+    crew::{apply_crew_agent_tool_policy, prepare_crew_request, CrewModelConfig},
     AgentRuntime, ModelConfig as AgentModelConfig, RuntimeHost, ToolDefinition, ToolInvocation,
     ToolOutput,
 };
@@ -44,6 +44,7 @@ struct WorkerRuntime {
     desktop_runner: Option<desktop::RunnerControl>,
     object_store: Option<storage::ObjectStore>,
     model_pricing: Option<ModelPricing>,
+    server_capabilities: Vec<Capability>,
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +125,7 @@ pub async fn run(pool: PgPool, config: Config) -> Result<()> {
                     output_micros_per_million,
                 },
             ),
+        server_capabilities: config.server_capabilities.clone(),
     };
 
     if runtime.agent.is_none() && runtime.runner.is_none() {
@@ -429,6 +431,7 @@ async fn execute_crew_run(
         &mut request,
         &mcp_bindings,
         lease.run.spec.creator_user_id,
+        &runtime.server_capabilities,
     )?);
     let timeout_seconds = model
         .timeout
@@ -647,23 +650,30 @@ fn inject_crew_mcp_context(
     request: &mut Value,
     bindings: &[ResolvedServerMcpBinding],
     creator_user_id: Uuid,
+    capabilities: &[Capability],
 ) -> Result<Vec<String>> {
     let agents = request
-        .get("agents")
-        .and_then(Value::as_array)
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
         .context("the prepared Crew request must contain agents")?;
     let mut requested_names = BTreeSet::new();
     let mut agent_access = Vec::with_capacity(agents.len());
     for agent in agents {
         let agent = agent
-            .as_object()
+            .as_object_mut()
             .context("prepared Crew agents must be objects")?;
         let agent_id = agent
             .get("id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .context("prepared Crew agents require an id")?;
+            .context("prepared Crew agents require an id")?
+            .to_owned();
+        let allowed_tools = apply_crew_agent_tool_policy(agent, |required| {
+            capabilities
+                .iter()
+                .any(|capability| capability.0 == required)
+        })?;
         let mut allowed_names = BTreeSet::new();
         if let Some(values) = agent.get("mcpServerNames") {
             for value in values
@@ -681,7 +691,7 @@ fn inject_crew_mcp_context(
         }
         agent_access.push(json!({
             "agentId":agent_id,
-            "allowedTools":[],
+            "allowedTools":allowed_tools,
             "blockedTools":[],
             "allowedMcpServerNames":allowed_names,
             "blockedMcpServerNames":[],
@@ -1658,7 +1668,7 @@ mod tests {
         let creator_user_id = Uuid::new_v4();
         let mut request = json!({
             "agents":[
-                {"id":"researcher","mcpServerNames":["Docs"]},
+                {"id":"researcher","tools":["read_file","office_workflow"],"mcpServerNames":["Docs"]},
                 {"id":"reviewer","mcpServerNames":[]}
             ]
         });
@@ -1672,7 +1682,13 @@ mod tests {
             headers: BTreeMap::new(),
         }];
 
-        let secrets = inject_crew_mcp_context(&mut request, &bindings, creator_user_id).unwrap();
+        let secrets = inject_crew_mcp_context(
+            &mut request,
+            &bindings,
+            creator_user_id,
+            &[Capability::from("files"), Capability::from("office.ooxml")],
+        )
+        .unwrap();
 
         assert_eq!(secrets, vec!["crew-secret"]);
         assert_eq!(
@@ -1694,8 +1710,9 @@ mod tests {
         );
         assert_eq!(
             request["governance"]["agentAccess"][0]["allowedTools"],
-            json!([])
+            json!(["read_file", "office_workflow"])
         );
+        assert_eq!(request["agents"][0]["allowDelegation"], false);
     }
 
     #[test]

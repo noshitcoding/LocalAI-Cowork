@@ -1372,6 +1372,7 @@ async fn prepare_scheduled_run(
     let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
         .await
         .map_err(block)?;
+    apply_frozen_crew_capabilities(&mut required_capabilities, &input).map_err(block)?;
     mcp_bindings::ensure_crew_mcp_selection(&input).map_err(block)?;
     if mcp_bindings::run_selects_mcp(&input) {
         if matches!(
@@ -1786,6 +1787,32 @@ pub(crate) fn effective_task_capabilities(
     Ok(capabilities)
 }
 
+pub(crate) fn apply_frozen_crew_capabilities(
+    capabilities: &mut Vec<Capability>,
+    input: &Value,
+) -> Result<(), ApiError> {
+    if input.get("task_runner").and_then(Value::as_str) != Some("crew") {
+        return Ok(());
+    }
+    let definition = input.get("crew_definition").ok_or_else(|| {
+        ApiError::Unprocessable("the Crew run has no frozen crew_definition".to_owned())
+    })?;
+    let mut derived = vec![cowork_contracts::capabilities::crew_python()];
+    derived.extend(
+        cowork_runtime::crew::required_crew_tool_capabilities(definition)
+            .map_err(|error| ApiError::Unprocessable(error.to_string()))?,
+    );
+    for capability in derived {
+        if !capabilities
+            .iter()
+            .any(|existing| existing.0 == capability.0)
+        {
+            capabilities.push(capability);
+        }
+    }
+    Ok(())
+}
+
 fn reject_cleartext_task_secrets(value: &Value) -> Result<(), ApiError> {
     fn visit(value: &Value, path: &mut Vec<String>) -> Option<String> {
         match value {
@@ -2173,5 +2200,29 @@ mod tests {
         )
         .expect_err("task versions must never persist cleartext provider credentials");
         assert!(error.to_string().contains("provider profile"));
+    }
+
+    #[test]
+    fn frozen_crew_tools_extend_the_routing_capabilities() {
+        let mut capabilities = vec![Capability::from("files")];
+        apply_frozen_crew_capabilities(
+            &mut capabilities,
+            &json!({
+                "task_runner":"crew",
+                "crew_definition":{
+                    "agents":[{"id":"writer","tools":["read_file","office_workflow","web_search"]}]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::from("files"),
+                Capability::from("crew.python"),
+                Capability::from("office.ooxml"),
+                Capability::from("web.fetch"),
+            ]
+        );
     }
 }

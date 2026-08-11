@@ -1913,7 +1913,7 @@ mod tests {
     #[tokio::test]
     async fn external_model_events_require_a_stable_id_before_database_access() {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://unused:unused@127.0.0.1/unused")
+            .connect_lazy("postgres://127.0.0.1/unused")
             .unwrap();
         let error = append_external_leased_event(
             &pool,

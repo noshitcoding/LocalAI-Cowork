@@ -490,7 +490,7 @@ dedicated Windows account. Configure:
 - canonical HTTPS `COWORK_SERVER_URL`
 - an executor ID and admin-created pool ID
 - an agent token
-- `COWORK_AGENT_CAPABILITIES=model.external,office.microsoft,desktop.windows`
+- `COWORK_AGENT_CAPABILITIES=model.external,files,shell,git,web.fetch,office.ooxml,office.microsoft,desktop.windows`
 - a dedicated `COWORK_AGENT_WORKSPACE_ROOT`
 
 Start its supervisor at machine startup and the interactive component at
@@ -516,6 +516,13 @@ Object containing its descendants. Output is limited to 32 MiB, individual
 lines and stderr are bounded, execution has a hard timeout, provider/MCP secrets
 are recursively redacted, and model deltas, usage, checkpoints and changed
 workspace snapshots enter the normal durable Run model.
+
+The frozen Crew definition is also the routing contract for its tools. Enabled
+agents derive `files`, `shell`, `web.fetch`, and `office.ooxml` requirements
+from their selected tools before a Run is queued. The pinned runtime receives
+only that exact per-agent allowlist; unsupported tools or an executor that lacks
+one of those capabilities fail closed. Delegation is disabled in both the
+governance record and the effective CrewAI agent configuration.
 
 ### Executor-local MCP on Windows
 

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use cowork_contracts::{ExecutorKind, RunEvent, RunEventKind, RunLease, SCHEMA_VERSION};
-use cowork_runtime::crew::{prepare_crew_request, CrewModelConfig};
+use cowork_runtime::crew::{apply_crew_agent_tool_policy, prepare_crew_request, CrewModelConfig};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
@@ -110,7 +110,7 @@ pub(crate) async fn verify_runtime(runtime: &CrewRuntimeConfig) -> Result<()> {
             bail!("Crew runtime status check timed out");
         }
     };
-    drop(process_job);
+    process_job.close();
     let (stdout, stdout_truncated) = stdout_task
         .await
         .context("Crew status stdout reader failed")??;
@@ -208,6 +208,7 @@ pub(crate) async fn execute_managed_run(
         &mut request,
         &bindings,
         lease.run.spec.creator_user_id,
+        &config.capabilities,
     )?);
 
     client
@@ -346,7 +347,7 @@ pub(crate) async fn execute_managed_run(
             );
         }
     };
-    drop(process_job);
+    process_job.close();
     let stderr = stderr_task.await.context("Crew stderr reader failed")??;
     let stderr = redact_executor_secrets(&stderr, &secrets);
     if !status.success() {
@@ -440,23 +441,30 @@ fn inject_executor_mcp_context(
     request: &mut Value,
     bindings: &[&ExecutorMcpBinding],
     creator_user_id: Uuid,
+    capabilities: &[cowork_contracts::CapabilityDescriptor],
 ) -> Result<Vec<String>> {
     let agents = request
-        .get("agents")
-        .and_then(Value::as_array)
+        .get_mut("agents")
+        .and_then(Value::as_array_mut)
         .context("the prepared Crew request must contain agents")?;
     let mut requested_names = BTreeSet::new();
     let mut agent_access = Vec::with_capacity(agents.len());
     for agent in agents {
         let agent = agent
-            .as_object()
+            .as_object_mut()
             .context("prepared Crew agents must be objects")?;
         let agent_id = agent
             .get("id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .context("prepared Crew agents require an id")?;
+            .context("prepared Crew agents require an id")?
+            .to_owned();
+        let allowed_tools = apply_crew_agent_tool_policy(agent, |required| {
+            capabilities
+                .iter()
+                .any(|capability| capability.name.0 == required)
+        })?;
         let mut allowed_names = BTreeSet::new();
         if let Some(values) = agent.get("mcpServerNames") {
             for value in values
@@ -474,7 +482,7 @@ fn inject_executor_mcp_context(
         }
         agent_access.push(json!({
             "agentId":agent_id,
-            "allowedTools":[],
+            "allowedTools":allowed_tools,
             "blockedTools":[],
             "allowedMcpServerNames":allowed_names,
             "blockedMcpServerNames":[],
@@ -619,7 +627,7 @@ mod tests {
     fn executor_crew_mcp_context_is_exact_agent_scoped_and_secret_bearing() {
         let mut request = json!({
             "agents":[
-                {"id":"researcher","mcpServerNames":["Docs"]},
+                {"id":"researcher","tools":["read_file","office_workflow"],"mcpServerNames":["Docs"]},
                 {"id":"reviewer","mcpServerNames":[]}
             ]
         });
@@ -635,7 +643,23 @@ mod tests {
             url: String::new(),
             headers: BTreeMap::new(),
         };
-        let secrets = inject_executor_mcp_context(&mut request, &[&binding], Uuid::nil()).unwrap();
+        let capabilities = [
+            cowork_contracts::CapabilityDescriptor {
+                schema_version: SCHEMA_VERSION,
+                name: cowork_contracts::Capability::from("files"),
+                version: "test".to_owned(),
+                attributes: BTreeMap::new(),
+            },
+            cowork_contracts::CapabilityDescriptor {
+                schema_version: SCHEMA_VERSION,
+                name: cowork_contracts::Capability::from("office.ooxml"),
+                version: "test".to_owned(),
+                attributes: BTreeMap::new(),
+            },
+        ];
+        let secrets =
+            inject_executor_mcp_context(&mut request, &[&binding], Uuid::nil(), &capabilities)
+                .unwrap();
         assert_eq!(secrets, vec!["executor-crew-secret"]);
         assert_eq!(
             request["governance"]["agentAccess"][0]["allowedMcpServerNames"],
@@ -646,9 +670,20 @@ mod tests {
             json!([])
         );
         assert_eq!(request["executorMcpBindings"][0]["name"], "Docs");
+        assert_eq!(
+            request["governance"]["agentAccess"][0]["allowedTools"],
+            json!(["read_file", "office_workflow"])
+        );
+        assert_eq!(request["agents"][0]["allowDelegation"], false);
 
         let mut mismatched = json!({"agents":[{"id":"researcher","mcpServerNames":["CRM"]}]});
-        assert!(inject_executor_mcp_context(&mut mismatched, &[&binding], Uuid::nil()).is_err());
+        assert!(inject_executor_mcp_context(
+            &mut mismatched,
+            &[&binding],
+            Uuid::nil(),
+            &capabilities,
+        )
+        .is_err());
     }
 
     #[tokio::test]
