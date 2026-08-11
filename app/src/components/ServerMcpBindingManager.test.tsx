@@ -134,7 +134,9 @@ describe('ServerMcpBindingManager', () => {
     fireEvent.change(screen.getByLabelText('MCP binding transport'), { target: { value: 'sse' } })
     fireEvent.change(screen.getByLabelText('MCP HTTPS endpoint'), { target: { value: 'https://mcp.example.com/events' } })
     fireEvent.change(screen.getByLabelText('MCP credential headers JSON'), { target: { value: '{"Authorization":"Bearer legacy-secret"}' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted binding' }))
+    const submit = screen.getByRole('button', { name: 'Create encrypted binding' })
+    await waitFor(() => expect(submit).toBeEnabled())
+    fireEvent.click(submit)
 
     await waitFor(() => expect(setServerMcpBinding).toHaveBeenCalledWith(
       projectId,
