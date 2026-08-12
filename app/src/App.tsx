@@ -207,6 +207,11 @@ function DesktopApp() {
   const loadBackendDefaults = useBackendDefaultsStore((s) => s.load)
 
   useEffect(() => {
+    if (!hasTauriRuntime()) return
+    void ensureCrewRuntimeReady()
+  }, [ensureCrewRuntimeReady])
+
+  useEffect(() => {
     let cancelled = false
     void initializeCredentialVault()
       .then(() => {
@@ -252,9 +257,6 @@ function DesktopApp() {
       .catch(() => {})
     seedDefaultPersonalities().catch(() => {})
     seedDefaultMemory().catch(() => {})
-    if (hasTauriRuntime()) {
-      void ensureCrewRuntimeReady()
-    }
     addLog({
       level: 'info',
       area: 'runtime',
@@ -267,7 +269,7 @@ function DesktopApp() {
     // Start scheduled tasks worker
     startScheduledWorker()
     return () => stopScheduledWorker()
-  }, [addLog, credentialsReady, ensureCrewRuntimeReady, existingInstallationAtBoot, loadBackendDefaults, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
+  }, [addLog, credentialsReady, existingInstallationAtBoot, loadBackendDefaults, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
