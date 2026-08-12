@@ -43,7 +43,8 @@ mod worker_sandbox;
 use claude_code_bridge::ClaudeCodeBridge;
 use crew_python_bridge::{
     crew_runtime_bootstrap, crew_runtime_execute_request, crew_runtime_status,
-    crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
+    crew_runtime_validate_definition, start_crew_runtime_bootstrap, CrewPythonBridge,
+    CrewRuntimeExecutionLog,
 };
 use db::{
     ApiProfileRow, AppBackendDefaultsRow, CodexAuthProfileRow, CodexThreadBindingRow, Database,
@@ -15713,6 +15714,7 @@ pub fn run() {
             app.manage(TerminalSessionRegistry::default());
             app.manage(DeveloperBrowserState::default());
             app.manage(CrewPythonBridge::default());
+            start_crew_runtime_bootstrap(app.handle().clone());
             app.manage(ClaudeCodeBridge::new());
             app.manage(codex_runtime);
             configure_pdfium_search_paths(app.handle());

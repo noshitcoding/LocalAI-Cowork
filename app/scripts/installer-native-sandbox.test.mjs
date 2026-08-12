@@ -10,6 +10,8 @@ const repositoryRoot = join(appRoot, '..')
 test('the Windows release smoke exercises the installed native sandbox', () => {
   const installerSmoke = readFileSync(join(appRoot, 'scripts', 'installer-crew-runtime-smoke.ps1'), 'utf8')
   const nativeSandbox = readFileSync(join(appRoot, 'src-tauri', 'src', 'native_windows_sandbox.rs'), 'utf8')
+  const crewRuntime = readFileSync(join(appRoot, 'src-tauri', 'src', 'crew_python_bridge.rs'), 'utf8')
+  const tauriLib = readFileSync(join(appRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8')
   const releaseWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release.yml'), 'utf8')
   const candidateWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release-candidate.yml'), 'utf8')
 
@@ -22,6 +24,9 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
   assert.match(installerSmoke, /repeatedSetupReady -ne \$true/)
   assert.match(installerSmoke, /identityVerified -ne \$true/)
   assert.match(installerSmoke, /markerWritten -ne \$true/)
+  assert.match(crewRuntime, /pub fn start_crew_runtime_bootstrap\(app: AppHandle\)/)
+  assert.match(crewRuntime, /REQUIRED_EMBEDDED_PYTHON_FILES/)
+  assert.match(tauriLib, /start_crew_runtime_bootstrap\(app\.handle\(\)\.clone\(\)\)/)
   assert.match(releaseWorkflow, /installer-crew-runtime-smoke\.ps1/)
   assert.doesNotMatch(releaseWorkflow, /SkipNativeSandbox/)
   assert.match(candidateWorkflow, /workflow_dispatch:/)

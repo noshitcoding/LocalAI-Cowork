@@ -37,6 +37,10 @@ const MANAGED_PYTHON_VERSION: &str = "3.12";
 const EXPECTED_BUNDLED_PYTHON_VERSION: &str = "3.12.10";
 const EXPECTED_RUNTIME_BUNDLE_SCHEMA_VERSION: u64 = 1;
 const EXPECTED_RUNTIME_SCHEMA_VERSION: u64 = 2;
+#[cfg(target_os = "windows")]
+const REQUIRED_EMBEDDED_PYTHON_FILES: &[&str] = &["python.exe", "python312.dll", "DLLs/select.pyd"];
+#[cfg(not(target_os = "windows"))]
+const REQUIRED_EMBEDDED_PYTHON_FILES: &[&str] = &[];
 const UV_VERSION: &str = "0.11.7";
 const UV_WINDOWS_DOWNLOAD_URL: &str =
     "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip";
@@ -1081,6 +1085,7 @@ fn ensure_bundled_runtime_assets<R: Runtime>(
         &python_archive,
         &embedded_python_root,
         &bundle.python_archive_sha256,
+        REQUIRED_EMBEDDED_PYTHON_FILES,
     )?;
     let embedded_python = embedded_python_root.join("python.exe");
     let extracted_python_version = read_python_version(embedded_python.to_string_lossy().as_ref())
@@ -1109,6 +1114,7 @@ fn ensure_bundled_runtime_assets<R: Runtime>(
         &wheels_archive,
         &wheels_destination,
         &bundle.wheels_archive_sha256,
+        &[],
     )?;
     validate_extracted_wheelhouse(
         &wheels_destination,
@@ -1191,13 +1197,18 @@ fn extract_zip_if_needed(
     zip_path: &Path,
     destination: &Path,
     archive_sha256: &str,
+    required_relative_files: &[&str],
 ) -> Result<bool, String> {
     let marker = destination.join(".localai_cowork_extract_complete");
     let expected_marker = format!("sha256:{}", archive_sha256);
 
     if marker.exists() {
         if let Ok(current_marker) = fs::read_to_string(&marker) {
-            if current_marker.trim() == expected_marker {
+            if current_marker.trim() == expected_marker
+                && required_relative_files
+                    .iter()
+                    .all(|relative| destination.join(relative).is_file())
+            {
                 return Ok(false);
             }
         }
@@ -1865,6 +1876,33 @@ pub fn crew_runtime_bootstrap(
     })
 }
 
+pub fn start_crew_runtime_bootstrap(app: AppHandle) {
+    if let Err(error) = thread::Builder::new()
+        .name("crew-runtime-bootstrap".to_string())
+        .spawn(move || {
+            let bridge = app.state::<CrewPythonBridge>();
+            match crew_runtime_status_internal(&app, bridge.inner()) {
+                Ok(status) if status.bootstrap_required => {
+                    let bootstrap_app = app.clone();
+                    if let Err(error) = crew_runtime_bootstrap(
+                        bootstrap_app,
+                        bridge,
+                        Some(CrewRuntimeBootstrapRequest {
+                            force_reinstall: false,
+                        }),
+                    ) {
+                        log::error!("Automatic Crew runtime bootstrap failed: {error}");
+                    }
+                }
+                Ok(_) => log::info!("Crew runtime is ready at native startup"),
+                Err(error) => log::error!("Crew runtime startup check failed: {error}"),
+            }
+        })
+    {
+        log::error!("Crew runtime bootstrap worker could not be started: {error}");
+    }
+}
+
 pub fn crew_runtime_execute_request<R: Runtime, F>(
     app: &AppHandle<R>,
     bridge: &CrewPythonBridge,
@@ -2065,6 +2103,49 @@ mod tests {
         );
 
         assert_eq!(selected.as_deref(), Some("embedded-python"));
+    }
+
+    #[test]
+    fn matching_archive_marker_does_not_hide_missing_required_python_files() {
+        let bundle = TestBundleDirectory::new();
+        let archive_path = bundle.path.join("python.zip");
+        let destination = bundle.path.join("extracted-python");
+        let archive_file = fs::File::create(&archive_path).expect("archive should be created");
+        let mut archive = zip::ZipWriter::new(archive_file);
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        for (path, contents) in [
+            ("python.exe", b"python".as_slice()),
+            ("python312.dll", b"runtime".as_slice()),
+            ("DLLs/select.pyd", b"select".as_slice()),
+        ] {
+            archive
+                .start_file(path, options)
+                .expect("archive entry should start");
+            archive
+                .write_all(contents)
+                .expect("archive entry should be written");
+        }
+        archive.finish().expect("archive should finish");
+
+        let archive_sha256 = sha256_file(&archive_path).expect("archive should hash");
+        fs::create_dir_all(&destination).expect("cached runtime should be created");
+        fs::write(destination.join("python.exe"), b"python")
+            .expect("partial cache should contain python");
+        mark_zip_extraction_complete(&destination, &archive_sha256)
+            .expect("partial cache marker should be written");
+
+        assert!(extract_zip_if_needed(
+            &archive_path,
+            &destination,
+            &archive_sha256,
+            &["python.exe", "python312.dll", "DLLs/select.pyd"],
+        )
+        .expect("incomplete cache should be repaired"));
+        assert_eq!(
+            fs::read(destination.join("DLLs").join("select.pyd"))
+                .expect("required module should be restored"),
+            b"select"
+        );
     }
 
     #[test]

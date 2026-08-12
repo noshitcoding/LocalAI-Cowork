@@ -10,7 +10,6 @@ import { useLogStore } from './stores/logStore'
 import { useConfigStore } from './stores/configStore'
 import { useCoworkStore } from './stores/coworkStore'
 import { useCrewStore } from './stores/crewStore'
-import { useCrewRuntimeStore } from './stores/crewRuntimeStore'
 import { useEngineStore } from './stores/engineStore'
 import { useWorkTasksStore } from './stores/workTasksStore'
 import { useProjectStore } from './stores/projectStore'
@@ -203,13 +202,7 @@ function DesktopApp() {
   const loadScheduledTasks = useCoworkStore((s) => s.loadScheduledTasks)
   const loadScheduledRuns = useCoworkStore((s) => s.loadScheduledRuns)
   const setPolicySnapshot = useCoworkStore((s) => s.setPolicySnapshot)
-  const ensureCrewRuntimeReady = useCrewRuntimeStore((s) => s.ensureReady)
   const loadBackendDefaults = useBackendDefaultsStore((s) => s.load)
-
-  useEffect(() => {
-    if (!hasTauriRuntime()) return
-    void ensureCrewRuntimeReady()
-  }, [ensureCrewRuntimeReady])
 
   useEffect(() => {
     let cancelled = false
