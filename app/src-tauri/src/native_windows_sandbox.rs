@@ -1078,7 +1078,7 @@ where
     };
     use windows_sys::Win32::System::Threading::{
         CreateProcessWithLogonW, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
-        CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+        CREATE_NO_WINDOW, CREATE_SUSPENDED, LOGON_WITH_PROFILE, PROCESS_INFORMATION, STARTUPINFOW,
     };
 
     let status = setup_status(app_data);
@@ -1160,7 +1160,7 @@ where
             username.as_ptr(),
             domain.as_ptr(),
             password_wide.as_ptr(),
-            0,
+            LOGON_WITH_PROFILE,
             executable_wide.as_ptr(),
             command_line.as_mut_ptr(),
             CREATE_NO_WINDOW
@@ -1487,13 +1487,22 @@ fn minimal_environment_block(cwd: &Path, python_root: Option<&str>) -> Vec<u16> 
         system_root.get(..2).unwrap_or("C:"),
         SANDBOX_ACCOUNT
     );
+    let home_drive = profile.get(..2).unwrap_or("C:");
+    let home_path = profile.get(2..).unwrap_or(r"\Users\LACoworkOnline");
     let entries = [
+        format!("APPDATA={profile}\\AppData\\Roaming"),
         format!("COMSPEC={}\\System32\\cmd.exe", system_root),
+        format!("HOMEDRIVE={home_drive}"),
+        format!("HOMEPATH={home_path}"),
+        format!("LOCALAPPDATA={profile}\\AppData\\Local"),
         format!("PATH={path}"),
         "PATHEXT=.COM;.EXE;.BAT;.CMD".to_string(),
+        format!("PROGRAMDATA={home_drive}\\ProgramData"),
         format!("SYSTEMROOT={system_root}"),
         format!("TEMP={}", temp.display()),
         format!("TMP={}", temp.display()),
+        format!("USERDOMAIN={}", "."),
+        format!("USERNAME={SANDBOX_ACCOUNT}"),
         format!("USERPROFILE={profile}"),
         format!("WINDIR={system_root}"),
     ];
@@ -1602,7 +1611,10 @@ fn native_sandbox_smoke_helper(app_data: &Path, result_path: &Path) -> Result<()
                 ),
                 shell: Some("powershell".to_string()),
                 cwd: workspace.display().to_string(),
-                timeout_ms: Some(30_000),
+                // A brand-new local account may need to materialize its Windows profile and
+                // PowerShell first-run state. Keep the release gate strict, but do not confuse
+                // that one-time initialization with a hung sandbox process.
+                timeout_ms: Some(120_000),
                 stream_id: uuid::Uuid::new_v4().to_string(),
             },
             |_, _, _| {},
