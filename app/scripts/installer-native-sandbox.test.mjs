@@ -15,8 +15,10 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
 
   assert.match(nativeSandbox, /--lacowork-native-sandbox-smoke/)
   assert.match(nativeSandbox, /let repeated = setup_start\(app_data\)\?/)
+  assert.match(nativeSandbox, /let current = setup_status\(app_data\);\s+if current\.ready \{\s+return Ok\(current\);/)
   assert.match(nativeSandbox, /SANDBOX_ACCOUNT\.to_ascii_lowercase\(\)/)
   assert.match(installerSmoke, /--lacowork-native-sandbox-smoke/)
+  assert.match(installerSmoke, /WaitForExit\(180000\)/)
   assert.match(installerSmoke, /repeatedSetupReady -ne \$true/)
   assert.match(installerSmoke, /identityVerified -ne \$true/)
   assert.match(installerSmoke, /markerWritten -ne \$true/)

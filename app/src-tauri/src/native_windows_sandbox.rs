@@ -400,6 +400,11 @@ pub fn setup_start(app_data: &Path) -> Result<SetupStatus, String> {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+    let current = setup_status(app_data);
+    if current.ready {
+        return Ok(current);
+    }
+
     fs::create_dir_all(setup_dir(app_data)).map_err(|error| error.to_string())?;
     let password = generate_password()?;
     let encrypted_for_helper = protect_data(password.as_bytes(), true)

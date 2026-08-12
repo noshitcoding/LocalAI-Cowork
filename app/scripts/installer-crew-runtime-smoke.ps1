@@ -261,8 +261,11 @@ try {
                     ('"' + $sandboxAppData + '"'),
                     ('"' + $sandboxResultPath + '"')
                 ) `
-                -Wait `
                 -PassThru
+            if (-not $sandboxSmoke.WaitForExit(180000)) {
+                Stop-Process -Id $sandboxSmoke.Id -Force -ErrorAction SilentlyContinue
+                throw "Installed native Windows sandbox smoke did not finish within three minutes."
+            }
             $sandboxResult = $null
             if (Test-Path -LiteralPath $sandboxResultPath -PathType Leaf) {
                 $sandboxResult = Get-Content -LiteralPath $sandboxResultPath -Raw | ConvertFrom-Json
