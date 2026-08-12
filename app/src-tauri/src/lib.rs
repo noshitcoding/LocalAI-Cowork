@@ -43,7 +43,8 @@ mod worker_sandbox;
 use claude_code_bridge::ClaudeCodeBridge;
 use crew_python_bridge::{
     crew_runtime_bootstrap, crew_runtime_execute_request, crew_runtime_status,
-    crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
+    crew_runtime_validate_definition, start_crew_runtime_bootstrap, CrewPythonBridge,
+    CrewRuntimeExecutionLog,
 };
 use db::{
     ApiProfileRow, AppBackendDefaultsRow, CodexAuthProfileRow, CodexThreadBindingRow, Database,
@@ -8089,6 +8090,16 @@ fn run_scheduled_codex_turn(
     )
 }
 
+const CODEX_APPROVAL_POLICY: &str = "untrusted";
+
+fn codex_thread_sandbox(permission_mode: &str) -> &'static str {
+    if permission_mode == "plan" {
+        "read-only"
+    } else {
+        "workspace-write"
+    }
+}
+
 fn run_codex_turn(
     app: &tauri::AppHandle,
     database: &Database,
@@ -8143,7 +8154,7 @@ fn run_codex_turn(
                 "threadId": thread_id,
                 "input": [{ "type": "text", "text": prompt }],
                 "cwd": cwd,
-                "approvalPolicy": "untrusted",
+                "approvalPolicy": CODEX_APPROVAL_POLICY,
                 "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
                 "model": model,
                 "effort": reasoning_effort
@@ -13753,6 +13764,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_protocol_values_match_the_bundled_app_server() {
+        assert_eq!(CODEX_APPROVAL_POLICY, "untrusted");
+        assert_eq!(codex_thread_sandbox("plan"), "read-only");
+        assert_eq!(codex_thread_sandbox("bypass"), "workspace-write");
+    }
+
+    #[test]
     fn run_authorization_without_native_setup_is_explicitly_read_only_and_empty_by_default() {
         let database = Arc::new(Database::open_in_memory().unwrap());
         database
@@ -15485,18 +15503,14 @@ fn codex_thread_open_impl(
         }
     }
 
-    let sandbox = if request.permission_mode == "plan" {
-        "read-only"
-    } else {
-        "workspace-write"
-    };
+    let sandbox = codex_thread_sandbox(&request.permission_mode);
     let result = runtime.request(
         &profile.id,
         "thread/start",
         Some(serde_json::json!({
             "cwd": request.cwd,
             "model": request.model,
-            "approvalPolicy": "untrusted",
+            "approvalPolicy": CODEX_APPROVAL_POLICY,
             "sandbox": sandbox,
             "serviceName": "open_cowork",
             "dynamicTools": request.dynamic_tools
@@ -15569,7 +15583,7 @@ fn codex_turn_start(
             "threadId": request.thread_id,
             "input": [{ "type": "text", "text": request.prompt }],
             "cwd": request.cwd,
-            "approvalPolicy": "untrusted",
+            "approvalPolicy": CODEX_APPROVAL_POLICY,
             "sandboxPolicy": sandbox_policy,
             "model": request.model,
             "effort": request.reasoning_effort
@@ -15700,6 +15714,7 @@ pub fn run() {
             app.manage(TerminalSessionRegistry::default());
             app.manage(DeveloperBrowserState::default());
             app.manage(CrewPythonBridge::default());
+            start_crew_runtime_bootstrap(app.handle().clone());
             app.manage(ClaudeCodeBridge::new());
             app.manage(codex_runtime);
             configure_pdfium_search_paths(app.handle());

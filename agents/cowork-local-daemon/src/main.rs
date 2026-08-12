@@ -61,7 +61,6 @@ mod sync_ipc;
 
 const MAX_IPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const LEGACY_LOCAL_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
-const DEFAULT_LOCAL_USER_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -449,10 +448,7 @@ impl Config {
             ipc_endpoint: env::var("COWORK_DAEMON_IPC_ENDPOINT")
                 .unwrap_or_else(|_| default_ipc_endpoint(&data_dir)),
             ipc_token,
-            user_id: env::var("COWORK_DAEMON_USER_ID")
-                .unwrap_or_else(|_| DEFAULT_LOCAL_USER_ID.to_owned())
-                .parse()
-                .context("invalid COWORK_DAEMON_USER_ID")?,
+            user_id: persistent_uuid("COWORK_DAEMON_USER_ID", &data_dir.join("user-id.txt"))?,
             device_id: persistent_uuid("COWORK_DAEMON_DEVICE_ID", &data_dir.join("device-id.txt"))?,
             model_secret_key: model_secret_key(&data_dir)?,
             fallback_model: PersistedModelConfig {
@@ -4034,6 +4030,7 @@ async fn dispatch(daemon: &Daemon, request: IpcRequest) -> IpcResponse {
         "health" => Ok(json!({
             "status": "ok",
             "schema_version": SCHEMA_VERSION,
+            "user_id": daemon.config.user_id,
             "device_id": daemon.config.device_id,
             "daemon_version": env!("CARGO_PKG_VERSION"),
         })),
@@ -5812,7 +5809,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_local_creator_ids_are_migrated_to_contract_valid_uuids() {
+    fn legacy_local_creator_ids_are_migrated_to_the_persistent_user_id() {
         let connection = Connection::open_in_memory().unwrap();
         initialize_database(&connection).unwrap();
         let run_id = Uuid::new_v4();
@@ -5865,14 +5862,15 @@ mod tests {
             )
             .unwrap();
 
-        let current_user_id: Uuid = DEFAULT_LOCAL_USER_ID.parse().unwrap();
+        let current_user_id = Uuid::new_v4();
         assert_eq!(
             migrate_legacy_creator_user_id(&connection, current_user_id).unwrap(),
             1
         );
         assert_eq!(
             migrate_legacy_creator_user_id(&connection, current_user_id).unwrap(),
-            0
+            0,
+            "the migration must be idempotent"
         );
         let encoded: String = connection
             .query_row(

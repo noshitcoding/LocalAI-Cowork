@@ -10,7 +10,6 @@ import { useLogStore } from './stores/logStore'
 import { useConfigStore } from './stores/configStore'
 import { useCoworkStore } from './stores/coworkStore'
 import { useCrewStore } from './stores/crewStore'
-import { useCrewRuntimeStore } from './stores/crewRuntimeStore'
 import { useEngineStore } from './stores/engineStore'
 import { useWorkTasksStore } from './stores/workTasksStore'
 import { useProjectStore } from './stores/projectStore'
@@ -204,7 +203,6 @@ function DesktopApp() {
   const loadScheduledTasks = useCoworkStore((s) => s.loadScheduledTasks)
   const loadScheduledRuns = useCoworkStore((s) => s.loadScheduledRuns)
   const setPolicySnapshot = useCoworkStore((s) => s.setPolicySnapshot)
-  const ensureCrewRuntimeReady = useCrewRuntimeStore((s) => s.ensureReady)
   const loadBackendDefaults = useBackendDefaultsStore((s) => s.load)
 
   useEffect(() => {
@@ -253,9 +251,6 @@ function DesktopApp() {
       .catch(() => {})
     seedDefaultPersonalities().catch(() => {})
     seedDefaultMemory().catch(() => {})
-    if (hasTauriRuntime()) {
-      void ensureCrewRuntimeReady()
-    }
     addLog({
       level: 'info',
       area: 'runtime',
@@ -268,7 +263,7 @@ function DesktopApp() {
     // Start scheduled tasks worker
     startScheduledWorker()
     return () => stopScheduledWorker()
-  }, [addLog, credentialsReady, ensureCrewRuntimeReady, existingInstallationAtBoot, loadBackendDefaults, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
+  }, [addLog, credentialsReady, existingInstallationAtBoot, loadBackendDefaults, loadChatFromDb, loadProjectsFromDb, loadScheduledRuns, loadScheduledTasks, loadTasksFromDb, loadWorkTasksFromDb, setPolicySnapshot])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
