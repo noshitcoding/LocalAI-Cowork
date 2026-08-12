@@ -5,7 +5,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { CheckCircle2, ChevronDown, Clock3, Loader2, Settings2, ShieldAlert, Sparkles, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, Loader2, Plus, Settings2, ShieldAlert, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
@@ -823,6 +823,8 @@ export default function CoworkView() {
   const [askUserFreeText, setAskUserFreeText] = useState('')
   const [slashSuggestionsOpen, setSlashSuggestionsOpen] = useState(false)
   const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] = useState(0)
+  const [composerSettingsOpen, setComposerSettingsOpen] = useState(false)
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false)
   const [contextEvidenceRun, setContextEvidenceRun] = useState<{ runId: string; threadId: string | null } | null>(null)
   const ollama = useConfigStore((s) => s.ollama)
   const availableModels = useConfigStore((s) => s.availableModels)
@@ -912,6 +914,7 @@ export default function CoworkView() {
   const setTerminalDockOpen = useTerminalStore((s) => s.setDockOpen)
   const setActiveAiThread = useTerminalStore((s) => s.setActiveAiThread)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const composerControlsRef = useRef<HTMLDivElement>(null)
   const [sandboxSetupReady, setSandboxSetupReady] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -935,6 +938,29 @@ export default function CoworkView() {
       window.removeEventListener('lacowork-sandbox-status-changed', onStatusChanged)
     }
   }, [])
+
+  useEffect(() => {
+    if (!composerSettingsOpen && !attachmentMenuOpen) return
+
+    const closeComposerMenus = (event: PointerEvent) => {
+      if (!composerControlsRef.current?.contains(event.target as Node)) {
+        setComposerSettingsOpen(false)
+        setAttachmentMenuOpen(false)
+      }
+    }
+    const closeComposerMenusWithEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setComposerSettingsOpen(false)
+      setAttachmentMenuOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeComposerMenus)
+    document.addEventListener('keydown', closeComposerMenusWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeComposerMenus)
+      document.removeEventListener('keydown', closeComposerMenusWithEscape)
+    }
+  }, [attachmentMenuOpen, composerSettingsOpen])
 
   useEffect(() => {
     if (!requestedSlashDraft?.startsWith('/')) return
@@ -4126,7 +4152,9 @@ export default function CoworkView() {
               </div>
             )}
           </div>
-          <div className="chat-input-bottom-bar">
+          <div ref={composerControlsRef} className="chat-input-controls">
+            {composerSettingsOpen && (
+              <div id="chat-composer-settings" className="chat-input-settings-panel" role="region" aria-label={tr('Chat settings')}>
             <button
               type="button"
               className={`btn-compact-action${sandboxSetupReady === false ? ' sandbox-setup-action' : ''}`}
@@ -4148,7 +4176,7 @@ export default function CoworkView() {
                     ? tr('Sandbox active')
                     : tr('Read-only – sandbox not configured')}
             </button>
-            <div className="chat-input-toolbar-compact">
+                <div className="chat-input-toolbar-compact">
               <div className={`chat-runner-control${chatUsesCrew ? ' crew-active' : ''}`}>
                 <span className="chat-runner-label">{tr('Runner')}</span>
                 <div className="chat-runner-mode" role="group" aria-label={tr('Runner')}>
@@ -4291,29 +4319,86 @@ export default function CoworkView() {
                   { value: 'strict', label: tr("Strikt") },
                 ]}
               />
-              <div className="chat-compact-actions">
-                <select
-                  className="chat-compact-select"
-                  value={attachmentAccess}
-                  onChange={(event) => setAttachmentAccess(event.currentTarget.value as 'read_only' | 'read_write')}
-                  disabled={uiLocked}
-                  aria-label={tr('Access for new files and folders')}
-                  title={tr('Access for new files and folders')}
-                >
-                  <option value="read_only">{tr('New: read only')}</option>
-                  <option value="read_write">{tr('New: read and edit')}</option>
-                </select>
-                <button type="button" className="btn-compact-action" onClick={handleAttachFiles} disabled={uiLocked}>{tr("Files")}</button>
-                <button type="button" className="btn-compact-action" onClick={handleAttachFolders} disabled={uiLocked}>{tr("Folder")}</button>
+              <select
+                className="chat-compact-select"
+                value={attachmentAccess}
+                onChange={(event) => setAttachmentAccess(event.currentTarget.value as 'read_only' | 'read_write')}
+                disabled={uiLocked}
+                aria-label={tr('Access for new files and folders')}
+                title={tr('Access for new files and folders')}
+              >
+                <option value="read_only">{tr('New: read only')}</option>
+                <option value="read_write">{tr('New: read and edit')}</option>
+              </select>
+                </div>
               </div>
-            </div>
-            {busy ? (
-              <button type="button" onClick={handleStop} className="btn-stop compact-send-btn">{tr("Stop")}</button>
-            ) : (
-              <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
-                {askUserQuestion ? tr("Send answer") : tr("Send")}
-              </button>
             )}
+            <div className="chat-input-bottom-bar">
+              <div className="chat-input-primary-actions">
+                <div className="chat-attachment-menu-root">
+                  <button
+                    type="button"
+                    className="chat-input-icon-button"
+                    aria-label={tr('Add files or folders')}
+                    aria-haspopup="menu"
+                    aria-expanded={attachmentMenuOpen}
+                    onClick={() => {
+                      setAttachmentMenuOpen((open) => !open)
+                      setComposerSettingsOpen(false)
+                    }}
+                    disabled={uiLocked}
+                  >
+                    <Plus size={17} aria-hidden="true" />
+                  </button>
+                  {attachmentMenuOpen && (
+                    <div className="chat-attachment-menu" role="menu" aria-label={tr('Add files or folders')}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAttachmentMenuOpen(false)
+                          void handleAttachFiles()
+                        }}
+                      >
+                        {tr('Files')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAttachmentMenuOpen(false)
+                          void handleAttachFolders()
+                        }}
+                      >
+                        {tr('Folder')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className={`chat-input-settings-toggle${composerSettingsOpen ? ' active' : ''}${sandboxSetupReady === false ? ' needs-attention' : ''}`}
+                  aria-label={tr('Chat settings')}
+                  aria-controls="chat-composer-settings"
+                  aria-expanded={composerSettingsOpen}
+                  onClick={() => {
+                    setComposerSettingsOpen((open) => !open)
+                    setAttachmentMenuOpen(false)
+                  }}
+                >
+                  <Settings2 size={15} aria-hidden="true" />
+                  <span>{tr('Settings')}</span>
+                  <ChevronDown size={14} aria-hidden="true" />
+                </button>
+              </div>
+              {busy ? (
+                <button type="button" onClick={handleStop} className="btn-stop compact-send-btn">{tr("Stop")}</button>
+              ) : (
+                <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
+                  {askUserQuestion ? tr("Send answer") : tr("Send")}
+                </button>
+              )}
+            </div>
           </div>
           </form>
         </div>

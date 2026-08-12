@@ -168,10 +168,34 @@ def _truncate(value: object, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     return text[:limit].rstrip() + f"\n...[truncated after {limit} characters]"
 
 
-def _safe_result(operation: str, callback) -> str:
+def _emit_tool_protocol_event(event: str, operation: str, success: bool | None = None) -> None:
+    stdout = sys.__stdout__
+    if stdout is None:
+        return
+    payload: dict[str, Any] = {"tool": operation}
+    if success is not None:
+        payload["success"] = success
+    envelope = {
+        "localAiCoworkEvent": event,
+        "payload": payload,
+    }
     try:
-        return _truncate(callback())
+        os.write(
+            stdout.fileno(),
+            (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8"),
+        )
+    except Exception:
+        pass
+
+
+def _safe_result(operation: str, callback) -> str:
+    _emit_tool_protocol_event("tool_started", operation)
+    try:
+        result = _truncate(callback())
+        _emit_tool_protocol_event("tool_completed", operation, True)
+        return result
     except Exception as exc:
+        _emit_tool_protocol_event("tool_completed", operation, False)
         return f"ERROR ({operation}): {exc.__class__.__name__}: {exc}"
 
 
@@ -199,6 +223,8 @@ def _canonical_tool_id(value: str) -> str:
         "generate_office_workflow": "office_workflow",
         "pptx_template_workflow": "office_workflow",
         "docx_template_workflow": "office_workflow",
+        "microsoftoffice": "microsoft_office",
+        "office_microsoft": "microsoft_office",
     }
     return aliases.get(normalized, normalized)
 
@@ -1102,6 +1128,347 @@ class OfficeWorkflowTool(BaseTool):
         return _safe_result("office_workflow", execute)
 
 
+class MicrosoftOfficeInput(BaseModel):
+    application: Literal["word", "excel", "powerpoint"]
+    action: Literal[
+        "export_pdf",
+        "replace_text",
+        "word_append_paragraph",
+        "word_format_text",
+        "excel_set_cell",
+        "excel_format_range",
+        "excel_add_chart",
+        "powerpoint_add_slide",
+        "powerpoint_format_text",
+    ] = "export_pdf"
+    source: str = Field(description="Existing Word, Excel, or PowerPoint file inside the workspace")
+    output: str = Field(description="New output path below artifacts/")
+    preview_output: str | None = Field(
+        default=None,
+        description="Optional new PDF preview path below artifacts/ for editing actions",
+    )
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class MicrosoftOfficeTool(BaseTool):
+    name: str = "microsoft_office"
+    description: str = (
+        "Use installed Microsoft Word, Excel, or PowerPoint on a managed Windows executor to export PDF, "
+        "replace or format content, edit cells, create charts, or add slides. Macros and active content are blocked."
+    )
+    args_schema: type[BaseModel] = MicrosoftOfficeInput
+    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
+
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
+        super().__init__()
+        self._roots = roots
+        self._deny_rules = deny_rules
+        self._root = _primary_workspace_root(roots)
+
+    def _relative_workspace_path(self, path: Path, field: str) -> str:
+        try:
+            return path.relative_to(self._root).as_posix()
+        except ValueError as error:
+            raise ValueError(f"{field} must stay inside the primary run workspace") from error
+
+    def _run(
+        self,
+        application: str,
+        source: str,
+        output: str,
+        action: str = "export_pdf",
+        preview_output: str | None = None,
+        parameters: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            source_path = _resolve_workspace_path(
+                self._roots,
+                source,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Microsoft Office source does not exist: {source}")
+            output_path = _resolve_workspace_path(
+                self._roots,
+                output,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            source_relative = self._relative_workspace_path(source_path, "source")
+            output_relative = self._relative_workspace_path(output_path, "output")
+            if not output_relative.startswith("artifacts/"):
+                raise ValueError("Microsoft Office output must stay below artifacts/")
+            preview_relative = None
+            if preview_output:
+                preview_path = _resolve_workspace_path(
+                    self._roots,
+                    preview_output,
+                    allow_root=False,
+                    tool="microsoft_office",
+                    deny_rules=self._deny_rules,
+                )
+                preview_relative = self._relative_workspace_path(preview_path, "preview_output")
+                if not preview_relative.startswith("artifacts/"):
+                    raise ValueError("Microsoft Office preview output must stay below artifacts/")
+            payload = {
+                "application": application,
+                "action": action,
+                "source": source_relative,
+                "output": output_relative,
+                "preview_output": preview_relative,
+                "parameters": {} if parameters is None else parameters,
+            }
+            completed = subprocess.run(
+                _windows_office_command(),
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=510,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"Microsoft Office adapter exited with {completed.returncode}: "
+                    f"{completed.stderr.strip() or completed.stdout.strip()}"
+                )
+            response = json.loads(completed.stdout)
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"Microsoft Office action failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("microsoft_office", execute)
+
+
+class McpToolInput(BaseModel):
+    server_name: str = Field(description="Exact executor-bound MCP server name")
+    tool_name: str = Field(description="Tool name exposed by the selected MCP server")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP tool arguments")
+
+
+def _executor_mcp_bindings(request: dict) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for value in request.get("executorMcpBindings") or []:
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or "").strip()
+        transport = str(value.get("transport") or "stdio").strip()
+        command = value.get("command")
+        args = value.get("args", [])
+        environment = value.get("environment", {})
+        url = value.get("url")
+        headers = value.get("headers", {})
+        if transport == "stdio" and (
+            name
+            and isinstance(command, str)
+            and command.strip()
+            and isinstance(args, list)
+            and all(isinstance(argument, str) for argument in args)
+            and isinstance(environment, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in environment.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "transport": "stdio",
+                "command": command,
+                "args": args,
+                "environment": environment,
+            }
+        elif transport == "streamable_http" and (
+            name
+            and isinstance(url, str)
+            and url.startswith("https://")
+            and isinstance(headers, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in headers.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "transport": "streamable_http",
+                "url": url,
+                "headers": headers,
+            }
+    return bindings
+
+
+def _allowed_mcp_server_names(request: dict, agent: dict) -> list[str]:
+    requested = [
+        str(value).strip()
+        for value in agent.get("mcpServerNames") or []
+        if str(value).strip()
+    ]
+    access = _agent_access(request, str(agent.get("id") or "").strip())
+    allowed = {
+        str(value).strip()
+        for value in access.get("allowedMcpServerNames") or []
+        if str(value).strip()
+    }
+    blocked = {
+        str(value).strip()
+        for value in access.get("blockedMcpServerNames") or []
+        if str(value).strip()
+    }
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in requested:
+        if name in allowed and name not in blocked and name not in seen:
+            result.append(name)
+            seen.add(name)
+    return result
+
+
+def _redact_mcp_binding_values(value: str, binding: dict[str, Any]) -> str:
+    redacted = value
+    environment = binding.get("environment") or binding.get("headers") or {}
+    secrets = sorted(
+        (secret for secret in environment.values() if isinstance(secret, str) and secret),
+        key=len,
+        reverse=True,
+    )
+    for secret in secrets:
+        redacted = redacted.replace(secret, "[REDACTED]")
+        escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+        if escaped != secret:
+            redacted = redacted.replace(escaped, "[REDACTED]")
+    return redacted
+
+
+def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _redact_mcp_binding_values(value, binding)
+    if isinstance(value, list):
+        return [_redact_mcp_binding_payload(item, binding) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_mcp_binding_payload(item, binding)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _bridge_command(variable: str, fallback: list[str] | None = None) -> list[str]:
+    configured = os.environ.get(variable)
+    if configured:
+        try:
+            command = json.loads(configured)
+        except ValueError as error:
+            raise ValueError(f"{variable} must be valid JSON") from error
+        if (
+            not isinstance(command, list)
+            or not 1 <= len(command) <= 8
+            or any(
+                not isinstance(argument, str)
+                or not argument.strip()
+                or len(argument) > 32_768
+                or "\0" in argument
+                for argument in command
+            )
+        ):
+            raise ValueError(
+                f"{variable} must contain 1 to 8 bounded command arguments"
+            )
+        return command
+    if fallback is None:
+        raise RuntimeError(f"{variable} is not configured by this executor")
+    return fallback
+
+
+def _mcp_tool_command() -> list[str]:
+    tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
+    return _bridge_command("COWORK_MCP_TOOL_COMMAND_JSON", [sys.executable, tool_path])
+
+
+def _windows_office_command() -> list[str]:
+    return _bridge_command("COWORK_WINDOWS_OFFICE_COMMAND_JSON")
+
+
+class McpTool(BaseTool):
+    name: str = "mcp_tool"
+    description: str = "Call a tool on an executor-bound MCP server."
+    args_schema: type[BaseModel] = McpToolInput
+    _bindings: dict[str, dict[str, Any]] = PrivateAttr()
+    _allowed_names: set[str] = PrivateAttr()
+    _root: Path = PrivateAttr()
+
+    def __init__(
+        self,
+        roots: list[tuple[Path, str]],
+        bindings: dict[str, dict[str, Any]],
+        allowed_names: list[str],
+    ) -> None:
+        names = [name for name in allowed_names if name in bindings]
+        super().__init__(
+            description=(
+                "Call a tool on an encrypted executor-bound MCP server. "
+                f"Allowed servers: {', '.join(names)}"
+            )
+        )
+        self._bindings = {name: bindings[name] for name in names}
+        self._allowed_names = set(names)
+        self._root = _primary_workspace_root(roots)
+
+    def _run(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            name = str(server_name or "").strip()
+            tool = str(tool_name or "").strip()
+            if name not in self._allowed_names or name not in self._bindings:
+                raise PermissionError(f"MCP server is not allowed for this agent: {name}")
+            if not tool or len(tool) > 1024 or any(
+                ord(character) < 32 or ord(character) == 127 for character in tool
+            ):
+                raise ValueError("MCP tool name is missing or invalid")
+            normalized_arguments = {} if arguments is None else arguments
+            if not isinstance(normalized_arguments, dict):
+                raise ValueError("MCP tool arguments must be an object")
+            payload = {
+                "server": self._bindings[name],
+                "tool_name": tool,
+                "arguments": normalized_arguments,
+                "timeout_seconds": 120,
+            }
+            completed = subprocess.run(
+                _mcp_tool_command(),
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=150,
+                check=False,
+            )
+            stdout = _redact_mcp_binding_values(completed.stdout, self._bindings[name])
+            stderr = _redact_mcp_binding_values(completed.stderr, self._bindings[name])
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"MCP adapter exited with {completed.returncode}: {stderr.strip() or stdout.strip()}"
+                )
+            response = _redact_mcp_binding_payload(
+                json.loads(completed.stdout),
+                self._bindings[name],
+            )
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"MCP call failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("mcp_tool", execute)
+
+
 TOOL_FACTORIES = {
     "read_file": lambda roots, deny_rules: ReadFileTool(roots, deny_rules),
     "edit_file": lambda roots, deny_rules: EditFileTool(roots, deny_rules),
@@ -1115,6 +1482,7 @@ TOOL_FACTORIES = {
     "bash": lambda roots, deny_rules: BashTool(roots, deny_rules),
     "todo": lambda roots, deny_rules: TodoTool(),
     "office_workflow": lambda roots, deny_rules: OfficeWorkflowTool(roots, deny_rules),
+    "microsoft_office": lambda roots, deny_rules: MicrosoftOfficeTool(roots, deny_rules),
 }
 
 
@@ -1138,6 +1506,10 @@ def build_runtime_tools(request: dict, agent: dict) -> list[BaseTool]:
             continue
         result.append(factory(roots, deny_rules))
         seen.add(tool_id)
+    bindings = _executor_mcp_bindings(request)
+    allowed_mcp_names = _allowed_mcp_server_names(request, agent)
+    if any(name in bindings for name in allowed_mcp_names):
+        result.append(McpTool(roots, bindings, allowed_mcp_names))
     return result
 
 
@@ -1146,4 +1518,15 @@ def unavailable_runtime_tools(request: dict, agent: dict) -> list[str]:
     requested = {_canonical_tool_id(value) for value in agent.get("tools") or [] if str(value).strip()}
     access = _agent_access(request, agent_id)
     allowed = {_canonical_tool_id(value) for value in access.get("allowedTools") or []}
-    return sorted(tool_id for tool_id in requested & allowed if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task"})
+    unavailable = {
+        tool_id
+        for tool_id in requested & allowed
+        if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task", "mcp"}
+    }
+    bindings = _executor_mcp_bindings(request)
+    unavailable.update(
+        f"mcp:{name}"
+        for name in _allowed_mcp_server_names(request, agent)
+        if name not in bindings
+    )
+    return sorted(unavailable)

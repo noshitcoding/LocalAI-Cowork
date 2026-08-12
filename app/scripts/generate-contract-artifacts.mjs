@@ -72,13 +72,31 @@ const responseSchemas = new Map([
   ['get /api/v1/version', 'VersionResponse'], ['get /api/v1/capabilities', 'CapabilityCatalog'],
   ['get /api/v1/runs', 'ListRunsResponse'], ['post /api/v1/runs', 'RunRecord'],
   ['get /api/v1/runs/{run_id}', 'RunRecord'], ['post /api/v1/runs/{run_id}/cancel', 'RunRecord'],
+  ['get /api/v1/threads/{thread_id}/messages', 'MessageRecord'],
+  ['post /api/v1/threads/{thread_id}/messages', 'ThreadMessageRun'],
+  ['get /api/v1/sync/changes', 'PullSyncChangesResponse'],
+  ['post /api/v1/sync/changes', 'PushSyncChangesResponse'],
+  ['get /api/v1/sync/entities/{entity_type}', 'SyncedEntityPage'],
+  ['get /api/v1/agent/executors/{executor_id}/sync/changes', 'PullSyncChangesResponse'],
+  ['post /api/v1/agent/executors/{executor_id}/sync/changes', 'PushSyncChangesResponse'],
+  ['get /api/v1/agent/executors/{executor_id}/sync/entities/{entity_type}', 'SyncedEntityPage'],
   ['get /api/v1/projects', 'ProjectRecord'], ['post /api/v1/projects', 'ProjectRecord'],
-  ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
+  ['get /api/v1/teams', 'TeamRecord'], ['post /api/v1/teams', 'TeamRecord'],
+  ['get /api/v1/teams/{team_id}/members', 'TeamMemberRecord'],
+  ['get /api/v1/provider-profiles', 'ProviderProfile'], ['post /api/v1/provider-profiles', 'ProviderProfile'],
+  ['put /api/v1/provider-profiles/{profile_id}', 'ProviderProfile'],
+  ['put /api/v1/provider-profiles/{profile_id}/secret', 'ProviderProfile'],
+  ['get /api/v1/projects/{project_id}/mcp-bindings', 'ServerMcpBindingRecord'],
+  ['put /api/v1/projects/{project_id}/mcp-bindings/{mcp_entity_id}', 'ServerMcpBindingRecord'],
+  ['get /api/v1/projects/{project_id}', 'ProjectRecord'], ['put /api/v1/projects/{project_id}', 'ProjectRecord'],
+  ['put /api/v1/threads/{thread_id}', 'ThreadRecord'],
+  ['get /api/v1/projects/{project_id}/threads', 'ThreadRecord'], ['get /api/v1/tasks', 'TaskDefinition'],
   ['post /api/v1/tasks', 'TaskDefinition'], ['get /api/v1/tasks/{task_id}', 'TaskDefinition'],
   ['get /api/v1/schedules', 'ScheduleRecord'], ['post /api/v1/schedules', 'ScheduleRecord'],
   ['put /api/v1/schedules/{schedule_id}', 'ScheduleRecord'],
   ['get /api/v1/operations/metrics', 'OperationsSnapshot'],
   ['get /api/v1/auth/sessions', 'AuthSessionRecord'],
+  ['post /api/v1/auth/invitations', 'InvitationSecret'],
   ['get /api/v1/support-grants', 'SupportGrantRecord'], ['post /api/v1/support-grants', 'SupportGrantRecord'],
   ['get /api/v1/runs/{run_id}/artifacts', 'RunArtifact'],
   ['get /api/v1/runs/{run_id}/approvals', 'ApprovalRequest'],
@@ -92,14 +110,32 @@ const responseSchemas = new Map([
   ['get /api/v1/snapshots/{manifest_id}/upload', 'SnapshotUploadSession'],
   ['get /api/v1/projects/{project_id}/versions', 'ProjectVersion'],
   ['post /api/v1/projects/{project_id}/versions', 'ProjectVersion'],
+  ['post /api/v1/projects/{project_id}/versions/{version_id}/apply', 'ProjectVersion'],
+  ['get /api/v1/projects/{project_id}/merge-review', 'ProjectMergeReview'],
+  ['post /api/v1/projects/{project_id}/merge-apply', 'ProjectVersion'],
 ])
 const arrayResponses = new Set([
-  'get /api/v1/projects', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/projects', 'get /api/v1/teams', 'get /api/v1/teams/{team_id}/members',
+  'get /api/v1/provider-profiles', 'get /api/v1/tasks', 'get /api/v1/schedules',
+  'get /api/v1/projects/{project_id}/mcp-bindings',
+  'get /api/v1/projects/{project_id}/threads',
+  'get /api/v1/threads/{thread_id}/messages',
   'get /api/v1/auth/sessions',
   'get /api/v1/support-grants', 'get /api/v1/runs/{run_id}/artifacts',
   'get /api/v1/runs/{run_id}/approvals', 'get /api/v1/runs/{run_id}/input-requests',
   'get /api/v1/runs/{run_id}/checkpoints', 'get /api/v1/runs/{run_id}/desktop-sessions',
   'get /api/v1/projects/{project_id}/versions',
+])
+const requestSchemas = new Map([
+  ['put /api/v1/projects/{project_id}/mcp-bindings/{mcp_entity_id}', 'SetServerMcpBindingRequest'],
+  ['post /api/v1/projects/{project_id}/versions', 'CreateProjectVersionRequest'],
+  ['post /api/v1/projects/{project_id}/versions/{version_id}/apply', 'ApplyProjectVersionRequest'],
+  ['post /api/v1/projects/{project_id}/merge-apply', 'ApplyProjectMergeRequest'],
+])
+const queryParameters = new Map([
+  ['get /api/v1/projects/{project_id}/merge-review', [
+    'base_version_id', 'current_version_id', 'result_version_id',
+  ]],
 ])
 
 function schemaRef(name, array = false) {
@@ -117,12 +153,20 @@ function buildOpenApi(routes, schemas) {
       ? { description: 'Successful response', content: { 'application/json': { schema: schemaRef(schemaName, arrayResponses.has(key)) } } }
       : { description: 'Successful response' }
     const parameters = [...route.path.matchAll(/{([^}]+)}/g)].map((match) => ({
-      name: match[1], in: 'path', required: true, schema: { type: 'string', format: 'uuid' },
+      name: match[1], in: 'path', required: true,
+      schema: match[1] === 'entity_type'
+        ? { type: 'string' }
+        : { type: 'string', format: 'uuid' },
     }))
+    parameters.push(...(queryParameters.get(key) ?? []).map((name) => ({
+      name, in: 'query', required: true, schema: { type: 'string', format: 'uuid' },
+    })))
+    const requestSchema = requestSchemas.get(key)
     paths[route.path][route.method] = {
       operationId: operationId(route.method, route.path),
       tags: [route.group],
       ...(parameters.length ? { parameters } : {}),
+      ...(requestSchema ? { requestBody: { required: true, content: { 'application/json': { schema: schemaRef(requestSchema) } } } } : {}),
       ...(route.group === 'protected' ? { security: [{ bearerAuth: [] }] }
         : route.group === 'agent' ? { security: [{ executorBearerAuth: [] }] } : {}),
       responses: { '200': response, '400': { $ref: '#/components/responses/Error' }, '401': { $ref: '#/components/responses/Error' } },

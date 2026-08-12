@@ -10,6 +10,4 @@
   FindClose $0
   Sleep 500
   RMDir /r "$LOCALAPPDATA\OpenCowork\daemon\bin"
-  Sleep 500
-  RMDir /r "$LOCALAPPDATA\OpenCowork\daemon\bin"
 !macroend

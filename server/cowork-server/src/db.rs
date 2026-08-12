@@ -3,14 +3,14 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use cowork_contracts::{
     ensure_run_transition, Capability, ExecutorKind, ExecutorRecord, ExecutorRegistration,
-    ExecutorTarget, RunError, RunEvent, RunEventKind, RunLease, RunRecord, RunSpec, RunState,
-    SCHEMA_VERSION,
+    ExecutorTarget, MessageRecord, MessageRole, RunError, RunEvent, RunEventKind, RunLease,
+    RunRecord, RunSpec, RunState, SCHEMA_VERSION,
 };
 use serde_json::{json, Value};
 use sqlx::{postgres::PgRow, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{error::ApiError, governance};
+use crate::{error::ApiError, governance, sync};
 
 const TERMINAL_STATES: &[&str] = &["completed", "failed", "canceled", "expired"];
 
@@ -24,22 +24,30 @@ pub async fn create_run(
     initial_state: RunState,
 ) -> Result<RunRecord, ApiError> {
     let mut tx = pool.begin().await?;
+    let (record, _) = create_run_tx(&mut tx, spec, initial_state).await?;
+    tx.commit().await?;
+    Ok(record)
+}
+
+async fn create_run_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    spec: &RunSpec,
+    initial_state: RunState,
+) -> Result<(RunRecord, bool), ApiError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("quota:user:{}", spec.creator_user_id))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     if let Some(row) =
         sqlx::query("SELECT * FROM runs WHERE creator_user_id = $1 AND idempotency_key = $2")
             .bind(spec.creator_user_id)
             .bind(&spec.idempotency_key)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
     {
-        let record = row_to_run(&row)?;
-        tx.commit().await?;
-        return Ok(record);
+        return Ok((row_to_run(&row)?, false));
     }
-    governance::enforce_run_quota_tx(&mut tx, spec.creator_user_id, spec.project_id).await?;
+    governance::enforce_run_quota_tx(tx, spec.creator_user_id, spec.project_id).await?;
     let (target_kind, pool_id, device_id) = target_columns(&spec.executor_target);
     let spec_json = serde_json::to_value(spec)?;
     let state = state_name(initial_state);
@@ -68,29 +76,96 @@ pub async fn create_run(
     .bind(spec_json)
     .bind(spec.snapshot_id)
     .bind(spec.created_at)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
 
-    let record = if let Some(row) = inserted {
-        append_event_tx(
-            &mut tx,
-            spec.id,
-            RunEventKind::Created,
-            json!({"state": state}),
-        )
-        .await?;
-        row_to_run(&row)?
+    let (record, inserted) = if let Some(row) = inserted {
+        append_event_tx(tx, spec.id, RunEventKind::Created, json!({"state": state})).await?;
+        (row_to_run(&row)?, true)
     } else {
         let row =
             sqlx::query("SELECT * FROM runs WHERE creator_user_id = $1 AND idempotency_key = $2")
                 .bind(spec.creator_user_id)
                 .bind(&spec.idempotency_key)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
-        row_to_run(&row)?
+        (row_to_run(&row)?, false)
     };
+    Ok((record, inserted))
+}
+
+pub async fn create_thread_message_run(
+    pool: &PgPool,
+    spec: &RunSpec,
+    initial_state: RunState,
+    content: Value,
+) -> Result<(MessageRecord, RunRecord), ApiError> {
+    let mut tx = pool.begin().await?;
+    let (run, inserted) = create_run_tx(&mut tx, spec, initial_state).await?;
+    if run.spec.thread_id != spec.thread_id {
+        return Err(ApiError::Conflict(
+            "idempotency key belongs to a run in a different thread".to_owned(),
+        ));
+    }
+    let row = if inserted {
+        let message_id = Uuid::new_v4();
+        let etag = format!("W/\"{message_id}:1\"");
+        let row = sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id, etag, thread_id, author_user_id, role, content, run_id
+            ) VALUES ($1, $2, $3, $4, 'user', $5, $6)
+            RETURNING *
+            "#,
+        )
+        .bind(message_id)
+        .bind(etag)
+        .bind(spec.thread_id)
+        .bind(spec.creator_user_id)
+        .bind(content)
+        .bind(run.spec.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        touch_thread_tx(&mut tx, spec.thread_id).await?;
+        sync::publish_canonical_message_tx(&mut tx, message_id).await?;
+        row
+    } else {
+        sqlx::query(
+            "SELECT * FROM messages WHERE run_id = $1 AND role = 'user' AND deleted_at IS NULL",
+        )
+        .bind(run.spec.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            ApiError::Conflict(
+                "idempotency key belongs to a run that was not created from a chat message"
+                    .to_owned(),
+            )
+        })?
+    };
+    let message = row_to_message(&row)?;
     tx.commit().await?;
-    Ok(record)
+    Ok((message, run))
+}
+
+pub async fn list_thread_messages(
+    pool: &PgPool,
+    thread_id: Uuid,
+    limit: i64,
+) -> Result<Vec<MessageRecord>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        SELECT * FROM messages
+        WHERE thread_id = $1 AND deleted_at IS NULL
+        ORDER BY created_at, id
+        LIMIT $2
+        "#,
+    )
+    .bind(thread_id)
+    .bind(limit.clamp(1, 1_000))
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(row_to_message).collect()
 }
 
 pub async fn get_run(pool: &PgPool, run_id: Uuid) -> Result<RunRecord, ApiError> {
@@ -376,6 +451,7 @@ pub async fn target_has_executor(
     pool: &PgPool,
     target: &ExecutorTarget,
     required: &[Capability],
+    input: &Value,
 ) -> Result<bool, ApiError> {
     let rows = match target {
         ExecutorTarget::ServerLinux { .. } => return Ok(true),
@@ -398,7 +474,7 @@ pub async fn target_has_executor(
     };
     for row in rows {
         let executor = row_to_executor(&row)?;
-        if has_capabilities(&executor.registration, required) {
+        if supports_run(&executor.registration, required, input) {
             return Ok(true);
         }
     }
@@ -452,7 +528,11 @@ pub async fn claim_external_run(
         .into_iter()
         .find_map(|row| match row_to_run(&row) {
             Ok(run)
-                if has_capabilities(&executor.registration, &run.spec.required_capabilities) =>
+                if supports_run(
+                    &executor.registration,
+                    &run.spec.required_capabilities,
+                    &run.spec.input,
+                ) =>
             {
                 Some(Ok(run))
             }
@@ -536,6 +616,58 @@ pub async fn recover_external_run(
         tx.commit().await?;
         return Ok(None);
     };
+    let run_id: Uuid = row.try_get("id")?;
+    let previous_state: String = row.try_get("state")?;
+    let safe_to_resume = sqlx::query_scalar::<_, bool>(
+        "SELECT safe_to_resume FROM run_checkpoints WHERE run_id = $1 ORDER BY sequence DESC LIMIT 1",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if safe_to_resume == Some(false) {
+        sqlx::query(
+            r#"
+            UPDATE runs SET state = 'interrupted', revision = revision + 1,
+                lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+                error = jsonb_build_object(
+                    'code', 'unsafe_tool_interrupted',
+                    'message', 'The executor disconnected during or after an unsafe action. The action was not retried.',
+                    'retryable', false,
+                    'details', jsonb_build_object(
+                        'safe_to_resume', false,
+                        'manual_review_required', true,
+                        'detected_during_reconnect', true
+                    )
+                ), updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE executors SET active_runs = GREATEST(active_runs - 1, 0) WHERE id = $1",
+        )
+        .bind(executor_id)
+        .execute(&mut *tx)
+        .await?;
+        append_event_tx(
+            &mut tx,
+            run_id,
+            RunEventKind::StateChanged,
+            json!({
+                "from": previous_state,
+                "to": "interrupted",
+                "reason": "unsafe_tool_interrupted",
+                "safe_to_resume": false,
+                "manual_review_required": true,
+                "detected_during_reconnect": true,
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(None);
+    }
     let lease_token: Uuid = row
         .try_get::<Option<Uuid>, _>("lease_token")?
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("recoverable run has no lease token")))?;
@@ -543,7 +675,7 @@ pub async fn recover_external_run(
     let row = sqlx::query(
         "UPDATE runs SET lease_expires_at = $2, updated_at = now() WHERE id = $1 RETURNING *",
     )
-    .bind(row.try_get::<Uuid, _>("id")?)
+    .bind(run_id)
     .bind(lease_expires_at)
     .fetch_one(&mut *tx)
     .await?;
@@ -598,6 +730,78 @@ pub async fn append_leased_event(
     kind: RunEventKind,
     payload: Value,
 ) -> Result<RunEvent, ApiError> {
+    append_leased_event_with_accounting(
+        pool,
+        LeasedEventInput {
+            run_id,
+            executor_id,
+            lease_token,
+            source_event_id,
+            kind,
+            payload,
+        },
+        false,
+    )
+    .await
+}
+
+pub async fn append_external_leased_event(
+    pool: &PgPool,
+    run_id: Uuid,
+    executor_id: Uuid,
+    lease_token: Uuid,
+    source_event_id: Option<Uuid>,
+    kind: RunEventKind,
+    payload: Value,
+) -> Result<RunEvent, ApiError> {
+    append_leased_event_with_accounting(
+        pool,
+        LeasedEventInput {
+            run_id,
+            executor_id,
+            lease_token,
+            source_event_id,
+            kind,
+            payload,
+        },
+        true,
+    )
+    .await
+}
+
+struct LeasedEventInput {
+    run_id: Uuid,
+    executor_id: Uuid,
+    lease_token: Uuid,
+    source_event_id: Option<Uuid>,
+    kind: RunEventKind,
+    payload: Value,
+}
+
+async fn append_leased_event_with_accounting(
+    pool: &PgPool,
+    input: LeasedEventInput,
+    account_external_model_usage: bool,
+) -> Result<RunEvent, ApiError> {
+    let LeasedEventInput {
+        run_id,
+        executor_id,
+        lease_token,
+        source_event_id,
+        kind,
+        payload,
+    } = input;
+    if account_external_model_usage
+        && matches!(
+            kind,
+            RunEventKind::ModelStarted | RunEventKind::ModelCompleted
+        )
+        && source_event_id.is_none()
+    {
+        return Err(ApiError::Unprocessable(
+            "external model events require a stable source_event_id".to_owned(),
+        ));
+    }
     let mut tx = pool.begin().await?;
     verify_lease(&mut tx, run_id, executor_id, lease_token).await?;
     if let Some(source_event_id) = source_event_id {
@@ -618,6 +822,14 @@ pub async fn append_leased_event(
             return Ok(existing);
         }
     }
+    let usage_tokens = if account_external_model_usage {
+        external_model_usage_tokens(kind, &payload)?
+    } else {
+        None
+    };
+    if account_external_model_usage && kind == RunEventKind::ModelStarted {
+        governance::ensure_model_quota_for_run_tx(&mut tx, run_id).await?;
+    }
     let event = append_event_tx_with_id(
         &mut tx,
         run_id,
@@ -626,8 +838,54 @@ pub async fn append_leased_event(
         payload,
     )
     .await?;
+    if let Some(tokens) = usage_tokens {
+        governance::record_model_usage_for_run_tx(&mut tx, run_id, tokens, 0).await?;
+    }
     tx.commit().await?;
     Ok(event)
+}
+
+fn external_model_usage_tokens(
+    kind: RunEventKind,
+    payload: &Value,
+) -> Result<Option<u64>, ApiError> {
+    if kind != RunEventKind::ModelCompleted {
+        return Ok(None);
+    }
+    let Some(usage) = payload.get("usage") else {
+        return Ok(None);
+    };
+    if usage.is_null() {
+        return Ok(None);
+    }
+    let usage = usage.as_object().ok_or_else(|| {
+        ApiError::Unprocessable("external ModelCompleted usage must be an object".to_owned())
+    })?;
+    let field = |name: &str| -> Result<Option<u64>, ApiError> {
+        usage
+            .get(name)
+            .map(|value| {
+                value.as_u64().ok_or_else(|| {
+                    ApiError::Unprocessable(format!(
+                        "external ModelCompleted usage.{name} must be an unsigned integer"
+                    ))
+                })
+            })
+            .transpose()
+    };
+    let prompt_tokens = field("prompt_tokens")?;
+    let completion_tokens = field("completion_tokens")?;
+    let total_tokens = field("total_tokens")?;
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        total_tokens.unwrap_or(0).max(
+            prompt_tokens
+                .unwrap_or(0)
+                .saturating_add(completion_tokens.unwrap_or(0)),
+        ),
+    ))
 }
 
 pub async fn complete_leased_run(
@@ -773,13 +1031,75 @@ async fn finish_leased_run(
             RunEventKind::Failed
         },
         result
+            .clone()
             .or_else(|| error.and_then(|value| serde_json::to_value(value).ok()))
             .unwrap_or(Value::Null),
     )
     .await?;
+    if state == RunState::Completed {
+        append_assistant_message_tx(&mut tx, run_id, result.unwrap_or(Value::Null)).await?;
+    }
     let record = row_to_run(&row)?;
     tx.commit().await?;
     Ok(record)
+}
+
+async fn append_assistant_message_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: Uuid,
+    content: Value,
+) -> Result<(), ApiError> {
+    let message_id = Uuid::new_v4();
+    let etag = format!("W/\"{message_id}:1\"");
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO messages (
+            id, etag, thread_id, author_user_id, role, content, run_id
+        )
+        SELECT $1, $2, user_message.thread_id, NULL, 'assistant', $3, $4
+        FROM messages user_message
+        WHERE user_message.run_id = $4
+          AND user_message.role = 'user'
+          AND user_message.deleted_at IS NULL
+        ON CONFLICT DO NOTHING
+        RETURNING thread_id
+        "#,
+    )
+    .bind(message_id)
+    .bind(etag)
+    .bind(content)
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = inserted {
+        touch_thread_tx(tx, row.try_get("thread_id")?).await?;
+        sync::publish_canonical_message_tx(tx, message_id).await?;
+    }
+    Ok(())
+}
+
+async fn touch_thread_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: Uuid,
+) -> Result<(), ApiError> {
+    let updated = sqlx::query(
+        r#"
+        UPDATE threads
+        SET revision = revision + 1,
+            etag = 'W/"' || id::text || ':' || (revision + 1)::text || '"',
+            updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(thread_id)
+    .execute(&mut **tx)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::NotFound(format!(
+            "thread {thread_id} was not found"
+        )));
+    }
+    Ok(())
 }
 
 async fn create_run_result_version_tx(
@@ -1276,6 +1596,55 @@ fn has_capabilities(registration: &ExecutorRegistration, required: &[Capability]
         .all(|item| available.contains(item.0.as_str()))
 }
 
+fn supports_run(
+    registration: &ExecutorRegistration,
+    required: &[Capability],
+    input: &Value,
+) -> bool {
+    if !has_capabilities(registration, required) {
+        return false;
+    }
+    if registration.kind != ExecutorKind::ManagedWindows {
+        return true;
+    }
+    if input.get("task_runner").and_then(Value::as_str) == Some("crew")
+        && !registration
+            .capabilities
+            .iter()
+            .any(|descriptor| descriptor.name.0 == "crew.python")
+    {
+        return false;
+    }
+    let selected = input
+        .get("frozen_runtime_context")
+        .and_then(|context| context.get("mcp_metadata"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("definition")
+                .and_then(|definition| definition.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+        })
+        .collect::<HashSet<_>>();
+    if selected.is_empty() {
+        return true;
+    }
+    let configured = registration
+        .capabilities
+        .iter()
+        .find(|descriptor| descriptor.name.0 == "tool.mcp.invoke")
+        .and_then(|descriptor| descriptor.attributes.get("server_names"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<HashSet<_>>();
+    selected.is_subset(&configured)
+}
+
 fn row_to_run(row: &PgRow) -> Result<RunRecord, ApiError> {
     let spec: RunSpec = serde_json::from_value(row.try_get("spec")?)?;
     let state = parse_state(row.try_get("state")?)?;
@@ -1295,6 +1664,34 @@ fn row_to_run(row: &PgRow) -> Result<RunRecord, ApiError> {
             .map(serde_json::from_value)
             .transpose()?,
         updated_at: row.try_get("updated_at")?,
+    })
+}
+
+fn row_to_message(row: &PgRow) -> Result<MessageRecord, ApiError> {
+    let role = match row.try_get::<&str, _>("role")? {
+        "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
+        "system" => MessageRole::System,
+        "tool" => MessageRole::Tool,
+        other => {
+            return Err(ApiError::Internal(anyhow::anyhow!(
+                "unknown message role {other}"
+            )))
+        }
+    };
+    Ok(MessageRecord {
+        schema_version: SCHEMA_VERSION,
+        id: row.try_get("id")?,
+        revision: row.try_get("revision")?,
+        etag: row.try_get("etag")?,
+        thread_id: row.try_get("thread_id")?,
+        author_user_id: row.try_get("author_user_id")?,
+        role,
+        content: row.try_get("content")?,
+        run_id: row.try_get("run_id")?,
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+        deleted_at: row.try_get("deleted_at")?,
     })
 }
 
@@ -1403,4 +1800,132 @@ fn event_kind_name(kind: RunEventKind) -> &'static str {
 
 fn parse_event_kind(value: &str) -> Result<RunEventKind, ApiError> {
     serde_json::from_value(Value::String(value.to_owned())).map_err(ApiError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cowork_contracts::CapabilityDescriptor;
+    use std::collections::BTreeMap;
+
+    fn registration(kind: ExecutorKind, server_names: &[&str]) -> ExecutorRegistration {
+        ExecutorRegistration {
+            schema_version: SCHEMA_VERSION,
+            executor_id: Uuid::new_v4(),
+            kind,
+            pool_id: Some(Uuid::new_v4()),
+            owner_user_id: None,
+            display_name: "executor".to_owned(),
+            protocol_version: SCHEMA_VERSION,
+            capabilities: vec![CapabilityDescriptor {
+                schema_version: SCHEMA_VERSION,
+                name: Capability::from("tool.mcp.invoke"),
+                version: "test".to_owned(),
+                attributes: BTreeMap::from([("server_names".to_owned(), json!(server_names))]),
+            }],
+            labels: BTreeMap::new(),
+            personal_device_remote_control: None,
+            max_concurrent_runs: 1,
+        }
+    }
+
+    #[test]
+    fn managed_windows_claims_only_runs_matching_its_local_mcp_names() {
+        let input = json!({
+            "frozen_runtime_context":{"mcp_metadata":[
+                {"definition":{"name":"Docs"}}
+            ]}
+        });
+        let required = [Capability::from("tool.mcp.invoke")];
+        assert!(supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["Docs", "CRM"]),
+            &required,
+            &input,
+        ));
+        assert!(!supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["CRM"]),
+            &required,
+            &input,
+        ));
+        let mut crew_executor = registration(ExecutorKind::ManagedWindows, &["Docs"]);
+        crew_executor.capabilities.push(CapabilityDescriptor {
+            schema_version: SCHEMA_VERSION,
+            name: Capability::from("crew.python"),
+            version: "test".to_owned(),
+            attributes: BTreeMap::new(),
+        });
+        assert!(supports_run(
+            &crew_executor,
+            &required,
+            &json!({
+                "task_runner":"crew",
+                "frozen_runtime_context":{"mcp_metadata":[
+                    {"definition":{"name":"Docs"}}
+                ]}
+            }),
+        ));
+        assert!(!supports_run(
+            &registration(ExecutorKind::ManagedWindows, &["Docs"]),
+            &required,
+            &json!({
+                "task_runner":"crew",
+                "frozen_runtime_context":{"mcp_metadata":[
+                    {"definition":{"name":"Docs"}}
+                ]}
+            }),
+        ));
+        assert!(supports_run(
+            &registration(ExecutorKind::PersonalDevice, &[]),
+            &required,
+            &input,
+        ));
+    }
+
+    #[test]
+    fn external_model_usage_is_bounded_and_never_understates_the_split() {
+        assert_eq!(
+            external_model_usage_tokens(
+                RunEventKind::ModelCompleted,
+                &json!({"usage":{"prompt_tokens":20,"completion_tokens":10,"total_tokens":5}}),
+            )
+            .unwrap(),
+            Some(30),
+        );
+        assert_eq!(
+            external_model_usage_tokens(
+                RunEventKind::ModelCompleted,
+                &json!({"usage":{"total_tokens":42}}),
+            )
+            .unwrap(),
+            Some(42),
+        );
+        assert_eq!(
+            external_model_usage_tokens(RunEventKind::ModelDelta, &json!({"usage":99})).unwrap(),
+            None,
+        );
+        assert!(external_model_usage_tokens(
+            RunEventKind::ModelCompleted,
+            &json!({"usage":{"total_tokens":-1}}),
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn external_model_events_require_a_stable_id_before_database_access() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://127.0.0.1/unused")
+            .unwrap();
+        let error = append_external_leased_event(
+            &pool,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            None,
+            RunEventKind::ModelStarted,
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, ApiError::Unprocessable(_)));
+    }
 }

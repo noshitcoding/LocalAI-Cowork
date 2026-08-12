@@ -26,7 +26,7 @@ use crate::{
     auth::{ExecutorPrincipal, Principal},
     db,
     error::ApiError,
-    organization, AppState,
+    mcp_bindings, organization, providers, sync, AppState,
 };
 
 const DEFAULT_WAIT_DAYS: i64 = 7;
@@ -42,6 +42,11 @@ pub struct TaskVersionQuery {
     revision: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DeleteTaskQuery {
+    expected_revision: i64,
+}
+
 pub async fn create_task(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -55,6 +60,8 @@ pub async fn create_task(
     )
     .await?;
     validate_task_fields(&request.name, &request.instructions)?;
+    let required_capabilities =
+        effective_task_capabilities(&request.required_capabilities, &request.config)?;
     if let Some(target) = &request.default_target {
         validate_target_for_project(&state.pool, principal.user_id, request.project_id, target)
             .await?;
@@ -62,6 +69,7 @@ pub async fn create_task(
     let id = Uuid::new_v4();
     let revision = 1_i64;
     let etag = version_etag(id, revision);
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO task_definitions (
@@ -78,7 +86,7 @@ pub async fn create_task(
     .bind(request.project_id)
     .bind(request.name.trim())
     .bind(request.instructions)
-    .bind(serde_json::to_value(request.required_capabilities)?)
+    .bind(serde_json::to_value(required_capabilities)?)
     .bind(
         request
             .default_target
@@ -88,9 +96,12 @@ pub async fn create_task(
     .bind(request.config)
     .bind(request.release)
     .bind(principal.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_task(&row)?)))
+    let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(task)))
 }
 
 pub async fn list_tasks(
@@ -158,6 +169,8 @@ pub async fn create_task_version(
     Json(request): Json<CreateTaskVersionRequest>,
 ) -> Result<(StatusCode, Json<TaskDefinition>), ApiError> {
     validate_task_fields(&request.name, &request.instructions)?;
+    let required_capabilities =
+        effective_task_capabilities(&request.required_capabilities, &request.config)?;
     let mut tx = state.pool.begin().await?;
     let current = sqlx::query(
         "SELECT * FROM task_definitions WHERE id = $1 AND deleted_at IS NULL ORDER BY revision DESC LIMIT 1 FOR UPDATE",
@@ -207,7 +220,7 @@ pub async fn create_task_version(
     .bind(project_id)
     .bind(request.name.trim())
     .bind(request.instructions)
-    .bind(serde_json::to_value(request.required_capabilities)?)
+    .bind(serde_json::to_value(required_capabilities)?)
     .bind(
         request
             .default_target
@@ -220,6 +233,7 @@ pub async fn create_task_version(
     .fetch_one(&mut *tx)
     .await?;
     let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, task_id).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(task)))
 }
@@ -259,8 +273,97 @@ pub async fn release_task_version(
     .fetch_one(&mut *tx)
     .await?;
     let task = row_to_task(&row)?;
+    sync::publish_canonical_task_tx(&mut tx, task_id).await?;
     tx.commit().await?;
     Ok(Json(task))
+}
+
+pub async fn delete_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<Uuid>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<DeleteTaskQuery>,
+) -> Result<StatusCode, ApiError> {
+    if query.expected_revision < 1 {
+        return Err(ApiError::Unprocessable(
+            "expected_revision must be positive".to_owned(),
+        ));
+    }
+    let current = sqlx::query(
+        r#"
+        SELECT task.project_id, task.revision, project.owner_user_id, project.privacy
+        FROM task_definitions task
+        JOIN projects project ON project.id = task.project_id
+        WHERE task.id = $1 AND task.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        ORDER BY task.revision DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("task {task_id} was not found")))?;
+    let project_id: Uuid = current.try_get("project_id")?;
+    organization::ensure_project_role(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        ProjectRole::Editor,
+    )
+    .await?;
+    if current.try_get::<i64, _>("revision")? != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "task revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let private = current.try_get::<&str, _>("privacy")? == "private_local";
+    let owner_user_id: Uuid = current.try_get("owner_user_id")?;
+    let mut tx = state.pool.begin().await?;
+    let locked_revision = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT revision FROM task_definitions
+        WHERE id = $1 AND deleted_at IS NULL
+        ORDER BY revision DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("task {task_id} was not found")))?;
+    if locked_revision != query.expected_revision {
+        return Err(ApiError::Conflict(
+            "task revision changed; reload before deleting".to_owned(),
+        ));
+    }
+    let schedule_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM schedules WHERE task_id = $1 AND deleted_at IS NULL ORDER BY id FOR UPDATE",
+    )
+    .bind(task_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE task_definitions SET released = FALSE, deleted_at = now() WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE schedules SET enabled = FALSE, next_run_at = NULL, blocked_reason = 'task deleted', updated_at = now() WHERE task_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
+    if private {
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "task", task_id).await?;
+        for schedule_id in schedule_ids {
+            sync::publish_canonical_schedule_tx(&mut tx, schedule_id).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn create_schedule(
@@ -284,6 +387,14 @@ pub async fn create_schedule(
         &request.executor_target,
     )
     .await?;
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        request.project_id,
+        request.model_profile_id,
+        &request.executor_target,
+    )
+    .await?;
     let next_run_at = if request.enabled {
         Some(next_occurrence(
             &request.cron,
@@ -294,6 +405,7 @@ pub async fn create_schedule(
         None
     };
     let id = Uuid::new_v4();
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO schedules (
@@ -317,9 +429,12 @@ pub async fn create_schedule(
     .bind(request.enabled)
     .bind(next_run_at)
     .bind(principal.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok((StatusCode::CREATED, Json(row_to_schedule(&row)?)))
+    let schedule = row_to_schedule(&row)?;
+    sync::publish_canonical_schedule_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(schedule)))
 }
 
 pub async fn list_schedules(
@@ -373,6 +488,14 @@ pub async fn update_schedule(
         &request.executor_target,
     )
     .await?;
+    providers::ensure_profile_for_target(
+        &state.pool,
+        principal.user_id,
+        project_id,
+        request.model_profile_id,
+        &request.executor_target,
+    )
+    .await?;
     let cron = normalized_cron(&request.cron)?;
     let timezone = validated_timezone(&request.timezone)?;
     let next_run_at = if request.enabled {
@@ -381,6 +504,7 @@ pub async fn update_schedule(
         None
     };
     let next_revision = request.expected_revision + 1;
+    let mut tx = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         UPDATE schedules SET revision = revision + 1, etag = $3,
@@ -401,12 +525,15 @@ pub async fn update_schedule(
     .bind(request.model_profile_id)
     .bind(request.enabled)
     .bind(next_run_at)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| {
         ApiError::Conflict("schedule revision changed; reload before updating".to_owned())
     })?;
-    Ok(Json(row_to_schedule(&row)?))
+    let schedule = row_to_schedule(&row)?;
+    sync::publish_canonical_schedule_tx(&mut tx, schedule_id).await?;
+    tx.commit().await?;
+    Ok(Json(schedule))
 }
 
 pub async fn delete_schedule(
@@ -414,11 +541,19 @@ pub async fn delete_schedule(
     Path(schedule_id): Path<Uuid>,
     Extension(principal): Extension<Principal>,
 ) -> Result<StatusCode, ApiError> {
-    let row = sqlx::query("SELECT project_id FROM schedules WHERE id = $1 AND deleted_at IS NULL")
-        .bind(schedule_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("schedule {schedule_id} was not found")))?;
+    let row = sqlx::query(
+        r#"
+        SELECT schedule.project_id, project.owner_user_id, project.privacy
+        FROM schedules schedule
+        JOIN projects project ON project.id = schedule.project_id
+        WHERE schedule.id = $1 AND schedule.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+        "#,
+    )
+    .bind(schedule_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::NotFound(format!("schedule {schedule_id} was not found")))?;
     let project_id: Uuid = row.try_get("project_id")?;
     organization::ensure_project_role(
         &state.pool,
@@ -427,12 +562,19 @@ pub async fn delete_schedule(
         ProjectRole::Runner,
     )
     .await?;
+    let owner_user_id: Uuid = row.try_get("owner_user_id")?;
+    let private = row.try_get::<&str, _>("privacy")? == "private_local";
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE schedules SET revision = revision + 1, enabled = FALSE, next_run_at = NULL, deleted_at = now(), updated_at = now() WHERE id = $1",
     )
     .bind(schedule_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+    if private {
+        sync::publish_server_tombstone_tx(&mut tx, owner_user_id, "schedule", schedule_id).await?;
+    }
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -917,6 +1059,7 @@ pub async fn trigger_due_schedules(
                 .bind(now)
                 .execute(&mut *tx)
                 .await?;
+                sync::publish_canonical_schedule_tx(&mut tx, schedule.id).await?;
                 tx.commit().await?;
                 triggered += 1;
             }
@@ -932,6 +1075,7 @@ pub async fn trigger_due_schedules(
                 .bind(reason)
                 .execute(&mut *tx)
                 .await?;
+                sync::publish_canonical_schedule_tx(&mut tx, schedule.id).await?;
                 tx.commit().await?;
             }
         }
@@ -1157,6 +1301,14 @@ pub async fn create_worker_checkpoint(
 
 struct ScheduleBlock(String);
 
+struct ScheduledTriggerContext {
+    schedule_id: Uuid,
+    due_at: DateTime<Utc>,
+    triggered_at: DateTime<Utc>,
+    missed_occurrences: usize,
+    catch_up_truncated: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_scheduled_run(
     pool: &PgPool,
@@ -1199,6 +1351,54 @@ async fn prepare_scheduled_run(
     .map_err(block)?
     .ok_or_else(|| ScheduleBlock("task_has_no_released_version".to_owned()))?;
     let task = row_to_task(&task_row).map_err(block)?;
+    let mut required_capabilities =
+        effective_task_capabilities(&task.required_capabilities, &task.config).map_err(block)?;
+    let creator_user_id = schedule_created_by(pool, schedule.id)
+        .await
+        .map_err(block)?;
+    let input = scheduled_input(
+        schedule.input.clone(),
+        &task.instructions,
+        &task.config,
+        ScheduledTriggerContext {
+            schedule_id: schedule.id,
+            due_at,
+            triggered_at: now,
+            missed_occurrences,
+            catch_up_truncated,
+        },
+    )
+    .map_err(block)?;
+    let input = sync::freeze_runtime_context_for_run(pool, creator_user_id, input)
+        .await
+        .map_err(block)?;
+    providers::ensure_crew_profiles_for_target(
+        pool,
+        creator_user_id,
+        schedule.project_id,
+        &input,
+        &schedule.executor_target,
+    )
+    .await
+    .map_err(block)?;
+    apply_frozen_crew_capabilities(&mut required_capabilities, &input).map_err(block)?;
+    mcp_bindings::ensure_crew_mcp_selection(&input).map_err(block)?;
+    if mcp_bindings::run_selects_mcp(&input) {
+        if matches!(
+            &schedule.executor_target,
+            ExecutorTarget::ServerLinux { .. }
+        ) {
+            mcp_bindings::ensure_server_bindings_for_run(pool, schedule.project_id, &input)
+                .await
+                .map_err(block)?;
+        }
+        if !required_capabilities
+            .iter()
+            .any(|capability| capability.0 == "tool.mcp.invoke")
+        {
+            required_capabilities.push(cowork_contracts::capabilities::mcp_invoke());
+        }
+    }
 
     match &schedule.executor_target {
         ExecutorTarget::ServerLinux {
@@ -1232,11 +1432,11 @@ async fn prepare_scheduled_run(
                 .iter()
                 .map(|capability| capability.0.as_str())
                 .collect();
-            task.required_capabilities
+            required_capabilities
                 .iter()
                 .all(|capability| available.contains(capability.0.as_str()))
         }
-        target => db::target_has_executor(pool, target, &task.required_capabilities)
+        target => db::target_has_executor(pool, target, &required_capabilities, &input)
             .await
             .map_err(block)?,
     };
@@ -1271,18 +1471,6 @@ async fn prepare_scheduled_run(
     } else {
         None
     };
-    let creator_user_id = schedule_created_by(pool, schedule.id)
-        .await
-        .map_err(block)?;
-    let input = scheduled_input(
-        schedule.input.clone(),
-        &task.instructions,
-        schedule.id,
-        due_at,
-        now,
-        missed_occurrences,
-        catch_up_truncated,
-    );
     Ok(RunSpec {
         schema_version: SCHEMA_VERSION,
         id: Uuid::new_v4(),
@@ -1299,7 +1487,7 @@ async fn prepare_scheduled_run(
         }),
         creator_user_id,
         executor_target: schedule.executor_target.clone(),
-        required_capabilities: task.required_capabilities,
+        required_capabilities,
         input,
         model_profile_id: schedule.model_profile_id,
         snapshot_id,
@@ -1311,35 +1499,27 @@ async fn prepare_scheduled_run(
 fn scheduled_input(
     input: Value,
     instructions: &str,
-    schedule_id: Uuid,
-    due_at: DateTime<Utc>,
-    triggered_at: DateTime<Utc>,
-    missed_occurrences: usize,
-    catch_up_truncated: bool,
-) -> Value {
-    let mut object = match input {
-        Value::Object(object) => object,
-        Value::Null => Map::new(),
-        other => {
-            let mut object = Map::new();
-            object.insert("input".to_owned(), other);
-            object
-        }
-    };
+    config: &Value,
+    trigger: ScheduledTriggerContext,
+) -> Result<Value, ApiError> {
+    let mut object = freeze_task_input(input, instructions, config)?
+        .as_object()
+        .cloned()
+        .expect("frozen task input is always an object");
     object
         .entry("prompt".to_owned())
         .or_insert_with(|| Value::String(instructions.to_owned()));
     object.insert(
         "_schedule".to_owned(),
         json!({
-            "schedule_id": schedule_id,
-            "first_due_at": due_at,
-            "triggered_at": triggered_at,
-            "missed_occurrences": missed_occurrences,
-            "catch_up_truncated": catch_up_truncated
+            "schedule_id": trigger.schedule_id,
+            "first_due_at": trigger.due_at,
+            "triggered_at": trigger.triggered_at,
+            "missed_occurrences": trigger.missed_occurrences,
+            "catch_up_truncated": trigger.catch_up_truncated
         }),
     );
-    Value::Object(object)
+    Ok(Value::Object(object))
 }
 
 async fn resume_waiting_run(
@@ -1551,6 +1731,175 @@ fn validate_task_fields(name: &str, instructions: &str) -> Result<(), ApiError> 
     Ok(())
 }
 
+fn task_config_value<'a>(config: &'a Value, key: &str) -> Option<&'a Value> {
+    config
+        .get(key)
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            config
+                .get("sync_metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get(key))
+        })
+}
+
+pub(crate) fn task_runner(config: &Value) -> Result<&str, ApiError> {
+    let runner = task_config_value(config, "runner")
+        .and_then(Value::as_str)
+        .unwrap_or("model");
+    if matches!(runner, "model" | "crew") {
+        Ok(runner)
+    } else {
+        Err(ApiError::Unprocessable(
+            "task config runner must be model or crew".to_owned(),
+        ))
+    }
+}
+
+fn task_crew_id(config: &Value) -> Result<Option<&str>, ApiError> {
+    if task_runner(config)? != "crew" {
+        return Ok(None);
+    }
+    let crew_id = task_config_value(config, "crew_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::Unprocessable("crew tasks require a non-empty crew_id".to_owned())
+        })?;
+    Ok(Some(crew_id))
+}
+
+pub(crate) fn effective_task_capabilities(
+    requested: &[Capability],
+    config: &Value,
+) -> Result<Vec<Capability>, ApiError> {
+    reject_cleartext_task_secrets(config)?;
+    let mut capabilities = Vec::with_capacity(requested.len() + 1);
+    let mut seen = std::collections::HashSet::with_capacity(requested.len() + 1);
+    for capability in requested {
+        if capability.0.trim().is_empty() || capability.0.len() > 100 {
+            return Err(ApiError::Unprocessable(
+                "capability names must contain 1 to 100 characters".to_owned(),
+            ));
+        }
+        if seen.insert(capability.0.clone()) {
+            capabilities.push(capability.clone());
+        }
+    }
+    if task_crew_id(config)?.is_some() {
+        let capability = cowork_contracts::capabilities::crew_python();
+        if seen.insert(capability.0.clone()) {
+            capabilities.push(capability);
+        }
+    }
+    Ok(capabilities)
+}
+
+pub(crate) fn apply_frozen_crew_capabilities(
+    capabilities: &mut Vec<Capability>,
+    input: &Value,
+) -> Result<(), ApiError> {
+    if input.get("task_runner").and_then(Value::as_str) != Some("crew") {
+        return Ok(());
+    }
+    let definition = input.get("crew_definition").ok_or_else(|| {
+        ApiError::Unprocessable("the Crew run has no frozen crew_definition".to_owned())
+    })?;
+    let mut derived = vec![cowork_contracts::capabilities::crew_python()];
+    derived.extend(
+        cowork_runtime::crew::required_crew_tool_capabilities(definition)
+            .map_err(|error| ApiError::Unprocessable(error.to_string()))?,
+    );
+    for capability in derived {
+        if !capabilities
+            .iter()
+            .any(|existing| existing.0 == capability.0)
+        {
+            capabilities.push(capability);
+        }
+    }
+    Ok(())
+}
+
+fn reject_cleartext_task_secrets(value: &Value) -> Result<(), ApiError> {
+    fn visit(value: &Value, path: &mut Vec<String>) -> Option<String> {
+        match value {
+            Value::Object(object) => object.iter().find_map(|(key, value)| {
+                path.push(key.clone());
+                let normalized = key
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                let secret_key = matches!(
+                    normalized.as_str(),
+                    "apikey"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "clientsecret"
+                        | "password"
+                        | "authorization"
+                        | "credential"
+                );
+                let found = if secret_key
+                    && value
+                        .as_str()
+                        .is_some_and(|secret| !secret.trim().is_empty())
+                {
+                    Some(path.join("."))
+                } else {
+                    visit(value, path)
+                };
+                path.pop();
+                found
+            }),
+            Value::Array(values) => values.iter().enumerate().find_map(|(index, value)| {
+                path.push(index.to_string());
+                let found = visit(value, path);
+                path.pop();
+                found
+            }),
+            _ => None,
+        }
+    }
+
+    if let Some(path) = visit(value, &mut Vec::new()) {
+        return Err(ApiError::Unprocessable(format!(
+            "task config must not contain cleartext credentials ({path}); reference a provider profile instead"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn freeze_task_input(
+    input: Value,
+    instructions: &str,
+    config: &Value,
+) -> Result<Value, ApiError> {
+    let runner = task_runner(config)?;
+    let crew_id = task_crew_id(config)?;
+    let mut object = match input {
+        Value::Object(object) => object,
+        Value::Null => Map::new(),
+        other => Map::from_iter([("input".to_owned(), other)]),
+    };
+    object.insert(
+        "task_instructions".to_owned(),
+        Value::String(instructions.to_owned()),
+    );
+    object.insert("task_config".to_owned(), config.clone());
+    object.insert("task_runner".to_owned(), Value::String(runner.to_owned()));
+    if let Some(crew_id) = crew_id {
+        object.insert("crew_id".to_owned(), Value::String(crew_id.to_owned()));
+        object.insert(
+            "resolve_current_crew_provider_bindings".to_owned(),
+            Value::Bool(true),
+        );
+    }
+    Ok(Value::Object(object))
+}
+
 fn validated_expiry(value: Option<DateTime<Utc>>) -> Result<DateTime<Utc>, ApiError> {
     let now = Utc::now();
     let expires_at = value.unwrap_or_else(|| now + Duration::days(DEFAULT_WAIT_DAYS));
@@ -1564,7 +1913,7 @@ fn validated_expiry(value: Option<DateTime<Utc>>) -> Result<DateTime<Utc>, ApiEr
     Ok(expires_at)
 }
 
-fn normalized_cron(expression: &str) -> Result<String, ApiError> {
+pub(crate) fn normalized_cron(expression: &str) -> Result<String, ApiError> {
     let expression = expression.trim();
     let fields = expression.split_whitespace().count();
     let normalized = match fields {
@@ -1581,7 +1930,7 @@ fn normalized_cron(expression: &str) -> Result<String, ApiError> {
     Ok(normalized)
 }
 
-fn validated_timezone(value: &str) -> Result<Tz, ApiError> {
+pub(crate) fn validated_timezone(value: &str) -> Result<Tz, ApiError> {
     value
         .parse::<Tz>()
         .map_err(|_| ApiError::Unprocessable(format!("{value} is not a recognized IANA timezone")))
@@ -1596,7 +1945,7 @@ fn next_occurrence(
     next_occurrence_normalized(&cron, validated_timezone(timezone)?, after)
 }
 
-fn next_occurrence_normalized(
+pub(crate) fn next_occurrence_normalized(
     expression: &str,
     timezone: Tz,
     after: DateTime<Utc>,
@@ -1806,5 +2155,83 @@ mod tests {
         let remaining = expiry - Utc::now();
         assert!(remaining > Duration::days(6));
         assert!(remaining <= Duration::days(7) + Duration::seconds(1));
+    }
+
+    #[test]
+    fn scheduled_input_keeps_task_instructions_with_an_explicit_prompt() {
+        let due = Utc.with_ymd_and_hms(2026, 1, 1, 9, 0, 0).unwrap();
+        let input = scheduled_input(
+            json!({"prompt": "today's customer input"}),
+            "released task instructions",
+            &json!({"sync_metadata":{"runner":"crew","crew_id":"research-crew"}}),
+            ScheduledTriggerContext {
+                schedule_id: Uuid::new_v4(),
+                due_at: due,
+                triggered_at: due,
+                missed_occurrences: 1,
+                catch_up_truncated: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(input["prompt"], "today's customer input");
+        assert_eq!(input["task_instructions"], "released task instructions");
+        assert_eq!(input["task_runner"], "crew");
+        assert_eq!(input["crew_id"], "research-crew");
+        assert_eq!(
+            input["task_config"],
+            json!({"sync_metadata":{"runner":"crew","crew_id":"research-crew"}})
+        );
+    }
+
+    #[test]
+    fn crew_tasks_require_identity_and_capability() {
+        let error = effective_task_capabilities(&[], &json!({"runner":"crew"}))
+            .expect_err("crew without an identity must be rejected");
+        assert!(error.to_string().contains("crew_id"));
+
+        let capabilities = effective_task_capabilities(
+            &[Capability::from("files"), Capability::from("files")],
+            &json!({"runner":"crew","crew_id":"writers"}),
+        )
+        .unwrap();
+        assert_eq!(
+            capabilities,
+            vec![Capability::from("files"), Capability::from("crew.python")]
+        );
+
+        let error = effective_task_capabilities(
+            &[],
+            &json!({
+                "runner":"crew",
+                "crew_id":"writers",
+                "crew_request":{"providerConfigs":{"openAICompatible":{"apiKey":"secret"}}}
+            }),
+        )
+        .expect_err("task versions must never persist cleartext provider credentials");
+        assert!(error.to_string().contains("provider profile"));
+    }
+
+    #[test]
+    fn frozen_crew_tools_extend_the_routing_capabilities() {
+        let mut capabilities = vec![Capability::from("files")];
+        apply_frozen_crew_capabilities(
+            &mut capabilities,
+            &json!({
+                "task_runner":"crew",
+                "crew_definition":{
+                    "agents":[{"id":"writer","tools":["read_file","office_workflow","web_search"]}]
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            capabilities,
+            vec![
+                Capability::from("files"),
+                Capability::from("crew.python"),
+                Capability::from("office.ooxml"),
+                Capability::from("web.fetch"),
+            ]
+        );
     }
 }

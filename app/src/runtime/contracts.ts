@@ -236,6 +236,42 @@ export const runInputRequestSchema = z.object({
 })
 export type RunInputRequest = z.infer<typeof runInputRequestSchema>
 
+export const teamRecordSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  name: z.string(),
+  owner_user_id: z.string().uuid(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type TeamRecord = z.infer<typeof teamRecordSchema>
+
+export const teamRoleSchema = z.enum(['owner', 'admin', 'member'])
+export type TeamRole = z.infer<typeof teamRoleSchema>
+
+export const teamMemberRecordSchema = z.object({
+  schema_version: z.number().int(),
+  team_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  role: teamRoleSchema,
+  email: z.string().email(),
+  display_name: z.string(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type TeamMemberRecord = z.infer<typeof teamMemberRecordSchema>
+
+export const invitationSecretSchema = z.object({
+  schema_version: z.number().int(),
+  invitation_id: z.string().uuid(),
+  email: z.string().email(),
+  token: z.string().min(32),
+  expires_at: z.string().datetime({ offset: true }),
+})
+export type InvitationSecret = z.infer<typeof invitationSecretSchema>
+
 export const projectRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),
@@ -255,6 +291,114 @@ export const projectRecordSchema = z.object({
 })
 export type ProjectRecord = z.infer<typeof projectRecordSchema>
 
+export const projectVersionSchema = z.object({
+  schema_version: z.number().int().positive(),
+  id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  parent_version_id: z.string().uuid().nullable(),
+  merge_base_version_id: z.string().uuid().nullable(),
+  snapshot_manifest_id: z.string().uuid(),
+  created_by_run_id: z.string().uuid().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type ProjectVersion = z.infer<typeof projectVersionSchema>
+
+export const createProjectVersionRequestSchema = z.object({
+  snapshot_manifest_id: z.string().uuid(),
+  parent_version_id: z.string().uuid().nullable(),
+  merge_base_version_id: z.string().uuid().nullable(),
+  created_by_run_id: z.string().uuid().nullable(),
+  diff_summary: z.unknown(),
+})
+export type CreateProjectVersionRequest = z.infer<typeof createProjectVersionRequestSchema>
+
+export const applyProjectVersionRequestSchema = z.object({
+  expected_project_revision: z.number().int().positive(),
+  expected_current_version_id: z.string().uuid().nullable(),
+})
+export type ApplyProjectVersionRequest = z.infer<typeof applyProjectVersionRequestSchema>
+
+export const mergeFileStatusSchema = z.enum([
+  'unchanged',
+  'added',
+  'deleted',
+  'current_only',
+  'result_only',
+  'identical_change',
+  'auto_merged',
+  'text_conflict',
+  'binary_conflict',
+  'renamed',
+])
+export type MergeFileStatus = z.infer<typeof mergeFileStatusSchema>
+
+export const mergeFileReviewSchema = z.object({
+  path: z.string(),
+  renamed_from: z.string().nullable(),
+  status: mergeFileStatusSchema,
+  base_digest: z.string().nullable(),
+  current_digest: z.string().nullable(),
+  result_digest: z.string().nullable(),
+  auto_mergeable: z.boolean(),
+  conflict_preview: z.string().nullable(),
+})
+export type MergeFileReview = z.infer<typeof mergeFileReviewSchema>
+
+export const projectMergeReviewSchema = z.object({
+  schema_version: z.number().int().positive(),
+  project_id: z.string().uuid(),
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+  files: z.array(mergeFileReviewSchema),
+})
+export type ProjectMergeReview = z.infer<typeof projectMergeReviewSchema>
+
+export const mergeReviewQuerySchema = z.object({
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+})
+export type MergeReviewQuery = z.infer<typeof mergeReviewQuerySchema>
+
+export const mergeResolutionChoiceSchema = z.enum(['current', 'result', 'delete', 'auto_merged'])
+export type MergeResolutionChoice = z.infer<typeof mergeResolutionChoiceSchema>
+
+export const mergeFileResolutionSchema = z.object({
+  path: z.string(),
+  choice: mergeResolutionChoiceSchema,
+})
+export type MergeFileResolution = z.infer<typeof mergeFileResolutionSchema>
+
+export const applyProjectMergeRequestSchema = z.object({
+  base_version_id: z.string().uuid(),
+  current_version_id: z.string().uuid(),
+  result_version_id: z.string().uuid(),
+  expected_project_revision: z.number().int().positive(),
+  resolutions: z.array(mergeFileResolutionSchema),
+})
+export type ApplyProjectMergeRequest = z.infer<typeof applyProjectMergeRequestSchema>
+
+export const createProjectRequestSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  privacy: projectPrivacySchema,
+  team_id: z.string().uuid().nullable(),
+  preferred_executor_target: executorTargetSchema.nullable(),
+  policy: z.unknown(),
+})
+export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>
+
+export const updateProjectRequestSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  name: z.string(),
+  description: z.string(),
+  preferred_executor_target: executorTargetSchema.nullable(),
+  policy: z.unknown(),
+})
+export type UpdateProjectRequest = z.infer<typeof updateProjectRequestSchema>
+
 export const threadRecordSchema = z.object({
   schema_version: z.number().int(),
   id: z.string().uuid(),
@@ -267,6 +411,38 @@ export const threadRecordSchema = z.object({
   deleted_at: z.string().datetime({ offset: true }).nullable(),
 })
 export type ThreadRecord = z.infer<typeof threadRecordSchema>
+
+export const updateThreadRequestSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  title: z.string(),
+})
+export type UpdateThreadRequest = z.infer<typeof updateThreadRequestSchema>
+
+export const messageRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
+export type MessageRole = z.infer<typeof messageRoleSchema>
+
+export const messageRecordSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  thread_id: z.string().uuid(),
+  author_user_id: z.string().uuid().nullable(),
+  role: messageRoleSchema,
+  content: z.unknown(),
+  run_id: z.string().uuid().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type MessageRecord = z.infer<typeof messageRecordSchema>
+
+export const threadMessageRunSchema = z.object({
+  schema_version: z.number().int(),
+  message: messageRecordSchema,
+  run: runRecordSchema,
+})
+export type ThreadMessageRun = z.infer<typeof threadMessageRunSchema>
 
 export const supportGrantRecordSchema = z.object({
   schema_version: z.number().int(),
@@ -388,6 +564,51 @@ export const taskDefinitionSchema = z.object({
   deleted_at: z.string().datetime({ offset: true }).nullable(),
 })
 export type TaskDefinition = z.infer<typeof taskDefinitionSchema>
+
+export const providerProfileSchema = z.object({
+  schema_version: z.number().int(),
+  id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  owner_user_id: z.string().uuid().nullable(),
+  team_id: z.string().uuid().nullable(),
+  name: z.string(),
+  provider_kind: z.string(),
+  model_defaults: z.unknown(),
+  has_secret: z.boolean(),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+  deleted_at: z.string().datetime({ offset: true }).nullable(),
+})
+export type ProviderProfile = z.infer<typeof providerProfileSchema>
+
+export const serverMcpBindingRecordSchema = z.object({
+  schema_version: z.number().int(),
+  project_id: z.string().uuid(),
+  mcp_entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  name: z.string(),
+  transport: z.enum(['stdio', 'streamable_http', 'sse']),
+  executable_hint: z.string(),
+  argument_count: z.number().int().nonnegative(),
+  environment_keys: z.array(z.string()),
+  created_at: z.string().datetime({ offset: true }),
+  updated_at: z.string().datetime({ offset: true }),
+})
+export type ServerMcpBindingRecord = z.infer<typeof serverMcpBindingRecordSchema>
+
+export const setServerMcpBindingRequestSchema = z.object({
+  expected_revision: z.number().int().positive().nullable(),
+  name: z.string(),
+  transport: z.enum(['stdio', 'streamable_http', 'sse']),
+  command: z.string(),
+  args: z.array(z.string()),
+  environment: z.record(z.string(), z.string()),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()),
+})
+export type SetServerMcpBindingRequest = z.infer<typeof setServerMcpBindingRequestSchema>
 
 export const scheduleRecordSchema = z.object({
   schema_version: z.number().int(),
@@ -524,6 +745,75 @@ export const versionResponseSchema = z.object({
 })
 export type VersionResponse = z.infer<typeof versionResponseSchema>
 
+export const syncOperationSchema = z.enum(['upsert', 'delete'])
+export type SyncOperation = z.infer<typeof syncOperationSchema>
+
+export const syncChangeSchema = z.object({
+  schema_version: z.number().int().positive(),
+  operation_id: z.string().uuid(),
+  device_id: z.string().uuid(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  base_revision: z.number().int().nonnegative(),
+  operation: syncOperationSchema,
+  payload: z.unknown().nullable(),
+  client_timestamp: z.string().datetime({ offset: true }),
+})
+export type SyncChange = z.infer<typeof syncChangeSchema>
+
+export const syncedEntitySchema = z.object({
+  schema_version: z.number().int().positive(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  etag: z.string(),
+  payload: z.unknown().nullable(),
+  tombstone: z.boolean(),
+  updated_at: z.string().datetime({ offset: true }),
+})
+export type SyncedEntity = z.infer<typeof syncedEntitySchema>
+
+export const syncedEntityPageSchema = z.object({
+  schema_version: z.number().int().positive(),
+  items: z.array(syncedEntitySchema),
+  next_after: z.string().uuid().nullable(),
+  watermark_cursor: z.number().int().nonnegative(),
+})
+export type SyncedEntityPage = z.infer<typeof syncedEntityPageSchema>
+
+export const syncApplyResultSchema = z.object({
+  schema_version: z.number().int().positive(),
+  operation_id: z.string().uuid(),
+  status: z.enum(['applied', 'conflict']),
+  entity: syncedEntitySchema.nullable(),
+})
+export type SyncApplyResult = z.infer<typeof syncApplyResultSchema>
+
+export const pushSyncChangesResponseSchema = z.object({
+  schema_version: z.number().int().positive(),
+  results: z.array(syncApplyResultSchema),
+})
+export type PushSyncChangesResponse = z.infer<typeof pushSyncChangesResponseSchema>
+
+export const serverSyncChangeSchema = z.object({
+  schema_version: z.number().int().positive(),
+  cursor: z.number().int().positive(),
+  entity_type: z.string(),
+  entity_id: z.string().uuid(),
+  revision: z.number().int().positive(),
+  operation: syncOperationSchema,
+  payload: z.unknown().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+})
+export type ServerSyncChange = z.infer<typeof serverSyncChangeSchema>
+
+export const pullSyncChangesResponseSchema = z.object({
+  schema_version: z.number().int().positive(),
+  changes: z.array(serverSyncChangeSchema),
+  next_cursor: z.number().int().nonnegative(),
+})
+export type PullSyncChangesResponse = z.infer<typeof pullSyncChangesResponseSchema>
+
 export const listRunsResponseSchema = z.object({
   items: z.array(runRecordSchema),
   next_cursor: z.string().nullable().optional(),
@@ -541,6 +831,11 @@ export interface CreateRunRequest {
   model_profile_id?: string | null
   snapshot_id?: string | null
   idempotency_key: string
+}
+
+export interface CreateThreadMessageRequest {
+  content: unknown
+  run: CreateRunRequest
 }
 
 export function assertProtocolCompatible(version: VersionResponse): void {

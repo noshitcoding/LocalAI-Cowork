@@ -73,6 +73,30 @@ describe('App', () => {
     expect(screen.queryByLabelText('Run context')).not.toBeInTheDocument()
   })
 
+  it('keeps attachments visible behind the plus and expands chat settings on demand', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...', undefined, { timeout: 10_000 })
+
+    const settingsToggle = screen.getByRole('button', { name: 'Chat settings' })
+    const attachmentToggle = screen.getByRole('button', { name: 'Add files or folders' })
+    expect(settingsToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('region', { name: 'Chat settings' })).not.toBeInTheDocument()
+
+    fireEvent.click(attachmentToggle)
+    const attachmentMenu = screen.getByRole('menu', { name: 'Add files or folders' })
+    expect(within(attachmentMenu).getByRole('menuitem', { name: 'Files' })).toBeInTheDocument()
+    expect(within(attachmentMenu).getByRole('menuitem', { name: 'Folder' })).toBeInTheDocument()
+
+    fireEvent.click(settingsToggle)
+    expect(screen.queryByRole('menu', { name: 'Add files or folders' })).not.toBeInTheDocument()
+    const settingsPanel = screen.getByRole('region', { name: 'Chat settings' })
+    expect(within(settingsPanel).getByRole('group', { name: 'Runner' })).toBeInTheDocument()
+    expect(within(settingsPanel).getByLabelText('Access for new files and folders')).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Chat settings' })).not.toBeInTheDocument()
+  })
+
   it('keeps the German navigation entry point localized', async () => {
     await i18n.changeLanguage('de')
     window.history.pushState({}, '', '/settings')

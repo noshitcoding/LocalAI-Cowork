@@ -1,48 +1,31 @@
 import { CalendarClock, Pause, Play, Plus, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 
-import type { CapabilityCatalog, ExecutorTarget, ProjectRecord, ScheduleRecord, TaskDefinition } from '../runtime/contracts'
+import type { CapabilityCatalog, ProjectRecord, ProviderProfile, ScheduleRecord, TaskDefinition } from '../runtime/contracts'
+import {
+  providerModelLabel,
+  providerSupportsProject,
+  providerSupportsTarget,
+  remoteTargetChoices,
+  remoteTargetKey,
+  remoteTargetSupports,
+} from '../runtime/remoteExecutionOptions'
 import type { RemoteRuntimeClient } from '../runtime/runtimeClient'
 
 type RemoteScheduleManagerProps = { client: RemoteRuntimeClient; compact?: boolean }
-type TargetChoice = { key: string; label: string; target: ExecutorTarget; capabilities: Set<string> }
-
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error) }
-function targetKey(target: ExecutorTarget): string {
-  if (target.kind === 'server_linux') return `server:${target.pool_id ?? ''}`
-  if (target.kind === 'managed_windows_pool') return `windows:${target.pool_id}`
-  return `device:${target.device_id}`
-}
-function choicesFrom(catalog: CapabilityCatalog): TargetChoice[] {
-  const choices: TargetChoice[] = [{
-    key: 'server:', label: 'Linux server', target: { kind: 'server_linux', pool_id: null },
-    capabilities: new Set(catalog.server_linux.map((item) => item.name)),
-  }]
-  const pools = new Set<string>()
-  for (const executor of catalog.executors) {
-    if (!executor.online) continue
-    const capabilities = new Set(executor.registration.capabilities.map((item) => item.name))
-    if (executor.registration.kind === 'managed_windows' && executor.registration.pool_id) {
-      const key = `windows:${executor.registration.pool_id}`
-      if (pools.has(key)) continue
-      pools.add(key)
-      choices.push({ key, label: `Windows pool · ${executor.registration.display_name}`, target: { kind: 'managed_windows_pool', pool_id: executor.registration.pool_id }, capabilities })
-    } else if (executor.registration.kind === 'personal_device') {
-      choices.push({ key: `device:${executor.registration.executor_id}`, label: `Personal device · ${executor.registration.display_name}`, target: { kind: 'personal_device', device_id: executor.registration.executor_id }, capabilities })
-    }
-  }
-  return choices
-}
 
 export default function RemoteScheduleManager({ client, compact = false }: RemoteScheduleManagerProps) {
   const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [tasks, setTasks] = useState<TaskDefinition[]>([])
   const [projects, setProjects] = useState<ProjectRecord[]>([])
+  const [profiles, setProfiles] = useState<ProviderProfile[]>([])
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([])
   const [catalog, setCatalog] = useState<CapabilityCatalog | null>(null)
   const [taskId, setTaskId] = useState('')
   const [target, setTarget] = useState('server:')
+  const [modelProfileId, setModelProfileId] = useState('')
   const [cron, setCron] = useState('0 9 * * *')
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
   const [input, setInput] = useState('')
@@ -51,14 +34,21 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
 
   const load = useCallback(async () => {
     try {
-      const [nextTasks, nextProjects, nextSchedules, nextCatalog] = await Promise.all([
-        client.listTasks(), client.listProjects(), client.listSchedules(), client.capabilities(),
+      const [nextProjects, nextCatalog, nextProfiles] = await Promise.all([
+        client.listProjects(), client.capabilities(), client.listProviderProfiles(),
       ])
+      const [taskGroups, scheduleGroups] = await Promise.all([
+        Promise.all(nextProjects.map((project) => client.listTasks(project.id))),
+        Promise.all(nextProjects.map((project) => client.listSchedules(project.id))),
+      ])
+      const nextTasks = taskGroups.flat()
+      const nextSchedules = scheduleGroups.flat()
       const released = nextTasks.filter((task) => task.released && !task.deleted_at)
       setTasks(released)
       setProjects(nextProjects)
       setSchedules(nextSchedules.filter((schedule) => !schedule.deleted_at))
       setCatalog(nextCatalog)
+      setProfiles(nextProfiles.filter((profile) => !profile.deleted_at))
       setTaskId((current) => current || released[0]?.id || '')
       setError(null)
     } catch (cause) { setError(messageOf(cause)) }
@@ -66,15 +56,27 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
 
   useEffect(() => { if (open) void load() }, [load, open])
   const task = tasks.find((item) => item.id === taskId)
-  const allChoices = useMemo(() => catalog ? choicesFrom(catalog) : [], [catalog])
+  const allChoices = useMemo(() => catalog ? remoteTargetChoices(catalog) : [], [catalog])
   const compatible = useMemo(() => allChoices.filter((choice) => (
-    task?.required_capabilities.every((required) => choice.capabilities.has(required)) ?? true
+    task ? remoteTargetSupports(choice, task.required_capabilities) : true
   )), [allChoices, task])
   useEffect(() => {
-    const preferred = task?.default_target ? targetKey(task.default_target) : null
+    const preferred = task?.default_target ? remoteTargetKey(task.default_target) : null
     if (preferred && compatible.some((choice) => choice.key === preferred)) setTarget(preferred)
     else if (!compatible.some((choice) => choice.key === target)) setTarget(compatible[0]?.key ?? '')
   }, [compatible, target, task])
+  const project = projects.find((item) => item.id === task?.project_id)
+  const selectedTarget = compatible.find((item) => item.key === target)?.target
+  const compatibleProfiles = profiles.filter((profile) => (
+    project && selectedTarget
+      ? providerSupportsProject(profile, project) && providerSupportsTarget(profile, selectedTarget)
+      : false
+  ))
+  useEffect(() => {
+    if (modelProfileId && !compatibleProfiles.some((profile) => profile.id === modelProfileId)) {
+      setModelProfileId('')
+    }
+  }, [compatibleProfiles, modelProfileId])
 
   const create = async (event: FormEvent) => {
     event.preventDefault()
@@ -92,7 +94,7 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
         timezone,
         executor_target: choice.target,
         input: input.trim() ? { prompt: input.trim() } : {},
-        model_profile_id: null,
+        model_profile_id: modelProfileId || null,
         enabled: true,
       })
       setCreating(false)
@@ -137,6 +139,7 @@ export default function RemoteScheduleManager({ client, compact = false }: Remot
       {creating ? <form onSubmit={create}>
         <label>Released task<select value={taskId} onChange={(event) => setTaskId(event.target.value)} required><option value="" disabled>Select task</option>{tasks.map((item) => <option key={`${item.id}:${item.revision}`} value={item.id}>{item.name}</option>)}</select></label>
         <label>Run on<select value={target} onChange={(event) => setTarget(event.target.value)} required><option value="" disabled>No compatible executor</option>{compatible.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}</select></label>
+        <label>Model profile<select value={modelProfileId} onChange={(event) => setModelProfileId(event.target.value)}><option value="">Server/device default</option>{compatibleProfiles.map((profile) => <option key={profile.id} value={profile.id}>{providerModelLabel(profile)}</option>)}</select></label>
         <label>Cron<input value={cron} onChange={(event) => setCron(event.target.value)} placeholder="0 9 * * *" required /></label>
         <label>IANA timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Europe/Berlin" required /></label>
         <label>Optional run input<textarea value={input} onChange={(event) => setInput(event.target.value)} rows={3} /></label>

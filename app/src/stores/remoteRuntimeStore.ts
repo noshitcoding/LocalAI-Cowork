@@ -40,6 +40,8 @@ type RemoteRuntimeState = {
   setConnection: (serverUrl: string, email: string) => void
   restore: () => Promise<boolean>
   login: (serverUrl: string, email: string, password: string, secondFactor?: string) => Promise<void>
+  bootstrap: (serverUrl: string, email: string, displayName: string, password: string, bootstrapToken: string) => Promise<void>
+  acceptInvitation: (serverUrl: string, email: string, displayName: string, password: string, invitationToken: string) => Promise<void>
   loginPasskey: (serverUrl: string, email: string) => Promise<void>
   loginOidc: (serverUrl: string) => Promise<void>
   linkOidc: () => Promise<void>
@@ -215,6 +217,47 @@ export const useRemoteRuntimeStore = create<RemoteRuntimeState>((set, get) => ({
         password,
         device_id: remoteDeviceId(),
         second_factor: secondFactor?.trim() || null,
+      })
+      storeConnection(normalizedUrl, normalizedEmail)
+      set({ serverUrl: normalizedUrl, email: normalizedEmail })
+      await applyTokens(tokens)
+    } catch (error) {
+      set({ status: 'error', error: errorMessage(error) })
+      throw error
+    }
+  },
+
+  bootstrap: async (serverUrl, email, displayName, password, bootstrapToken) => {
+    set({ status: 'authenticating', error: null })
+    try {
+      const normalizedUrl = selectedServerUrl(serverUrl)
+      const normalizedEmail = email.trim().toLocaleLowerCase()
+      const tokens = await new RemoteAuthClient(normalizedUrl).bootstrap({
+        email: normalizedEmail,
+        display_name: displayName.trim(),
+        password,
+        bootstrap_token: bootstrapToken.trim(),
+        device_id: remoteDeviceId(),
+      })
+      storeConnection(normalizedUrl, normalizedEmail)
+      set({ serverUrl: normalizedUrl, email: normalizedEmail })
+      await applyTokens(tokens)
+    } catch (error) {
+      set({ status: 'error', error: errorMessage(error) })
+      throw error
+    }
+  },
+
+  acceptInvitation: async (serverUrl, email, displayName, password, invitationToken) => {
+    set({ status: 'authenticating', error: null })
+    try {
+      const normalizedUrl = selectedServerUrl(serverUrl)
+      const normalizedEmail = email.trim().toLocaleLowerCase()
+      const tokens = await new RemoteAuthClient(normalizedUrl).acceptInvitation({
+        token: invitationToken.trim(),
+        display_name: displayName.trim(),
+        password,
+        device_id: remoteDeviceId(),
       })
       storeConnection(normalizedUrl, normalizedEmail)
       set({ serverUrl: normalizedUrl, email: normalizedEmail })

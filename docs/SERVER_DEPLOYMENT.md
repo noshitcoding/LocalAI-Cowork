@@ -50,8 +50,14 @@ password contains URI-reserved characters, percent-encode it in
 `database_url.txt`.
 
 Configure `COWORK_MODEL_BASE_URL`, `COWORK_MODEL_NAME` and optionally
-`COWORK_MODEL_API_KEY` for server model runs. This key is injected only into the
-worker/control-plane environment, never into a sandbox or browser client.
+`COWORK_MODEL_API_KEY` for server model runs and as the fallback for Crew
+agents without an explicit synchronized provider profile. Ordinary agent calls
+keep this key inside the worker. A Crew run receives the fallback plus only the
+distinct server-bound profiles referenced by its enabled agents, and receives
+their credentials only in the signed, schema-checked stdin of its dedicated
+sandbox process. Credentials are never written into the frozen Run, an event,
+an artifact, a browser response, or the sandbox workspace; protocol output is
+recursively redacted before persistence.
 
 Set `COWORK_PUBLIC_ORIGIN` to the one canonical HTTPS origin, without a path,
 and `COWORK_WEBAUTHN_RP_ID` to its stable relying-party domain. For example:
@@ -120,7 +126,111 @@ Tagged releases publish server, runner, web, egress and sandbox images to GHCR
 with SBOM and provenance attestations. `SERVER-IMAGES.txt` in the matching
 GitHub release records immutable digests. For a reviewed source checkout, set
 `COWORK_UPGRADE_BUILD_FROM_SOURCE=1` and run `docker compose build --pull`
-instead. The runner starts only after both pinned sandbox images exist.
+instead. The runner starts only after all three pinned Core, GUI and Crew
+sandbox images exist.
+
+Server Crew tasks freeze the released task configuration and the current
+secret-free synchronized Crew definition before they enter the queue. The
+server canonicalizes each selected profile reference, checks that it belongs to
+the Run owner or project team and is server-bound, and rejects an unavailable
+profile before queueing. At dispatch the worker resolves each distinct profile
+once and CrewAI selects its endpoint, model, timeout and credential per enabled
+agent. Agents without a profile inherit the Run's server-bound model profile or
+the configured server default. Disabled agents and their tasks are removed
+from the request, unsafe dispatch is checkpointed, and a missing definition,
+provider, image or capability fails closed. Personal-device and managed-Windows
+Crews continue to use their executor-local fallback profile until their local
+profile maps implement the same versioned per-agent contract.
+
+Before dispatch, Crew Runs pass the same user/team token and hard-cost quota
+check as ordinary model Runs. The pinned CrewAI adapter returns its actual
+prompt, completion, reasoning, cache and total-token counters, including any
+artifact-repair kickoff. The worker persists those counters on the Run and
+debits total tokens plus the configured input/output price from the quota
+ledger. If a provider adapter exposes no usage counters, the worker records no
+fabricated estimate; operators should therefore use a provider with usage
+reporting when hard accounting is required.
+
+### Linux server MCP bindings
+
+Synchronized `mcp_metadata` records never contain commands, arguments, endpoints
+or credential values. After creating the metadata record, an Editor can open
+**Server MCP** in Web or Android and bind that exact metadata UUID to one
+project. The complete stdio command, argument array and environment map are
+encrypted with the project user/team envelope key. Streamable HTTP and legacy
+HTTP+SSE bindings instead encrypt their complete HTTPS URL and static
+credential-header map. List
+responses expose only the transport, a generic `HTTPS endpoint` hint or the
+stdio executable basename, the argument count, and secret environment/header
+names. Updating a binding requires submitting the complete secret again because
+the API never returns stored values. Binding names are unique inside a project
+because the agent-facing MCP contract addresses servers by name. Renaming
+synchronized MCP metadata intentionally blocks new Runs until an Editor replaces
+the binding; this prevents a stale credential binding from silently changing
+identity.
+
+The configured command must already exist in the pinned Core sandbox image.
+For a custom MCP server, derive a reviewed Core image from
+`deploy/sandboxes/core/Dockerfile`, install the fixed executable/version, set
+`COWORK_SANDBOX_CORE_IMAGE`, and rebuild the runner image set. Do not use a
+binding to download arbitrary packages at Run time.
+
+Streamable HTTP currently implements the MCP 2025-11-25 transport and lifecycle. The
+client handles JSON and SSE responses, propagates a valid `MCP-Session-Id`, sends
+`MCP-Protocol-Version` after initialization, resumes interrupted SSE delivery by
+event ID within a bounded retry budget, and attempts session deletion on exit.
+The endpoint must use HTTPS on port 443 and a public DNS name; user information, query
+strings, fragments, IP literals, local/internal names, redirects, reserved MCP
+or hop-by-hop headers, and control characters are rejected. The sandbox still
+reaches it only through the filtered egress proxy, whose destination checks
+block private, link-local, metadata, host and Compose networks after DNS
+resolution. Keeping credentials in headers rather than URL queries also avoids
+placing them in proxy request paths.
+
+For older MCP servers, select the `sse` transport and provide their HTTPS event
+stream URL. The client opens the long-lived GET stream, accepts only its first
+`endpoint` event as the POST target, requires that resolved target to remain on
+the configured scheme, DNS name and port, and then exchanges MCP 2024-11-05
+JSON-RPC messages through that stream. The server-announced POST target may use
+a session query because it never leaves the already validated origin. Static
+headers are applied to both GET and POST requests; redirects, a cross-origin
+POST target, oversized streams and more than 256 unmatched events fail closed.
+
+Selecting MCP metadata in the Run composer automatically requires
+`tool.mcp.invoke`. A Linux Run fails closed before queueing when its project has
+no matching binding. At execution, the worker decrypts only the selected
+bindings, sends them inside the HMAC-signed internal runner body, and the runner
+delivers them to the sandbox over stdin rather than Docker environment
+arguments. The one-shot MCP client uses filtered egress, invokes stdio commands
+without a shell, applies a 120-second protocol timeout and recursively redacts
+every bound environment or header value before model or event persistence.
+
+MCP stdio, Streamable HTTP and legacy HTTP+SSE bindings are available to both the normal Rust
+agent and the pinned Crew adapter on the Linux server executor. For Crew Runs,
+the selected frozen metadata names must exactly equal the union of
+`mcpServerNames` on enabled agents. The worker injects only those bindings,
+gives each agent only its own allowlist, and recursively redacts provider and
+MCP environment/header secrets again before any Crew event or response is
+persisted. Static authorization headers are supported; OAuth discovery and
+dynamic registration are not. The newer MCP 2026-07-28 line changes the wire
+model to a stateless core, removes this initialization/session lifecycle, adds
+header routing and hardens authorization. This deployment does not yet claim
+2026-07-28 compatibility; use a 2025-11-25-compatible MCP endpoint until the
+versioned adapter and its N-1 tests are implemented. See the official
+[MCP 2026-07-28 release notes](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
+for the breaking protocol changes. Managed Windows uses
+the executor-local stdio or Streamable HTTP configuration described below; its
+pinned Crew adapter applies the same exact per-agent MCP allowlists and routes
+the actual call back through the hardened Rust executor adapter.
+
+Runs may also select synchronized skills and memory records by ID. The API
+resolves those records in the run creator's namespace, keeps only the supported
+fields, records each exact revision and stores the result in the immutable Run
+input before queueing. The normal Rust agent and the Crew adapter receive the
+same frozen context. Synchronized MCP records contain metadata only: commands,
+endpoints, environment values and credentials remain executor-bound, and the
+runtime must not claim an MCP tool is available unless that executor advertises
+an authorized binding.
 
 The bundled object store uses path-style MinIO by default. An external
 S3-compatible bucket can be selected with `COWORK_S3_ENDPOINT`,
@@ -361,6 +471,12 @@ are omitted, the daemon uses its own local model configuration.
 
 Advertise only capabilities that the device and its daemon can actually serve,
 for example `model.ollama,files,shell,git,web,mcp,browser.headless`. Add
+`crew.python` only after the bundled CrewAI runtime has been prepared and the
+daemon runtime-path health check succeeds; Crew tasks require this capability
+and otherwise remain visibly in `waiting_for_executor` instead of running as a
+different runner. Server-originated personal Crew runs currently also require
+`COWORK_MODEL_BASE_URL` and `COWORK_MODEL_NAME` on the outbound device agent;
+the resulting per-Run Crew configuration is encrypted by the daemon. Add
 `desktop.windows` on an interactive Windows device or `desktop.linux` on an
 interactive Linux device. In addition
 to the canonical HTTPS server URL, executor ID, credential file, bridge settings
@@ -395,7 +511,7 @@ dedicated Windows account. Configure:
 - canonical HTTPS `COWORK_SERVER_URL`
 - an executor ID and admin-created pool ID
 - an agent token
-- `COWORK_AGENT_CAPABILITIES=office.microsoft,desktop.windows`
+- `COWORK_AGENT_CAPABILITIES=model.external,files,shell,git,web.fetch,office.ooxml,office.microsoft,desktop.windows`
 - a dedicated `COWORK_AGENT_WORKSPACE_ROOT`
 
 Start its supervisor at machine startup and the interactive component at
@@ -405,9 +521,138 @@ automation with visible applications, forced macro disablement, dialog
 detection, live desktop streaming, single-run concurrency, cleanup, and a
 post-run health gate.
 
+To execute frozen Crew definitions on the Windows pool, prepare the release's
+pinned CrewAI runtime under the dedicated account and additionally configure:
+
+- append `crew.python` to `COWORK_AGENT_CAPABILITIES`
+- the model endpoint in `COWORK_MODEL_BASE_URL`, plus
+  `COWORK_MODEL_API_KEY_FILE` when required
+- absolute regular non-symlink files in `COWORK_CREW_PYTHON` and
+  `COWORK_CREW_SCRIPT`
+
+Before registering `crew.python`, the agent runs the adapter's status contract
+and requires runtime schema 2 plus CrewAI 1.15.8. Each Run starts that adapter
+without a shell, with a minimal Windows environment, inside a kill-on-close Job
+Object containing its descendants. Output is limited to 32 MiB, individual
+lines and stderr are bounded, execution has a hard timeout, provider/MCP secrets
+are recursively redacted, and model deltas, usage, checkpoints and changed
+workspace snapshots enter the normal durable Run model.
+
+The frozen Crew definition is also the routing contract for its tools. Enabled
+agents derive `files`, `shell`, `web.fetch`, `office.ooxml`, and
+`office.microsoft` requirements from their selected tools before a Run is
+queued. The pinned runtime receives only that exact per-agent allowlist;
+unsupported tools or an executor that lacks one of those capabilities fail
+closed. Delegation is disabled in both the governance record and the effective
+CrewAI agent configuration.
+
+### Microsoft Office from CrewAI
+
+Crew authors choose between two separate tools. `office_workflow` creates DOCX
+or PPTX deterministically with Python/OOXML and requires `office.ooxml`.
+`microsoft_office` controls the installed Word, Excel, or PowerPoint application
+and requires `office.microsoft`; it is not enabled in new generic tool profiles
+by default. Selecting it therefore routes the Run only to a capable member of
+the chosen managed Windows pool.
+
+For each call, the Python adapter invokes
+`cowork-device-agent.exe executor-windows-office` through a validated JSON
+argument vector without a shell. The one-shot bridge accepts a bounded JSON
+request on stdin and reuses the interactive COM adapter. Source and output paths
+must be normalized paths inside the Run workspace, outputs must be new files
+below `artifacts/`, output parents may not contain symlinks, active/macro-enabled
+formats remain blocked, editing actions save only non-macro OOXML, and Excel
+formulas containing external links, data sources, or active-call functions are
+rejected. The bridge runs in a kill-on-close Job Object with a minimal
+environment, bounded stdout/stderr, and an eight-minute deadline, then cleans
+Word, Excel, PowerPoint, and the dedicated account's clipboard. It returns only
+workspace-relative paths; the normal Run snapshot and artifact pipeline
+publishes the result for review.
+
+Supported operations are PDF export and cross-application text replacement,
+Word paragraph append/text formatting, Excel cell/range/chart changes, and
+PowerPoint slide creation/text formatting. Editing operations may request an
+additional PDF preview. The Crew artifact contract verifies only new DOCX,
+PPTX, XLSX, or PDF results below `artifacts/`; source-document mentions are not
+mistaken for outputs, and a missing real-Office result is never silently replaced
+with a deterministic OOXML fallback. Because Office is interactive, unexpected
+modal dialogs still require the managed desktop takeover flow or cause a bounded
+failure.
+
+### Executor-local MCP on Windows
+
+A managed Windows executor can additionally run stdio MCP servers installed on
+that dedicated VM/PC or call a remote Streamable HTTP or legacy HTTP+SSE MCP
+endpoint. Copy
+`agents/cowork-device-agent/mcp-bindings.example.json` outside the checkout,
+replace its placeholder, and set `COWORK_MCP_BINDINGS_FILE` to the absolute
+path. Protect the file with a Windows ACL readable only by Administrators and
+the dedicated executor account. The file is deliberately local to the
+executor; neither its commands/URLs nor its environment/header values are
+synchronized to the control plane.
+
+Each JSON entry has `name` and optional `transport` (default `stdio`). `name`
+must exactly match the name of synchronized MCP metadata selected in the Run.
+A stdio entry additionally has `command`, optional `args`, and optional
+`environment`. The command must be an absolute path to a reviewed, already
+installed `.exe` or `.com`; batch and command files are rejected so it is
+started directly without `cmd.exe` or PowerShell command-line interpretation.
+The executable itself must be a regular non-symlink file. The child receives
+only a small Windows process baseline and its binding-specific environment, so
+it does not inherit the executor token, model key, or unrelated `COWORK_*`
+values. It and all descendants are attached to a kill-on-close Windows Job
+Object.
+
+A `streamable_http` entry instead has `url` and optional static `headers`. It
+uses the implemented MCP 2025-11-25 transport with JSON/SSE responses, session and
+protocol headers, bounded SSE resume, best-effort session deletion, no
+redirects and normal TLS certificate verification. Only HTTPS port 443 and a
+public DNS hostname are accepted. Immediately before connecting, the agent
+resolves and pins the complete address set; if any answer is private, loopback,
+link-local, carrier-grade NAT, documentation, benchmark, multicast or reserved,
+the invocation fails. Automatic system proxies are disabled so they cannot
+bypass that pinned resolution. The administrator should still enforce the same
+public-egress-only rule with Windows Firewall or endpoint policy as a second
+boundary. URL queries and protocol/hop-by-hop header overrides are rejected;
+put static credentials in headers. Configure a model endpoint with
+`COWORK_MODEL_BASE_URL` and, when needed, `COWORK_MODEL_API_KEY_FILE`.
+
+An `sse` entry uses the same local file fields and network restrictions, but
+negotiates MCP 2024-11-05 over the legacy long-lived event stream. The endpoint
+event may direct POSTs only to the same normalized scheme, DNS name and port;
+cross-origin targets are rejected before credentials are sent. Its session
+query is accepted only on that server-announced same-origin target.
+
+On registration, the agent adds `tool.mcp.invoke` and publishes only the bound
+server names. The server will queue and lease a selected MCP Run only to an
+executor in the chosen pool that advertises every exact name. Tool responses,
+events, checkpoints, errors, and final model content are recursively redacted
+for all configured environment or header values. A disconnect after an unsafe MCP
+checkpoint interrupts the Run for manual review instead of starting the tool a
+second time. Changed workspace files are uploaded as the normal review-only
+result snapshot.
+
+Crew MCP does not execute the binding through the Python network stack. The
+adapter launches `cowork-device-agent.exe executor-mcp-tool` by a validated JSON
+argument vector; that one-shot process receives the selected binding through
+stdin and reuses the Rust stdio/Streamable HTTP/legacy SSE implementation, including
+direct executable launch, Job Object cleanup, TLS verification, public-DNS
+validation, DNS pinning, proxy disabling and bounded MCP session handling. The
+dedicated Windows account and process boundary are still not a general network
+sandbox; host firewall/endpoint policy must constrain arbitrary stdio MCP child
+processes and provide defense in depth.
+
 Microsoft does not recommend unattended Office server automation. Operate this
 as best-effort interactive RPA on licensed Windows/Microsoft 365 installations
 and run compatibility tests for every supported Office channel.
+
+After preparing the dedicated interactive account and building the agent, run
+`powershell -File scripts/test-windows-office.ps1 -AgentPath <path-to-agent>` in
+that session. The acceptance drives the public Rust bridge (not the private
+PowerShell implementation directly), edits and reopens Word/Excel/PowerPoint
+fixtures, verifies PDF previews and an Excel chart, and proves that active
+formats and external Excel formulas fail closed. Repeat it for every supported
+Microsoft 365/Office update channel before admitting the executor to a pool.
 
 Executor agents use independently revocable, hashed executor credentials from
 files or the platform credential store; they never depend on a user's
@@ -420,6 +665,16 @@ monthly tokens, and configured model costs. Platform administrators set user
 limits; team owners/admins set team limits. A configured cost limit always
 requires a token fallback. Set both model price environment variables to record
 costs; without known prices the token ceiling remains the hard guard.
+
+Server-originated model Runs on personal devices and managed Windows executors
+must persist `ModelStarted` before contacting the configured model endpoint.
+The control plane rejects that event when the user or team quota is exhausted.
+On `ModelCompleted`, reported prompt/completion/total tokens are validated and
+debited in the same PostgreSQL transaction as the stable source event. Replayed
+device events therefore never double-charge after a reconnect. Executor-local
+provider prices are not trusted as billing input, so these Runs debit reported
+tokens with zero server-side cost; the mandatory token fallback remains their
+hard limit when no centrally configured price applies.
 
 Platform administrators have no implicit project-content access. A project
 editor can grant one administrator project- or thread-scoped Viewer access for

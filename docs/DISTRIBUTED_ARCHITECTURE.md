@@ -47,7 +47,9 @@ flowchart LR
   Compose publishes no VNC, RDP, WebRTC or TURN port.
 - Managed Windows Office work accepts only relative paths inside a per-run
   workspace, disables Office automation security/macros, and never overwrites
-  an existing output.
+  an existing output. Capability-gated Crew agents reach the same adapter
+  through a bounded, shell-free one-shot bridge; deterministic OOXML and real
+  installed Microsoft Office remain distinct tools and routing capabilities.
 
 ## Protocol surfaces
 

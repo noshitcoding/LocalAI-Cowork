@@ -118,7 +118,13 @@ try {
                 'excel_set_cell' {
                     $cell = $sheet.Range([string](Get-ParameterValue 'cell' $null $true))
                     $formula = Get-ParameterValue 'formula'
-                    if ($null -ne $formula) { $cell.Formula = [string]$formula } else { $cell.Value2 = Get-ParameterValue 'value' $null $true }
+                    if ($null -ne $formula) {
+                        $formulaText = [string]$formula
+                        if ($formulaText -match '(?i)(https?|ftp|file):|\[[^\]]+\]|\b(WEBSERVICE|HYPERLINK|RTD|CALL|REGISTER\.ID)\s*\(') {
+                            throw 'External links, data sources, and active Excel formulas are blocked by policy'
+                        }
+                        $cell.Formula = $formulaText
+                    } else { $cell.Value2 = Get-ParameterValue 'value' $null $true }
                     $numberFormat = Get-ParameterValue 'number_format'
                     if ($null -ne $numberFormat) { $cell.NumberFormat = [string]$numberFormat }
                     $office.CalculateFull()

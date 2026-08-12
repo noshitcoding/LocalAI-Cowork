@@ -172,6 +172,35 @@ try {
     protocol_version = 2; active_run_ids = @(); health = @{ status = 'ready' }
   } $executorToken | Out-Null
 
+  $unsafeReconnectRun = New-ThreadAndRun $project $admin.access_token @{ kind = 'personal_device'; device_id = $executorId } 'Unsafe executor reconnect' @{ prompt = 'do not repeat' }
+  $unsafeReconnectLease = Invoke-Json POST "/agent/executors/$executorId/claim" $null $executorToken
+  if ($unsafeReconnectLease.run.spec.id -ne $unsafeReconnectRun.spec.id) { throw 'executor did not claim the unsafe reconnect run' }
+  Invoke-Json POST "/agent/executors/$executorId/runs/$($unsafeReconnectRun.spec.id)/checkpoints" @{
+    lease_token = $unsafeReconnectLease.lease_token; safe_to_resume = $false; executor_state = @{ phase = 'unsafe_action_dispatched' }
+  } $executorToken | Out-Null
+  docker exec open-cowork-postgres-1 psql -v ON_ERROR_STOP=1 -U cowork -d $databaseName -c `
+    "UPDATE runs SET lease_expires_at=now()+interval '30 seconds' WHERE id='$($unsafeReconnectRun.spec.id)';" | Out-Null
+  $executorSocket = [Net.WebSockets.ClientWebSocket]::new()
+  try {
+    $executorSocket.Options.SetRequestHeader('Authorization', "Bearer $executorToken")
+    $executorSocket.ConnectAsync(
+      [Uri]"ws://127.0.0.1:$apiPort/api/v1/agent/executors/$executorId/connect",
+      [Threading.CancellationToken]::None
+    ).GetAwaiter().GetResult()
+    $unsafeReconnectInterrupted = Wait-RunState $unsafeReconnectRun.spec.id $admin.access_token 'interrupted' 10
+  } finally {
+    $executorSocket.Dispose()
+  }
+  if ($unsafeReconnectInterrupted.error.code -ne 'unsafe_tool_interrupted' `
+      -or $unsafeReconnectInterrupted.error.details.safe_to_resume -ne $false `
+      -or $unsafeReconnectInterrupted.error.details.manual_review_required -ne $true `
+      -or $unsafeReconnectInterrupted.error.details.detected_during_reconnect -ne $true) {
+    throw 'unsafe executor reconnect did not interrupt the run for manual review'
+  }
+  $activeRuns = docker exec open-cowork-postgres-1 psql -U cowork -d $databaseName -tAc `
+    "SELECT active_runs FROM executors WHERE id='$executorId';"
+  if ([int](($activeRuns -join '').Trim()) -ne 0) { throw 'unsafe reconnect did not release executor capacity' }
+
   $safeRun = New-ThreadAndRun $project $admin.access_token @{ kind = 'personal_device'; device_id = $executorId } 'Executor disconnect' @{ prompt = 'safe disconnect' }
   $safeLease = Invoke-Json POST "/agent/executors/$executorId/claim" $null $executorToken
   if ($safeLease.run.spec.id -ne $safeRun.spec.id) { throw 'executor did not claim the safe disconnect run' }
@@ -234,6 +263,7 @@ try {
   Write-Output 'killed_worker_lease_expiry=ok'
   Write-Output 'unsafe_dispatch_checkpoint=ok'
   Write-Output 'unsafe_action_not_repeated=ok'
+  Write-Output 'unsafe_executor_reconnect_not_repeated=ok'
   Write-Output 'safe_executor_disconnect_classification=ok'
   Write-Output 'expired_lease_rejects_late_writes=ok'
   Write-Output 'executor_reconnect_and_capacity_cleanup=ok'

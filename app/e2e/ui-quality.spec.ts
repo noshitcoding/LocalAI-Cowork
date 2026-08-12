@@ -129,6 +129,7 @@ test('chat dropdowns open upward and stay inside fullscreen dimensions', async (
   for (const theme of THEMES) {
     await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' })
     await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: withTheme('/', theme) })
+    await page.getByRole('button', { name: 'Chat settings' }).click()
 
     const controls = page.locator('.chat-input-toolbar-compact .chat-dropdown-toggle')
     await expect(controls).toHaveCount(4)

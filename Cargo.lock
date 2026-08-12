@@ -755,8 +755,10 @@ name = "cowork-device-agent"
 version = "0.3.4"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "cowork-contracts",
+ "cowork-runtime",
  "dotenvy",
  "futures-util",
  "hex",
