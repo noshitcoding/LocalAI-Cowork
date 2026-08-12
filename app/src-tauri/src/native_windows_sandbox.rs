@@ -470,6 +470,7 @@ pub fn setup_start(_app_data: &Path) -> Result<SetupStatus, String> {
     Err("native Windows sandboxing is only available on Windows".to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
 
@@ -484,7 +485,7 @@ fn capability_sid_for_run(app_data: &Path, run_id: &str) -> Result<String, Strin
 }
 
 fn capability_sid_from_hash(hash: &[u8; 32]) -> String {
-    let components = (0..8)
+    let components = (0..4)
         .map(|index| {
             let offset = index * 4;
             u32::from_le_bytes(
@@ -495,7 +496,7 @@ fn capability_sid_from_hash(hash: &[u8; 32]) -> String {
         })
         .collect::<Vec<_>>();
     format!(
-        "S-1-15-3-1024-{}",
+        "S-1-5-21-{}",
         components
             .iter()
             .map(u32::to_string)
@@ -506,6 +507,112 @@ fn capability_sid_from_hash(hash: &[u8; 32]) -> String {
 
 fn icacls_sid_grant(sid: &str, permissions: &str) -> String {
     format!("*{sid}:{permissions}")
+}
+
+#[cfg(target_os = "windows")]
+fn grant_unresolved_sid_access(
+    path: &Path,
+    sid: &str,
+    access_permissions: u32,
+) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+        GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        Authorization::ConvertStringSidToSidW, DACL_SECURITY_INFORMATION,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    };
+
+    let sid_wide = wide(sid);
+    let mut sid_ptr = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(sid_wide.as_ptr(), &mut sid_ptr) } == 0 {
+        return Err(format!(
+            "invalid per-run sandbox restriction SID: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut path_wide = wide(&path.display().to_string());
+    let mut existing_dacl = std::ptr::null_mut();
+    let mut security_descriptor = std::ptr::null_mut();
+    let queried = unsafe {
+        GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut existing_dacl,
+            std::ptr::null_mut(),
+            &mut security_descriptor,
+        )
+    };
+    if queried != ERROR_SUCCESS {
+        unsafe {
+            LocalFree(sid_ptr as _);
+        }
+        return Err(format!(
+            "failed to read the sandbox workspace ACL (Windows error {queried})"
+        ));
+    }
+
+    // A null DACL already grants full access, including to every restricting SID. Preserve that
+    // unusual but valid security descriptor instead of replacing it with a narrower ACL.
+    if existing_dacl.is_null() {
+        unsafe {
+            LocalFree(security_descriptor as _);
+            LocalFree(sid_ptr as _);
+        }
+        return Ok(());
+    }
+
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: access_permissions,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid_ptr as _,
+        },
+    };
+    let mut updated_dacl = std::ptr::null_mut();
+    let merged = unsafe { SetEntriesInAclW(1, &entry, existing_dacl, &mut updated_dacl) };
+    if merged != ERROR_SUCCESS {
+        unsafe {
+            LocalFree(security_descriptor as _);
+            LocalFree(sid_ptr as _);
+        }
+        return Err(format!(
+            "failed to add the per-run sandbox ACL entry (Windows error {merged})"
+        ));
+    }
+    let applied = unsafe {
+        SetNamedSecurityInfoW(
+            path_wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            updated_dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    unsafe {
+        LocalFree(updated_dacl as _);
+        LocalFree(security_descriptor as _);
+        LocalFree(sid_ptr as _);
+    }
+    if applied != ERROR_SUCCESS {
+        return Err(format!(
+            "failed to apply the per-run sandbox ACL entry (Windows error {applied})"
+        ));
+    }
+    Ok(())
 }
 
 pub fn grant_workspace_access(
@@ -520,14 +627,16 @@ pub fn grant_workspace_access(
     }
     #[cfg(target_os = "windows")]
     {
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        };
+
         let capability_sid = capability_sid_for_run(app_data, run_id)?;
         let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
         let status = std::process::Command::new("icacls.exe")
             .arg(workspace)
             .args(["/grant:r"])
             .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)M"))
-            .args(["/grant:r"])
-            .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)M"))
             .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
             .creation_flags(0x08000000)
             .status()
@@ -537,6 +646,11 @@ pub fn grant_workspace_access(
                 "failed to set sandbox workspace ACL (icacls {status})"
             ));
         }
+        grant_unresolved_sid_access(
+            workspace,
+            &capability_sid,
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
+        )?;
         Ok(capability_sid)
     }
 }
@@ -554,14 +668,16 @@ pub fn grant_workspace_access_for_roots(
     }
     #[cfg(target_os = "windows")]
     {
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        };
+
         let capability_sid = capability_sid_for_run(app_data, run_id)?;
         let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
         let status = std::process::Command::new("icacls.exe")
             .arg(workspace)
             .args(["/grant:r"])
             .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)RX"))
-            .args(["/grant:r"])
-            .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)RX"))
             .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
             .creation_flags(0x08000000)
             .status()
@@ -571,6 +687,11 @@ pub fn grant_workspace_access_for_roots(
                 "failed to set read-only sandbox workspace ACL (icacls {status})"
             ));
         }
+        grant_unresolved_sid_access(
+            workspace,
+            &capability_sid,
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        )?;
         for writable_root in writable_roots {
             if !writable_root.starts_with(workspace) {
                 return Err("writable sandbox root escapes its workspace".to_string());
@@ -579,8 +700,6 @@ pub fn grant_workspace_access_for_roots(
                 .arg(writable_root)
                 .args(["/grant:r"])
                 .arg(icacls_sid_grant(&sandbox_group_sid, "(OI)(CI)M"))
-                .args(["/grant:r"])
-                .arg(icacls_sid_grant(&capability_sid, "(OI)(CI)M"))
                 .args(["/grant:r", "*S-1-5-18:(OI)(CI)F", "/T", "/C", "/Q"])
                 .creation_flags(0x08000000)
                 .status()
@@ -590,6 +709,11 @@ pub fn grant_workspace_access_for_roots(
                     "failed to set writable sandbox root ACL (icacls {status})"
                 ));
             }
+            grant_unresolved_sid_access(
+                writable_root,
+                &capability_sid,
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
+            )?;
         }
         Ok(capability_sid)
     }
@@ -651,20 +775,12 @@ pub fn prepare_bundled_python(resource_dir: &Path, app_data: &Path) -> Result<Pa
 
 #[cfg(target_os = "windows")]
 pub fn grant_capability_read_access(path: &Path, capability_sid: &str) -> Result<(), String> {
-    let status = std::process::Command::new("icacls.exe")
-        .arg(path)
-        .args(["/grant:r"])
-        .arg(icacls_sid_grant(capability_sid, "(OI)(CI)RX"))
-        .args(["/T", "/C", "/Q"])
-        .creation_flags(0x08000000)
-        .status()
-        .map_err(|error| format!("failed to grant runtime capability ACL: {error}"))?;
-    if !status.success() {
-        return Err(format!(
-            "failed to grant runtime capability ACL (icacls {status})"
-        ));
-    }
-    Ok(())
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+    grant_unresolved_sid_access(
+        path,
+        capability_sid,
+        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -742,6 +858,58 @@ fn local_principal_sid_string(principal: &str, description: &str) -> Result<Stri
 #[cfg(target_os = "windows")]
 fn sandbox_account_sid_string() -> Result<String, String> {
     local_principal_sid_string(SANDBOX_ACCOUNT, "sandbox account")
+}
+
+#[cfg(target_os = "windows")]
+fn validate_sandbox_logon(password: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT,
+    };
+
+    let username = wide(SANDBOX_ACCOUNT);
+    let domain = wide(".");
+    let password = wide(password);
+    let mut token = std::ptr::null_mut();
+    if unsafe {
+        LogonUserW(
+            username.as_ptr(),
+            domain.as_ptr(),
+            password.as_ptr(),
+            LOGON32_LOGON_INTERACTIVE,
+            LOGON32_PROVIDER_DEFAULT,
+            &mut token,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "sandbox account logon failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    unsafe {
+        CloseHandle(token);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn grant_sandbox_runner_read_execute(executable: &Path) -> Result<(), String> {
+    let sandbox_group_sid = local_principal_sid_string(SANDBOX_GROUP, "sandbox group")?;
+    let status = std::process::Command::new("icacls.exe")
+        .arg(executable)
+        .args(["/grant:r"])
+        .arg(icacls_sid_grant(&sandbox_group_sid, "RX"))
+        .arg("/Q")
+        .creation_flags(0x08000000)
+        .status()
+        .map_err(|error| format!("failed to grant sandbox runner access: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "failed to grant sandbox runner access (icacls {status})"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -959,13 +1127,15 @@ where
         script_path: script_path.display().to_string(),
     };
     let serialized_request = serde_json::to_vec(&runner_request).map_err(|e| e.to_string())?;
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    validate_sandbox_logon(&password)?;
+    grant_sandbox_runner_read_execute(&executable)?;
     let pipe_name = format!(
         r"\\.\pipe\lacowork-sandbox-{}",
         uuid::Uuid::new_v4().simple()
     );
     let pipe_handle = create_sandbox_named_pipe(&pipe_name)?;
 
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut command_line = wide(&format!(
         "\"{}\" --lacowork-native-sandbox-runner \"{}\"",
         executable.display(),
@@ -1007,7 +1177,7 @@ where
             CloseHandle(pipe_handle as _);
         }
         return Err(format!(
-            "sandbox logon/spawn failed: {}",
+            "sandbox runner launch failed after successful account logon and executable ACL grant: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -1386,7 +1556,20 @@ fn native_sandbox_smoke_helper(app_data: &Path, result_path: &Path) -> Result<()
         uuid::Uuid::new_v4()
     ));
     let outcome = (|| {
-        let first = setup_start(app_data)?;
+        #[cfg(debug_assertions)]
+        let skip_setup = std::env::var_os("LACOWORK_NATIVE_SANDBOX_SKIP_SETUP").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        #[cfg(not(debug_assertions))]
+        let skip_setup = false;
+        let setup = || {
+            if skip_setup {
+                Ok(setup_status(app_data))
+            } else {
+                setup_start(app_data)
+            }
+        };
+
+        let first = setup()?;
         report.setup_ready = first.ready;
         if !first.ready {
             return Err(format!(
@@ -1395,7 +1578,7 @@ fn native_sandbox_smoke_helper(app_data: &Path, result_path: &Path) -> Result<()
             ));
         }
 
-        let repeated = setup_start(app_data)?;
+        let repeated = setup()?;
         report.repeated_setup_ready = repeated.ready;
         if !repeated.ready {
             return Err(format!(
@@ -1745,19 +1928,20 @@ fn command_runner(pipe_name: &str) -> i32 {
                 "sandbox command script path escaped its private run directory".to_string(),
             );
         }
-        fs::create_dir_all(&script_dir).map_err(|error| error.to_string())?;
-        let script_bytes = if request.shell == "cmd" {
-            format!("@chcp 65001>nul\r\n{}\r\n", request.command).into_bytes()
-        } else {
-            let wrapped = format!(
+        let powershell_command = (request.shell == "powershell").then(|| {
+            format!(
                 "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)\r\n[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)\r\n$OutputEncoding = [Console]::OutputEncoding\r\n& {{\r\n{}\r\n}}\r\n$__lacowork_ok = $?\r\n$__lacowork_exit = $LASTEXITCODE\r\nif (-not $__lacowork_ok) {{ exit 1 }}\r\nif ($null -ne $__lacowork_exit) {{ exit $__lacowork_exit }}\r\nexit 0\r\n",
                 request.command,
-            );
-            let mut bytes = vec![0xef, 0xbb, 0xbf];
-            bytes.extend_from_slice(wrapped.as_bytes());
-            bytes
-        };
-        fs::write(&script_path, script_bytes).map_err(|error| error.to_string())?;
+            )
+        });
+        if request.shell == "cmd" {
+            fs::create_dir_all(&script_dir).map_err(|error| error.to_string())?;
+            fs::write(
+                &script_path,
+                format!("@chcp 65001>nul\r\n{}\r\n", request.command).into_bytes(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
         let (application, line) = if request.shell == "cmd" {
             let app = PathBuf::from(&system_root).join("System32").join("cmd.exe");
             (
@@ -1774,12 +1958,20 @@ fn command_runner(pipe_name: &str) -> i32 {
                 .join("WindowsPowerShell")
                 .join("v1.0")
                 .join("powershell.exe");
+            let encoded = BASE64.encode(
+                powershell_command
+                    .as_deref()
+                    .expect("PowerShell command must be prepared")
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
             (
                 app.clone(),
                 format!(
-                    "\"{}\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\"",
+                    "\"{}\" -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
                     app.display(),
-                    script_path.display()
+                    encoded
                 ),
             )
         };
@@ -1989,14 +2181,13 @@ fn create_capability_restricted_token(
     base_token: windows_sys::Win32::Foundation::HANDLE,
     capability_sid: &str,
 ) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
-    use windows_sys::Win32::Foundation::{LocalFree, HANDLE};
+    use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
     use windows_sys::Win32::Security::{
-        CreateRestrictedToken, CreateWellKnownSid, GetTokenInformation, TokenUser, WinWorldSid,
-        DISABLE_MAX_PRIVILEGE, SID_AND_ATTRIBUTES, TOKEN_USER,
+        CopySid, CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, GetTokenInformation,
+        TokenGroups, TokenUser, WinWorldSid, DISABLE_MAX_PRIVILEGE, SID_AND_ATTRIBUTES, TOKEN_USER,
     };
 
-    const LUA_TOKEN: u32 = 0x04;
     const WRITE_RESTRICTED: u32 = 0x08;
     let capability = wide(capability_sid);
     let mut capability_ptr = std::ptr::null_mut();
@@ -2075,6 +2266,70 @@ fn create_capability_restricted_token(
         ));
     }
     let token_user_sid = unsafe { (*(token_user.as_ptr() as *const TOKEN_USER)).User.Sid };
+    let mut token_groups_size = 0u32;
+    unsafe {
+        GetTokenInformation(
+            base_token,
+            TokenGroups,
+            std::ptr::null_mut(),
+            0,
+            &mut token_groups_size,
+        );
+    }
+    if token_groups_size < std::mem::size_of::<u32>() as u32 {
+        unsafe {
+            LocalFree(capability_ptr as _);
+        }
+        return Err("failed to size the sandbox token groups".to_string());
+    }
+    let mut token_groups = vec![0u8; token_groups_size as usize];
+    if unsafe {
+        GetTokenInformation(
+            base_token,
+            TokenGroups,
+            token_groups.as_mut_ptr() as _,
+            token_groups_size,
+            &mut token_groups_size,
+        )
+    } == 0
+    {
+        unsafe {
+            LocalFree(capability_ptr as _);
+        }
+        return Err(format!(
+            "failed to resolve the sandbox logon SID: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
+    let group_count = unsafe { std::ptr::read_unaligned(token_groups.as_ptr() as *const u32) };
+    let after_count = unsafe { token_groups.as_ptr().add(std::mem::size_of::<u32>()) } as usize;
+    let group_alignment = std::mem::align_of::<SID_AND_ATTRIBUTES>();
+    let aligned_groups = (after_count + group_alignment - 1) & !(group_alignment - 1);
+    let groups = aligned_groups as *const SID_AND_ATTRIBUTES;
+    let mut logon_sid = None;
+    for index in 0..group_count as usize {
+        let group = unsafe { std::ptr::read_unaligned(groups.add(index)) };
+        if group.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID {
+            let length = unsafe { GetLengthSid(group.Sid) };
+            if length != 0 {
+                let mut bytes = vec![0u8; length as usize];
+                if unsafe { CopySid(length, bytes.as_mut_ptr() as _, group.Sid) } != 0 {
+                    logon_sid = Some(bytes);
+                }
+            }
+            break;
+        }
+    }
+    let mut logon_sid = match logon_sid {
+        Some(sid) => sid,
+        None => {
+            unsafe {
+                LocalFree(capability_ptr as _);
+            }
+            return Err("sandbox logon SID is missing from the account token".to_string());
+        }
+    };
     let mut restrictions = [
         SID_AND_ATTRIBUTES {
             Sid: capability_ptr,
@@ -2088,12 +2343,19 @@ fn create_capability_restricted_token(
             Sid: world.as_mut_ptr() as _,
             Attributes: 0,
         },
+        SID_AND_ATTRIBUTES {
+            Sid: logon_sid.as_mut_ptr() as _,
+            Attributes: 0,
+        },
     ];
     let mut restricted: HANDLE = std::ptr::null_mut();
     let created = unsafe {
         CreateRestrictedToken(
             base_token,
-            DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
+            // The runner already executes as a dedicated standard user. LUA_TOKEN expects an
+            // administrator token to filter and returns ERROR_INVALID_PARAMETER for this local
+            // non-administrator account on supported Windows 11 builds.
+            DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED,
             0,
             std::ptr::null(),
             0,
@@ -2103,14 +2365,17 @@ fn create_capability_restricted_token(
             &mut restricted,
         )
     };
+    if created == 0 {
+        let original_error = unsafe { GetLastError() };
+        unsafe {
+            LocalFree(capability_ptr as _);
+        }
+        return Err(format!(
+            "capability-restricted token creation failed: Windows error {original_error}"
+        ));
+    }
     unsafe {
         LocalFree(capability_ptr as _);
-    }
-    if created == 0 {
-        return Err(format!(
-            "capability-restricted token creation failed: {}",
-            std::io::Error::last_os_error()
-        ));
     }
     Ok(restricted)
 }
@@ -2269,13 +2534,10 @@ mod tests {
     };
 
     #[test]
-    fn per_run_sid_uses_the_windows_capability_authority() {
+    fn per_run_sid_uses_an_unresolved_nt_restriction_authority() {
         let sid = capability_sid_from_hash(&[1u8; 32]);
-        assert_eq!(
-            sid,
-            "S-1-15-3-1024-16843009-16843009-16843009-16843009-16843009-16843009-16843009-16843009"
-        );
-        assert_eq!(sid.split('-').count(), 13);
+        assert_eq!(sid, "S-1-5-21-16843009-16843009-16843009-16843009");
+        assert_eq!(sid.split('-').count(), 8);
     }
 
     #[test]
