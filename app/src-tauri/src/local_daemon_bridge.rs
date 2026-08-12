@@ -108,22 +108,29 @@ async fn call_endpoint(endpoint: &str, encoded: &[u8]) -> Result<Value, String> 
 async fn call_endpoint(endpoint: &str, encoded: &[u8]) -> Result<Value, String> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let mut last_error = None;
-    for _ in 0..20 {
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(50);
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_PIPE_BUSY: i32 = 231;
+
+    fn is_transient(error: &std::io::Error) -> bool {
+        matches!(
+            error.raw_os_error(),
+            Some(ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY)
+        )
+    }
+
+    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+    let last_error = loop {
         match ClientOptions::new().open(endpoint) {
             Ok(stream) => return exchange(stream, encoded).await,
-            Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            Err(error) if is_transient(&error) && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(RETRY_INTERVAL).await;
             }
+            Err(error) => break error,
         }
-    }
-    Err(format!(
-        "local daemon is unavailable: {}",
-        last_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "named pipe connection failed".to_owned())
-    ))
+    };
+    Err(format!("local daemon is unavailable: {last_error}"))
 }
 
 async fn exchange<T>(stream: T, encoded: &[u8]) -> Result<Value, String>
@@ -228,6 +235,70 @@ fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_client_waits_for_a_busy_pipe_to_become_available() {
+        use tokio::{
+            io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+            net::windows::named_pipe::{ClientOptions, ServerOptions},
+        };
+
+        tauri::async_runtime::block_on(async {
+            let endpoint = format!(r"\\.\pipe\open-cowork-bridge-test-{}", Uuid::new_v4());
+            let busy_server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .max_instances(1)
+                .create(&endpoint)
+                .unwrap();
+            let busy_client = ClientOptions::new().open(&endpoint).unwrap();
+            busy_server.connect().await.unwrap();
+
+            let responder_endpoint = endpoint.clone();
+            let responder = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1_200)).await;
+                drop(busy_client);
+                drop(busy_server);
+
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                let server = loop {
+                    match ServerOptions::new()
+                        .first_pipe_instance(true)
+                        .create(&responder_endpoint)
+                    {
+                        Ok(server) => break server,
+                        Err(_) if tokio::time::Instant::now() < deadline => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(error) => panic!("failed to recreate test pipe: {error}"),
+                    }
+                };
+                server.connect().await.unwrap();
+                let (reader, mut writer) = tokio::io::split(server);
+                let mut request = String::new();
+                BufReader::new(reader)
+                    .read_line(&mut request)
+                    .await
+                    .unwrap();
+                assert!(!request.trim().is_empty());
+                writer
+                    .write_all(b"{\"result\":{\"recovered\":true},\"error\":null}\n")
+                    .await
+                    .unwrap();
+                writer.flush().await.unwrap();
+            });
+
+            let response = tokio::time::timeout(
+                Duration::from_secs(5),
+                call_endpoint(&endpoint, br#"{"method":"health"}"#),
+            )
+            .await
+            .expect("client retry exceeded the regression-test timeout")
+            .unwrap();
+            assert_eq!(response["recovered"], true);
+            responder.await.unwrap();
+        });
+    }
 
     #[test]
     fn provider_binding_credentials_are_resolved_without_frontend_read_access() {

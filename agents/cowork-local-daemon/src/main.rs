@@ -5312,19 +5312,62 @@ async fn serve_ipc(daemon: Daemon) -> Result<()> {
 }
 
 #[cfg(windows)]
-async fn serve_ipc(daemon: Daemon) -> Result<()> {
+const PENDING_WINDOWS_PIPE_INSTANCES: usize = 16;
+
+#[cfg(windows)]
+fn create_windows_pipe_server(
+    endpoint: &str,
+    first: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let mut first = true;
+    ServerOptions::new()
+        .first_pipe_instance(first)
+        .reject_remote_clients(true)
+        .create(endpoint)
+}
+
+#[cfg(windows)]
+fn queue_windows_pipe_accept(
+    listeners: &mut tokio::task::JoinSet<
+        std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer>,
+    >,
+    server: tokio::net::windows::named_pipe::NamedPipeServer,
+) {
+    listeners.spawn(async move {
+        server.connect().await?;
+        Ok(server)
+    });
+}
+
+#[cfg(windows)]
+async fn serve_ipc(daemon: Daemon) -> Result<()> {
+    use tokio::task::JoinSet;
+
+    let endpoint = daemon.config.ipc_endpoint.clone();
+    let mut listeners = JoinSet::new();
+    for index in 0..PENDING_WINDOWS_PIPE_INSTANCES {
+        queue_windows_pipe_accept(
+            &mut listeners,
+            create_windows_pipe_server(&endpoint, index == 0)?,
+        );
+    }
     tracing::info!(endpoint = %daemon.config.ipc_endpoint, "local daemon IPC ready");
     loop {
-        let mut options = ServerOptions::new();
-        options
-            .first_pipe_instance(first)
-            .reject_remote_clients(true);
-        let server = options.create(&daemon.config.ipc_endpoint)?;
-        first = false;
-        server.connect().await?;
+        let server = listeners
+            .join_next()
+            .await
+            .context("Windows IPC listener pool stopped")?
+            .context("Windows IPC listener task panicked")??;
+
+        // Replenish the pending pool before dispatching the accepted connection.
+        // Startup reconciliation sends a burst of parallel requests, and a single
+        // pending instance makes every other client observe ERROR_PIPE_BUSY (231).
+        queue_windows_pipe_accept(
+            &mut listeners,
+            create_windows_pipe_server(&endpoint, false)?,
+        );
+
         let daemon = daemon.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(daemon, server).await {
@@ -5686,6 +5729,26 @@ fn default_ipc_endpoint(_data_dir: &Path) -> String {
 mod tests {
     use super::*;
     use chrono::{Datelike, TimeZone, Timelike};
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_ipc_keeps_a_parallel_listener_pool_ready() {
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let endpoint = format!(r"\\.\pipe\open-cowork-test-{}", Uuid::new_v4());
+        let servers = (0..PENDING_WINDOWS_PIPE_INSTANCES)
+            .map(|index| create_windows_pipe_server(&endpoint, index == 0).unwrap())
+            .collect::<Vec<_>>();
+
+        let clients = (0..PENDING_WINDOWS_PIPE_INSTANCES)
+            .map(|_| ClientOptions::new().open(&endpoint).unwrap())
+            .collect::<Vec<_>>();
+
+        for server in &servers {
+            server.connect().await.unwrap();
+        }
+        assert_eq!(clients.len(), PENDING_WINDOWS_PIPE_INSTANCES);
+    }
 
     fn schedule_test_request(input: Value) -> CreateRunRequest {
         serde_json::from_value(json!({
