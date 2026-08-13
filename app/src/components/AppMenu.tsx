@@ -52,6 +52,7 @@ type AppMenuProps = {
   open: boolean
   compactSidebar: boolean
   onOpenWorkspaceSidebar: () => void
+  onClose: () => void
 }
 
 function routeSubroutes(route: ProductRoute): readonly ProductSubroute[] {
@@ -73,6 +74,7 @@ export default function AppMenu({
   open,
   compactSidebar,
   onOpenWorkspaceSidebar,
+  onClose,
 }: AppMenuProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -94,7 +96,6 @@ export default function AppMenu({
     appMenuSearchFocused,
     shortcutsOverlayOpen,
     setActiveMode,
-    setAppMenuOpen,
     setAppMenuSearchFocused,
     setContextDrawerOpen,
     setShortcutsOverlayOpen,
@@ -170,8 +171,6 @@ export default function AppMenu({
     }
   }, [open])
 
-  const closeMenu = () => setAppMenuOpen(false)
-
   const navigateTo = (route: ProductRoute, path: string = route.path) => {
     if (route.activeMode) setActiveMode(route.activeMode)
     setQuery('')
@@ -233,7 +232,7 @@ export default function AppMenu({
       >
         <header className="app-menu-header">
           <strong>{tr('Workspace')}</strong>
-          <button type="button" onClick={closeMenu} aria-label={tr('Close menu')}>
+          <button type="button" onClick={onClose} aria-label={tr('Close menu')}>
             <X size={17} aria-hidden="true" />
           </button>
         </header>

@@ -44,7 +44,7 @@ describe('AppMenu updater', () => {
   it('installs an available update with one action from the burger menu', () => {
     render(
       <MemoryRouter>
-        <AppMenu open compactSidebar={false} onOpenWorkspaceSidebar={vi.fn()} />
+        <AppMenu open compactSidebar={false} onOpenWorkspaceSidebar={vi.fn()} onClose={vi.fn()} />
       </MemoryRouter>,
     )
 

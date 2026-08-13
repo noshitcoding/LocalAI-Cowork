@@ -209,13 +209,15 @@ test('minimal shell keeps onboarding and context inside the two drawers', async 
   await expect(menu.getByText('Choose a model in the chat controls.')).toBeVisible()
 
   await menu.getByRole('button', { name: /Context & status/ }).click()
+  await expect(menu).toBeVisible()
+  await menu.getByRole('button', { name: 'Close menu' }).click()
   await expect(menu).toHaveCount(0)
   await expect(page.getByRole('complementary', { name: 'Run context' })).toBeVisible()
   await page.getByRole('button', { name: 'Close run context' }).click()
   await expect(page.getByRole('complementary', { name: 'Run context' })).toHaveCount(0)
 })
 
-test('burger navigation has deterministic focus and closes on route changes', async ({ page }) => {
+test('burger navigation stays open until the close button is used', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 650 })
   await openStableSurface(page, PRODUCT_SURFACES[0])
 
@@ -235,6 +237,12 @@ test('burger navigation has deterministic focus and closes on route changes', as
   await expect(page).toHaveScreenshot('burger-menu-light-compact.png', { fullPage: false })
 
   await page.keyboard.press('Escape')
+  await expect(menu).toBeVisible()
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  await expect(menu).toBeVisible()
+
+  await menu.getByRole('button', { name: 'Close menu' }).click()
   await expect(menu).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Open main menu' })).toBeFocused()
 
@@ -242,6 +250,9 @@ test('burger navigation has deterministic focus and closes on route changes', as
   await menu.getByRole('button', { name: /^Settings/ }).click()
   await expect(page).toHaveURL(/\/settings$/)
   await expect(page.getByRole('heading', { name: 'AI & model' })).toBeVisible()
+  await expect(menu).toBeVisible()
+
+  await menu.getByRole('button', { name: 'Close menu' }).click()
   await expect(menu).toHaveCount(0)
 
   const settingsContent = page.locator('.settings-content')
@@ -260,6 +271,7 @@ test('burger navigation has deterministic focus and closes on route changes', as
   await settingsSections.getByRole('button', { name: 'AI Sandbox' }).click()
   await expect(page).toHaveURL(/\/settings\?section=sandbox$/)
   await expect(page.getByRole('heading', { name: 'AI Sandbox', level: 2 })).toBeVisible()
+  await expect(menu).toBeVisible()
 })
 
 test('run context renders persisted events and artifacts', async ({ page }) => {
