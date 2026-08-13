@@ -151,6 +151,7 @@ describe('App', () => {
     await clickMenuRoute('Tasks')
     await waitFor(() => expect(window.location.pathname).toBe('/tasks'))
     expect(await screen.findByRole('heading', { name: 'New task' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
 
     await clickMenuRoute('Settings')
     await waitFor(() => expect(window.location.pathname).toBe('/settings'))
@@ -163,6 +164,19 @@ describe('App', () => {
     fireEvent.click(within(settingsSections).getByRole('button', { name: /^AI Sandbox/ }))
     await waitFor(() => expect(window.location.search).toBe('?section=sandbox'))
     expect(await screen.findByText('AI Sandbox', { selector: '.shell-title' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
+
+    const crewButton = within(menu).getByRole('button', { name: /^Crew/ })
+    fireEvent.click(crewButton)
+    await waitFor(() => expect(window.location.pathname).toBe('/crew'))
+    await waitFor(() => expect(menu.querySelector('[data-doc-id="button:/app/top-navigation/crew"]')).toHaveAttribute('aria-current', 'page'))
+    const crewSections = within(menu).getByLabelText('Crew Sections')
+    const crewMembersButton = within(crewSections).getByRole('button', { name: /^Crew members/ })
+    fireEvent.click(crewMembersButton)
+    await waitFor(() => expect(window.location.search).toBe('?section=members'))
+    await waitFor(() => expect(within(crewSections).getByRole('button', { name: /^Crew members/ })).toHaveAttribute('aria-current', 'page'))
+    expect(await screen.findByText('Crew members', { selector: '.shell-title' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
   })
 
   it('keeps number shortcuts mapped to the registered route order', async () => {
@@ -188,6 +202,9 @@ describe('App', () => {
     expect(within(menu).getAllByRole('button', { name: /GitHub/ }).length).toBeGreaterThan(0)
 
     fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
+
+    fireEvent.click(within(menu).getByRole('button', { name: 'Close menu' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
 
     fireEvent.keyDown(window, { key: '?', ctrlKey: true, shiftKey: true })
@@ -195,28 +212,29 @@ describe('App', () => {
     expect(within(shortcutMenu).getByText('Ctrl Shift B')).toBeInTheDocument()
   })
 
-  it('keeps shell drawers mutually exclusive and closes them with Escape and backdrop', async () => {
+  it('keeps the burger menu open until its close button is used', async () => {
     render(<App />)
     await screen.findByPlaceholderText('Next instruction...')
 
-    let menu = await openMainMenu()
+    const menuButton = screen.getByRole('button', { name: 'Open main menu' })
+    const menu = await openMainMenu()
     fireEvent.click(within(menu).getByRole('button', { name: /Context & status/ }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
     expect(screen.getByLabelText('Run context')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open main menu' }))
-    menu = await screen.findByRole('dialog', { name: 'Main menu' })
-    expect(screen.queryByLabelText('Run context')).not.toBeInTheDocument()
+    fireEvent.click(menuButton)
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
 
     fireEvent.keyDown(menu, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
 
-    menu = await openMainMenu()
-    const backdrop = screen.getAllByRole('button', { name: 'Close menu' })
-      .find((button) => button.classList.contains('app-drawer-backdrop'))
-    expect(backdrop).toBeDefined()
-    fireEvent.click(backdrop!)
+    fireEvent.click(screen.getByTestId('app-menu-backdrop'))
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
+
+    fireEvent.click(within(menu).getByRole('button', { name: 'Close menu' }))
     await waitFor(() => expect(menu).not.toBeInTheDocument())
+    expect(menuButton).toHaveFocus()
+    expect(screen.getByLabelText('Run context')).toBeInTheDocument()
   })
 
   it('resizes the project and chat sidebar within the new limits', async () => {
@@ -251,6 +269,14 @@ describe('App', () => {
     fireEvent.click(within(menu).getByRole('button', { name: /Projects & chats/ }))
     expect(await screen.findByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Close sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Main menu' })).toBeInTheDocument()
+
+    fireEvent.click(within(menu).getByRole('button', { name: 'Close menu' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
 
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => {

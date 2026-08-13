@@ -291,6 +291,54 @@ describe('CrewPanel', () => {
     expect(screen.getByText('Approvals for all members')).toBeInTheDocument()
   })
 
+  it('toggles a member without removing its configuration or task assignments', async () => {
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        tasks: [{
+          id: 'task-assigned',
+          description: 'Keep this assignment',
+          expectedOutput: 'Assigned result',
+          agentId: 'agent-default',
+          context: [],
+          dependencies: [],
+          asyncExecution: false,
+          status: 'pending' as const,
+          output: null,
+        }],
+        agents: crew.agents.map((agent) => agent.id === 'agent-default'
+          ? {
+              ...agent,
+              modelOverride: 'llama3.1:70b',
+              backendSelection: { backend: 'codex' as const, authProfileId: 'work-account' },
+              tools: ['delegate_task'],
+              personalityId: 'profile-kept',
+            }
+          : agent),
+      })),
+    }))
+
+    renderCrewPanel('/crew?section=members')
+
+    const enabledToggle = screen.getByRole('checkbox', { name: 'Default Agent: Enabled' })
+    fireEvent.click(enabledToggle)
+
+    let crew = useCrewStore.getState().crews[0]
+    expect(crew.agents.find((agent) => agent.id === 'agent-default')).toMatchObject({
+      enabled: false,
+      modelOverride: 'llama3.1:70b',
+      backendSelection: { backend: 'codex', authProfileId: 'work-account' },
+      tools: ['delegate_task'],
+      personalityId: 'profile-kept',
+    })
+    expect(crew.tasks[0]).toMatchObject({ id: 'task-assigned', agentId: 'agent-default' })
+
+    fireEvent.click(enabledToggle)
+    crew = useCrewStore.getState().crews[0]
+    expect(crew.agents.find((agent) => agent.id === 'agent-default')?.enabled).toBe(true)
+    expect(crew.tasks[0]).toMatchObject({ id: 'task-assigned', agentId: 'agent-default' })
+  })
+
   it('explains provider blockers next to the disabled run action and links to their fixes', async () => {
     useConfigStore.setState((state) => ({
       llmProfiles: state.llmProfiles.map((profile) => profile.preset === 'openrouter'
@@ -470,35 +518,52 @@ describe('CrewPanel', () => {
       crews: state.crews.map((crew) => ({
         ...crew,
         agents: [
-          ...crew.agents,
-          { ...baseAgent, id: 'agent-profile', personalityId: 'profile-agent', modelOverride: 'llama3.1:70b' },
+          ...crew.agents.map((agent) => agent.id === 'agent-default'
+            ? { ...agent, backendSelection: { backend: 'codex' as const } }
+            : {
+                ...agent,
+                enabled: false,
+                backendSelection: { backend: 'openai-compatible' as const, profileId: 'openai-default' },
+              }),
+          {
+            ...baseAgent,
+            id: 'agent-profile',
+            name: 'Profile Agent',
+            personalityId: 'profile-agent',
+            modelOverride: 'llama3.1:70b',
+            backendSelection: { backend: 'codex' as const, authProfileId: 'personal-account' },
+          },
         ],
       })),
     }))
 
     await act(async () => {
-      renderCrewPanel()
+      renderCrewPanel('/crew?section=members')
     })
-    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Crew-Model' }), {
+      target: { value: 'qwen3:14b' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Apply crew model to all' }))
 
     const crew = useCrewStore.getState().crews[0]
+    expect(crew.defaultModel).toBe('qwen3:14b')
     expect(crew.agents.every((agent) => agent.modelOverride === null)).toBe(true)
     expect(crew.agents.every((agent) => agent.inheritCrewModel)).toBe(true)
+    expect(crew.agents.every((agent) => agent.backendSelection === undefined)).toBe(true)
+    expect(crew.agents.find((agent) => agent.id === 'agent-custom')?.enabled).toBe(false)
     expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
     expect(screen.getByText(`Crew model applied to ${crew.agents.length} members.`)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Crew-members/ }))
     const profileAgentHeader = screen.getByRole('button', { name: /Profile Agent/ })
     fireEvent.click(profileAgentHeader)
     const profileAgentCard = profileAgentHeader.closest('.crew-agent-card')
     expect(profileAgentCard).not.toBeNull()
     fireEvent.change(within(profileAgentCard as HTMLElement).getByRole('combobox', { name: 'Model' }), {
-      target: { value: 'qwen3:14b' },
+      target: { value: 'llama3.1:70b' },
     })
 
     const overriddenAgent = useCrewStore.getState().crews[0].agents.find((agent) => agent.id === 'agent-profile')
-    expect(overriddenAgent).toMatchObject({ modelOverride: 'qwen3:14b', inheritCrewModel: false })
+    expect(overriddenAgent).toMatchObject({ modelOverride: 'llama3.1:70b', inheritCrewModel: false })
     expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
   })
 

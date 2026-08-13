@@ -64,7 +64,6 @@ export default function Layout() {
   const menuButtonRef = useRef<HTMLButtonElement | null>(null)
   const leftSidebarFrameRef = useRef<HTMLDivElement | null>(null)
   const leftSidebarResizeRef = useRef<{ pointerId: number; left: number } | null>(null)
-  const previousMenuOpenRef = useRef(false)
   const [leftSidebarResizing, setLeftSidebarResizing] = useState(false)
   const [compactSidebar, setCompactSidebar] = useState(() => (
     typeof window !== 'undefined' && window.matchMedia?.(COMPACT_SIDEBAR_MEDIA_QUERY).matches === true
@@ -144,12 +143,10 @@ export default function Layout() {
     setCompactSidebarOpen(false)
   }, [closeShellOverlays, location.pathname, location.search])
 
-  useEffect(() => {
-    if (previousMenuOpenRef.current && !appMenuOpen) {
-      window.requestAnimationFrame(() => menuButtonRef.current?.focus())
-    }
-    previousMenuOpenRef.current = appMenuOpen
-  }, [appMenuOpen])
+  const handleCloseAppMenu = useCallback(() => {
+    setAppMenuOpen(false)
+    menuButtonRef.current?.focus()
+  }, [setAppMenuOpen])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -326,6 +323,7 @@ export default function Layout() {
         open={appMenuOpen}
         compactSidebar={compactSidebar || focusMode}
         onOpenWorkspaceSidebar={handleOpenWorkspaceSidebarFromMenu}
+        onClose={handleCloseAppMenu}
       />
       <AppContextDrawer open={contextDrawerOpen} onClose={() => setContextDrawerOpen(false)} />
     </div>
