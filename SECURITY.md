@@ -8,7 +8,7 @@ Security fixes target the latest published release and the current `main` branch
 
 ## Vulnerability Exceptions
 
-Target-specific exceptions are published as OpenVEX documents under `.vex/` and consumed by Trivy in CI. An exception must name one advisory and package, explain why the vulnerable code is outside the maintained execution path, and be revisited before the supported platform set changes. VEX statements do not disable secret, dependency, Semgrep, or filesystem scanning.
+Target-specific exceptions are published as OpenVEX documents under `.vex/` and consumed by Trivy in CI. An exception must name one advisory and package, explain why the vulnerable code is outside the maintained execution path, and be revisited before the supported platform set changes. A RustSec exception additionally requires a matching, commented `.cargo/audit.toml` entry because cargo-audit does not consume OpenVEX. VEX statements do not disable secret, Semgrep, or filesystem scanning; cargo-audit continues to fail for every advisory that is not explicitly documented in both places.
 
 ## Report A Vulnerability
 

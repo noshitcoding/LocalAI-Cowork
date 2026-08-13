@@ -1,9 +1,11 @@
 ﻿import { fireEvent, render, screen } from '@testing-library/react'
+import { act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectView from './ProjectView'
 import { useChatStore } from '../stores/chatStore'
 import { useProjectStore } from '../stores/projectStore'
+import { dispatchShellContextAction } from '../product/shellContextActions'
 
 const navigateMock = vi.fn()
 
@@ -94,7 +96,7 @@ describe('ProjectView', () => {
   it('can delete a project together with its chats', () => {
     renderProjectView()
 
-    fireEvent.click(screen.getByTitle('Delete project'))
+    act(() => dispatchShellContextAction('project-delete'))
     expect(screen.getByRole('dialog', { name: 'Delete project' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete project and assigned chats' }))
@@ -107,8 +109,9 @@ describe('ProjectView', () => {
     useProjectStore.setState({ projects: [], activeProjectId: null })
     renderProjectView()
 
-    expect(screen.getByRole('heading', { name: 'Give focused work a permanent home' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Create first project' }))
+    expect(screen.getByRole('heading', { name: 'No project selected' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Project setup steps')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }))
 
     expect(useProjectStore.getState().projects).toHaveLength(1)
     expect(screen.getByLabelText('Project name')).toHaveValue('Project 1')

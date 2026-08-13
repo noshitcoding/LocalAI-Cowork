@@ -14,6 +14,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
@@ -39,20 +40,125 @@ def _workspace_root(request: dict) -> Path:
     return resolved if resolved.is_dir() else resolved.parent
 
 
-def _resolve_workspace_path(root: Path, value: str, *, allow_root: bool = True) -> Path:
+def _authorized_roots(request: dict) -> list[tuple[Path, str]]:
+    roots: list[tuple[Path, str]] = []
+    seen: set[str] = set()
+
+    configured_cwd = str(request.get("cwd") or "").strip()
+    candidates: list[dict[str, str]] = []
+    if configured_cwd:
+        candidates.append({"path": configured_cwd, "kind": "folder", "access": "read_write"})
+    candidates.extend(
+        entry for entry in (request.get("authorizedPaths") or [])
+        if isinstance(entry, dict)
+    )
+
+    for entry in candidates:
+        raw = str(entry.get("path") or "").strip()
+        kind = str(entry.get("kind") or "").strip()
+        access = str(entry.get("access") or "read_write").strip()
+        if not raw or kind not in {"file", "folder"} or access != "read_write":
+            continue
+        candidate = Path(raw).expanduser()
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if (kind == "folder" and not resolved.is_dir()) or (kind == "file" and not resolved.is_file()):
+            continue
+        key = os.path.normcase(str(resolved))
+        if key not in seen:
+            roots.append((resolved, kind))
+            seen.add(key)
+
+    # Backwards compatibility for older saved crew snapshots without authorizedPaths.
+    if not roots and "authorizedPaths" not in request:
+        root = _workspace_root(request)
+        roots.append((root, "folder"))
+    return roots
+
+
+def _primary_workspace_root(roots: list[tuple[Path, str]]) -> Path:
+    folder = next((path for path, kind in roots if kind == "folder"), None)
+    if folder is not None:
+        return folder
+    file_root = next((path for path, kind in roots if kind == "file"), None)
+    return file_root.parent if file_root is not None else Path.cwd().resolve()
+
+
+def _resolve_workspace_path(
+    roots: list[tuple[Path, str]],
+    value: str,
+    *,
+    allow_root: bool = True,
+    tool: str = "",
+    deny_rules: list[str] | None = None,
+) -> Path:
+    if not roots:
+        raise PermissionError("No file or folder paths are authorized for this run.")
+    root = _primary_workspace_root(roots)
     raw = str(value or "").strip()
     if not raw:
         target = root
     else:
         candidate = Path(raw).expanduser()
         target = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=False)
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Path is outside the authorized working directory: {value}") from exc
-    if not allow_root and target == root:
+    authorized = False
+    for allowed_path, kind in roots:
+        if kind == "file":
+            authorized = target == allowed_path
+        else:
+            try:
+                target.relative_to(allowed_path)
+                authorized = True
+            except ValueError:
+                authorized = False
+        if authorized:
+            break
+    if not authorized:
+        raise ValueError(
+            f"Path is outside the authorized working directory or project paths: {value}"
+        )
+    rendered_target = str(target)
+    for rule in deny_rules or []:
+        normalized_rule = str(rule or "").strip()
+        if not normalized_rule:
+            continue
+        if ":" in normalized_rule:
+            rule_tool, rule_target = normalized_rule.split(":", 1)
+        else:
+            rule_tool, rule_target = normalized_rule, "*"
+        if (
+            fnmatch.fnmatchcase(tool.lower(), rule_tool.lower())
+            and fnmatch.fnmatchcase(rendered_target.lower(), rule_target.lower())
+        ):
+            raise PermissionError(f"Global deny rule blocks {tool} for this path.")
+    if not allow_root and any(kind == "folder" and target == path for path, kind in roots):
         raise ValueError("The working-directory root itself cannot be modified.")
     return target
+
+
+def _display_authorized_path(roots: list[tuple[Path, str]], target: Path) -> str:
+    for root, kind in roots:
+        if kind == "file" and target == root:
+            return target.name
+        if kind == "folder":
+            try:
+                return target.relative_to(root).as_posix()
+            except ValueError:
+                continue
+    return str(target)
+
+
+def _path_deny_rules(request: dict) -> list[str]:
+    governance = request.get("governance") or {}
+    if governance.get("policyStrict") is False:
+        return []
+    return [
+        str(rule).strip()
+        for rule in governance.get("denyRules") or []
+        if str(rule).strip()
+    ]
 
 
 def _truncate(value: object, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -62,10 +168,34 @@ def _truncate(value: object, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     return text[:limit].rstrip() + f"\n...[truncated after {limit} characters]"
 
 
-def _safe_result(operation: str, callback) -> str:
+def _emit_tool_protocol_event(event: str, operation: str, success: bool | None = None) -> None:
+    stdout = sys.__stdout__
+    if stdout is None:
+        return
+    payload: dict[str, Any] = {"tool": operation}
+    if success is not None:
+        payload["success"] = success
+    envelope = {
+        "localAiCoworkEvent": event,
+        "payload": payload,
+    }
     try:
-        return _truncate(callback())
+        os.write(
+            stdout.fileno(),
+            (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8"),
+        )
+    except Exception:
+        pass
+
+
+def _safe_result(operation: str, callback) -> str:
+    _emit_tool_protocol_event("tool_started", operation)
+    try:
+        result = _truncate(callback())
+        _emit_tool_protocol_event("tool_completed", operation, True)
+        return result
     except Exception as exc:
+        _emit_tool_protocol_event("tool_completed", operation, False)
         return f"ERROR ({operation}): {exc.__class__.__name__}: {exc}"
 
 
@@ -93,6 +223,8 @@ def _canonical_tool_id(value: str) -> str:
         "generate_office_workflow": "office_workflow",
         "pptx_template_workflow": "office_workflow",
         "docx_template_workflow": "office_workflow",
+        "microsoftoffice": "microsoft_office",
+        "office_microsoft": "microsoft_office",
     }
     return aliases.get(normalized, normalized)
 
@@ -107,15 +239,19 @@ class ReadFileTool(BaseTool):
     name: str = "read_file"
     description: str = "Read a UTF-8 text file inside the authorized working directory with line numbers."
     args_schema: type[BaseModel] = ReadFileInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, path: str, start_line: int = 1, max_lines: int = 400) -> str:
         def execute() -> str:
-            target = _resolve_workspace_path(self._root, path)
+            target = _resolve_workspace_path(
+                self._roots, path, tool="read_file", deny_rules=self._deny_rules
+            )
             if not target.is_file():
                 raise FileNotFoundError(f"File not found: {target}")
             if target.stat().st_size > MAX_FILE_READ_BYTES:
@@ -145,11 +281,13 @@ class EditFileTool(BaseTool):
     name: str = "edit_file"
     description: str = "Create or edit a UTF-8 text file atomically. Use content for a full write, or old_text/new_text for a precise replacement."
     args_schema: type[BaseModel] = EditFileInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(
         self,
@@ -160,7 +298,13 @@ class EditFileTool(BaseTool):
         replace_all: bool = False,
     ) -> str:
         def execute() -> str:
-            target = _resolve_workspace_path(self._root, path, allow_root=False)
+            target = _resolve_workspace_path(
+                self._roots,
+                path,
+                allow_root=False,
+                tool="edit_file",
+                deny_rules=self._deny_rules,
+            )
             if target.exists() and not target.is_file():
                 raise ValueError(f"Target is not a file: {target}")
             if old_text:
@@ -197,17 +341,25 @@ class CreateDirectoryTool(BaseTool):
     name: str = "create_directory"
     description: str = "Create a directory, including missing parent directories, inside the working directory."
     args_schema: type[BaseModel] = PathInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, path: str) -> str:
         return _safe_result("create_directory", lambda: self._create(path))
 
     def _create(self, path: str) -> str:
-        target = _resolve_workspace_path(self._root, path, allow_root=False)
+        target = _resolve_workspace_path(
+            self._roots,
+            path,
+            allow_root=False,
+            tool="create_directory",
+            deny_rules=self._deny_rules,
+        )
         target.mkdir(parents=True, exist_ok=True)
         return f"Created directory: {target}"
 
@@ -221,16 +373,22 @@ class MovePathTool(BaseTool):
     name: str = "move_path"
     description: str = "Move or rename a file or directory within the working directory."
     args_schema: type[BaseModel] = TransferPathInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, source: str, destination: str) -> str:
         def execute() -> str:
-            src = _resolve_workspace_path(self._root, source, allow_root=False)
-            dst = _resolve_workspace_path(self._root, destination, allow_root=False)
+            src = _resolve_workspace_path(
+                self._roots, source, allow_root=False, tool="move_path", deny_rules=self._deny_rules
+            )
+            dst = _resolve_workspace_path(
+                self._roots, destination, allow_root=False, tool="move_path", deny_rules=self._deny_rules
+            )
             if not src.exists():
                 raise FileNotFoundError(f"Source does not exist: {src}")
             if dst.exists():
@@ -246,16 +404,22 @@ class CopyPathTool(BaseTool):
     name: str = "copy_path"
     description: str = "Copy a file or directory within the working directory without overwriting an existing destination."
     args_schema: type[BaseModel] = TransferPathInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, source: str, destination: str) -> str:
         def execute() -> str:
-            src = _resolve_workspace_path(self._root, source, allow_root=False)
-            dst = _resolve_workspace_path(self._root, destination, allow_root=False)
+            src = _resolve_workspace_path(
+                self._roots, source, allow_root=False, tool="copy_path", deny_rules=self._deny_rules
+            )
+            dst = _resolve_workspace_path(
+                self._roots, destination, allow_root=False, tool="copy_path", deny_rules=self._deny_rules
+            )
             if not src.exists():
                 raise FileNotFoundError(f"Source does not exist: {src}")
             if dst.exists():
@@ -280,23 +444,37 @@ class GlobTool(BaseTool):
     name: str = "glob"
     description: str = "Find workspace files by glob pattern."
     args_schema: type[BaseModel] = GlobInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, pattern: str, path: str = ".", max_results: int = 200) -> str:
         def execute() -> str:
-            base = _resolve_workspace_path(self._root, path)
+            base = _resolve_workspace_path(
+                self._roots, path, tool="glob", deny_rules=self._deny_rules
+            )
             if not base.is_dir():
                 raise NotADirectoryError(f"Not a directory: {base}")
             matches: list[str] = []
             for candidate in base.glob(pattern):
-                relative_parts = candidate.relative_to(self._root).parts
+                try:
+                    candidate = _resolve_workspace_path(
+                        self._roots,
+                        str(candidate),
+                        tool="glob",
+                        deny_rules=self._deny_rules,
+                    )
+                except ValueError:
+                    continue
+                display_path = _display_authorized_path(self._roots, candidate)
+                relative_parts = Path(display_path).parts
                 if any(part in IGNORED_DIRECTORY_NAMES for part in relative_parts):
                     continue
-                matches.append(candidate.relative_to(self._root).as_posix() + ("/" if candidate.is_dir() else ""))
+                matches.append(display_path + ("/" if candidate.is_dir() else ""))
                 if len(matches) >= max_results:
                     break
             return f"Found {len(matches)} path(s):\n" + "\n".join(matches)
@@ -316,11 +494,13 @@ class GrepTool(BaseTool):
     name: str = "grep"
     description: str = "Search UTF-8 workspace files and return path, line number, and matching line."
     args_schema: type[BaseModel] = GrepInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(
         self,
@@ -331,14 +511,26 @@ class GrepTool(BaseTool):
         max_results: int = 200,
     ) -> str:
         def execute() -> str:
-            target = _resolve_workspace_path(self._root, path)
+            target = _resolve_workspace_path(
+                self._roots, path, tool="grep", deny_rules=self._deny_rules
+            )
             regex = re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
             candidates = [target] if target.is_file() else target.rglob("*")
             matches: list[str] = []
             for candidate in candidates:
                 if not candidate.is_file() or not fnmatch.fnmatch(candidate.name, file_pattern):
                     continue
-                relative_parts = candidate.relative_to(self._root).parts
+                try:
+                    candidate = _resolve_workspace_path(
+                        self._roots,
+                        str(candidate),
+                        tool="grep",
+                        deny_rules=self._deny_rules,
+                    )
+                except ValueError:
+                    continue
+                display_path = _display_authorized_path(self._roots, candidate)
+                relative_parts = Path(display_path).parts
                 if any(part in IGNORED_DIRECTORY_NAMES for part in relative_parts):
                     continue
                 try:
@@ -352,7 +544,7 @@ class GrepTool(BaseTool):
                     continue
                 for line_number, line in enumerate(lines, 1):
                     if regex.search(line):
-                        matches.append(f"{candidate.relative_to(self._root).as_posix()}:{line_number}: {_truncate(line, 500)}")
+                        matches.append(f"{display_path}:{line_number}: {_truncate(line, 500)}")
                         if len(matches) >= max_results:
                             return f"Found at least {len(matches)} match(es):\n" + "\n".join(matches)
             return f"Found {len(matches)} match(es):\n" + "\n".join(matches)
@@ -582,9 +774,73 @@ class WebSearchInput(BaseModel):
     max_results: int = Field(default=6, ge=1, le=10)
 
 
+_NEWS_QUERY_PATTERN = re.compile(
+    r"(?i)\b(news|nachrichten|breaking|headlines?|stories|latest|aktuell|heute|today)\b"
+)
+_BROAD_NEWS_QUERY_PATTERN = re.compile(
+    r"(?i)\b(world|global|international|welt|worldwide|around\s+the\s+world)\b"
+)
+
+
+def _looks_like_news_query(query: str) -> bool:
+    return bool(_NEWS_QUERY_PATTERN.search(query))
+
+
+def _google_news_feed_url(query: str) -> str:
+    locale = "hl=en-US&gl=US&ceid=US:en"
+    if _BROAD_NEWS_QUERY_PATTERN.search(query):
+        return f"https://news.google.com/rss?{locale}"
+    return (
+        "https://news.google.com/rss/search?q="
+        + urllib.parse.quote_plus(query)
+        + f"&{locale}"
+    )
+
+
+def _plain_feed_description(value: str) -> str:
+    if not value:
+        return ""
+    extractor = _TextExtractor()
+    extractor.feed(value)
+    return " ".join(extractor.text().split())
+
+
+def _parse_google_news_feed(body: str, max_results: int) -> list[dict[str, str]]:
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError:
+        return []
+
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in root.findall(".//item"):
+        title = " ".join((item.findtext("title") or "").split())
+        url = (item.findtext("link") or "").strip()
+        if not title or not url.startswith(("http://", "https://")) or url in seen:
+            continue
+
+        seen.add(url)
+        source = " ".join((item.findtext("source") or "").split())
+        published = " ".join((item.findtext("pubDate") or "").split())
+        snippet = _plain_feed_description(item.findtext("description") or "")
+        results.append({
+            "url": url,
+            "title": title,
+            "snippet": snippet[:700],
+            "source": source,
+            "published": published,
+        })
+        if len(results) >= max_results:
+            break
+    return results
+
+
 class WebSearchTool(BaseTool):
     name: str = "web_search"
-    description: str = "Search the public web and return titles, source URLs, and snippets for research."
+    description: str = (
+        "Search the live public web and return titles, source URLs, snippets, and news publication times. "
+        "The runtime date is authoritative even when it is newer than the model's training data."
+    )
     args_schema: type[BaseModel] = WebSearchInput
 
     def _run(self, query: str, max_results: int = 6) -> str:
@@ -592,8 +848,35 @@ class WebSearchTool(BaseTool):
             normalized = " ".join(str(query or "").split())
             if not normalized:
                 raise ValueError("A non-empty search query is required")
+
+            if _looks_like_news_query(normalized):
+                provider = "Google News RSS"
+                _, body, _, _ = _fetch_public_text(_google_news_feed_url(normalized))
+                news_results = _parse_google_news_feed(body, max_results)
+                if news_results:
+                    rendered = []
+                    for index, item in enumerate(news_results, start=1):
+                        details = [
+                            f"{index}. {item['title']}",
+                            f"URL: {item['url']}",
+                        ]
+                        if item["source"]:
+                            details.append(f"Source: {item['source']}")
+                        if item["published"]:
+                            details.append(f"Published: {item['published']}")
+                        details.append(f"Snippet: {item['snippet'] or '(no snippet)'}")
+                        rendered.append("\n".join(details))
+                    return (
+                        f"Search query: {normalized}\nProvider: {provider}\n"
+                        f"Results: {len(rendered)}\n\n" + "\n\n".join(rendered)
+                    )
+
             provider = "Bing"
-            search_url = "https://www.bing.com/search?q=" + urllib.parse.quote_plus(normalized)
+            search_url = (
+                "https://www.bing.com/search?q="
+                + urllib.parse.quote_plus(normalized)
+                + "&setlang=en-US&cc=US&ensearch=1"
+            )
             _, body, _, _ = _fetch_public_text(search_url)
             parser: _BingParser | _DuckDuckGoParser = _BingParser()
             parser.feed(body)
@@ -652,10 +935,14 @@ class BashTool(BaseTool):
     description: str = "Run a bounded, non-interactive PowerShell command on Windows or POSIX shell command elsewhere, from the working directory."
     args_schema: type[BaseModel] = BashInput
     _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
+        self._root = _primary_workspace_root(roots)
 
     def _run(self, command: str, timeout_seconds: int = 60) -> str:
         def execute() -> str:
@@ -667,6 +954,27 @@ class BashTool(BaseTool):
             )
             if destructive.search(normalized):
                 raise PermissionError("Destructive shell commands are blocked by the Crew runtime")
+            if re.search(r"(^|[\\/\s\"'])\.\.([\\/\s\"']|$)", normalized):
+                raise PermissionError("Path traversal is blocked by the Crew runtime")
+            absolute_candidates = set(
+                re.findall(r"(?i)(?:[a-z]:[\\/][^\\s\"'|;&]+|/(?:[^\\s\"'|;&/]+/)*[^\\s\"'|;&]+)", normalized)
+            )
+            for candidate in absolute_candidates:
+                _resolve_workspace_path(
+                    self._roots, candidate, tool="bash", deny_rules=self._deny_rules
+                )
+            relative_candidates = set(
+                re.findall(r"(?:^|[\s\"'=])([A-Za-z0-9_.-]+[\\/][^\s\"'|;&]+)", normalized)
+            )
+            for candidate in relative_candidates:
+                candidate_path = self._root / candidate
+                if candidate_path.exists():
+                    _resolve_workspace_path(
+                        self._roots,
+                        str(candidate_path),
+                        tool="bash",
+                        deny_rules=self._deny_rules,
+                    )
             args = (
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", normalized]
                 if os.name == "nt"
@@ -762,15 +1070,23 @@ class OfficeWorkflowTool(BaseTool):
         "[{\"title\":\"Evidence\",\"bullets\":[\"Verified fact\"]}]. Do not return a proposed tool call as text."
     )
     args_schema: type[BaseModel] = OfficeWorkflowInput
-    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
         super().__init__()
-        self._root = root
+        self._roots = roots
+        self._deny_rules = deny_rules
 
     def _run(self, output_path: str, title: str, sections_json: str) -> str:
         def execute() -> str:
-            target = _resolve_workspace_path(self._root, output_path, allow_root=False)
+            target = _resolve_workspace_path(
+                self._roots,
+                output_path,
+                allow_root=False,
+                tool="office_workflow",
+                deny_rules=self._deny_rules,
+            )
             suffix = target.suffix.lower()
             if suffix not in {".pptx", ".docx"}:
                 raise ValueError("output_path must end in .pptx or .docx")
@@ -812,19 +1128,361 @@ class OfficeWorkflowTool(BaseTool):
         return _safe_result("office_workflow", execute)
 
 
+class MicrosoftOfficeInput(BaseModel):
+    application: Literal["word", "excel", "powerpoint"]
+    action: Literal[
+        "export_pdf",
+        "replace_text",
+        "word_append_paragraph",
+        "word_format_text",
+        "excel_set_cell",
+        "excel_format_range",
+        "excel_add_chart",
+        "powerpoint_add_slide",
+        "powerpoint_format_text",
+    ] = "export_pdf"
+    source: str = Field(description="Existing Word, Excel, or PowerPoint file inside the workspace")
+    output: str = Field(description="New output path below artifacts/")
+    preview_output: str | None = Field(
+        default=None,
+        description="Optional new PDF preview path below artifacts/ for editing actions",
+    )
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class MicrosoftOfficeTool(BaseTool):
+    name: str = "microsoft_office"
+    description: str = (
+        "Use installed Microsoft Word, Excel, or PowerPoint on a managed Windows executor to export PDF, "
+        "replace or format content, edit cells, create charts, or add slides. Macros and active content are blocked."
+    )
+    args_schema: type[BaseModel] = MicrosoftOfficeInput
+    _root: Path = PrivateAttr()
+    _roots: list[tuple[Path, str]] = PrivateAttr()
+    _deny_rules: list[str] = PrivateAttr()
+
+    def __init__(self, roots: list[tuple[Path, str]], deny_rules: list[str]) -> None:
+        super().__init__()
+        self._roots = roots
+        self._deny_rules = deny_rules
+        self._root = _primary_workspace_root(roots)
+
+    def _relative_workspace_path(self, path: Path, field: str) -> str:
+        try:
+            return path.relative_to(self._root).as_posix()
+        except ValueError as error:
+            raise ValueError(f"{field} must stay inside the primary run workspace") from error
+
+    def _run(
+        self,
+        application: str,
+        source: str,
+        output: str,
+        action: str = "export_pdf",
+        preview_output: str | None = None,
+        parameters: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            source_path = _resolve_workspace_path(
+                self._roots,
+                source,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            if not source_path.is_file():
+                raise FileNotFoundError(f"Microsoft Office source does not exist: {source}")
+            output_path = _resolve_workspace_path(
+                self._roots,
+                output,
+                allow_root=False,
+                tool="microsoft_office",
+                deny_rules=self._deny_rules,
+            )
+            source_relative = self._relative_workspace_path(source_path, "source")
+            output_relative = self._relative_workspace_path(output_path, "output")
+            if not output_relative.startswith("artifacts/"):
+                raise ValueError("Microsoft Office output must stay below artifacts/")
+            preview_relative = None
+            if preview_output:
+                preview_path = _resolve_workspace_path(
+                    self._roots,
+                    preview_output,
+                    allow_root=False,
+                    tool="microsoft_office",
+                    deny_rules=self._deny_rules,
+                )
+                preview_relative = self._relative_workspace_path(preview_path, "preview_output")
+                if not preview_relative.startswith("artifacts/"):
+                    raise ValueError("Microsoft Office preview output must stay below artifacts/")
+            payload = {
+                "application": application,
+                "action": action,
+                "source": source_relative,
+                "output": output_relative,
+                "preview_output": preview_relative,
+                "parameters": {} if parameters is None else parameters,
+            }
+            completed = subprocess.run(
+                _windows_office_command(),
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=510,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"Microsoft Office adapter exited with {completed.returncode}: "
+                    f"{completed.stderr.strip() or completed.stdout.strip()}"
+                )
+            response = json.loads(completed.stdout)
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"Microsoft Office action failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("microsoft_office", execute)
+
+
+class McpToolInput(BaseModel):
+    server_name: str = Field(description="Exact executor-bound MCP server name")
+    tool_name: str = Field(description="Tool name exposed by the selected MCP server")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP tool arguments")
+
+
+def _executor_mcp_bindings(request: dict) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for value in request.get("executorMcpBindings") or []:
+        if not isinstance(value, dict):
+            continue
+        name = str(value.get("name") or "").strip()
+        transport = str(value.get("transport") or "stdio").strip()
+        command = value.get("command")
+        args = value.get("args", [])
+        environment = value.get("environment", {})
+        url = value.get("url")
+        headers = value.get("headers", {})
+        if transport == "stdio" and (
+            name
+            and isinstance(command, str)
+            and command.strip()
+            and isinstance(args, list)
+            and all(isinstance(argument, str) for argument in args)
+            and isinstance(environment, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in environment.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "transport": "stdio",
+                "command": command,
+                "args": args,
+                "environment": environment,
+            }
+        elif transport == "streamable_http" and (
+            name
+            and isinstance(url, str)
+            and url.startswith("https://")
+            and isinstance(headers, dict)
+            and all(isinstance(key, str) and isinstance(secret, str) for key, secret in headers.items())
+        ):
+            bindings[name] = {
+                "name": name,
+                "transport": "streamable_http",
+                "url": url,
+                "headers": headers,
+            }
+    return bindings
+
+
+def _allowed_mcp_server_names(request: dict, agent: dict) -> list[str]:
+    requested = [
+        str(value).strip()
+        for value in agent.get("mcpServerNames") or []
+        if str(value).strip()
+    ]
+    access = _agent_access(request, str(agent.get("id") or "").strip())
+    allowed = {
+        str(value).strip()
+        for value in access.get("allowedMcpServerNames") or []
+        if str(value).strip()
+    }
+    blocked = {
+        str(value).strip()
+        for value in access.get("blockedMcpServerNames") or []
+        if str(value).strip()
+    }
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in requested:
+        if name in allowed and name not in blocked and name not in seen:
+            result.append(name)
+            seen.add(name)
+    return result
+
+
+def _redact_mcp_binding_values(value: str, binding: dict[str, Any]) -> str:
+    redacted = value
+    environment = binding.get("environment") or binding.get("headers") or {}
+    secrets = sorted(
+        (secret for secret in environment.values() if isinstance(secret, str) and secret),
+        key=len,
+        reverse=True,
+    )
+    for secret in secrets:
+        redacted = redacted.replace(secret, "[REDACTED]")
+        escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+        if escaped != secret:
+            redacted = redacted.replace(escaped, "[REDACTED]")
+    return redacted
+
+
+def _redact_mcp_binding_payload(value: Any, binding: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _redact_mcp_binding_values(value, binding)
+    if isinstance(value, list):
+        return [_redact_mcp_binding_payload(item, binding) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _redact_mcp_binding_payload(item, binding)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _bridge_command(variable: str, fallback: list[str] | None = None) -> list[str]:
+    configured = os.environ.get(variable)
+    if configured:
+        try:
+            command = json.loads(configured)
+        except ValueError as error:
+            raise ValueError(f"{variable} must be valid JSON") from error
+        if (
+            not isinstance(command, list)
+            or not 1 <= len(command) <= 8
+            or any(
+                not isinstance(argument, str)
+                or not argument.strip()
+                or len(argument) > 32_768
+                or "\0" in argument
+                for argument in command
+            )
+        ):
+            raise ValueError(
+                f"{variable} must contain 1 to 8 bounded command arguments"
+            )
+        return command
+    if fallback is None:
+        raise RuntimeError(f"{variable} is not configured by this executor")
+    return fallback
+
+
+def _mcp_tool_command() -> list[str]:
+    tool_path = os.environ.get("COWORK_MCP_TOOL_PATH") or "/opt/cowork/mcp-tool.py"
+    return _bridge_command("COWORK_MCP_TOOL_COMMAND_JSON", [sys.executable, tool_path])
+
+
+def _windows_office_command() -> list[str]:
+    return _bridge_command("COWORK_WINDOWS_OFFICE_COMMAND_JSON")
+
+
+class McpTool(BaseTool):
+    name: str = "mcp_tool"
+    description: str = "Call a tool on an executor-bound MCP server."
+    args_schema: type[BaseModel] = McpToolInput
+    _bindings: dict[str, dict[str, Any]] = PrivateAttr()
+    _allowed_names: set[str] = PrivateAttr()
+    _root: Path = PrivateAttr()
+
+    def __init__(
+        self,
+        roots: list[tuple[Path, str]],
+        bindings: dict[str, dict[str, Any]],
+        allowed_names: list[str],
+    ) -> None:
+        names = [name for name in allowed_names if name in bindings]
+        super().__init__(
+            description=(
+                "Call a tool on an encrypted executor-bound MCP server. "
+                f"Allowed servers: {', '.join(names)}"
+            )
+        )
+        self._bindings = {name: bindings[name] for name in names}
+        self._allowed_names = set(names)
+        self._root = _primary_workspace_root(roots)
+
+    def _run(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> str:
+        def execute() -> str:
+            name = str(server_name or "").strip()
+            tool = str(tool_name or "").strip()
+            if name not in self._allowed_names or name not in self._bindings:
+                raise PermissionError(f"MCP server is not allowed for this agent: {name}")
+            if not tool or len(tool) > 1024 or any(
+                ord(character) < 32 or ord(character) == 127 for character in tool
+            ):
+                raise ValueError("MCP tool name is missing or invalid")
+            normalized_arguments = {} if arguments is None else arguments
+            if not isinstance(normalized_arguments, dict):
+                raise ValueError("MCP tool arguments must be an object")
+            payload = {
+                "server": self._bindings[name],
+                "tool_name": tool,
+                "arguments": normalized_arguments,
+                "timeout_seconds": 120,
+            }
+            completed = subprocess.run(
+                _mcp_tool_command(),
+                cwd=self._root,
+                env=_subprocess_environment(),
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=150,
+                check=False,
+            )
+            stdout = _redact_mcp_binding_values(completed.stdout, self._bindings[name])
+            stderr = _redact_mcp_binding_values(completed.stderr, self._bindings[name])
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"MCP adapter exited with {completed.returncode}: {stderr.strip() or stdout.strip()}"
+                )
+            response = _redact_mcp_binding_payload(
+                json.loads(completed.stdout),
+                self._bindings[name],
+            )
+            if not isinstance(response, dict) or response.get("success") is not True:
+                detail = response.get("error") if isinstance(response, dict) else "invalid response"
+                raise RuntimeError(f"MCP call failed: {detail}")
+            return json.dumps(response.get("result"), ensure_ascii=False, indent=2)
+
+        return _safe_result("mcp_tool", execute)
+
+
 TOOL_FACTORIES = {
-    "read_file": lambda root: ReadFileTool(root),
-    "edit_file": lambda root: EditFileTool(root),
-    "create_directory": lambda root: CreateDirectoryTool(root),
-    "move_path": lambda root: MovePathTool(root),
-    "copy_path": lambda root: CopyPathTool(root),
-    "glob": lambda root: GlobTool(root),
-    "grep": lambda root: GrepTool(root),
-    "web_fetch": lambda root: WebFetchTool(),
-    "web_search": lambda root: WebSearchTool(),
-    "bash": lambda root: BashTool(root),
-    "todo": lambda root: TodoTool(),
-    "office_workflow": lambda root: OfficeWorkflowTool(root),
+    "read_file": lambda roots, deny_rules: ReadFileTool(roots, deny_rules),
+    "edit_file": lambda roots, deny_rules: EditFileTool(roots, deny_rules),
+    "create_directory": lambda roots, deny_rules: CreateDirectoryTool(roots, deny_rules),
+    "move_path": lambda roots, deny_rules: MovePathTool(roots, deny_rules),
+    "copy_path": lambda roots, deny_rules: CopyPathTool(roots, deny_rules),
+    "glob": lambda roots, deny_rules: GlobTool(roots, deny_rules),
+    "grep": lambda roots, deny_rules: GrepTool(roots, deny_rules),
+    "web_fetch": lambda roots, deny_rules: WebFetchTool(),
+    "web_search": lambda roots, deny_rules: WebSearchTool(),
+    "bash": lambda roots, deny_rules: BashTool(roots, deny_rules),
+    "todo": lambda roots, deny_rules: TodoTool(),
+    "office_workflow": lambda roots, deny_rules: OfficeWorkflowTool(roots, deny_rules),
+    "microsoft_office": lambda roots, deny_rules: MicrosoftOfficeTool(roots, deny_rules),
 }
 
 
@@ -834,17 +1492,24 @@ def build_runtime_tools(request: dict, agent: dict) -> list[BaseTool]:
     access = _agent_access(request, agent_id)
     allowed = {_canonical_tool_id(value) for value in access.get("allowedTools") or []}
     blocked = {_canonical_tool_id(value) for value in access.get("blockedTools") or []}
-    root = _workspace_root(request)
+    roots = _authorized_roots(request)
+    deny_rules = _path_deny_rules(request)
     result: list[BaseTool] = []
     seen: set[str] = set()
     for tool_id in requested:
         if tool_id in seen or tool_id in blocked or tool_id not in allowed:
             continue
+        if tool_id == "bash" and not any(kind == "folder" for _, kind in roots):
+            continue
         factory = TOOL_FACTORIES.get(tool_id)
         if factory is None:
             continue
-        result.append(factory(root))
+        result.append(factory(roots, deny_rules))
         seen.add(tool_id)
+    bindings = _executor_mcp_bindings(request)
+    allowed_mcp_names = _allowed_mcp_server_names(request, agent)
+    if any(name in bindings for name in allowed_mcp_names):
+        result.append(McpTool(roots, bindings, allowed_mcp_names))
     return result
 
 
@@ -853,4 +1518,15 @@ def unavailable_runtime_tools(request: dict, agent: dict) -> list[str]:
     requested = {_canonical_tool_id(value) for value in agent.get("tools") or [] if str(value).strip()}
     access = _agent_access(request, agent_id)
     allowed = {_canonical_tool_id(value) for value in access.get("allowedTools") or []}
-    return sorted(tool_id for tool_id in requested & allowed if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task"})
+    unavailable = {
+        tool_id
+        for tool_id in requested & allowed
+        if tool_id not in TOOL_FACTORIES and tool_id not in {"delegate_task", "mcp"}
+    }
+    bindings = _executor_mcp_bindings(request)
+    unavailable.update(
+        f"mcp:{name}"
+        for name in _allowed_mcp_server_names(request, agent)
+        if name not in bindings
+    )
+    return sorted(unavailable)

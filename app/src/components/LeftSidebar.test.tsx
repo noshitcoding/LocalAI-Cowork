@@ -5,7 +5,6 @@ import LeftSidebar from './LeftSidebar'
 import { useChatStore } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore } from '../stores/coworkStore'
-import { useEngineStore } from '../stores/engineStore'
 import { useProjectStore } from '../stores/projectStore'
 import { getProductRouteById } from '../product/routeRegistry'
 import i18n from '../i18n'
@@ -85,68 +84,9 @@ describe('LeftSidebar', () => {
       activeProjectId: null,
     })
 
-    useEngineStore.setState({
-      ...useEngineStore.getState(),
-      currentSessionId: null,
-      getSessions: vi.fn().mockResolvedValue([
-        {
-          id: 'session-1',
-          title: 'Persistierte Analyse',
-          cwd: 'C:/repo',
-          createdAt: 100,
-          updatedAt: 100,
-          messageCount: 2,
-        },
-      ]),
-      loadSessionById: vi.fn().mockResolvedValue({
-        id: 'session-1',
-        title: 'Persistierte Analyse',
-        cwd: 'C:/repo',
-        messages: [
-          {
-            type: 'user',
-            uuid: 'message-1',
-            timestamp: 100,
-            content: [{ type: 'text', text: 'Please check den Build.' }],
-          },
-        ],
-        totalUsage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-        },
-        totalCostUsd: 0,
-        appState: {},
-        createdAt: 100,
-        updatedAt: 200,
-      }),
-    })
   })
 
-  it('loads a persisted session from the sidebar and navigates to cowork', async () => {
-    render(
-      <MemoryRouter>
-        <LeftSidebar />
-      </MemoryRouter>,
-    )
-
-    await waitFor(() => expect(screen.getByText('Persistierte Analyse')).toBeInTheDocument())
-
-    fireEvent.click(screen.getByRole('button', { name: /Persistierte Analyse/i }))
-
-    await waitFor(() => {
-      // Check that the session was loaded and navigation occurred
-      expect(navigateMock).toHaveBeenCalledWith(getProductRouteById('cowork').path)
-      // Verify the engine store's loadSessionById was called
-      const engineState = useEngineStore.getState()
-      expect(engineState.loadSessionById).toHaveBeenCalledWith('session-1')
-    })
-
-    expect(navigateMock).toHaveBeenCalledWith(getProductRouteById('cowork').path)
-  })
-
-  it('uses route registry paths for sidebar navigation actions', () => {
+  it('contains only project and chat navigation actions', () => {
     render(
       <MemoryRouter>
         <LeftSidebar />
@@ -160,9 +100,9 @@ describe('LeftSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: '+ New project' }))
     expect(navigateMock).toHaveBeenLastCalledWith(getProductRouteById('projects').path)
 
-    navigateMock.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: 'Crew Studio' }))
-    expect(navigateMock).toHaveBeenLastCalledWith(getProductRouteById('crew').path)
+    expect(screen.queryByRole('button', { name: 'Crew Studio' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Workspace status')).not.toBeInTheDocument()
+    expect(screen.queryByText('Tasks')).not.toBeInTheDocument()
   })
 
   it('localizes the canonical empty chat title without changing stored data', async () => {

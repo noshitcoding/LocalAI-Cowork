@@ -1,17 +1,19 @@
 // crewHandler.ts
 // Handles crew task messages from the engine store.
 
-import { listen } from '@tauri-apps/api/event'
-import { useWorkTasksStore } from '../../stores/workTasksStore'
+import { useWorkTasksStore, type WorkTask } from '../../stores/workTasksStore'
 import { resolveCrewAgentsWithProfiles, useCrewStore, type CrewPersonalityProfile } from '../../stores/crewStore'
 import { useConfigStore } from '../../stores/configStore'
 import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../../stores/chatStore'
 import { usePersonalityStore } from '../../stores/personalityStore'
-import { safeInvoke } from '../../utils/safeInvoke'
+import { createDurableCrewRun } from '../../runtime/localDaemonExecution'
+import { attachDurableLocalRun } from '../../runtime/localDaemonChat'
 import type { EngineUserInput, ConversationHistorySeed } from '../../stores/engineStore'
 import type { EngineEvent } from '../core/queryEngine'
 import type { ChatProviderSelection } from '../../utils/chatProvider'
 import type { PermissionMode } from '../types/tool'
+import type { AuthorizedTaskPath } from '../../utils/taskProjectContext'
+import i18n from '../../i18n'
 import {
   appendCrewLiveEntry,
   applyCrewDefaultModel,
@@ -23,8 +25,8 @@ import {
   resolveCrewRuntimeConfig,
   resolveExternalProviderConfig,
   type CrewExecutionLog,
-  type CrewExecutionLogEvent,
   type CrewExecutionResponse,
+  type CrewResolvedProviderConfigs,
 } from './workTaskCrewRuntime'
 
 export interface CrewTaskMessageParams {
@@ -33,10 +35,25 @@ export interface CrewTaskMessageParams {
   onEvent?: (event: EngineEvent) => void
   historySeed?: ConversationHistorySeed
   providerSelection?: ChatProviderSelection
-  permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+  permissionConfig?: {
+    mode: PermissionMode
+    allowedDirectories: string[]
+    authorizedPaths?: AuthorizedTaskPath[]
+  }
   crewId: string | null
   threadId: string
   runId: string
+  securityMode: 'windows_native_elevated' | 'host_read_only_broker'
+}
+
+const READ_ONLY_BLOCKED_CREW_TOOL = /(bash|shell|terminal|powershell|cmd|write|edit|delete|remove|rename|move|copy|create.?directory|office|python|save.?skill|desktop)/i
+
+function secureCrewTools(
+  tools: string[],
+  mode: CrewTaskMessageParams['securityMode'],
+): string[] {
+  if (mode === 'windows_native_elevated') return tools
+  return tools.filter((tool) => !READ_ONLY_BLOCKED_CREW_TOOL.test(tool))
 }
 
 function createCrewStreamId(): string {
@@ -62,25 +79,58 @@ function buildCrewRunOutput(response: CrewExecutionResponse, fallbackTaskId: str
   return response.error || 'Crew-Execution abclosed.'
 }
 
+function extractCrewChatPrompt(userInput: EngineUserInput): string {
+  if (typeof userInput === 'string') return userInput.trim()
+  return userInput
+    .filter((block): block is Extract<(typeof userInput)[number], { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text.trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+export function createChatCrewWorkTask(params: Pick<CrewTaskMessageParams, 'userInput' | 'cwd' | 'threadId' | 'crewId' | 'runId'>): WorkTask {
+  const prompt = extractCrewChatPrompt(params.userInput) || 'Complete the user request from this chat.'
+  const title = prompt.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Crew chat request'
+  const now = Date.now()
+  return {
+    id: `chat-${params.runId}`,
+    title,
+    prompt,
+    expectedOutput: 'Return the complete final result to the chat.',
+    workDir: params.cwd,
+    threadId: params.threadId,
+    runner: 'crew',
+    crewId: params.crewId,
+    model: '',
+    scheduleExpr: '',
+    scheduleEnabled: false,
+    status: 'idle',
+    output: null,
+    error: null,
+    lastRunAt: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
 export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Promise<void> {
   const { crewId, threadId } = params
   const workTasksStore = useWorkTasksStore.getState()
   const crewStore = useCrewStore.getState()
 
-  const task = workTasksStore.tasks.find((entry) => entry.threadId === threadId)
-  if (!task) {
-    throw new Error('Task for this chat was not found.')
-  }
+  const persistedTask = workTasksStore.tasks.find((entry) => entry.threadId === threadId) ?? null
+  const task = persistedTask ?? createChatCrewWorkTask(params)
 
-  workTasksStore.updateTask(task.id, {
-    status: 'running',
-    output: '',
-    error: null,
-  })
+  if (persistedTask) {
+    workTasksStore.updateTask(task.id, {
+      status: 'running',
+      output: '',
+      error: null,
+    })
+  }
 
   let crewLiveState: CrewLiveState | null = null
   let crewLiveMessageId: string | null = null
-  let unlistenCrewLogs: (() => void) | null = null
   const streamedCrewLogIds = new Set<string>()
 
   const publishCrewLive = (persist = false) => {
@@ -150,20 +200,22 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
     const ollamaConfig = configState?.ollama || { baseUrl: 'http://localhost:11434', model: 'llama3', timeoutMs: 600000 }
     const enabledAgentIds = new Set(enabledAgents.map((agent) => agent.id))
     const runtimeTasks = buildCrewRuntimeTasks(crew, task, enabledAgentIds)
-    const defaultOpenAICompatibleProfile = configState.llmProfiles.find((profile) => profile.id === configState.defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
-      ?? configState.llmProfiles.find((profile) => profile.provider === 'openai-compatible')
-    const defaultOpenRouterProfile = configState.llmProfiles.find((profile) => profile.id === configState.defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
-      ?? configState.llmProfiles.find((profile) => profile.provider === 'openrouter')
-    let providerConfigs = {
+    const defaultOpenAICompatibleProfile = configState.llmProfiles.find((profile) => profile.id === configState.defaultLlmProfileIds['openai-compatible'] && profile.preset === 'openai')
+      ?? configState.llmProfiles.find((profile) => profile.preset === 'openai')
+    const defaultOpenRouterProfile = configState.llmProfiles.find((profile) => profile.id === configState.defaultLlmProfileIds.openrouter && profile.preset === 'openrouter')
+      ?? configState.llmProfiles.find((profile) => profile.preset === 'openrouter')
+    let providerConfigs: CrewResolvedProviderConfigs = {
       openAICompatible: resolveExternalProviderConfig(
         crew.providerProfiles.openAICompatible,
         defaultOpenAICompatibleProfile,
         defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+        defaultOpenAICompatibleProfile ? configState.llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
       ),
       openRouter: resolveExternalProviderConfig(
         crew.providerProfiles.openRouter,
         defaultOpenRouterProfile,
         defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+        defaultOpenRouterProfile ? configState.llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
       ),
     }
     let config = resolveCrewRuntimeConfig(crew, {
@@ -193,18 +245,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
       crewLive: crewLiveState,
     })
 
-    try {
-      unlistenCrewLogs = await listen<CrewExecutionLogEvent>('crew-execution-log', (event) => {
-        const payload = event.payload
-        if (!payload || payload.streamId !== crewStreamId) return
-        appendCrewLogToMonitor(payload.log)
-      })
-    } catch {
-      // Browser-only tests and fallback environments do not expose the Tauri event bus.
-    }
-
-    const response = await safeInvoke<CrewExecutionResponse>('crew_execute', {
-      request: {
+    const crewRequest = {
         id: crew.id,
         streamId: crewStreamId,
         name: crew.name,
@@ -212,6 +253,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
         executionSubject: crew.executionSubject,
         executionGuidelines: buildWorkTaskCrewGuidelines(crew, task),
         knowledgeFocus: crew.knowledgeFocus,
+        responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
         governanceMode: crew.governanceMode,
         outputMode: crew.outputMode,
         stopOnFailure: crew.stopOnFailure,
@@ -236,7 +278,7 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
           personalityId: agent.personalityId,
           modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
           providerKind: crewDefaultProvider,
-          tools: augmentCrewToolsForTask(agent.tools, task),
+          tools: secureCrewTools(augmentCrewToolsForTask(agent.tools, task), params.securityMode),
           mcpServerNames: agent.mcpServerNames,
           enabled: agent.enabled,
           allowDelegation: agent.allowDelegation,
@@ -245,9 +287,36 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
         })),
         tasks: runtimeTasks,
         cwd: params.cwd || null,
+        ...(params.permissionConfig?.authorizedPaths !== undefined
+          ? { authorizedPaths: params.permissionConfig.authorizedPaths }
+          : {}),
         config,
-      },
+    }
+    const resultMessageId = useChatStore.getState().addMessage(threadId, {
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      streaming: true,
     })
+    const { client, run } = await createDurableCrewRun({
+      clientThreadId: threadId,
+      clientProjectId: params.cwd || `chat:${threadId}`,
+      clientTaskId: persistedTask?.id ?? null,
+      assistantMessageId: resultMessageId,
+      crewLiveMessageId,
+      crewLiveTitle: crewLiveState.title,
+      prompt: task.prompt,
+      workspacePath: params.cwd || null,
+      crewId: crew.id,
+      crewRequest,
+      source: 'chat',
+    })
+    const finalRun = await attachDurableLocalRun(client, run)
+    const response = ((finalRun.result as Record<string, unknown> | null)?.crew_response
+      ?? null) as CrewExecutionResponse | null
+    if (!response) {
+      throw new Error(finalRun.error?.message || `Crew run ended in state ${finalRun.state}`)
+    }
 
     const mappedStatus = response.status === 'completed' ? 'completed' : 'failed'
     for (const log of response.logs) {
@@ -256,28 +325,31 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
     finishCrewLive(mappedStatus === 'completed' ? 'completed' : 'failed')
     const output = buildCrewRunOutput(response, task.id)
 
-    workTasksStore.updateTask(task.id, {
-      status: mappedStatus,
-      output,
-      error: response.error ?? null,
-      lastRunAt: Date.now(),
-    })
+    if (persistedTask) {
+      workTasksStore.updateTask(task.id, {
+        status: mappedStatus,
+        output,
+        error: response.error ?? null,
+        lastRunAt: Date.now(),
+      })
+    }
 
-    useChatStore.getState().addMessage(threadId, {
-      role: 'assistant',
+    useChatStore.getState().updateMessage(threadId, resultMessageId, {
       content: output,
-      timestamp: Date.now(),
-    })
+      streaming: false,
+    }, { persist: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     finishCrewLive('failed')
 
-    workTasksStore.updateTask(task.id, {
-      status: 'failed',
-      error: message,
-      output: message,
-      lastRunAt: Date.now(),
-    })
+    if (persistedTask) {
+      workTasksStore.updateTask(task.id, {
+        status: 'failed',
+        error: message,
+        output: message,
+        lastRunAt: Date.now(),
+      })
+    }
 
     useChatStore.getState().addMessage(threadId, {
       role: 'assistant',
@@ -285,6 +357,6 @@ export async function handleCrewTaskMessage(params: CrewTaskMessageParams): Prom
       timestamp: Date.now(),
     })
   } finally {
-    unlistenCrewLogs?.()
+    // The per-user daemon owns the Crew subprocess and its lifecycle.
   }
 }

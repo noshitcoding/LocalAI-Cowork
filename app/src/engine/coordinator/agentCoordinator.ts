@@ -72,13 +72,13 @@ export class AgentCoordinator {
   ): AsyncGenerator<EngineEvent & { agentId: string }> {
     const agentId = generateUUID()
     const childRunId = generateUUID()
-    const sandboxId = generateUUID()
+    let sandboxId: string
 
     await safeInvokeVoid('engine_run_create', {
       request: {
         id: childRunId,
         parentRunId: this.baseConfig.runId,
-        sessionId: this.baseConfig.sessionId,
+        threadId: this.baseConfig.threadId,
         title: definition.name,
         inputSummary: task.slice(0, 1000),
         status: 'running',
@@ -101,25 +101,14 @@ export class AgentCoordinator {
 
     let sandboxWorkspace: string
     try {
-      const sandbox = await safeInvoke<{ id: string; workspaceRoot: string }>('worker_sandbox_create', {
+      const sandbox = await safeInvoke<{ sandboxId: string; workspaceRoot: string }>('sandbox_run_prepare', {
         request: {
-          id: sandboxId,
           runId: childRunId,
           parentRunId: this.baseConfig.runId,
           sourceCwd: this.baseConfig.cwd,
-          mode: 'workspace_copy',
-          allowFileRead: true,
-          allowFileWrite: true,
-          allowShellExecution: true,
-          allowWebFetch: false,
-          allowWebSearch: false,
-          allowMcp: false,
-          metadataJson: JSON.stringify({
-            agentId,
-            agentName: definition.name,
-          }),
         },
       })
+      sandboxId = sandbox.sandboxId
       sandboxWorkspace = sandbox.workspaceRoot
       void safeInvokeVoid('engine_run_update', {
         request: {
@@ -158,7 +147,7 @@ export class AgentCoordinator {
       maxTurns: definition.maxTurns ?? 10,
       maxBudgetUsd: definition.budget?.totalUsd ?? this.baseConfig.maxBudgetUsd,
       runId: childRunId,
-      sessionId: this.baseConfig.sessionId,
+      threadId: this.baseConfig.threadId,
       sandboxId,
     }
 
@@ -459,7 +448,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Researcher',
     description: 'Specialized in research and analysis.',
     type: 'research',
-    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'SessionSearch'],
+    tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'MemoryRead', 'ChatSearch'],
     maxTurns: 10,
   },
   {
@@ -475,7 +464,7 @@ export const DEFAULT_AGENTS: AgentDefinition[] = [
     name: 'Planner',
     description: 'Specialized in project planning and task decomposition.',
     type: 'planning',
-    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'SessionSearch'],
+    tools: ['Read', 'Glob', 'TaskCreate', 'TaskList', 'MemoryRead', 'MemoryWrite', 'ChatSearch'],
     maxTurns: 5,
   },
 ]

@@ -2,10 +2,18 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ChevronDown } from 'lucide-react'
 import { checkOllamaConnection, listOllamaModels } from '../engine/api/ollamaClient'
-import { useConfigStore, type LlmProfile, type LlmProviderKind } from '../stores/configStore'
+import {
+  useConfigStore,
+  type ApiProfilePreset,
+  type DefaultLlmProfileIds,
+  type LlmProfile,
+} from '../stores/configStore'
 import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
+import { resolveProviderModelFromCatalog } from '../utils/providerModels'
+import { getModelGuidance } from '../utils/modelGuidance'
 import { tr } from '../i18n'
 import SecureCredentialInput from './SecureCredentialInput'
+import CodexAccountsPanel from './CodexAccountsPanel'
 
 type ExternalProviderHealthCheckResult = {
   reachable: boolean
@@ -35,30 +43,36 @@ type ProfileModelsState = {
   message?: string
 }
 
-const PROVIDER_ORDER: LlmProviderKind[] = ['ollama', 'openai-compatible', 'openrouter']
+const PROVIDER_ORDER: ApiProfilePreset[] = ['ollama', 'openai', 'openrouter', 'custom']
 
-function isLlmProviderKind(value: string | null): value is LlmProviderKind {
-  return PROVIDER_ORDER.some((provider) => provider === value)
+function parseRequestedPreset(value: string | null): ApiProfilePreset | null {
+  if (value === 'openai-compatible') return 'openai'
+  return PROVIDER_ORDER.find((preset) => preset === value) ?? null
 }
 
-const PROVIDER_LABELS: Record<LlmProviderKind, string> = {
+const PROVIDER_LABELS: Record<ApiProfilePreset, string> = {
   ollama: 'Ollama',
-  'openai-compatible': 'OpenAI-compatible',
+  openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  custom: 'Custom API',
 }
 
-const PROVIDER_PLACEHOLDERS: Record<LlmProviderKind, { baseUrl: string; model: string }> = {
+const PROVIDER_PLACEHOLDERS: Record<ApiProfilePreset, { baseUrl: string; model: string }> = {
   ollama: {
-    baseUrl: 'http://localhost:11434',
+    baseUrl: 'http://localhost:11434/v1',
     model: 'llama3.1:8b',
   },
-  'openai-compatible': {
+  openai: {
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4.1-mini',
   },
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
     model: 'openai/gpt-4o-mini',
+  },
+  custom: {
+    baseUrl: 'http://localhost:8000/v1',
+    model: 'model-name',
   },
 }
 
@@ -67,31 +81,27 @@ function parseNumericInput(raw: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function supportsApiKey(provider: LlmProviderKind): boolean {
-  return provider !== 'ollama'
+function supportsApiKey(preset: ApiProfilePreset | undefined): boolean {
+  return preset !== 'ollama'
 }
 
-function modelSuffix(model: string): string {
-  return model.trim().split('/').filter(Boolean).at(-1) ?? model.trim()
+function getDefaultProfileId(defaultIds: DefaultLlmProfileIds, preset: ApiProfilePreset): string {
+  if (preset === 'ollama') return defaultIds.ollama
+  if (preset === 'openrouter') return defaultIds.openrouter
+  if (preset === 'openai') return defaultIds['openai-compatible']
+  return defaultIds.api ?? defaultIds.ollama
+}
+
+function getRoutingProvider(profile: LlmProfile): 'openai-compatible' | 'openrouter' {
+  return profile.preset === 'openrouter' ? 'openrouter' : 'openai-compatible'
+}
+
+function getOllamaBaseUrl(profile: LlmProfile): string {
+  return profile.baseUrl.replace(/\/v1\/?$/i, '')
 }
 
 function resolveLoadedModel(currentModel: string, models: string[]): string {
-  const current = currentModel.trim()
-  const normalizedModels = models.map((model) => model.trim()).filter(Boolean)
-  if (normalizedModels.length === 0) return current
-  if (!current) return normalizedModels.length === 1 ? normalizedModels[0] : ''
-
-  const exact = normalizedModels.find((model) => model === current)
-  if (exact) return exact
-
-  const lowerCurrent = current.toLowerCase()
-  const caseInsensitive = normalizedModels.find((model) => model.toLowerCase() === lowerCurrent)
-  if (caseInsensitive) return caseInsensitive
-
-  const suffixMatch = normalizedModels.find((model) => modelSuffix(model).toLowerCase() === lowerCurrent)
-  if (suffixMatch) return suffixMatch
-
-  return normalizedModels.length === 1 ? normalizedModels[0] : current
+  return resolveProviderModelFromCatalog(currentModel, models)
 }
 
 export default function LlmProfilesPanel() {
@@ -109,8 +119,8 @@ export default function LlmProfilesPanel() {
 
   const [searchParams] = useSearchParams()
   const requestedProviderParam = searchParams.get('provider')
-  const requestedProvider = isLlmProviderKind(requestedProviderParam) ? requestedProviderParam : null
-  const appliedRequestedProvider = useRef<LlmProviderKind | null>(null)
+  const requestedProvider = parseRequestedPreset(requestedProviderParam)
+  const appliedRequestedProvider = useRef<ApiProfilePreset | null>(null)
 
   const [healthChecks, setHealthChecks] = useState<Record<string, ProfileHealthState>>({})
   const [modelStates, setModelStates] = useState<Record<string, ProfileModelsState>>({})
@@ -118,14 +128,14 @@ export default function LlmProfilesPanel() {
   const profilesByProvider = useMemo(
     () => PROVIDER_ORDER.map((provider) => ({
       provider,
-      profiles: llmProfiles.filter((profile) => profile.provider === provider),
-    })),
+      profiles: llmProfiles.filter((profile) => profile.preset === provider),
+    })).filter(({ profiles }) => profiles.length > 0),
     [llmProfiles],
   )
-  const [expandedProvider, setExpandedProvider] = useState<LlmProviderKind | null>(() => {
+  const [expandedProvider, setExpandedProvider] = useState<ApiProfilePreset | null>(() => {
     if (requestedProvider) return requestedProvider
     const openRouterProfile = llmProfiles.find((profile) => (
-      profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter'
+      profile.id === defaultLlmProfileIds.openrouter && profile.preset === 'openrouter'
     ))
     return openRouterProfile?.model.trim() ? 'openrouter' : 'ollama'
   })
@@ -146,7 +156,7 @@ export default function LlmProfilesPanel() {
     return () => window.cancelAnimationFrame(frame)
   }, [requestedProvider])
 
-  const openProvider = (provider: LlmProviderKind) => {
+  const openProvider = (provider: ApiProfilePreset) => {
     setExpandedProvider(provider)
     window.requestAnimationFrame(() => {
       const section = document.getElementById(`llm-provider-${provider}`)
@@ -164,11 +174,11 @@ export default function LlmProfilesPanel() {
     if (health?.reachable === true) return { label: tr('Connected'), tone: 'success' }
     if (health?.reachable === false) return { label: tr('Action needed'), tone: 'warning' }
     if (!profile.baseUrl.trim() || !profile.model.trim()) return { label: tr('Setup needed'), tone: 'warning' }
-    if (supportsApiKey(profile.provider) && !profile.apiKey.trim()) return { label: tr('API key needed'), tone: 'warning' }
+    if (supportsApiKey(profile.preset) && !profile.hasApiKey) return { label: tr('Access key needed'), tone: 'warning' }
     return { label: tr('Configured'), tone: 'neutral' }
   }
 
-  const handleAddProfile = (provider: LlmProviderKind) => {
+  const handleAddProfile = (provider: ApiProfilePreset) => {
     addLlmProfile(provider)
   }
 
@@ -183,8 +193,8 @@ export default function LlmProfilesPanel() {
 
     try {
       const [reachable, models] = await Promise.all([
-        checkOllamaConnection(profile.baseUrl),
-        listOllamaModels(profile.baseUrl).catch(() => []),
+        checkOllamaConnection(getOllamaBaseUrl(profile)),
+        listOllamaModels(getOllamaBaseUrl(profile)).catch(() => []),
       ])
       const modelNames = models.map((model) => model.name)
       setLlmProfileModels(profile.id, modelNames)
@@ -245,9 +255,10 @@ export default function LlmProfilesPanel() {
     try {
       const result = await safeInvoke<ExternalProviderHealthCheckResult>('crew_provider_health_check', {
         request: {
-          providerKind: profile.provider,
+          providerKind: getRoutingProvider(profile),
+          profileId: profile.id,
           baseUrl: profile.baseUrl,
-          apiKey: profile.apiKey,
+          apiKey: '',
           model: profile.model,
           verifyTlsCertificates: profile.verifyTlsCertificates,
         },
@@ -276,7 +287,7 @@ export default function LlmProfilesPanel() {
   }
 
   const handleHealthCheck = async (profile: LlmProfile) => {
-    if (profile.provider === 'ollama') {
+    if (profile.preset === 'ollama') {
       await handleOllamaHealthCheck(profile)
       return
     }
@@ -295,7 +306,7 @@ export default function LlmProfilesPanel() {
     }))
 
     try {
-      const models = await listOllamaModels(profile.baseUrl)
+      const models = await listOllamaModels(getOllamaBaseUrl(profile))
       const modelNames = models.map((model) => model.name)
       setLlmProfileModels(profile.id, modelNames)
       setModelStates((current) => ({
@@ -346,9 +357,10 @@ export default function LlmProfilesPanel() {
     try {
       const result = await safeInvoke<ExternalProviderModelsResult>('crew_provider_models_list', {
         request: {
-          providerKind: profile.provider,
+          providerKind: getRoutingProvider(profile),
+          profileId: profile.id,
           baseUrl: profile.baseUrl,
-          apiKey: profile.apiKey,
+          apiKey: '',
           model: profile.model,
           verifyTlsCertificates: profile.verifyTlsCertificates,
         },
@@ -389,7 +401,7 @@ export default function LlmProfilesPanel() {
   }
 
   const handleLoadModels = async (profile: LlmProfile) => {
-    if (profile.provider === 'ollama') {
+    if (profile.preset === 'ollama') {
       await handleOllamaModelsLoad(profile)
       return
     }
@@ -398,20 +410,37 @@ export default function LlmProfilesPanel() {
   }
 
   return (
+    <>
+    <CodexAccountsPanel />
     <div className="panel llm-profiles-panel">
       <div className="panel-heading-row">
-        <h2>{tr("LLM profiles")}</h2>
+        <h2>{tr('OpenAI-compatible API')}</h2>
         <div className="actions llm-profile-add-actions">
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('ollama')}>{tr("+ Ollama")}</button>
-          <button type="button" className="btn-sm" onClick={() => handleAddProfile('openai-compatible')}>{tr("+ OpenAI-compatible")}</button>
+          <button type="button" className="btn-sm" onClick={() => handleAddProfile('openai')}>{tr("+ OpenAI")}</button>
           <button type="button" className="btn-sm" onClick={() => handleAddProfile('openrouter')}>{tr("+ OpenRouter")}</button>
+          <button type="button" className="btn-sm" onClick={() => handleAddProfile('custom')}>{tr("+ Custom API")}</button>
         </div>
       </div>
-      <p className="hint-text">{tr("Maintain multiple endpoints in parallel and set one global default profile per provider for dropdowns and fallbacks.")}</p>
+      <p className="hint-text">{tr('All API connections use the same adapter. Ollama, OpenRouter, and OpenAI are editable presets with suitable defaults.')}</p>
+      <div className="llm-provider-default-row">
+        <label htmlFor="global-api-profile">
+          <span>{tr('Global default API profile')}</span>
+          <select
+            id="global-api-profile"
+            value={defaultLlmProfileIds.api ?? llmProfiles[0]?.id ?? ''}
+            onChange={(event) => setDefaultLlmProfile('openai-compatible', event.target.value)}
+          >
+            {llmProfiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>{profile.name} · {PROVIDER_LABELS[profile.preset ?? 'custom']}</option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       <div className="llm-provider-overview" role="group" aria-label={tr('Provider overview')}>
         {profilesByProvider.map(({ provider, profiles }) => {
-          const defaultProfile = profiles.find((profile) => profile.id === defaultLlmProfileIds[provider]) ?? profiles[0]
+          const defaultProfile = profiles.find((profile) => profile.id === getDefaultProfileId(defaultLlmProfileIds, provider)) ?? profiles[0]
           const status = getProfileStatus(defaultProfile)
           const isFreeModel = provider === 'openrouter' && defaultProfile?.model.trim().endsWith(':free')
 
@@ -462,33 +491,17 @@ export default function LlmProfilesPanel() {
 
             {expandedProvider === provider ? (
               <div id={`llm-provider-content-${provider}`} className="llm-provider-section-content">
-                <div className="llm-provider-default-row">
-                  <label htmlFor={`llm-provider-default-${provider}`}>
-                    <span>{tr("Global default profile for this provider")}</span>
-                    <select
-                      id={`llm-provider-default-${provider}`}
-                      aria-label={`${PROVIDER_LABELS[provider]} ${tr('Global default profile for this provider')}`}
-                      value={defaultLlmProfileIds[provider]}
-                      onChange={(event) => setDefaultLlmProfile(provider, event.target.value)}
-                      disabled={profiles.length === 0}
-                    >
-                      {profiles.map((profile) => (
-                        <option key={profile.id} value={profile.id}>{profile.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
                 {profiles.length === 0 ? (
                   <p className="panel-empty">{tr("No profile for")}{PROVIDER_LABELS[provider]}{tr("angelegt.")}</p>
                 ) : (
                   <div className="llm-profile-list">
                 {profiles.map((profile) => {
-                  const isDefault = defaultLlmProfileIds[provider] === profile.id
+                  const isDefault = defaultLlmProfileIds.api === profile.id
                   const health = healthChecks[profile.id]
                   const models = llmProfileModels[profile.id] ?? []
                   const modelState = modelStates[profile.id]
                   const canDelete = !isDefault && profiles.length > 1
+                  const guidance = getModelGuidance(profile.model)
 
                   return (
                     <div
@@ -518,37 +531,43 @@ export default function LlmProfilesPanel() {
                         <label>{tr("Endpoint")}<input
                             value={profile.baseUrl}
                             onChange={(event) => updateLlmProfile(profile.id, { baseUrl: event.target.value })}
-                            placeholder={PROVIDER_PLACEHOLDERS[profile.provider].baseUrl}
+                            placeholder={PROVIDER_PLACEHOLDERS[profile.preset ?? provider].baseUrl}
                             style={{ fontFamily: 'monospace' }}
                           />
                         </label>
                         <label>{tr("Model")}{models.length > 0 ? (
                             <select value={profile.model} onChange={(event) => updateLlmProfile(profile.id, { model: event.target.value })}>
-                              {models.map((model) => <option key={model} value={model}>{model}</option>)}
-                              {!models.includes(profile.model) && profile.model && <option value={profile.model}>{profile.model}</option>}
+                              {models.map((model) => (
+                                <option key={model} value={model}>
+                                  {model} — {tr(getModelGuidance(model).title)}
+                                </option>
+                              ))}
+                              {!models.includes(profile.model) && profile.model && (
+                                <option value={profile.model}>{profile.model} — {tr(guidance.title)}</option>
+                              )}
                             </select>
                           ) : (
                             <input
                               value={profile.model}
                               onChange={(event) => updateLlmProfile(profile.id, { model: event.target.value })}
-                              placeholder={PROVIDER_PLACEHOLDERS[profile.provider].model}
+                              placeholder={PROVIDER_PLACEHOLDERS[profile.preset ?? provider].model}
                               style={{ fontFamily: 'monospace' }}
                             />
                           )}
                         </label>
-                        {supportsApiKey(profile.provider) && (
-                          <label className="llm-profile-api-key-field">{tr("API Key")}<SecureCredentialInput
-                              value={profile.apiKey}
+                        {supportsApiKey(profile.preset) && (
+                          <label className="llm-profile-api-key-field">{tr("Access key for the application programming interface")}<SecureCredentialInput
+                              value={profile.hasApiKey ? '••••••••••••' : ''}
                               onCommit={(value) => setLlmProfileApiKey(profile.id, value)}
                               placeholder={tr("sk?...")}
                               style={{ fontFamily: 'monospace' }}
-                              ariaLabel={`${PROVIDER_LABELS[profile.provider]} ${tr('API Key')}`}
+                              ariaLabel={`${PROVIDER_LABELS[profile.preset ?? provider]} ${tr('Access key for the application programming interface')}`}
                             />
                           </label>
                         )}
-                        {supportsApiKey(profile.provider) && (
+                        {supportsApiKey(profile.preset) && (
                           <label className="toggle-row" style={{ alignSelf: 'end' }}>
-                            <span>{tr("Check SSL verification / TLS certificates")}<span className="hint-text">{tr("Turn off for HTTPS with self-signed certificates.")}</span>
+                            <span>{tr("Check Secure Sockets Layer and Transport Layer Security certificates")}<span className="hint-text">{tr("Turn off for secure web connections with self-signed certificates.")}</span>
                             </span>
                             <button
                               type="button"
@@ -561,7 +580,7 @@ export default function LlmProfilesPanel() {
                             </button>
                           </label>
                         )}
-                        <label>{tr("Timeout (ms)")}<input
+                        <label>{tr("Timeout in milliseconds")}<input
                             type="number"
                             min={1000}
                             max={86400000}
@@ -570,18 +589,16 @@ export default function LlmProfilesPanel() {
                             onChange={(event) => updateLlmProfile(profile.id, { timeoutMs: parseNumericInput(event.target.value, profile.timeoutMs) })}
                           />
                         </label>
-                        {profile.provider === 'ollama' && (
-                          <label>{tr("Context Window")}<input
+                        <label>{tr("Context window in tokens")}<input
                               type="number"
                               min={512}
-                              max={262144}
+                              max={2000000}
                               step={512}
                               value={profile.contextWindow ?? 128000}
                               onChange={(event) => updateLlmProfile(profile.id, { contextWindow: parseNumericInput(event.target.value, profile.contextWindow ?? 128000) })}
                             />
                           </label>
-                        )}
-                        {profile.provider === 'ollama' && (
+                        {profile.preset === 'ollama' && (
                           <label>{tr("Temperature")}<input
                               type="number"
                               min={0}
@@ -593,6 +610,36 @@ export default function LlmProfilesPanel() {
                           </label>
                         )}
                       </div>
+
+                      <section className="model-guidance" aria-label={tr('Model task guidance')}>
+                        <div className="model-guidance-heading">
+                          <div>
+                            <span>{tr('Best model type for this task')}</span>
+                            <strong>{tr(guidance.title)}</strong>
+                          </div>
+                          <p>{tr(guidance.summary)}</p>
+                        </div>
+                        <dl>
+                          <div>
+                            <dt>{tr('Recommended for')}</dt>
+                            <dd>{tr(guidance.recommendedFor)}</dd>
+                          </div>
+                          <div>
+                            <dt>{tr('Important tradeoff')}</dt>
+                            <dd>{tr(guidance.tradeoff)}</dd>
+                          </div>
+                        </dl>
+                        <details>
+                          <summary>{tr('Explain the technical model name')}</summary>
+                          <ul>
+                            {guidance.nameExplanations.map((explanation) => (
+                              <li key={`${explanation.text}-${JSON.stringify(explanation.values)}`}>
+                                {tr(explanation.text, explanation.values)}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </section>
 
                       <div className="actions llm-profile-actions">
                         <button
@@ -642,6 +689,7 @@ export default function LlmProfilesPanel() {
           </section>
         ))}
       </div>
-    </div>
+      </div>
+    </>
   )
 }

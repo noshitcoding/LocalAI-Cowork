@@ -60,6 +60,7 @@ describe('crew mission handoff', () => {
       }],
       ollamaModel: 'llama3.1:8b',
       defaultLlmProfileIds: {
+        api: 'openrouter-free',
         ollama: 'default-ollama',
         'openai-compatible': 'default-openai-compatible',
         openrouter: 'openrouter-free',
@@ -68,6 +69,8 @@ describe('crew mission handoff', () => {
         id: 'openrouter-free',
         name: 'OpenRouter Free',
         provider: 'openrouter',
+        preset: 'openrouter',
+        authMode: 'bearer',
         baseUrl: 'https://openrouter.ai/api/v1',
         model: freeModel,
         apiKey: '',
@@ -76,9 +79,9 @@ describe('crew mission handoff', () => {
         contextWindow: null,
         temperature: null,
       }],
-      fallbackProviderSettings: { provider: 'ollama', model: 'llama3.1:8b' },
+      fallbackProviderSettings: { backend: 'openai-compatible', profileId: 'default-ollama', model: 'llama3.1:8b' },
     })).toEqual({
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: freeModel,
       profileId: 'openrouter-free',
     })

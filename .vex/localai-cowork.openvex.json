@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/noshitcoding/LocalAI-Cowork/blob/main/.vex/localai-cowork.openvex.json",
   "author": "LocalAI Cowork maintainers",
-  "timestamp": "2026-07-16T00:00:00Z",
-  "version": 1,
+  "timestamp": "2026-08-13T18:18:24Z",
+  "version": 10,
   "statements": [
     {
       "vulnerability": {
@@ -11,7 +11,15 @@
       },
       "products": [
         {
-          "@id": "pkg:cargo/app@0.1.8",
+          "@id": "pkg:cargo/app@0.3.4",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/glib@0.18.5"
+            }
+          ]
+        },
+        {
+          "@id": "pkg:cargo/open-cowork-android@0.3.3",
           "subcomponents": [
             {
               "@id": "pkg:cargo/glib@0.18.5"
@@ -21,7 +29,77 @@
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
-      "impact_statement": "LocalAI Cowork maintains and publishes Windows 10 and Windows 11 builds. glib 0.18.5 is pulled only through Tauri's Linux GTK dependency graph and is not compiled into or executed by the supported Windows application. Reassess this statement before adding Linux as a maintained release target."
+      "impact_statement": "glib 0.18.5 enters Linux builds only through Tauri's GTK/WebKit dependency graph. A source audit of the application and its complete resolved Cargo graph found no reference to glib::VariantStrIter or Variant::array_iter_str outside glib's own type and method definitions, so the unsound iterator cannot be instantiated on an executable Open Cowork path. Windows builds do not compile this dependency. Reassess this statement whenever the Tauri/GTK graph or application glib usage changes, and remove it once the upstream stack supports glib 0.20 or newer."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53666"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The advisory applies only to React Router Framework or Data Mode applications performing manual SSR and hydration. LocalAI Cowork is a client-only Tauri application using BrowserRouter, Routes, and Route in Declarative Mode; it has no React Router loaders, actions, server rendering, hydration pipeline, or deserializeErrors execution path."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53668"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router-dom@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The advisory requires an application-level open redirect. LocalAI Cowork exposes no untrusted redirect destination: every Link, Navigate, and useNavigate target is a fixed internal route or is constructed from a fixed leading-slash route with dynamic values encoded only into query parameters."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-53669"
+      },
+      "products": [
+        {
+          "@id": "pkg:npm/react-router@6.30.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The advisory requires attacker-supplied paths to reach React Router navigation APIs. LocalAI Cowork passes only fixed internal route constants or leading-slash routes with encodeURIComponent-protected query values to Link, Navigate, and useNavigate, so an adversary cannot supply a protocol-relative or backslash navigation target."
+    },
+    {
+      "vulnerability": {
+        "name": "PYSEC-2026-311"
+      },
+      "products": [
+        {
+          "@id": "pkg:pypi/chromadb@1.1.1"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The advisory requires ChromaDB's FastAPI collection-creation endpoint or a remote Chroma client loading attacker-controlled collection embedding configuration. LocalAI Cowork neither starts a ChromaDB HTTP server nor configures a remote Chroma endpoint, and its CrewAI runtime does not enable Crew memory, knowledge sources, knowledge, or an embedder. ChromaDB is therefore not initialized on an executable path. Reassess this statement before enabling any Chroma server, remote Chroma client, or CrewAI memory/knowledge feature."
+    },
+    {
+      "vulnerability": {
+        "name": "RUSTSEC-2023-0071"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/cowork-server@0.3.4",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/rsa@0.9.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The Marvin advisory concerns RSA private-key operations. The server no longer performs FCM service-account signing through the RustCrypto rsa graph; it signs RS256 assertions with OpenSSL. The remaining rsa dependency is transitive through openidconnect, where Open Cowork only verifies provider signatures, and web-push-native, where Open Cowork explicitly constructs an ES256 VAPID key. No maintained path imports or invokes an rsa private key. Reassess this statement whenever OIDC client authentication, WebPush algorithms, or the affected dependency graph changes, and remove the exception as soon as upstream publishes a fixed release."
     }
   ]
 }

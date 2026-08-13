@@ -7,6 +7,16 @@ import { useChatStore } from './stores/chatStore'
 import { useConfigStore } from './stores/configStore'
 import { useUiStore } from './stores/uiStore'
 
+async function openMainMenu() {
+  fireEvent.click(screen.getByRole('button', { name: /Open main menu|Hauptmenü öffnen/ }))
+  return screen.findByRole('dialog', undefined, { timeout: 5_000 })
+}
+
+async function clickMenuRoute(label: string) {
+  const menu = await openMainMenu()
+  fireEvent.click(within(menu).getByRole('button', { name: new RegExp(`^${label}`) }))
+}
+
 describe('App', () => {
   beforeEach(async () => {
     await i18n.changeLanguage('en')
@@ -36,7 +46,10 @@ describe('App', () => {
 
     useUiStore.setState({
       leftSidebarOpen: true,
-      leftSidebarWidth: 320,
+      leftSidebarWidth: 260,
+      appMenuOpen: false,
+      appMenuSearchFocused: false,
+      contextDrawerOpen: false,
       commandPaletteOpen: false,
       shortcutsOverlayOpen: false,
     })
@@ -50,66 +63,111 @@ describe('App', () => {
     }))
   })
 
-  it('starts directly in an empty chat', async () => {
+  it('starts directly in a reduced empty chat', async () => {
     render(<App />)
+
     expect(await screen.findByPlaceholderText('Next instruction...', undefined, { timeout: 10_000 })).toBeInTheDocument()
+    expect(screen.getByText(/Getting started is available in the main menu/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '+ New chat' })).toBeInTheDocument()
+    expect(screen.queryByText('Plan your work')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Run context')).not.toBeInTheDocument()
   })
 
-  it('keeps the German Cowork entry point consistently localized', async () => {
+  it('keeps attachments visible behind the plus and expands chat settings on demand', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...', undefined, { timeout: 10_000 })
+
+    const settingsToggle = screen.getByRole('button', { name: 'Chat settings' })
+    const attachmentToggle = screen.getByRole('button', { name: 'Add files or folders' })
+    expect(settingsToggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('region', { name: 'Chat settings' })).not.toBeInTheDocument()
+
+    fireEvent.click(attachmentToggle)
+    const attachmentMenu = screen.getByRole('menu', { name: 'Add files or folders' })
+    expect(within(attachmentMenu).getByRole('menuitem', { name: 'Files' })).toBeInTheDocument()
+    expect(within(attachmentMenu).getByRole('menuitem', { name: 'Folder' })).toBeInTheDocument()
+
+    fireEvent.click(settingsToggle)
+    expect(screen.queryByRole('menu', { name: 'Add files or folders' })).not.toBeInTheDocument()
+    const settingsPanel = screen.getByRole('region', { name: 'Chat settings' })
+    expect(within(settingsPanel).getByRole('group', { name: 'Runner' })).toBeInTheDocument()
+    expect(within(settingsPanel).getByLabelText('Access for new files and folders')).toBeInTheDocument()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Chat settings' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the German navigation entry point localized', async () => {
     await i18n.changeLanguage('de')
-    render(<App />)
-
-    expect(await screen.findByRole('button', { name: 'Projekte verwalten' }, { timeout: 10_000 })).toBeInTheDocument()
-    expect(screen.getByText('Keine Projekte')).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'Erstelle einen klaren Plan mit 5 Schritten für die aktuelle Aufgabe.' }, { timeout: 10_000 })).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'Analysiere die letzten Änderungen und nenne Risiken.' }, { timeout: 10_000 })).toBeInTheDocument()
-    expect(await screen.findByRole('button', { name: 'Formuliere die nächsten konkreten To-dos mit Priorität.' }, { timeout: 10_000 })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('link', { name: 'Aufgaben' }))
-    expect(await screen.findByRole('heading', { name: 'Aufgaben' })).toBeInTheDocument()
-  })
-
-  it('shows top navigation links', async () => {
-    render(<App />)
-    for (const route of PRODUCT_ROUTES) {
-      const link = await screen.findByRole('link', { name: i18n.t(route.navLabelKey) })
-      expect(link).toHaveAttribute('href', route.path)
-      expect(link).toHaveAttribute('data-doc-id', route.navButtonDocId)
-    }
-  })
-
-  it('loads direct feature URLs', async () => {
-    window.history.pushState({}, '', '/features')
-    render(<App />)
-    expect(await screen.findByRole('heading', { name: 'Tools and knowledge' })).toBeInTheDocument()
-  })
-
-  it('loads the tasks page without crashing', async () => {
-    render(<App />)
-    fireEvent.click(await screen.findByRole('link', { name: 'Tasks' }, { timeout: 10_000 }))
-    expect(await screen.findByRole('heading', { name: 'Tasks' }, { timeout: 10_000 })).toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'New task' }, { timeout: 10_000 })).toBeInTheDocument()
-  })
-
-  it('uses a focused settings layout and restores the workspace sidebar on return', async () => {
     window.history.pushState({}, '', '/settings')
     render(<App />)
 
-    expect(await screen.findByRole('heading', { name: 'AI & model' })).toBeInTheDocument()
-    expect(screen.queryByRole('complementary', { name: 'Workspace sidebar' })).not.toBeInTheDocument()
-    expect(useUiStore.getState().leftSidebarOpen).toBe(true)
+    expect(await screen.findByLabelText('KI & Modell', { selector: '.settings-view' }, { timeout: 10_000 })).toBeInTheDocument()
+    const menu = await openMainMenu()
+    fireEvent.click(within(menu).getByRole('button', { name: /^Aufgaben/ }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to Cowork' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/tasks'))
+    expect(await screen.findByRole('heading', { name: 'Neue Aufgabe' }, { timeout: 5000 })).toBeInTheDocument()
+  }, 15_000)
 
-    await waitFor(() => expect(window.location.pathname).toBe('/'))
-    expect(await screen.findByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
-    expect(useUiStore.getState().leftSidebarOpen).toBe(true)
+  it('removes permanent top navigation and exposes every route in the burger menu', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...')
+
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    const menu = await openMainMenu()
+    for (const route of PRODUCT_ROUTES) {
+      const button = within(menu).getByRole('button', { name: new RegExp(`^${i18n.t(route.navLabelKey)}`) })
+      expect(button).toHaveAttribute('data-doc-id', route.navButtonDocId)
+      expect(within(button).getByText(route.shortcut)).toBeInTheDocument()
+    }
   })
 
-  it('maps number shortcuts to the top navigation order', async () => {
+  it('loads direct subsection URLs and uses the leaf title', async () => {
+    window.history.pushState({}, '', '/features?tab=commands')
     render(<App />)
-    await screen.findByRole('link', { name: 'Cowork' })
+
+    expect(await screen.findByRole('heading', { name: 'Slash commands' })).toHaveClass('shell-title')
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+  })
+
+  it('loads the developer browser and GitHub URLs', async () => {
+    window.history.pushState({}, '', '/browser')
+    const { unmount } = render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Browser' })).toHaveClass('shell-title')
+    expect(await screen.findByRole('tab', { name: 'CDP' })).toBeInTheDocument()
+
+    unmount()
+    window.history.pushState({}, '', '/github')
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'GitHub' })).toHaveClass('shell-title')
+    expect(await screen.findByRole('button', { name: 'Choose repository' })).toBeInTheDocument()
+  })
+
+  it('navigates between main and subsection routes through the burger menu', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...')
+
+    await clickMenuRoute('Tasks')
+    await waitFor(() => expect(window.location.pathname).toBe('/tasks'))
+    expect(await screen.findByRole('heading', { name: 'New task' })).toBeInTheDocument()
+
+    await clickMenuRoute('Settings')
+    await waitFor(() => expect(window.location.pathname).toBe('/settings'))
+    expect(await screen.findByText('AI & model', { selector: '.shell-title' }, { timeout: 5_000 })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
+
+    const menu = await openMainMenu()
+    const settingsSections = within(menu).getByLabelText('Settings Sections')
+    expect(within(settingsSections).getAllByRole('button')).toHaveLength(10)
+    fireEvent.click(within(settingsSections).getByRole('button', { name: /^AI Sandbox/ }))
+    await waitFor(() => expect(window.location.search).toBe('?section=sandbox'))
+    expect(await screen.findByText('AI Sandbox', { selector: '.shell-title' })).toBeInTheDocument()
+  })
+
+  it('keeps number shortcuts mapped to the registered route order', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...')
 
     for (const route of PRODUCT_ROUTES.slice(1)) {
       fireEvent.keyDown(window, { key: route.shortcutKey, ctrlKey: true })
@@ -117,46 +175,65 @@ describe('App', () => {
     }
   })
 
-  it('uses route registry labels in shortcuts and command palette navigation', async () => {
+  it('opens the burger search with Ctrl+K and keeps shortcut help inside it', async () => {
     render(<App />)
-    await screen.findByRole('link', { name: 'Cowork' })
-
-    fireEvent.keyDown(window, { key: '?', ctrlKey: true, shiftKey: true })
-    const shortcutDialog = await screen.findByRole('dialog', { name: 'Shortcuts' })
-    expect(shortcutDialog).toHaveAttribute('data-doc-id', 'element:/app/shortcut-overlay')
-    for (const route of PRODUCT_ROUTES) {
-      expect(within(shortcutDialog).getByText(i18n.t(route.shortcutLabelKey))).toBeInTheDocument()
-      expect(within(shortcutDialog).getByText(route.shortcut)).toBeInTheDocument()
-    }
-    fireEvent.click(within(shortcutDialog).getByRole('button', { name: 'Esc' }))
+    await screen.findByPlaceholderText('Next instruction...')
 
     fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
-    const input = await screen.findByPlaceholderText('Search command or / for commands...')
-    for (const route of PRODUCT_ROUTES) {
-      fireEvent.change(input, { target: { value: route.commandLabel } })
-      await waitFor(() => {
-        expect(screen.getAllByText(route.commandLabel).length).toBeGreaterThan(0)
-      })
-    }
+    const menu = await screen.findByRole('dialog', { name: 'Main menu' })
+    const input = within(menu).getByRole('searchbox', { name: 'Search areas and commands' })
+    await waitFor(() => expect(input).toHaveFocus())
+
+    fireEvent.change(input, { target: { value: 'GitHub' } })
+    expect(within(menu).getAllByRole('button', { name: /GitHub/ }).length).toBeGreaterThan(0)
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
+
+    fireEvent.keyDown(window, { key: '?', ctrlKey: true, shiftKey: true })
+    const shortcutMenu = await screen.findByRole('dialog', { name: 'Main menu' })
+    expect(within(shortcutMenu).getByText('Ctrl Shift B')).toBeInTheDocument()
   })
 
-  it('resizes the left sidebar from the separator', async () => {
+  it('keeps shell drawers mutually exclusive and closes them with Escape and backdrop', async () => {
+    render(<App />)
+    await screen.findByPlaceholderText('Next instruction...')
+
+    let menu = await openMainMenu()
+    fireEvent.click(within(menu).getByRole('button', { name: /Context & status/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Run context')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open main menu' }))
+    menu = await screen.findByRole('dialog', { name: 'Main menu' })
+    expect(screen.queryByLabelText('Run context')).not.toBeInTheDocument()
+
+    fireEvent.keyDown(menu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Main menu' })).not.toBeInTheDocument())
+
+    menu = await openMainMenu()
+    const backdrop = screen.getAllByRole('button', { name: 'Close menu' })
+      .find((button) => button.classList.contains('app-drawer-backdrop'))
+    expect(backdrop).toBeDefined()
+    fireEvent.click(backdrop!)
+    await waitFor(() => expect(menu).not.toBeInTheDocument())
+  })
+
+  it('resizes the project and chat sidebar within the new limits', async () => {
     render(<App />)
 
     const separator = await screen.findByRole('separator', { name: 'Resize sidebar' })
-    fireEvent.pointerDown(separator, { pointerId: 7, button: 0, clientX: 320 })
-
+    fireEvent.pointerDown(separator, { pointerId: 7, button: 0, clientX: 260 })
     await waitFor(() => expect(document.body).toHaveClass('sidebar-resize-active'))
-
     fireEvent.pointerMove(window, { pointerId: 7, clientX: 430 })
     fireEvent.pointerUp(window, { pointerId: 7, clientX: 430 })
 
-    expect(useUiStore.getState().leftSidebarWidth).toBe(430)
+    expect(useUiStore.getState().leftSidebarWidth).toBe(360)
   })
 
-  it('uses an accessible drawer instead of a clipped sidebar on compact desktop windows', async () => {
+  it('opens the project and chat sidebar from the burger menu below 900 px', async () => {
     vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
-      matches: query === '(max-width: 900px)',
+      matches: query === '(max-width: 899px)',
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -167,14 +244,12 @@ describe('App', () => {
     }))
 
     render(<App />)
-
-    const toggle = await screen.findByRole('button', { name: 'Toggle sidebar' })
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await screen.findByPlaceholderText('Next instruction...')
     expect(screen.queryByRole('complementary', { name: 'Workspace sidebar' })).not.toBeInTheDocument()
 
-    fireEvent.click(toggle)
+    const menu = await openMainMenu()
+    fireEvent.click(within(menu).getByRole('button', { name: /Projects & chats/ }))
     expect(await screen.findByRole('complementary', { name: 'Workspace sidebar' })).toBeInTheDocument()
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('button', { name: 'Close sidebar' })).toBeInTheDocument()
 
     fireEvent.keyDown(window, { key: 'Escape' })

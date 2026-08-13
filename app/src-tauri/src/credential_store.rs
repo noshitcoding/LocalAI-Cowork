@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const SERVICE_NAME: &str = "com.open-cowork.desktop.credentials.v1";
 const MAX_OWNER_BYTES: usize = 512;
 const MAX_FIELD_BYTES: usize = 512;
@@ -15,12 +15,20 @@ const ALLOWED_SCOPES: &[&str] = &[
     "engine",
     "llm_profile",
     "mcp_env",
+    "remote_server",
     "memory_provider",
     "terminal_backend",
     "tool_gateway",
     "worker_sandbox",
 ];
-const FRONTEND_SCOPES: &[&str] = &["connector", "crew", "engine", "llm_profile", "mcp_env"];
+const FRONTEND_SCOPES: &[&str] = &[
+    "connector",
+    "crew",
+    "engine",
+    "llm_profile",
+    "mcp_env",
+    "remote_server",
+];
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +52,25 @@ pub struct CredentialReadResponse {
     pub value: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialExistsResponse {
+    pub exists: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialCopyRequest {
+    pub source: CredentialLocator,
+    pub destination: CredentialLocator,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialCopyResponse {
+    pub copied: bool,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CredentialStoreError {
     #[error("credential scope is not supported")]
@@ -52,7 +79,7 @@ pub enum CredentialStoreError {
     InvalidLocator,
     #[error("credential value exceeds the supported size")]
     ValueTooLarge,
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     #[error("operating-system credential storage is unavailable")]
     UnsupportedPlatform,
     #[error("operating-system credential storage failed")]
@@ -101,18 +128,18 @@ impl CredentialBackend for MemoryCredentialBackend {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Default)]
 struct NativeCredentialBackend;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl NativeCredentialBackend {
     fn entry(account: &str) -> Result<keyring::Entry, CredentialStoreError> {
         keyring::Entry::new(SERVICE_NAME, account).map_err(|_| CredentialStoreError::Backend)
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl CredentialBackend for NativeCredentialBackend {
     fn set(&self, account: &str, value: &str) -> Result<(), CredentialStoreError> {
         Self::entry(account)?
@@ -136,11 +163,11 @@ impl CredentialBackend for NativeCredentialBackend {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 #[derive(Default)]
 struct NativeCredentialBackend;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl CredentialBackend for NativeCredentialBackend {
     fn set(&self, _account: &str, _value: &str) -> Result<(), CredentialStoreError> {
         Err(CredentialStoreError::UnsupportedPlatform)
@@ -231,6 +258,30 @@ impl CredentialStore {
             .map_err(|_| CredentialStoreError::Lock)?;
         self.backend.delete(&account)
     }
+
+    pub fn copy_if_destination_empty(
+        &self,
+        source: &CredentialLocator,
+        destination: &CredentialLocator,
+    ) -> Result<bool, CredentialStoreError> {
+        let source_account = account_id(source)?;
+        let destination_account = account_id(destination)?;
+        let _guard = self
+            .access_lock
+            .lock()
+            .map_err(|_| CredentialStoreError::Lock)?;
+        if self.backend.get(&destination_account)?.is_some() {
+            return Ok(false);
+        }
+        let Some(value) = self.backend.get(&source_account)? else {
+            return Ok(false);
+        };
+        if value.len() > MAX_SECRET_BYTES {
+            return Err(CredentialStoreError::ValueTooLarge);
+        }
+        self.backend.set(&destination_account, &value)?;
+        Ok(true)
+    }
 }
 
 fn validate_locator_part(value: &str, max_bytes: usize) -> bool {
@@ -269,6 +320,17 @@ pub fn validate_frontend_access(locator: &CredentialLocator) -> Result<(), Crede
         Ok(())
     } else {
         Err(CredentialStoreError::UnsupportedScope)
+    }
+}
+
+pub fn validate_frontend_read_access(
+    locator: &CredentialLocator,
+) -> Result<(), CredentialStoreError> {
+    validate_frontend_access(locator)?;
+    if locator.scope == "llm_profile" {
+        Err(CredentialStoreError::UnsupportedScope)
+    } else {
+        Ok(())
     }
 }
 
@@ -318,6 +380,30 @@ mod tests {
         store.set(&locator, "temporary").expect("set");
         store.set(&locator, "").expect("empty set deletes");
         assert_eq!(store.get(&locator), Ok(None));
+    }
+
+    #[test]
+    fn backend_copy_migrates_without_exposing_or_overwriting_the_secret() {
+        let store = CredentialStore::in_memory();
+        let source = CredentialLocator {
+            scope: "crew".to_string(),
+            owner_id: "crew-1".to_string(),
+            field: "openrouter_api_key".to_string(),
+        };
+        let destination = locator();
+        store.set(&source, "crew-secret").unwrap();
+
+        assert_eq!(
+            store.copy_if_destination_empty(&source, &destination),
+            Ok(true)
+        );
+        assert_eq!(store.get(&destination), Ok(Some("crew-secret".to_string())));
+        store.set(&source, "newer-source-secret").unwrap();
+        assert_eq!(
+            store.copy_if_destination_empty(&source, &destination),
+            Ok(false)
+        );
+        assert_eq!(store.get(&destination), Ok(Some("crew-secret".to_string())));
     }
 
     #[test]

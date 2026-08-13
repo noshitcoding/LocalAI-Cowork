@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { openPath } from '@tauri-apps/plugin-opener'
 import { useEngineStore } from '../stores/engineStore'
 import { safeInvoke } from '../utils/safeInvoke'
 import {
@@ -13,7 +14,6 @@ type EngineRunRow = {
   id: string
   parentRunId: string | null
   threadId: string | null
-  sessionId: string | null
   title: string
   inputSummary: string | null
   source: string
@@ -35,6 +35,30 @@ type EngineRunRow = {
   error: string | null
   updatedAt: string
   createdAt: string
+}
+
+type SandboxDiff = {
+  workspaceRoot: string
+  changes: Array<{
+    rootId?: string
+    rootLabel?: string
+    path: string
+    kind: string
+    size: number
+    binary: boolean
+    preview?: string | null
+    applicable?: boolean
+    policyError?: string | null
+  }>
+}
+
+function groupSandboxChanges(diff: SandboxDiff): Array<[string, SandboxDiff['changes']]> {
+  const groups = new Map<string, SandboxDiff['changes']>()
+  for (const change of diff.changes) {
+    const label = change.rootLabel || change.rootId || tr('Workspace')
+    groups.set(label, [...(groups.get(label) ?? []), change])
+  }
+  return [...groups.entries()]
 }
 
 type EngineRunCheckpointRow = {
@@ -104,7 +128,6 @@ const normalizeRun = (value: unknown): EngineRunRow | null => {
     id,
     parentRunId: asNullableString(row.parentRunId ?? row.parent_run_id),
     threadId: asNullableString(row.threadId ?? row.thread_id),
-    sessionId: asNullableString(row.sessionId ?? row.session_id),
     title: asString(row.title, 'Untitleder Run'),
     inputSummary: asNullableString(row.inputSummary ?? row.input_summary),
     source: asString(row.source, 'desktop'),
@@ -173,6 +196,7 @@ export default function RunPanel() {
   const [artifacts, setArtifacts] = useState<EngineRunArtifactRow[]>([])
   const [checkpoints, setCheckpoints] = useState<EngineRunCheckpointRow[]>([])
   const [sandbox, setSandbox] = useState<WorkerSandboxRow | null>(null)
+  const [sandboxDiff, setSandboxDiff] = useState<SandboxDiff | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busyRunId, setBusyRunId] = useState<string | null>(null)
@@ -254,6 +278,43 @@ export default function RunPanel() {
     }
   }
 
+  const reviewSandboxChanges = async (runId: string) => {
+    setError(null)
+    try {
+      setSandboxDiff(await safeInvoke<SandboxDiff>('sandbox_run_diff', { request: { runId } }))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const applySandboxChanges = async (runId: string) => {
+    setBusyRunId(runId)
+    try {
+      const result = await safeInvoke<{ applied: string[]; conflicts: string[]; rejected?: string[] }>('sandbox_run_apply', { request: { runId } })
+      setSandboxDiff(null)
+      if (result.conflicts.length > 0) setError(`Conflicts not overwritten: ${result.conflicts.join(', ')}`)
+      if ((result.rejected?.length ?? 0) > 0) setError(`Read-only or out-of-scope changes not applied: ${result.rejected!.join(', ')}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyRunId(null)
+    }
+  }
+
+  const discardSandbox = async (runId: string) => {
+    if (!window.confirm(tr('Discard the retained AI Sandbox copy and all unapplied changes?'))) return
+    setBusyRunId(runId)
+    try {
+      await safeInvoke('sandbox_run_discard', { request: { runId } })
+      setSandboxDiff(null)
+      await refreshSandbox(runId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyRunId(null)
+    }
+  }
+
   useEffect(() => {
     void refreshRuns()
     // Refresh once on mount; manual refresh and actions keep the list current.
@@ -266,8 +327,10 @@ export default function RunPanel() {
       setArtifacts([])
       setCheckpoints([])
       setSandbox(null)
+      setSandboxDiff(null)
       return
     }
+    setSandboxDiff(null)
     void refreshEvents(selectedRun)
     void refreshArtifacts(selectedRun)
     void refreshCheckpoints(selectedRun)
@@ -394,6 +457,39 @@ export default function RunPanel() {
                             {tr("Permissions:")} {tr("read")} {formatBool(sandbox.allowFileRead)} / {tr("write")} {formatBool(sandbox.allowFileWrite)} / {tr("shell")} {formatBool(sandbox.allowShellExecution)} / {tr("web")} {formatBool(sandbox.allowWebFetch || sandbox.allowWebSearch)} / {tr("mcp")} {formatBool(sandbox.allowMcp)}
                           </div>
                         </div>
+                        {sandbox.mode === 'windows_native_elevated' && sandbox.status !== 'destroyed' && (
+                          <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                            <button type="button" className="btn-sm" onClick={() => void reviewSandboxChanges(run.id)}>{tr('Review changes')}</button>
+                            <button type="button" className="btn-sm" onClick={() => void openPath(sandbox.workspaceRoot)}>{tr('Open retained copy')}</button>
+                            <button type="button" className="btn-sm" disabled={busyRunId === run.id} onClick={() => void discardSandbox(run.id)}>{tr('Discard copy')}</button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {sandboxDiff && (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{tr('Sandbox change set')} ({sandboxDiff.changes.length})</div>
+                        <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {groupSandboxChanges(sandboxDiff).map(([rootLabel, changes]) => (
+                            <div key={rootLabel}>
+                              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>{rootLabel}</div>
+                              {changes.map((change) => (
+                                <div key={`${change.rootId ?? rootLabel}:${change.kind}:${change.path}`} style={{ fontSize: 11, background: 'var(--bg-primary)', padding: 8, borderRadius: 'var(--radius-sm)', marginBottom: 4 }}>
+                                  <strong>{change.kind.toUpperCase()} {change.path}</strong>
+                                  {change.policyError && <div role="alert" style={{ color: 'var(--danger)' }}>{change.policyError}</div>}
+                                  {change.binary
+                                    ? <div style={{ color: 'var(--text-muted)' }}>{tr('Binary file')}, {change.size} bytes</div>
+                                    : change.preview && <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>{change.preview}</pre>}
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                        {sandboxDiff.changes.length > 0 && (
+                          <button type="button" className="btn-sm" style={{ marginTop: 8 }} disabled={busyRunId === run.id} onClick={() => void applySandboxChanges(run.id)}>
+                            {tr('Apply complete change set')}
+                          </button>
+                        )}
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

@@ -18,7 +18,6 @@ import type { ContextSnapshot } from '../engine/services/contextManager'
 import {
   createAssistantMessage,
   createInitialAppState,
-  createSystemMessage,
   createUserMessage,
   EMPTY_USAGE,
   extractTextContent,
@@ -29,24 +28,129 @@ import {
   type TokenUsage,
   type ToolUIRequest,
 } from '../engine/types'
-import {
-  autoSaveSession,
-  createSession,
-  deleteSession,
-  generateSessionTitle,
-  loadSession,
-  listSessions,
-  type SessionRecord,
-  type SessionSummary,
-} from '../engine/services/sessionPersistence'
 import { useConfigStore } from './configStore'
 import { useChatStore } from './chatStore'
-import { parsePersistedSessionMessage } from '../utils/sessionThreads'
+import { parsePersistedChatMessage } from '../utils/chatMessages'
+import { splitPromptDebugContent } from '../utils/messageDisplay'
 import { getChatProviderState, normalizeChatProvider, type ChatProviderKind, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
+import type { AuthorizedTaskPath } from '../utils/taskProjectContext'
 import { useCoworkStore } from './coworkStore'
 import { setCredential } from '../security/credentialVault'
 import { sanitizeEngineConfigForPersistence } from '../security/credentialPersistence'
+import { hasTauriRuntime } from '../utils/safeInvoke'
+import { CodexAppServerEngine } from '../engine/codex/codexAppServerEngine'
+
+export type RunSecurityMode = 'checking' | 'windows_native_elevated' | 'host_read_only_broker'
+type ChatEngine = QueryEngine | CodexAppServerEngine
+
+type RunContextPrepareResult = {
+  mode: Exclude<RunSecurityMode, 'checking'>
+  sandboxId?: string | null
+  workspaceRoot: string
+  allowedDirectories: string[]
+  roots: Array<{
+    rootId: string
+    rootLabel: string
+    sourcePath: string
+    workspacePath: string
+    kind: 'file' | 'folder'
+    access: 'read_only' | 'read_write'
+    isPrimary: boolean
+  }>
+  copiedFiles: number
+  skippedFiles: number
+  warning?: string | null
+}
+
+type SandboxFileChange = {
+  rootId?: string
+  rootLabel?: string
+  path: string
+  kind: 'created' | 'modified' | 'deleted'
+  size: number
+  binary: boolean
+  preview?: string | null
+  applicable?: boolean
+  policyError?: string | null
+}
+
+type SandboxRunDiff = {
+  workspaceRoot: string
+  changes: SandboxFileChange[]
+}
+
+async function offerSandboxChanges(runId: string): Promise<void> {
+  const diff = await invoke<SandboxRunDiff>('sandbox_run_diff', { request: { runId } })
+  if (diff.changes.length === 0 || typeof window === 'undefined') return
+  const rendered = diff.changes.map((change) => {
+    const detail = change.binary
+      ? `[binary, ${change.size} bytes]`
+      : change.preview
+        ? `\n${change.preview}`
+        : ''
+    const root = change.rootLabel ? `[${change.rootLabel}] ` : ''
+    const policy = change.policyError ? `\n[not applicable: ${change.policyError}]` : ''
+    return `${change.kind.toUpperCase()} ${root}${change.path}${detail}${policy}`
+  }).join('\n\n')
+  const confirmed = window.confirm(
+    `AI Sandbox changes (${diff.changes.length})\n\n${rendered}\n\nApply this complete change set to the original project?`,
+  )
+  if (!confirmed) return
+  const applied = await invoke<{ applied: string[]; conflicts: string[]; rejected?: string[] }>('sandbox_run_apply', {
+    request: { runId },
+  })
+  if (applied.conflicts.length > 0) {
+    window.alert(`Some files changed outside the sandbox and were not overwritten:\n${applied.conflicts.join('\n')}`)
+  }
+  if ((applied.rejected?.length ?? 0) > 0) {
+    window.alert(`Read-only or out-of-scope sandbox changes were not applied:\n${applied.rejected!.join('\n')}`)
+  }
+}
+
+const CAPABILITY_TOOL_NAMES: Record<string, string[]> = {
+  bash: ['Bash'],
+  read_file: ['Read', 'ListDir', 'FileInfo'],
+  edit_file: ['Write', 'Edit', 'MultiEdit', 'Append', 'DeleteFile', 'RenameFile', 'SaveSkill'],
+  create_directory: ['CreateDirectory'],
+  move_path: ['MovePath'],
+  copy_path: ['CopyPath'],
+  glob: ['Glob'],
+  grep: ['Grep'],
+  web_fetch: ['WebFetch'],
+  web_search: ['WebSearch'],
+  office_workflow: ['OfficeWorkflowTool'],
+  todo: ['TaskCreate', 'TaskList', 'TaskUpdate', 'EnterPlanMode', 'ExitPlanMode'],
+  delegate_task: ['Agent', 'Skill'],
+  ask_user: ['AskUser'],
+  mcp: ['MCPTool'],
+}
+
+const SAFE_INTERNAL_TOOL_NAMES = ['MemoryRead', 'MemoryWrite', 'ChatSearch', 'Think']
+const LOCAL_MUTATION_CAPABILITIES = new Set([
+  'bash', 'edit_file', 'create_directory', 'move_path', 'copy_path',
+  'office_workflow', 'delegate_task',
+])
+
+function resolveEffectiveToolNames(
+  mode: Exclude<RunSecurityMode, 'checking'>,
+  hasReadableRoots: boolean,
+): string[] {
+  const policy = useCoworkStore.getState()
+  const enabled = new Set(policy.enabledClaudeToolIds)
+  const result = new Set(SAFE_INTERNAL_TOOL_NAMES)
+  for (const capability of enabled) {
+    if (mode === 'host_read_only_broker' && LOCAL_MUTATION_CAPABILITIES.has(capability)) continue
+    if (mode === 'host_read_only_broker' && ['read_file', 'glob', 'grep'].includes(capability) && !hasReadableRoots) continue
+    if (capability === 'bash' && !policy.policyFlags.allowShellExecution) continue
+    if (['read_file', 'glob', 'grep'].includes(capability) && !policy.policyFlags.allowFileReadExtraction) continue
+    if (capability === 'web_fetch' && !policy.policyFlags.allowWebFetch) continue
+    if (capability === 'web_search' && !policy.policyFlags.allowWebSearch) continue
+    if (capability === 'mcp' && !policy.policyFlags.allowMcpToolCalls) continue
+    for (const toolName of CAPABILITY_TOOL_NAMES[capability] ?? []) result.add(toolName)
+  }
+  return [...result]
+}
 
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful AI assistant in the LocalAI Cowork desktop app. You have access to tools for reading, writing, and searching files, running shell commands, and more.
 
@@ -59,9 +163,11 @@ Important rules:
    If the target is clear, complete it autonomously and ask only when critical information is missing or a destructive step is involved.
 6. Do not create files that are not needed.
 7. Proactively preserve only durable, high-signal facts. Use MemoryWrite for stable user preferences, environment facts, corrections, conventions, and completed-work lessons. Never store secrets, raw logs, or temporary details.
-8. Curated memory is a frozen session-start snapshot. A write is persisted for future sessions; use SessionSearch when exact details from older conversations are needed.
+8. Curated memory is frozen when a chat starts. A write is persisted for future chats; use ChatSearch when exact details from older conversations are needed.
+9. Reusable app skills belong in the central LocalAI Cowork skill store. When the user asks you to create, save, or register a skill, use SaveSkill. Do not create a skill JSON, Markdown file, or script in the current workspace unless the user explicitly asks for a standalone file.
+10. AI-owned shell commands run only through the Bash tool in the prepared native sandbox. Never use desktop automation or a terminal window as a fallback for a failed Bash call.
 
-You work in a Windows environment with PowerShell.`
+Use the path and shell conventions of the operating system hosting LocalAI Cowork.`
 
 export type EngineProvider = ChatProviderKind
 export type EngineStatus = 'idle' | 'streaming' | 'tool_running' | 'waiting_approval' | 'error'
@@ -84,17 +190,22 @@ export type EngineStoreConfig = {
   permissionMode: 'default' | 'plan' | 'bypass' | 'strict'
   thinkingEnabled: boolean
   thinkingBudget: number
-  autoCompact: boolean
   appendSystemPrompt: string
   // Ollama-specific (persisted alongside configStore)
   ollamaBaseUrl: string
   ollamaModel: string
-  sessionPersistence: boolean
 }
 
 export type ContextWarning = {
   level: 'none' | 'low' | 'medium' | 'high' | 'critical'
   estimatedTokens: number
+}
+
+export type ContextCoverage = {
+  totalPrevious: number
+  sentPrevious: number
+  omittedPrevious: number
+  maxInputTokens: number
 }
 
 export type ChatHistorySeedMessage = {
@@ -106,6 +217,9 @@ export type ChatHistorySeedMessage = {
 export type ConversationHistorySeed = {
   threadId: string | null
   messages: ChatHistorySeedMessage[]
+  ownerKind?: 'chat' | 'task' | 'schedule' | 'crew'
+  ownerId?: string
+  memberId?: string
 }
 
 export type EngineUserInput = string | ContentBlock[]
@@ -177,6 +291,12 @@ async function appendRunEvent(
   })
 }
 
+type RuntimePermissionConfig = {
+  mode: PermissionMode
+  allowedDirectories: string[]
+  authorizedPaths?: AuthorizedTaskPath[]
+}
+
 export type EngineStoreState = {
   // ── Engine State ───────────────────────────────────────────────────────
   status: EngineStatus
@@ -192,15 +312,15 @@ export type EngineStoreState = {
   activeProvider: EngineProvider
   setActiveProvider: (provider: EngineProvider) => void
 
-  // ── Context & Compaction State ─────────────────────────────────────────
+  // ── Context State ──────────────────────────────────────────────────────
   contextWarning: ContextWarning
-  compactionCount: number
   contextSnapshot: ContextSnapshot | null
+  contextCoverage: ContextCoverage | null
 
-  // ── Session State ──────────────────────────────────────────────────────
-  currentSessionId: string | null
+  // ── Run State ──────────────────────────────────────────────────────────
   currentRunId: string | null
   conversationThreadId: string | null
+  sandboxContext: { mode: RunSecurityMode; warning: string | null }
 
   // ── Configuration ──────────────────────────────────────────────────────
   config: EngineStoreConfig
@@ -214,7 +334,7 @@ export type EngineStoreState = {
     onEvent?: (event: EngineEvent) => void,
     historySeed?: ConversationHistorySeed,
     providerSelection?: ChatProviderSelection,
-    permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
+    permissionConfig?: RuntimePermissionConfig,
   ) => Promise<void>
   abort: () => void
   resolveApproval: (result: ApprovalResult) => void
@@ -229,10 +349,11 @@ export type EngineStoreState = {
       onEvent?: (event: EngineEvent) => void
       historySeed?: ConversationHistorySeed
       providerSelection?: ChatProviderSelection
-      permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+      permissionConfig?: RuntimePermissionConfig
       crewId: string | null
       threadId: string
       runId: string
+      securityMode: Exclude<RunSecurityMode, 'checking'>
     },
   ) => Promise<void>) | null
   setCrewTaskMessageHandler: (handler: ((
@@ -242,24 +363,26 @@ export type EngineStoreState = {
       onEvent?: (event: EngineEvent) => void
       historySeed?: ConversationHistorySeed
       providerSelection?: ChatProviderSelection
-      permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }
+      permissionConfig?: RuntimePermissionConfig
       crewId: string | null
       threadId: string
       runId: string
+      securityMode: Exclude<RunSecurityMode, 'checking'>
     },
   ) => Promise<void>) | null) => void
   // ── New Actions (CC features) ──────────────────────────────────────────
-  forceCompact: () => Promise<void>
   getContextSnapshot: () => ContextSnapshot | null
-  loadSessionById: (sessionId: string) => Promise<SessionRecord | null>
-  getSessions: () => Promise<SessionSummary[]>
-  deleteSessionById: (sessionId: string) => Promise<void>
   fetchOllamaModels: () => Promise<Array<{ id: string; name: string; size: number }>>
   checkOllamaStatus: () => Promise<boolean>
 
   // ── Internal ───────────────────────────────────────────────────────────
-  _engine: QueryEngine | null
-  _initEngine: (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }) => Promise<QueryEngine>
+  _engine: ChatEngine | null
+  _initEngine: (
+    cwd: string,
+    providerSelection?: ChatProviderSelection,
+    permissionConfig?: RuntimePermissionConfig,
+    owner?: Pick<ConversationHistorySeed, 'ownerKind' | 'ownerId' | 'memberId'>,
+  ) => Promise<ChatEngine>
 }
 
 // ── Store ──────────────────────────────────────────────────────────────────
@@ -283,11 +406,14 @@ function mapChatHistorySeedToEngineMessages(
   return seedMessages.reduce<Message[]>((acc, message) => {
     // Try to parse structured content from debugContent or content
     const textContent = extractSeedMessageText(message)
-    const rawContent = message.debugContent?.trim() || textContent
-    const structuredMessage = parsePersistedSessionMessage(rawContent)
+    const debugContext = splitPromptDebugContent(message.debugContent).promptDebug
+    const rawContent = debugContext || textContent
+    const structuredMessage = parsePersistedChatMessage(rawContent)
 
     if (structuredMessage) {
-      acc.push(structuredMessage)
+      if (structuredMessage.type !== 'system') {
+        acc.push(structuredMessage)
+      }
       return acc
     }
 
@@ -316,7 +442,7 @@ function mapChatHistorySeedToEngineMessages(
     }
 
     const preferredContent = message.role === 'user'
-      ? (message.debugContent?.trim() || textContent)
+      ? (debugContext || textContent)
       : textContent
 
     if (!preferredContent) return acc
@@ -329,7 +455,6 @@ function mapChatHistorySeedToEngineMessages(
         acc.push(createAssistantMessage([{ type: 'text', text: preferredContent }], model, { ...EMPTY_USAGE }, 'end_turn'))
         return acc
       case 'system':
-        acc.push(createSystemMessage(preferredContent))
         return acc
       default:
         return acc
@@ -337,8 +462,9 @@ function mapChatHistorySeedToEngineMessages(
   }, [])
 }
 
-function getResolvedProvider(provider: unknown): EngineBackend {
-  return normalizeChatProvider(provider)
+function getResolvedProvider(providerState: ReturnType<typeof getChatProviderState>): EngineBackend {
+  if (providerState.provider === 'codex') return 'codex'
+  return providerState.compatibilityProvider ?? 'openai-compatible'
 }
 
 function buildChatEngineConfig(
@@ -346,9 +472,10 @@ function buildChatEngineConfig(
   config: EngineStoreConfig,
   cwd: string,
   runId?: string,
-  sessionId?: string,
+  threadId?: string,
   providerSelection?: ChatProviderSelection,
-  permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] },
+  permissionConfig?: RuntimePermissionConfig,
+  owner?: Pick<ConversationHistorySeed, 'ownerKind' | 'ownerId' | 'memberId'>,
 ): EngineConfig {
   const configState = useConfigStore.getState()
   const providerState = getChatProviderState(configState, provider, providerSelection)
@@ -367,21 +494,34 @@ function buildChatEngineConfig(
         : { type: 'disabled' },
     },
     ollama: {
-      baseUrl: providerState.provider === 'ollama' ? providerState.endpoint : ollamaConfig.baseUrl,
-      model: providerState.provider === 'ollama' ? providerState.model : ollamaConfig.model,
+      baseUrl: ollamaConfig.baseUrl,
+      model: ollamaConfig.model,
       temperature: ollamaConfig.temperature,
-      contextWindow: ollamaConfig.contextWindow,
+      contextWindow: providerState.contextWindow,
       timeoutMs: effectiveOllamaTimeoutMs,
       thinkingEnabled: effectiveThinkingEnabled,
     },
     openAiCompatible: provider === 'openai-compatible' || provider === 'openrouter'
       ? {
           provider,
+          profileId: providerState.profileId,
+          preset: providerState.preset,
+          authMode: providerState.preset === 'ollama' ? 'none' : 'bearer',
           apiKey: providerState.apiKey,
           baseUrl: providerState.endpoint,
           model: providerState.model,
           timeoutMs: providerState.timeoutMs,
           verifyTlsCertificates: providerState.verifyTlsCertificates,
+        }
+      : undefined,
+    codex: provider === 'codex'
+      ? {
+          authProfileId: providerState.authProfileId,
+          model: providerState.model || undefined,
+          reasoningEffort: providerState.reasoningEffort,
+          ownerKind: owner?.ownerKind ?? 'chat',
+          ownerId: owner?.ownerId ?? threadId,
+          memberId: owner?.memberId,
         }
       : undefined,
     cwd,
@@ -394,8 +534,12 @@ function buildChatEngineConfig(
     agentDefinitions: DEFAULT_AGENTS,
     appendSystemPrompt: config.appendSystemPrompt,
     runId,
-    sessionId,
+    threadId,
     toolsetPolicyId,
+    availableToolNames: resolveEffectiveToolNames(
+      'host_read_only_broker',
+      (permissionConfig?.authorizedPaths?.length ?? 0) > 0,
+    ),
   }
 }
 
@@ -413,17 +557,17 @@ export const useEngineStore = create<EngineStoreState>()(
       currentToolUI: null,
       activeTools: [],
       error: null,
-      activeProvider: 'ollama',
+      activeProvider: 'openai-compatible',
 
-      // Context & Compaction
+      // Context
       contextWarning: { level: 'none', estimatedTokens: 0 },
-      compactionCount: 0,
       contextSnapshot: null,
+      contextCoverage: null,
 
-      // Session
-      currentSessionId: null,
+      // Run
       currentRunId: null,
       conversationThreadId: null,
+      sandboxContext: { mode: 'checking', warning: null },
 
       config: {
         apiKey: '',
@@ -434,11 +578,9 @@ export const useEngineStore = create<EngineStoreState>()(
         permissionMode: 'default' as const,
         thinkingEnabled: true,
         thinkingBudget: 10000,
-        autoCompact: true,
         appendSystemPrompt: '',
         ollamaBaseUrl: 'http://localhost:11434',
         ollamaModel: 'llama3.1:8b',
-        sessionPersistence: true,
       },
 
       _engine: null,
@@ -450,26 +592,29 @@ export const useEngineStore = create<EngineStoreState>()(
       setConfig: (patch) => set((s) => ({ config: { ...s.config, ...patch } })),
       setApiKey: async (apiKey) => {
         await setCredential({ scope: 'engine', ownerId: 'legacy-engine', field: 'api_key' }, apiKey)
-        set((state) => ({ config: { ...state.config, apiKey } }))
+        set((state) => ({ config: { ...state.config, apiKey: '' } }))
       },
 
       // ── Init Engine ──────────────────────────────────────────────────────
-      _initEngine: async (cwd: string, providerSelection?: ChatProviderSelection, permissionConfig?: { mode: PermissionMode; allowedDirectories: string[] }): Promise<QueryEngine> => {
+      _initEngine: async (cwd, providerSelection, permissionConfig, owner): Promise<ChatEngine> => {
         ensureCommandsRegistered()
 
-        const { config, activeProvider, currentRunId, currentSessionId } = get()
+        const { config, activeProvider, currentRunId, conversationThreadId } = get()
         const providerState = getChatProviderState(useConfigStore.getState(), activeProvider, providerSelection)
         const engineConfig = buildChatEngineConfig(
-          getResolvedProvider(providerState.provider),
+          getResolvedProvider(providerState),
           config,
           cwd,
           currentRunId ?? undefined,
-          currentSessionId ?? undefined,
+          conversationThreadId ?? undefined,
           providerSelection,
           permissionConfig,
+          owner,
         )
 
-        const engine = new QueryEngine(engineConfig)
+        const engine: ChatEngine = engineConfig.backend === 'codex'
+          ? new CodexAppServerEngine(engineConfig)
+          : new QueryEngine(engineConfig)
 
         // Wire tool UI callback
         engine.setToolUICallback((ui) => {
@@ -495,10 +640,12 @@ export const useEngineStore = create<EngineStoreState>()(
               }
             }
 
-            // Check if active thread is a crew task
+            // Resolve the addressed thread from the history seed. Background task
+            // runs must never inherit the currently visible chat's runner/backend.
             const chatState = useChatStore.getState()
-            const activeThread = chatState.threads.find(t => t.id === chatState.activeThreadId)
-            const isCrewTask = activeThread?.runner === 'crew' && activeThread?.crewId
+            const targetThread = chatState.threads.find((thread) => thread.id === historySeed?.threadId)
+              ?? chatState.threads.find((thread) => thread.id === chatState.activeThreadId)
+            const isCrewTask = targetThread?.runner === 'crew' && targetThread?.crewId
 
             // If this is a crew task, delegate to crew handler
             if (isCrewTask && get().crewTaskMessageHandler) {
@@ -511,19 +658,103 @@ export const useEngineStore = create<EngineStoreState>()(
                 activeTools: [],
                 currentToolUI: null,
                 currentRunId: runId,
+                sandboxContext: { mode: 'checking', warning: null },
               })
-              
-              return get().crewTaskMessageHandler!({
-                userInput,
-                cwd,
-                onEvent,
-                historySeed,
-                providerSelection,
-                permissionConfig,
-                crewId: activeThread!.crewId!,
-                threadId: activeThread!.id,
-                runId,
-              })
+
+              try {
+                const authorizedPaths = permissionConfig?.authorizedPaths ?? []
+                let persistedRun = false
+                try {
+                  await invoke('engine_run_create', {
+                    request: {
+                      id: runId,
+                      threadId: targetThread!.id,
+                      title: extractUserInputText(userInput).slice(0, 120) || 'Crew Run',
+                      inputSummary: extractUserInputText(userInput).slice(0, 1000),
+                      source: 'crew_chat',
+                      status: 'running',
+                      phase: 'crew_runtime',
+                      cwd,
+                      authorizedPaths,
+                      metadataJson: JSON.stringify({ runner: 'crew' }),
+                    },
+                  })
+                  persistedRun = true
+                } catch (error) {
+                  if (hasTauriRuntime()) throw error
+                }
+                const prepared: RunContextPrepareResult = persistedRun && hasTauriRuntime()
+                  ? await invoke<RunContextPrepareResult>('engine_run_prepare_context', {
+                      request: { runId, authorizedPaths, preferredCwd: cwd || null },
+                    })
+                  : {
+                      mode: 'host_read_only_broker',
+                      sandboxId: null,
+                      workspaceRoot: '',
+                      allowedDirectories: authorizedPaths.map((entry) => entry.path),
+                      roots: authorizedPaths.map((entry, index) => ({
+                        rootId: `root-${index.toString().padStart(3, '0')}`,
+                        rootLabel: entry.label ?? entry.path,
+                        sourcePath: entry.path,
+                        workspacePath: entry.path,
+                        kind: entry.kind,
+                        access: 'read_only',
+                        isPrimary: entry.isPrimary === true,
+                      })),
+                      copiedFiles: 0,
+                      skippedFiles: 0,
+                      warning: 'Native sandbox is unavailable; crew local access is read-only.',
+                    }
+                const mappedPermissionConfig: RuntimePermissionConfig = {
+                  mode: permissionConfig?.mode ?? get().config.permissionMode,
+                  allowedDirectories: prepared.roots
+                    .filter((root) => root.kind === 'folder')
+                    .map((root) => root.workspacePath),
+                  authorizedPaths: prepared.roots.map((root) => ({
+                    id: root.rootId,
+                    path: root.workspacePath,
+                    kind: root.kind,
+                    access: root.access,
+                    label: root.rootLabel,
+                    isPrimary: root.isPrimary,
+                  })),
+                }
+                set({ sandboxContext: { mode: prepared.mode, warning: prepared.warning ?? null } })
+                await get().crewTaskMessageHandler!({
+                  userInput,
+                  cwd: prepared.workspaceRoot || cwd,
+                  onEvent,
+                  historySeed,
+                  providerSelection,
+                  permissionConfig: mappedPermissionConfig,
+                  crewId: targetThread!.crewId!,
+                  threadId: targetThread!.id,
+                  runId,
+                  securityMode: prepared.mode,
+                })
+                if (prepared.mode === 'windows_native_elevated') {
+                  try {
+                    await offerSandboxChanges(runId)
+                  } catch (error) {
+                    void appendRunEvent(runId, 'sandbox_diff_error', 'Crew sandbox change review failed', {
+                      error: error instanceof Error ? error.message : String(error),
+                    }).catch(() => {})
+                  }
+                }
+                if (persistedRun) {
+                  void invoke('engine_run_update', {
+                    request: { id: runId, status: 'completed', phase: 'completed' },
+                  }).catch(() => {})
+                }
+              } finally {
+                set({
+                  status: 'idle',
+                  streamingText: '',
+                  thinkingText: '',
+                  currentRunId: null,
+                })
+              }
+              return
             }
 
             const runId = crypto.randomUUID()
@@ -535,118 +766,170 @@ export const useEngineStore = create<EngineStoreState>()(
               activeTools: [],
               currentToolUI: null,
               currentRunId: runId,
+              sandboxContext: { mode: 'checking', warning: null },
             })
+
+            if (historySeed?.threadId) {
+              set({ conversationThreadId: historySeed.threadId })
+            }
 
             // Get or create engine
             const latestStore = get()
             const userInputText = extractUserInputText(userInput)
             const providerState = getChatProviderState(useConfigStore.getState(), latestStore.activeProvider, providerSelection)
-            const provider = getResolvedProvider(providerState.provider)
+            const provider = getResolvedProvider(providerState)
             const toolsetPolicyId = useCoworkStore.getState().activeToolsetPolicyId
             let engine = state._engine
-            if (!engine) {
-              engine = await state._initEngine(cwd, providerSelection, permissionConfig)
+            if (
+              !engine
+              || (provider === 'codex' && !(engine instanceof CodexAppServerEngine))
+              || (provider !== 'codex' && engine instanceof CodexAppServerEngine)
+            ) {
+              engine?.abort()
+              engine = await state._initEngine(cwd, providerSelection, permissionConfig, historySeed)
             } else {
               engine.updateConfig(buildChatEngineConfig(
                 provider,
                 latestStore.config,
                 cwd,
                 runId,
-                latestStore.currentSessionId ?? undefined,
+                historySeed?.threadId ?? latestStore.conversationThreadId ?? undefined,
                 providerSelection,
                 permissionConfig,
+                historySeed,
               ))
             }
 
-            const shouldHydrateHistory = Boolean(
-              historySeed &&
-              Array.isArray(historySeed.messages) &&
-              historySeed.messages.length > 0 &&
-              (
-                latestStore.messages.length === 0 ||
-                historySeed.threadId !== latestStore.conversationThreadId
-              ),
-            )
-
-            if (shouldHydrateHistory) {
-              const hydratedMessages = mapChatHistorySeedToEngineMessages(historySeed!.messages, providerState.model)
+            // The persisted chat is the source of truth. Rebuild provider-neutral
+            // engine messages before every request, including after model changes.
+            if (historySeed && Array.isArray(historySeed.messages)) {
+              const hydratedMessages = mapChatHistorySeedToEngineMessages(historySeed.messages, providerState.model)
               set({
                 messages: hydratedMessages,
                 conversationThreadId: historySeed?.threadId ?? null,
-                currentSessionId: null,
                 contextSnapshot: engine.getContextSnapshot(hydratedMessages),
+                contextCoverage: null,
               })
-            } else if (historySeed?.threadId && historySeed.threadId !== latestStore.conversationThreadId) {
-              set({ conversationThreadId: historySeed.threadId })
             }
 
-            let sessionId = get().currentSessionId
-            if (!sessionId) {
-              sessionId = crypto.randomUUID()
-              try {
-                await createSession({
-                  id: sessionId,
-                  threadId: historySeed?.threadId ?? get().conversationThreadId ?? undefined,
-                  title: userInputText.slice(0, 60) || 'New session',
+            const threadId = historySeed?.threadId ?? get().conversationThreadId ?? undefined
+            const frozenSnapshot = await loadFrozenMemorySnapshot(threadId)
+
+            let persistedRun = false
+            try {
+              await invoke('engine_run_create', {
+                request: {
+                  id: runId,
+                  threadId: threadId ?? null,
+                  title: userInputText.slice(0, 120) || 'Engine Run',
+                  inputSummary: userInputText.slice(0, 1000),
+                  status: 'running',
+                  phase: 'llm_turn',
+                  cwd,
                   model: providerState.model,
-                  provider: providerState.provider,
-                })
-              } catch {
-                // Browser/dev fallback has no Tauri session table.
-              }
-              set({ currentSessionId: sessionId })
-            }
-
-            const frozenSnapshot = await loadFrozenMemorySnapshot(sessionId)
-
-            // Load project memory and build enhanced system prompt
-            try {
-              const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
-                cwd,
-                latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
-                { userInput: userInputText, frozenSnapshot },
-              )
-              engine.updateConfig({
-                systemPrompt,
-                memoryContent,
-                sessionId,
+                  provider,
+                  toolsetPolicyId,
+                  authorizedPaths: permissionConfig?.authorizedPaths ?? [],
+                  metadataJson: JSON.stringify({
+                    permissionMode: latestStore.config.permissionMode,
+                    maxTurns: latestStore.config.maxTurns,
+                  }),
+                },
               })
-            } catch {
-              // Memory loading is optional — fall back to default prompt
+              persistedRun = true
+            } catch (error) {
+              if (hasTauriRuntime() || permissionConfig?.authorizedPaths) {
+                throw error
+              }
+              // Browser/dev fallback has no persisted engine run.
             }
 
-            try {
-              await captureAutomaticMemoryDraft(cwd, userInputText, sessionId)
-            } catch {
-              // Automatic draft capture must never block the user turn.
-            }
-
-            void invoke('engine_run_create', {
-              request: {
-                id: runId,
-                sessionId: get().currentSessionId,
-                title: userInputText.slice(0, 120) || 'Engine Run',
-                inputSummary: userInputText.slice(0, 1000),
-                status: 'running',
-                phase: 'llm_turn',
-                cwd,
-                model: providerState.model,
-                provider,
-                toolsetPolicyId,
-                metadataJson: JSON.stringify({
-                  permissionMode: latestStore.config.permissionMode,
-                  maxTurns: latestStore.config.maxTurns,
-                }),
+            const authorizedPaths = permissionConfig?.authorizedPaths ?? []
+            const prepared: RunContextPrepareResult = persistedRun && hasTauriRuntime()
+              ? await invoke<RunContextPrepareResult>('engine_run_prepare_context', {
+                  request: {
+                    runId,
+                    authorizedPaths,
+                    preferredCwd: cwd || null,
+                  },
+                })
+              : {
+                  mode: 'host_read_only_broker',
+                  sandboxId: null,
+                  workspaceRoot: '',
+                  allowedDirectories: authorizedPaths.map((entry) => entry.path),
+                  roots: authorizedPaths.map((entry, index) => ({
+                    rootId: `root-${index.toString().padStart(3, '0')}`,
+                    rootLabel: entry.label ?? entry.path,
+                    sourcePath: entry.path,
+                    workspacePath: entry.path,
+                    kind: entry.kind,
+                    access: 'read_only',
+                    isPrimary: entry.isPrimary === true,
+                  })),
+                  copiedFiles: 0,
+                  skippedFiles: 0,
+                  warning: 'Native sandbox is unavailable in this runtime; local access is read-only.',
+                }
+            const sandboxPrepared = prepared.mode === 'windows_native_elevated'
+            const effectiveToolNames = resolveEffectiveToolNames(
+              prepared.mode,
+              prepared.allowedDirectories.length > 0,
+            )
+            const securityPrompt = sandboxPrepared
+              ? 'This run is inside the native Windows sandbox. Work only in mapped sandbox roots. Changes are reviewed before they are applied to original shared paths.'
+              : 'This run has no native process sandbox. Local shared paths are read-only. Shell, local mutation, Office artifact, skill-writing, delegation, and desktop-control tools are unavailable. Never use a host terminal fallback.'
+            engine.updateConfig({
+              cwd: prepared.workspaceRoot || cwd,
+              runId,
+              sandboxId: prepared.sandboxId ?? undefined,
+              allowedDirectories: prepared.allowedDirectories,
+              availableToolNames: effectiveToolNames,
+              appendSystemPrompt: [latestStore.config.appendSystemPrompt, securityPrompt]
+                .filter(Boolean)
+                .join('\n\n'),
+            })
+            set({
+              sandboxContext: {
+                mode: prepared.mode,
+                warning: prepared.warning ?? null,
               },
+            })
+            void appendRunEvent(runId, 'run_security_context', `Run security mode: ${prepared.mode}`, {
+              mode: prepared.mode,
+              sandboxId: prepared.sandboxId ?? null,
+              rootCount: prepared.roots.length,
+              effectiveTools: effectiveToolNames,
+              warning: prepared.warning ?? null,
             }).catch(() => {})
+
+            // Unscoped filesystem helpers are used only against the isolated copy.
+            if (sandboxPrepared) {
+              try {
+                const { systemPrompt, memoryContent } = await buildSystemPromptWithMemory(
+                  prepared.workspaceRoot,
+                  latestStore.config.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+                  { userInput: userInputText, frozenSnapshot },
+                )
+                engine.updateConfig({ systemPrompt, memoryContent, threadId })
+              } catch {
+                // Workspace memory is optional.
+              }
+              try {
+                await captureAutomaticMemoryDraft(prepared.workspaceRoot, userInputText, runId)
+              } catch {
+                // Automatic draft capture must never block the user turn.
+              }
+            }
 
             void invoke('memory_upsert', {
               id: crypto.randomUUID(),
-              scope: 'session',
+              scope: 'chat',
+              scopeRef: threadId ?? null,
               category: 'run_input',
               key: runId,
               content: userInputText,
-              sourceSessionId: runId,
+              sourceRunId: runId,
               confidence: 1,
             }).catch(() => {})
 
@@ -706,12 +989,13 @@ export const useEngineStore = create<EngineStoreState>()(
                         toolUseId: event.toolUseId,
                         toolName: event.toolName,
                         result: event.result,
+                        isError: event.isError,
                       },
                     ).catch(() => {})
                     set((s) => ({
                       activeTools: s.activeTools.map(t =>
                         t.id === event.toolUseId
-                          ? { ...t, status: 'completed' as const, result: event.result }
+                          ? { ...t, status: event.isError ? 'failed' as const : 'completed' as const, result: event.result }
                           : t,
                       ),
                     }))
@@ -803,15 +1087,19 @@ export const useEngineStore = create<EngineStoreState>()(
                           phase: 'completed',
                           checkpointJson,
                           resultSummary: summary,
+                          inputTokens: event.totalUsage.input_tokens,
+                          outputTokens: event.totalUsage.output_tokens,
+                          costUsd: event.totalCostUsd,
                         },
                       }).catch(() => {})
                       void invoke('memory_upsert', {
                         id: crypto.randomUUID(),
-                        scope: 'session',
+                        scope: 'chat',
+                        scopeRef: threadId ?? null,
                         category: 'run_output',
                         key: runId,
                         content: summary || 'Run completed.',
-                        sourceSessionId: runId,
+                        sourceRunId: runId,
                         confidence: 0.9,
                       }).catch(() => {})
                     }
@@ -828,42 +1116,24 @@ export const useEngineStore = create<EngineStoreState>()(
                       conversationThreadId: historySeed?.threadId ?? get().conversationThreadId,
                     })
 
-                    // Auto-save session after completion
-                    if (get().config.sessionPersistence) {
-                      const doneMessages = event.messages
-                      const sessionId = get().currentSessionId ?? crypto.randomUUID()
-                      const title = generateSessionTitle(doneMessages)
-                      const threadId = get().conversationThreadId
-                      void createSession({
-                        id: sessionId,
-                        threadId: threadId ?? undefined,
-                        title,
-                        model: providerState.model,
-                        provider: providerState.provider,
-                      }).catch(() => { /* optional */ })
-                      void autoSaveSession(
-                        sessionId,
-                        title,
-                        cwd,
-                        doneMessages,
-                        event.totalUsage,
-                        event.totalCostUsd,
-                        engine!.getAppState(),
-                        threadId ?? undefined,
-                      )
-                        .then(() => set({ currentSessionId: sessionId }))
-                        .catch(() => { /* session save optional */ })
-                    }
-
                     // Update context snapshot
                     try {
                       const snap = engine!.getContextSnapshot(event.messages)
                       set({ contextSnapshot: snap })
                     } catch { /* optional */ }
+                    if (sandboxPrepared) {
+                      try {
+                        await offerSandboxChanges(runId)
+                      } catch (error) {
+                        void appendRunEvent(runId, 'sandbox_diff_error', 'Sandbox change review failed', {
+                          error: error instanceof Error ? error.message : String(error),
+                        }).catch(() => {})
+                      }
+                    }
                     break
 
-                  case 'compaction':
-                    set((s) => ({ compactionCount: s.compactionCount + 1 }))
+                  case 'context_coverage':
+                    set({ contextCoverage: event })
                     break
 
                   case 'context_warning':
@@ -905,7 +1175,12 @@ export const useEngineStore = create<EngineStoreState>()(
       // ── Abort ────────────────────────────────────────────────────────────
       abort: () => {
         const { _engine: engine, currentRunId } = get()
+        const chatState = useChatStore.getState()
+        const activeThread = chatState.threads.find((thread) => thread.id === chatState.activeThreadId)
         if (engine) engine.abort()
+        if (activeThread?.runner === 'crew' && activeThread.crewId) {
+          void invoke('crew_stop', { request: { crewId: activeThread.crewId } }).catch(() => {})
+        }
         if (currentRunId) {
           void invoke('engine_run_cancel', { id: currentRunId }).catch(() => {})
         }
@@ -942,9 +1217,8 @@ export const useEngineStore = create<EngineStoreState>()(
         currentToolUI: null,
         appState: createInitialAppState(''),
         contextWarning: { level: 'none', estimatedTokens: 0 },
-        compactionCount: 0,
         contextSnapshot: null,
-        currentSessionId: null,
+        contextCoverage: null,
         currentRunId: null,
         conversationThreadId: null,
       }),
@@ -952,48 +1226,10 @@ export const useEngineStore = create<EngineStoreState>()(
       clearError: () => set({ error: null, status: 'idle' }),
 
       // ── New Actions (CC features) ────────────────────────────────────────
-      forceCompact: async () => {
-        const { _engine: engine, messages } = get()
-        if (!engine || messages.length === 0) return
-        const compacted = await engine.forceCompact(messages)
-        set({
-          messages: compacted.messages,
-          compactionCount: get().compactionCount + 1,
-          contextSnapshot: engine.getContextSnapshot(compacted.messages),
-        })
-      },
-
       getContextSnapshot: () => {
         const { _engine: engine, messages } = get()
         if (!engine) return null
         return engine.getContextSnapshot(messages)
-      },
-
-      loadSessionById: async (sessionId: string) => {
-        const session = await loadSession(sessionId)
-        if (session) {
-          set({
-            currentSessionId: session.id,
-            currentRunId: null,
-            conversationThreadId: session.threadId ?? session.id,
-            streamingText: '',
-            thinkingText: '',
-            activeTools: [],
-            status: 'idle',
-          })
-        }
-        return session
-      },
-
-      getSessions: async () => {
-        return listSessions()
-      },
-
-      deleteSessionById: async (sessionId: string) => {
-        await deleteSession(sessionId)
-        if (get().currentSessionId === sessionId) {
-          set({ currentSessionId: null })
-        }
       },
 
       fetchOllamaModels: async () => {
@@ -1019,8 +1255,6 @@ export const useEngineStore = create<EngineStoreState>()(
       partialize: (state) => ({
         activeProvider: state.activeProvider,
         config: sanitizeEngineConfigForPersistence(state.config),
-        currentSessionId: state.currentSessionId,
-        currentRunId: state.currentRunId,
       }),
       merge: (persistedState, currentState) => {
         const typedState = persistedState as Partial<EngineStoreState> | undefined
@@ -1047,6 +1281,4 @@ export const selectNeedsApproval = (s: EngineStoreState) => s.status === 'waitin
 export const selectIsEngineReady = () => true
 export const selectAvailableModels = (): string[] => []
 export const selectContextWarning = (s: EngineStoreState) => s.contextWarning
-export const selectCompactionCount = (s: EngineStoreState) => s.compactionCount
-export const selectHasSession = (s: EngineStoreState) => s.currentSessionId !== null
-export const selectIsOllamaProvider = (s: EngineStoreState) => s.activeProvider === 'ollama'
+export const selectIsOllamaProvider = () => false

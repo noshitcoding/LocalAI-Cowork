@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -30,6 +31,20 @@ class CrewRuntimeStatusTests(unittest.TestCase):
         self.assertTrue(status["toolDependenciesInstalled"])
         self.assertEqual(status["crewaiVersion"], crew_runtime.EXPECTED_CREWAI_VERSION)
         self.assertEqual(status["runtimeSchemaVersion"], crew_runtime.RUNTIME_SCHEMA_VERSION)
+
+    def test_openai_service_root_uses_the_standard_v1_api_base(self) -> None:
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test"),
+            "https://inference.example.test/v1",
+        )
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test/v1/chat/completions"),
+            "https://inference.example.test/v1",
+        )
+        self.assertEqual(
+            crew_runtime.normalize_openai_compatible_base_url("https://inference.example.test/api/v1"),
+            "https://inference.example.test/api/v1",
+        )
 
 
 class CrewRuntimeToolTests(unittest.TestCase):
@@ -112,6 +127,173 @@ class CrewRuntimeToolTests(unittest.TestCase):
         built_agent = crew_runtime.build_agent(self.request, self.agent)
         self.assertEqual(set(tools), {tool.name for tool in built_agent.tools})
 
+    def test_tool_protocol_events_are_structured_and_content_free(self) -> None:
+        with mock.patch.object(crew_tools, "_emit_tool_protocol_event") as emit:
+            success = crew_tools._safe_result("read_file", lambda: "private result")
+            failure = crew_tools._safe_result(
+                "microsoft_office",
+                lambda: (_ for _ in ()).throw(RuntimeError("private failure")),
+            )
+
+        self.assertEqual(success, "private result")
+        self.assertIn("private failure", failure)
+        self.assertEqual(emit.call_args_list, [
+            mock.call("tool_started", "read_file"),
+            mock.call("tool_completed", "read_file", True),
+            mock.call("tool_started", "microsoft_office"),
+            mock.call("tool_completed", "microsoft_office", False),
+        ])
+
+    def test_executor_bound_mcp_is_agent_scoped_and_redacts_secrets(self) -> None:
+        self.agent["mcpServerNames"] = ["Allowed MCP", "Missing MCP", "Blocked MCP"]
+        access = self.request["governance"]["agentAccess"][0]
+        access["allowedMcpServerNames"] = ["Allowed MCP", "Missing MCP"]
+        access["blockedMcpServerNames"] = ["Blocked MCP"]
+        self.request["executorMcpBindings"] = [{
+            "name": "Allowed MCP",
+            "transport": "stdio",
+            "command": "/opt/cowork/bin/fake-mcp",
+            "args": ["--stdio"],
+            "environment": {
+                "MCP_TOKEN": "executor-secret-value",
+                "MCP_QUOTED_TOKEN": 'quote"secret',
+            },
+        }]
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({
+                "success": True,
+                "result": {
+                    "content": 'authorized=executor-secret-value quoted=quote"secret'
+                },
+                "error": None,
+            }),
+            stderr="",
+        )
+
+        bridge_command = ["C:/Open Cowork/cowork-device-agent.exe", "executor-mcp-tool"]
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"COWORK_MCP_TOOL_COMMAND_JSON": json.dumps(bridge_command)},
+            ),
+            mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run,
+        ):
+            tools = self._tools()
+            result = tools["mcp_tool"]._run("Allowed MCP", "lookup", {"query": "hello"})
+
+        self.assertIn("authorized=[REDACTED]", result)
+        self.assertNotIn("executor-secret-value", result)
+        self.assertNotIn('quote"secret', result)
+        self.assertEqual(run.call_args.args[0], bridge_command)
+        sent = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(sent["server"]["environment"]["MCP_TOKEN"], "executor-secret-value")
+        self.assertEqual(sent["tool_name"], "lookup")
+        self.assertEqual(
+            crew_tools.unavailable_runtime_tools(self.request, self.agent),
+            ["mcp:Missing MCP"],
+        )
+        denied = tools["mcp_tool"]._run("Blocked MCP", "lookup", {})
+        self.assertIn("not allowed", denied)
+
+    def test_executor_mcp_command_override_is_shell_free_and_bounded(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"COWORK_MCP_TOOL_COMMAND_JSON": json.dumps(["agent.exe", "executor-mcp-tool"])},
+        ):
+            self.assertEqual(
+                crew_tools._mcp_tool_command(),
+                ["agent.exe", "executor-mcp-tool"],
+            )
+        for invalid in ["{}", "[]", '["agent.exe", ""]', '["agent.exe", "bad\\u0000arg"]']:
+            with mock.patch.dict(os.environ, {"COWORK_MCP_TOOL_COMMAND_JSON": invalid}):
+                with self.assertRaises(ValueError):
+                    crew_tools._mcp_tool_command()
+
+    def test_managed_windows_office_tool_uses_shell_free_executor_bridge(self) -> None:
+        self.agent["tools"].append("microsoft_office")
+        self.request["governance"]["agentAccess"][0]["allowedTools"].append(
+            "microsoft_office"
+        )
+        (self.root / "source.docx").write_bytes(b"test document placeholder")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps({
+                "success": True,
+                "result": {
+                    "application": "word",
+                    "action": "replace_text",
+                    "output": "artifacts/result.docx",
+                },
+                "error": None,
+            }),
+            stderr="",
+        )
+        bridge_command = [
+            "C:/Open Cowork/cowork-device-agent.exe",
+            "executor-windows-office",
+        ]
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"COWORK_WINDOWS_OFFICE_COMMAND_JSON": json.dumps(bridge_command)},
+            ),
+            mock.patch.object(crew_tools.subprocess, "run", return_value=completed) as run,
+        ):
+            result = self._tools()["microsoft_office"]._run(
+                application="word",
+                action="replace_text",
+                source="source.docx",
+                output="artifacts/result.docx",
+                preview_output="artifacts/result.pdf",
+                parameters={"old_text": "old", "new_text": "new"},
+            )
+
+        self.assertIn('"application": "word"', result)
+        self.assertEqual(run.call_args.args[0], bridge_command)
+        self.assertEqual(run.call_args.kwargs["cwd"], self.root.resolve())
+        self.assertEqual(run.call_args.kwargs["timeout"], 510)
+        sent = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(sent["source"], "source.docx")
+        self.assertEqual(sent["output"], "artifacts/result.docx")
+        self.assertEqual(sent["preview_output"], "artifacts/result.pdf")
+        self.assertEqual(sent["parameters"], {"old_text": "old", "new_text": "new"})
+
+    def test_managed_windows_office_command_is_required_and_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError):
+                crew_tools._windows_office_command()
+        for invalid in ["{}", "[]", '["agent.exe", ""]', '["bad\\u0000arg"]']:
+            with mock.patch.dict(
+                os.environ,
+                {"COWORK_WINDOWS_OFFICE_COMMAND_JSON": invalid},
+            ):
+                with self.assertRaises(ValueError):
+                    crew_tools._windows_office_command()
+
+    def test_executor_bound_streamable_http_mcp_keeps_headers_and_redacts_values(self) -> None:
+        bindings = crew_tools._executor_mcp_bindings({
+            "executorMcpBindings": [{
+                "name": "Remote MCP",
+                "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer http-secret"},
+            }]
+        })
+
+        self.assertEqual(bindings["Remote MCP"]["transport"], "streamable_http")
+        self.assertEqual(bindings["Remote MCP"]["url"], "https://mcp.example.com/mcp")
+        self.assertEqual(
+            crew_tools._redact_mcp_binding_values(
+                "request failed with Bearer http-secret",
+                bindings["Remote MCP"],
+            ),
+            "request failed with [REDACTED]",
+        )
+
     def test_file_tools_edit_read_glob_and_grep_inside_workspace(self) -> None:
         tools = self._tools()
 
@@ -127,6 +309,44 @@ class CrewRuntimeToolTests(unittest.TestCase):
         self.assertIn("src/example.py", glob_result)
         self.assertIn("outside the authorized working directory", escape_result)
         self.assertFalse((self.root.parent / "escape.txt").exists())
+
+    def test_exact_file_authorization_does_not_expose_neighboring_files(self) -> None:
+        allowed = self.root / "allowed.txt"
+        neighbor = self.root / "neighbor.txt"
+        allowed.write_text("allowed", encoding="utf-8")
+        neighbor.write_text("secret", encoding="utf-8")
+        self.request["cwd"] = ""
+        self.request["authorizedPaths"] = [
+            {"path": str(allowed), "kind": "file", "access": "read_write"}
+        ]
+        tools = self._tools()
+
+        self.assertIn("allowed", tools["read_file"]._run(str(allowed)))
+        self.assertIn(
+            "outside the authorized working directory",
+            tools["read_file"]._run(str(neighbor)),
+        )
+        self.assertIn(
+            "outside the authorized working directory",
+            tools["edit_file"]._run(str(neighbor), content="changed"),
+        )
+        self.assertEqual(neighbor.read_text(encoding="utf-8"), "secret")
+
+    def test_global_path_deny_rules_still_restrict_project_roots(self) -> None:
+        blocked = self.root / "blocked.txt"
+        blocked.write_text("secret", encoding="utf-8")
+        self.request["governance"]["denyRules"] = [
+            "read_file:*blocked.txt",
+            "edit_file:*blocked.txt",
+        ]
+        tools = self._tools()
+
+        self.assertIn("Global deny rule blocks read_file", tools["read_file"]._run(str(blocked)))
+        self.assertIn(
+            "Global deny rule blocks edit_file",
+            tools["edit_file"]._run(str(blocked), content="changed"),
+        )
+        self.assertEqual(blocked.read_text(encoding="utf-8"), "secret")
 
     def test_bash_uses_runtime_python_without_inheriting_pythonhome(self) -> None:
         with mock.patch.dict(
@@ -196,6 +416,34 @@ class CrewRuntimeToolTests(unittest.TestCase):
         self.assertIn("CrewAI docs", result)
         self.assertNotIn("ERROR", result)
 
+    def test_web_search_uses_live_news_feed_with_publication_times(self) -> None:
+        feed = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel>
+          <item>
+            <title>Verified current headline - Example Wire</title>
+            <link>https://news.google.com/rss/articles/current-story</link>
+            <pubDate>Thu, 23 Jul 2026 06:00:00 GMT</pubDate>
+            <source>Example Wire</source>
+            <description><![CDATA[<a href="https://example.test/story">Current report</a>]]></description>
+          </item>
+        </channel></rss>"""
+
+        with mock.patch.object(
+            crew_tools,
+            "_fetch_public_text",
+            return_value=("https://news.google.com/rss", feed, 200, False),
+        ) as fetch:
+            result = self._tools()["web_search"]._run(
+                "top global news stories today",
+                6,
+            )
+
+        self.assertIn("Provider: Google News RSS", result)
+        self.assertIn("Published: Thu, 23 Jul 2026 06:00:00 GMT", result)
+        self.assertIn("Source: Example Wire", result)
+        self.assertIn("https://news.google.com/rss/articles/current-story", result)
+        self.assertIn("news.google.com/rss?", fetch.call_args.args[0])
+
     def test_office_workflow_creates_a_real_powerpoint(self) -> None:
         sections = json.dumps([
             {"title": "Research", "bullets": ["Search works", "Sources included"]},
@@ -219,6 +467,148 @@ class CrewRuntimeToolTests(unittest.TestCase):
 
 
 class CrewRuntimeTaskTests(unittest.TestCase):
+    def test_usage_metrics_preserve_crewai_reported_counters(self) -> None:
+        usage = crew_runtime.normalize_usage_metrics(SimpleNamespace(
+            total_tokens=37,
+            prompt_tokens=20,
+            cached_prompt_tokens=4,
+            completion_tokens=17,
+            reasoning_tokens=3,
+            cache_creation_tokens=2,
+            successful_requests=5,
+        ))
+
+        self.assertEqual(usage, {
+            "total_tokens": 37,
+            "prompt_tokens": 20,
+            "cached_prompt_tokens": 4,
+            "completion_tokens": 17,
+            "reasoning_tokens": 3,
+            "cache_creation_tokens": 2,
+            "successful_requests": 5,
+        })
+
+    def test_usage_metrics_are_omitted_when_the_adapter_reports_none(self) -> None:
+        self.assertIsNone(crew_runtime.normalize_usage_metrics(None))
+        self.assertIsNone(crew_runtime.normalize_usage_metrics({"total_tokens": "invalid"}))
+
+    def test_usage_metrics_add_artifact_repair_calls(self) -> None:
+        combined = crew_runtime.merge_usage_metrics(
+            crew_runtime.normalize_usage_metrics({
+                "total_tokens": 30,
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "successful_requests": 2,
+            }),
+            crew_runtime.normalize_usage_metrics({
+                "total_tokens": 9,
+                "prompt_tokens": 7,
+                "completion_tokens": 2,
+                "successful_requests": 1,
+            }),
+        )
+
+        self.assertEqual(combined["total_tokens"], 39)
+        self.assertEqual(combined["prompt_tokens"], 27)
+        self.assertEqual(combined["completion_tokens"], 12)
+        self.assertEqual(combined["successful_requests"], 3)
+
+    def test_shared_crew_rpm_is_not_divided_into_one_request_agent_limits(self) -> None:
+        self.assertEqual(
+            crew_runtime.effective_max_rpm(
+                {"maxRpm": 3},
+                agent_count=14,
+                uses_openrouter_free=False,
+            ),
+            0,
+        )
+
+    def test_fresh_news_task_treats_runtime_time_as_authoritative(self) -> None:
+        description = crew_runtime.build_task_description(
+            {
+                "executionGuidelines": (
+                    "Current run date: 2026-07-23\n"
+                    "Create verified world news for the last 24 hours."
+                ),
+                "knowledgeFocus": "Fresh global news",
+            },
+            {
+                "description": "Search current sources.",
+                "expectedOutput": "Daily News Brief",
+            },
+            {"id": "news-scout"},
+        )
+
+        self.assertIn("authoritative live system time", description)
+        self.assertIn("Never describe that date as future", description)
+        self.assertIn("revised search query", description)
+
+    def test_fresh_news_memory_excludes_previous_crew_runs_and_failures(self) -> None:
+        note = crew_runtime.build_memory_note({
+            "executionGuidelines": "Create verified world news for the last 24 hours.",
+            "memoryContext": {
+                "entries": [
+                    {
+                        "scope": "shared",
+                        "category": "crew-run",
+                        "key": "crew::news::latest",
+                        "content": "Status: completed\nNo current sources were found.",
+                        "confidence": 0.82,
+                    },
+                    {
+                        "scope": "shared",
+                        "category": "rules",
+                        "key": "source-policy",
+                        "content": "Prefer primary sources.",
+                        "confidence": 0.95,
+                    },
+                    {
+                        "scope": "shared",
+                        "category": "crew-run",
+                        "key": "crew::news::failed",
+                        "content": "Status: failed\nNo model configured.",
+                        "confidence": 0.45,
+                    },
+                ],
+            },
+        })
+
+        self.assertIn("Prefer primary sources", note)
+        self.assertNotIn("No current sources", note)
+        self.assertNotIn("No model configured", note)
+
+    def test_work_task_prompt_language_overrides_fixed_german_crew_template(self) -> None:
+        request = {
+            "executionGuidelines": (
+                "Mission: create a verified briefing.\n"
+                "Final answer language: German.\n\n"
+                "Work task request: Daily News Report\n\n"
+                "Create a verified report with current sources.\n\n"
+                "Expected overall result:\nA concise report."
+            ),
+            "tasks": [{
+                "description": "Write the final Daily News Brief in German.",
+            }],
+        }
+
+        self.assertEqual(crew_runtime.resolve_response_language(request), "English")
+        description = crew_runtime.build_task_description(
+            request,
+            request["tasks"][0],
+            {"id": "editor"},
+        )
+        self.assertIn("Required final-output language: English", description)
+        self.assertIn("overrides fixed language defaults", description)
+
+    def test_response_language_falls_back_to_selected_interface_language(self) -> None:
+        self.assertEqual(
+            crew_runtime.resolve_response_language({
+                "responseLanguage": "de",
+                "description": "Q3 2026",
+            }),
+            "German",
+        )
+
     def test_openrouter_respects_selected_models_and_agent_overrides(self) -> None:
         request = {
             "providerConfigs": {
@@ -299,6 +689,94 @@ class CrewRuntimeTaskTests(unittest.TestCase):
         self.assertEqual(llm.additional_params.get("max_retries"), 4)
         self.assertIs(llm.additional_params.get("_skip_mcp_handler"), True)
         self.assertEqual(built_agent.max_execution_time, 180)
+
+    def test_openai_compatible_uses_the_loaded_model_for_a_stale_alias(self) -> None:
+        request = {
+            "providerConfigs": {
+                "openAICompatible": {
+                    "baseUrl": "https://inference.example.test/v1",
+                    "model": "google/gemma-4-31B-it",
+                    "models": ["RedHatAI/gemma-4-31B-it-FP8-block"],
+                    "apiKey": "test-key",
+                    "timeoutMs": 180_000,
+                }
+            },
+        }
+        agent = {
+            "id": "runtime-agent",
+            "providerKind": "openai-compatible",
+            "tools": [],
+        }
+
+        llm = crew_runtime.build_llm(request, agent)
+
+        self.assertEqual(
+            crew_runtime.resolve_agent_model_label(request, agent),
+            "RedHatAI/gemma-4-31B-it-FP8-block",
+        )
+        self.assertEqual(llm.model, "openai/RedHatAI/gemma-4-31B-it-FP8-block")
+
+    def test_agent_profile_selects_an_isolated_provider_configuration(self) -> None:
+        request = {
+            "config": {"timeoutMs": 60_000},
+            "providerConfigs": {
+                "openAICompatible": {
+                    "baseUrl": "https://fallback.example.test/v1",
+                    "model": "fallback-model",
+                    "apiKey": "fallback-key",
+                    "timeoutMs": 60_000,
+                },
+                "byProfile": {
+                    "profile-fast": {
+                        "baseUrl": "https://fast.example.test/v1",
+                        "model": "fast-model",
+                        "apiKey": "fast-key",
+                        "timeoutMs": 15_000,
+                    },
+                    "profile-deep": {
+                        "baseUrl": "https://deep.example.test/v1",
+                        "model": "deep-model",
+                        "apiKey": "deep-key",
+                        "timeoutMs": 180_000,
+                    },
+                },
+            },
+        }
+        fast_agent = {
+            "id": "fast",
+            "providerKind": "openai-compatible",
+            "providerProfileId": "profile-fast",
+            "tools": [],
+        }
+        deep_agent = {
+            "id": "deep",
+            "providerKind": "openai-compatible",
+            "providerProfileId": "profile-deep",
+            "modelOverride": "deep-agent-model",
+            "tools": [],
+        }
+
+        fast_llm = crew_runtime.build_llm(request, fast_agent)
+        deep_llm = crew_runtime.build_llm(request, deep_agent)
+
+        self.assertEqual(fast_llm.base_url, "https://fast.example.test/v1")
+        self.assertEqual(fast_llm.model, "openai/fast-model")
+        self.assertEqual(fast_llm.timeout, 15)
+        self.assertEqual(deep_llm.base_url, "https://deep.example.test/v1")
+        self.assertEqual(deep_llm.model, "openai/deep-agent-model")
+        self.assertEqual(deep_llm.timeout, 180)
+        with self.assertRaisesRegex(ValueError, "was not injected"):
+            crew_runtime.resolve_agent_provider_config(
+                request,
+                {"providerKind": "openai-compatible", "providerProfileId": "missing"},
+            )
+
+    def test_model_does_not_exist_is_classified_as_model_not_found(self) -> None:
+        classified = crew_runtime.classify_runtime_error(
+            RuntimeError("The model `stale/model` does not exist.")
+        )
+
+        self.assertTrue(classified.startswith("ModelNotFoundError:"))
 
     def test_configured_retry_count_can_raise_provider_default(self) -> None:
         request = {"retryCount": 5}
@@ -443,12 +921,47 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
             expected = crew_runtime.expected_office_artifact_paths(request, task, agent)
 
-            self.assertEqual(expected, [root / "artifacts" / "verified-output.pptx"])
+            self.assertEqual(
+                expected,
+                [root.resolve(strict=False) / "artifacts" / "verified-output.pptx"],
+            )
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
 
             expected[0].parent.mkdir(parents=True)
             expected[0].write_bytes(b"valid-artifact")
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), [])
+
+    def test_required_microsoft_office_outputs_include_xlsx_and_pdf_but_not_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "source.xlsx").write_bytes(b"source")
+            request = {"cwd": str(root)}
+            agent = {"tools": ["microsoft_office"]}
+            task = {
+                "description": (
+                    "Open source.xlsx with Microsoft Office, update cell C2, save "
+                    "artifacts/reviewed.xlsx and render artifacts/reviewed.pdf."
+                ),
+                "expectedOutput": "Both artifacts/reviewed.xlsx and artifacts/reviewed.pdf.",
+            }
+
+            expected = crew_runtime.expected_office_artifact_paths(request, task, agent)
+
+            self.assertEqual(expected, [
+                root.resolve(strict=False) / "artifacts" / "reviewed.xlsx",
+                root.resolve(strict=False) / "artifacts" / "reviewed.pdf",
+            ])
+            repair = crew_runtime.build_artifact_repair_description(
+                request,
+                task,
+                agent,
+                expected,
+                [],
+            )
+            self.assertIn("Immediately call microsoft_office", repair)
+            self.assertIsNone(
+                crew_runtime.deterministic_office_fallback(request, task, agent, expected)
+            )
 
     def test_required_edit_artifact_must_exist_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -462,7 +975,10 @@ class CrewRuntimeTaskTests(unittest.TestCase):
 
             expected = crew_runtime.expected_edit_artifact_paths(request, task, agent)
 
-            self.assertEqual(expected, [root / "artifacts" / "verified-script.py"])
+            self.assertEqual(
+                expected,
+                [root.resolve(strict=False) / "artifacts" / "verified-script.py"],
+            )
             self.assertEqual(crew_runtime.missing_required_artifacts(request, task, agent), expected)
 
             expected[0].parent.mkdir(parents=True)

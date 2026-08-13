@@ -85,6 +85,25 @@ function normalizeRiskLevel(riskLevel: string): TaskStep['riskLevel'] {
   return RISK_LEVELS.includes(riskLevel as TaskStep['riskLevel']) ? riskLevel as TaskStep['riskLevel'] : 'medium'
 }
 
+function daemonTaskStatus(status: TaskStatus): string {
+  if (status === 'created' || status === 'planned' || status === 'waiting_approval') return 'pending'
+  return status === 'cancelled' ? 'canceled' : status
+}
+
+function mirrorTaskToDaemon(task: Task): void {
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => mirrorDurableLocalEntity('task', task.id, {
+      task_kind: 'plan',
+      title: task.title,
+      description: task.prompt,
+      status: daemonTaskStatus(task.status),
+      note: task.error,
+      thread_id: task.threadId,
+      source: 'desktop',
+    }))
+    .catch((error) => console.warn('[taskStore] Daemon task mirror failed', error))
+}
+
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
 }
@@ -165,6 +184,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
     void persistInvoke('db_save_task', {
       id, title, prompt, status: 'created', threadId, createdAt: isoNow,
     }, 'db_save_task')
+    mirrorTaskToDaemon(task)
     return id
   },
 
@@ -183,6 +203,8 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
       ),
     }))
     void persistInvoke('db_update_task_status', { id: taskId, status }, 'db_update_task_status')
+    const updatedTask = get().tasks.find((task) => task.id === taskId)
+    if (updatedTask) mirrorTaskToDaemon(updatedTask)
 
     if (status === 'running') {
       void (async () => {
@@ -252,5 +274,7 @@ export const useTaskStore = create<TaskState>()((set, get) => ({
       ),
     }))
     void persistInvoke('db_update_task_status', { id: taskId, status: 'failed' }, 'db_update_task_status setTaskError')
+    const updatedTask = get().tasks.find((task) => task.id === taskId)
+    if (updatedTask) mirrorTaskToDaemon(updatedTask)
   },
 }))

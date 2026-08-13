@@ -4,9 +4,12 @@
  * when running outside the Tauri desktop runtime (e.g. in a browser dev server).
  */
 
-import { invoke } from '@tauri-apps/api/core'
-
 const NOT_AVAILABLE_MSG = 'Tauri runtime is not available - feature can only be used in the desktop app.'
+
+async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import('./tauriInvoke')
+  return invoke<T>(cmd, args)
+}
 
 /** Check whether the Tauri runtime is available. */
 export function hasTauriRuntime(): boolean {
@@ -29,7 +32,7 @@ export async function safeInvoke<T>(
     if (fallback !== undefined) return fallback
     throw new Error(NOT_AVAILABLE_MSG)
   }
-  return invoke<T>(cmd, args)
+  return invokeTauri<T>(cmd, args)
 }
 
 /**
@@ -42,7 +45,7 @@ export async function safeInvokeVoid(
 ): Promise<void> {
   if (!hasTauriRuntime()) return
   try {
-    await invoke(cmd, args)
+    await invokeTauri(cmd, args)
   } catch (error) {
     console.warn(`[safeInvokeVoid] ${cmd} failed:`, error)
   }

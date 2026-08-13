@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 
 const scriptPath = fileURLToPath(import.meta.url)
 const defaultAppRoot = resolve(dirname(scriptPath), '..')
+const crewRuntimeManifestResourcePath = 'python/crew_runtime/runtime-bundle-manifest.json'
+const crewRuntimeManifestRelativePath = `src-tauri/${crewRuntimeManifestResourcePath}`
+const crewRuntimeRequirementsRelativePath = 'src-tauri/python/crew_runtime/requirements.txt'
+const crewRuntimeLockRelativePath = 'src-tauri/python/crew_runtime/requirements.lock'
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -18,6 +22,255 @@ function sha256(bytes) {
 function fileHash(path) {
   const bytes = readFileSync(path)
   return { bytes: bytes.length, sha256: sha256(bytes) }
+}
+
+function normalizedResourcePath(value) {
+  return String(value).replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/+$/, '')
+}
+
+function resourceSourceIncludesCrewManifest(value) {
+  const path = normalizedResourcePath(value)
+  if (
+    path === crewRuntimeManifestResourcePath
+    || path === crewRuntimeManifestRelativePath
+    || path.endsWith(`/${crewRuntimeManifestResourcePath}`)
+  ) return true
+  const staticPrefix = path.slice(0, path.search(/[*?[{]/) < 0 ? path.length : path.search(/[*?[{]/)).replace(/\/+$/, '')
+  return staticPrefix === 'python/crew_runtime'
+    || staticPrefix === 'src-tauri/python/crew_runtime'
+    || crewRuntimeManifestResourcePath.startsWith(`${staticPrefix}/`)
+}
+
+function resourceTargetIsCrewManifest(value) {
+  const path = normalizedResourcePath(value)
+  return path === crewRuntimeManifestResourcePath
+    || path === crewRuntimeManifestRelativePath
+    || path.endsWith(`/${crewRuntimeManifestResourcePath}`)
+}
+
+function tauriBundlesCrewRuntimeManifest(tauriConfig) {
+  const resources = tauriConfig.bundle?.resources
+  if (Array.isArray(resources)) {
+    return resources.some(resourceSourceIncludesCrewManifest)
+  }
+  if (!resources || typeof resources !== 'object') return false
+  return Object.entries(resources).some(([source, target]) => (
+    resourceSourceIncludesCrewManifest(source) || resourceTargetIsCrewManifest(target)
+  ))
+}
+
+function crewManifestError(message) {
+  throw new Error(`Invalid Crew Runtime bundle manifest: ${message}`)
+}
+
+function manifestObject(value, path) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    crewManifestError(`${path} must be an object`)
+  }
+  return value
+}
+
+function manifestString(value, path) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    crewManifestError(`${path} must be a non-empty string`)
+  }
+  return value.trim()
+}
+
+function manifestSha256(value, path) {
+  const hash = manifestString(value, path).toLowerCase()
+  if (!/^[a-f0-9]{64}$/.test(hash)) crewManifestError(`${path} must be a SHA-256 digest`)
+  return hash
+}
+
+function manifestArchive(value, path) {
+  const archive = manifestObject(value, path)
+  const archivePath = manifestString(archive.path, `${path}.path`)
+  if (!Number.isSafeInteger(archive.bytes) || archive.bytes <= 0) {
+    crewManifestError(`${path}.bytes must be a positive safe integer`)
+  }
+  return {
+    path: archivePath,
+    bytes: archive.bytes,
+    sha256: manifestSha256(archive.sha256, `${path}.sha256`),
+  }
+}
+
+function validateCrewRuntimeManifest(value) {
+  const manifest = manifestObject(value, 'root')
+  if (manifest.schemaVersion !== 1) crewManifestError('schemaVersion must equal 1')
+
+  const pythonValue = manifestObject(manifest.python, 'python')
+  const python = {
+    name: manifestString(pythonValue.name, 'python.name'),
+    version: manifestString(pythonValue.version, 'python.version'),
+    license: manifestString(pythonValue.license, 'python.license'),
+    purl: manifestString(pythonValue.purl, 'python.purl'),
+    archive: manifestArchive(pythonValue.archive, 'python.archive'),
+  }
+  if (python.name !== 'CPython') crewManifestError('python.name must equal CPython')
+  if (python.license !== 'Python-2.0') crewManifestError('python.license must equal Python-2.0')
+  if (!python.purl.startsWith('pkg:')) crewManifestError('python.purl must be a package URL')
+
+  const wheelhouseValue = manifestObject(manifest.wheelhouse, 'wheelhouse')
+  const wheelhouse = {
+    requirementsSha256: manifestSha256(wheelhouseValue.requirementsSha256, 'wheelhouse.requirementsSha256'),
+    lockSha256: manifestSha256(wheelhouseValue.lockSha256, 'wheelhouse.lockSha256'),
+    archive: manifestArchive(wheelhouseValue.archive, 'wheelhouse.archive'),
+  }
+
+  if (!Array.isArray(manifest.packages) || manifest.packages.length === 0) {
+    crewManifestError('packages must be a non-empty array')
+  }
+  const purls = new Set()
+  const packages = manifest.packages.map((value, index) => {
+    const packageValue = manifestObject(value, `packages[${index}]`)
+    const packageRecord = {
+      name: manifestString(packageValue.name, `packages[${index}].name`),
+      version: manifestString(packageValue.version, `packages[${index}].version`),
+      license: manifestString(packageValue.license, `packages[${index}].license`),
+      purl: manifestString(packageValue.purl, `packages[${index}].purl`),
+      filename: manifestString(packageValue.filename, `packages[${index}].filename`),
+      sha256: manifestSha256(packageValue.sha256, `packages[${index}].sha256`),
+    }
+    if (!packageRecord.purl.startsWith('pkg:pypi/')) {
+      crewManifestError(`packages[${index}].purl must be a PyPI package URL`)
+    }
+    if (purls.has(packageRecord.purl)) crewManifestError(`duplicate package purl ${packageRecord.purl}`)
+    purls.add(packageRecord.purl)
+    return packageRecord
+  })
+
+  manifestObject(manifest.smoke, 'smoke')
+  return { schemaVersion: 1, python, wheelhouse, packages, smoke: manifest.smoke }
+}
+
+function verifyCrewRuntimeArchive(appRoot, archive, field) {
+  const root = resolve(appRoot)
+  const normalizedPath = normalizedResourcePath(archive.path)
+  const candidates = [resolve(root, normalizedPath)]
+  if (!normalizedPath.startsWith('src-tauri/')) {
+    candidates.push(resolve(root, 'src-tauri', normalizedPath))
+  }
+  const containedCandidates = candidates.filter((path) => path.startsWith(`${root}${sep}`))
+  if (containedCandidates.length !== candidates.length) {
+    crewManifestError(`${field}.path must remain inside the application root`)
+  }
+  const archivePath = containedCandidates.find((path) => existsSync(path))
+  if (!archivePath) crewManifestError(`${field}.path does not exist: ${archive.path}`)
+  const stats = lstatSync(archivePath)
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    crewManifestError(`${field}.path must identify a regular file`)
+  }
+  const actual = fileHash(archivePath)
+  if (actual.bytes !== archive.bytes) {
+    crewManifestError(`${field}.bytes does not match ${archive.path}`)
+  }
+  if (actual.sha256 !== archive.sha256) {
+    crewManifestError(`${field}.sha256 does not match ${archive.path}`)
+  }
+}
+
+function readCrewRuntimeBundle(
+  appRoot,
+  tauriConfig = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json')),
+  { verifyArchives = true } = {},
+) {
+  if (!tauriBundlesCrewRuntimeManifest(tauriConfig)) return null
+  const manifestPath = join(appRoot, ...crewRuntimeManifestRelativePath.split('/'))
+  const requirementsPath = join(appRoot, ...crewRuntimeRequirementsRelativePath.split('/'))
+  const lockPath = join(appRoot, ...crewRuntimeLockRelativePath.split('/'))
+  if (!existsSync(manifestPath)) {
+    throw new Error(`Crew Runtime bundle manifest is required by tauri.conf.json but is missing: ${crewRuntimeManifestRelativePath}`)
+  }
+  if (!existsSync(requirementsPath)) {
+    throw new Error(`Crew Runtime requirements are required by the bundle manifest but are missing: ${crewRuntimeRequirementsRelativePath}`)
+  }
+  if (!existsSync(lockPath)) {
+    throw new Error(`Crew Runtime dependency lock is required by the bundle manifest but is missing: ${crewRuntimeLockRelativePath}`)
+  }
+
+  const manifestBytes = readFileSync(manifestPath)
+  let manifestValue
+  try {
+    manifestValue = JSON.parse(manifestBytes.toString('utf8'))
+  } catch (error) {
+    crewManifestError(`JSON parsing failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const manifest = validateCrewRuntimeManifest(manifestValue)
+  if (verifyArchives) {
+    verifyCrewRuntimeArchive(appRoot, manifest.python.archive, 'python.archive')
+    verifyCrewRuntimeArchive(appRoot, manifest.wheelhouse.archive, 'wheelhouse.archive')
+  }
+  const requirementsBytes = readFileSync(requirementsPath)
+  const lockBytes = readFileSync(lockPath)
+  const requirementsSha256 = sha256(requirementsBytes)
+  if (requirementsSha256 !== manifest.wheelhouse.requirementsSha256) {
+    crewManifestError(
+      `wheelhouse.requirementsSha256 does not match ${crewRuntimeRequirementsRelativePath}`,
+    )
+  }
+  if (sha256(lockBytes) !== manifest.wheelhouse.lockSha256) {
+    crewManifestError(
+      `wheelhouse.lockSha256 does not match ${crewRuntimeLockRelativePath}`,
+    )
+  }
+
+  const records = [
+    {
+      ecosystem: 'python',
+      name: manifest.python.name,
+      version: manifest.python.version,
+      license: manifest.python.license,
+      purl: manifest.python.purl,
+      sha256: manifest.python.archive.sha256,
+    },
+    ...manifest.packages.map((pkg) => ({
+      ecosystem: 'pypi',
+      name: pkg.name,
+      version: pkg.version,
+      license: pkg.license,
+      purl: pkg.purl,
+      sha256: pkg.sha256,
+    })),
+  ]
+  const components = [
+    {
+      type: 'application',
+      'bom-ref': manifest.python.purl,
+      name: manifest.python.name,
+      version: manifest.python.version,
+      purl: manifest.python.purl,
+      hashes: [{ alg: 'SHA-256', content: manifest.python.archive.sha256 }],
+      licenses: [{ expression: normalizeLicenseExpression(manifest.python.license) }],
+      properties: [
+        { name: 'localai-cowork:archive-path', value: manifest.python.archive.path },
+        { name: 'localai-cowork:archive-bytes', value: String(manifest.python.archive.bytes) },
+      ],
+    },
+    ...manifest.packages.map((pkg) => ({
+      type: 'library',
+      'bom-ref': pkg.purl,
+      name: pkg.name,
+      version: pkg.version,
+      purl: pkg.purl,
+      hashes: [{ alg: 'SHA-256', content: pkg.sha256 }],
+      licenses: [{ expression: normalizeLicenseExpression(pkg.license) }],
+      properties: [{ name: 'localai-cowork:wheel-filename', value: pkg.filename }],
+    })),
+  ]
+  return {
+    manifest,
+    records,
+    components,
+    rootDependencies: components.map((component) => component['bom-ref']),
+    materialBuffers: [manifestBytes, requirementsBytes, lockBytes],
+    materialPaths: [
+      crewRuntimeManifestRelativePath,
+      crewRuntimeRequirementsRelativePath,
+      crewRuntimeLockRelativePath,
+    ],
+  }
 }
 
 function command(commandName, args, cwd) {
@@ -100,7 +353,7 @@ export function assertVersionConsistency({ packageVersion, packageLockVersion, c
   return expected
 }
 
-function releaseVersion(appRoot, releaseTag = '') {
+export function releaseVersion(appRoot, releaseTag = '') {
   const packageJson = readJson(join(appRoot, 'package.json'))
   const packageLock = readJson(join(appRoot, 'package-lock.json'))
   const tauri = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json'))
@@ -284,18 +537,30 @@ export function workflowHardeningErrors(text) {
 export function releaseWorkflowSigningErrors(text) {
   const errors = []
   const signingIndex = text.indexOf('sign-windows-installer.ps1')
+  const updaterSigningIndex = text.indexOf('tauri signer sign')
+  const updaterManifestIndex = text.indexOf('create-updater-manifest.mjs')
   const sbomIndex = text.indexOf('supply-chain:sbom')
   const provenanceIndex = text.indexOf('supply-chain:release')
-  const attestationIndex = text.indexOf('attest-build-provenance')
+  const attestationIndex = text.indexOf('uses: actions/attest@')
+  const sbomAttestationIndex = text.indexOf('sbom-path:')
   const publicationIndex = text.indexOf('action-gh-release')
   if (signingIndex < 0) errors.push('release workflow is missing Authenticode signing')
+  if (updaterSigningIndex < 0) errors.push('release workflow is missing Tauri updater signing')
+  if (updaterManifestIndex < 0) errors.push('release workflow is missing latest.json generation')
+  if (attestationIndex < 0) errors.push('release workflow is missing build attestation')
+  if (sbomAttestationIndex < 0) errors.push('release workflow is missing SBOM attestation')
   for (const [name, index] of [
     ['SBOM generation', sbomIndex],
     ['release provenance', provenanceIndex],
     ['build attestation', attestationIndex],
+    ['SBOM attestation', sbomAttestationIndex],
     ['release publication', publicationIndex],
   ]) {
     if (index >= 0 && signingIndex >= index) errors.push(`Authenticode signing must run before ${name}`)
+    if (index >= 0 && updaterSigningIndex >= index) errors.push(`updater signing must run before ${name}`)
+  }
+  if (updaterManifestIndex >= 0 && updaterSigningIndex >= updaterManifestIndex) {
+    errors.push('updater artifact signing must run before latest.json generation')
   }
   for (const variable of [
     'LOCALAI_COWORK_CODESIGN_PFX_BASE64',
@@ -313,6 +578,46 @@ export function releaseWorkflowSigningErrors(text) {
   if (/LOCALAI_COWORK_AUTHENTICODE_TEST_MODE|TestAllowUntrustedCertificate|TestSkipTimestamp/i.test(text)) {
     errors.push('Authenticode test bypasses are forbidden in the release workflow')
   }
+  if (!/TAURI_SIGNING_PRIVATE_KEY:\s*\$\{\{\s*secrets\.LOCALAI_COWORK_UPDATER_PRIVATE_KEY\s*}}/.test(text)) {
+    errors.push('release workflow is missing the secret-backed updater private key')
+  }
+  if (!/LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required/.test(text)) {
+    errors.push('release workflow must fail closed when the updater private key is missing')
+  }
+  if (/tauri signer sign[^\r\n]*(?:private-key|-k\s)/i.test(text)) {
+    errors.push('updater private key material must not be passed on the command line')
+  }
+  if (text.includes('LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE')) {
+    const requiredUnsignedControls = [
+      [
+        /LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE:\s*\$\{\{\s*vars\.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE\s*}}/,
+        'unsigned releases must require the repository-scoped LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE variable',
+      ],
+      [
+        /if:\s*\$\{\{\s*steps\.signing_mode\.outputs\.sign\s*==\s*'true'\s*}}/,
+        'the Authenticode step must be controlled by the fail-closed signing mode',
+      ],
+      [
+        /\$env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE\s+-ne\s+'true'/,
+        'unsigned releases must require the exact explicit value true',
+      ],
+      [
+        /Get-AuthenticodeSignature[\s\S]*Status\s+-ne\s+'NotSigned'/,
+        'the unsigned exception must verify that the installer is actually unsigned',
+      ],
+      [
+        /UNSIGNED-WINDOWS-INSTALLER\.txt/,
+        'unsigned releases must publish a warning asset',
+      ],
+      [
+        /body:\s*\$\{\{\s*(?:steps\.signing_mode|needs\.windows)\.outputs\.release_notice\s*}}/,
+        'unsigned releases must display a warning in the GitHub release body',
+      ],
+    ]
+    for (const [pattern, error] of requiredUnsignedControls) {
+      if (!pattern.test(text)) errors.push(error)
+    }
+  }
   return errors
 }
 
@@ -327,7 +632,7 @@ function validateWorkflowHardening(appRoot, policy) {
     const text = readFileSync(join(workflowRoot, name), 'utf8')
     combined += `\n${text}`
     errors.push(...workflowHardeningErrors(text).map((error) => `${name}: ${error}`))
-    if (name === 'windows-installer.yml' || name === 'windows-installer.yaml') {
+    if (['release.yml', 'release.yaml', 'windows-installer.yml', 'windows-installer.yaml'].includes(name)) {
       errors.push(...releaseWorkflowSigningErrors(text).map((error) => `${name}: ${error}`))
     }
   }
@@ -335,7 +640,7 @@ function validateWorkflowHardening(appRoot, policy) {
     errors.push(`cargo-audit is not installed at policy version ${policy.cargoAuditVersion}`)
   }
   if (!combined.includes('npm audit --audit-level=high')) errors.push('blocking high-severity npm audit is missing')
-  for (const required of ['supply-chain:sbom', 'supply-chain:release', 'attest-build-provenance', 'attest-sbom']) {
+  for (const required of ['supply-chain:sbom', 'supply-chain:release', 'uses: actions/attest@', 'sbom-path:']) {
     if (!combined.includes(required)) errors.push(`release workflow is missing ${required}`)
   }
   if (errors.length > 0) throw new Error(`Workflow supply-chain policy failed:\n${errors.join('\n')}`)
@@ -364,6 +669,8 @@ export function collectInventory(appRoot = defaultAppRoot, options = {}) {
   const packageLockPath = join(appRoot, 'package-lock.json')
   const cargoLockPath = join(appRoot, 'src-tauri', 'Cargo.lock')
   const packageLock = readJson(packageLockPath)
+  const tauriConfig = readJson(join(appRoot, 'src-tauri', 'tauri.conf.json'))
+  const crewRuntimeBundle = readCrewRuntimeBundle(appRoot, tauriConfig)
   const target = options.target ?? process.env.TAURI_BUILD_TARGET ?? 'x86_64-pc-windows-msvc'
   const metadata = options.cargoMetadata ?? JSON.parse(command('cargo', [
     'metadata', '--locked', '--format-version', '1', '--filter-platform', target,
@@ -430,8 +737,13 @@ export function collectInventory(appRoot = defaultAppRoot, options = {}) {
     })
   }
 
-  validateLicenses([...npmRecords, ...cargoRecords], policy)
-  const components = [...npmComponents.values(), ...cargoComponents.values()]
+  const records = [...npmRecords, ...cargoRecords, ...(crewRuntimeBundle?.records ?? [])]
+  validateLicenses(records, policy)
+  const components = [
+    ...npmComponents.values(),
+    ...cargoComponents.values(),
+    ...(crewRuntimeBundle?.components ?? []),
+  ]
     .map((component) => Object.fromEntries(Object.entries(component).filter(([, value]) => value !== undefined)))
     .sort((left, right) => left['bom-ref'].localeCompare(right['bom-ref']))
   const cargoRefById = new Map([...cargoComponents].map(([id, component]) => [id, component['bom-ref']]))
@@ -452,18 +764,23 @@ export function collectInventory(appRoot = defaultAppRoot, options = {}) {
     const ref = cargoRefById.get(dependency.pkg)
     if (ref) rootDependencies.push(ref)
   }
+  rootDependencies.push(...(crewRuntimeBundle?.rootDependencies ?? []))
 
   return {
     packageJson,
     policy,
     target,
     components,
-    records: [...npmRecords, ...cargoRecords],
+    records,
     dependencies: [
       { ref: `pkg:generic/localai-cowork@${packageJson.version}`, dependsOn: [...new Set(rootDependencies)].sort() },
       ...[...dependencyMap].map(([ref, dependsOn]) => ({ ref, dependsOn })).sort((a, b) => a.ref.localeCompare(b.ref)),
     ],
-    materialSeed: Buffer.concat([readFileSync(packageLockPath), readFileSync(cargoLockPath)]),
+    materialSeed: Buffer.concat([
+      readFileSync(packageLockPath),
+      readFileSync(cargoLockPath),
+      ...(crewRuntimeBundle?.materialBuffers ?? []),
+    ]),
   }
 }
 
@@ -498,12 +815,14 @@ export function createSbom(appRoot = defaultAppRoot, options = {}) {
 
 function notices(inventory, version, context) {
   const packages = inventory.records
-    .map((record) => ({
+    .map((record) => Object.fromEntries(Object.entries({
       ecosystem: record.ecosystem,
       name: record.name,
       version: record.version,
       license: normalizeLicenseExpression(record.license),
-    }))
+      purl: record.purl,
+      sha256: record.sha256,
+    }).filter(([, value]) => value !== undefined)))
     .sort((left, right) => `${left.ecosystem}:${left.name}@${left.version}`.localeCompare(`${right.ecosystem}:${right.name}@${right.version}`))
   return { schemaVersion: 1, product: 'localai-cowork', version, commit: context.commit, generatedAt: context.timestamp, packages }
 }
@@ -548,7 +867,16 @@ export function writeReleaseProvenance(appRoot, assetsDir, options = {}) {
     assertRegularAsset(path, assetsDir)
     return { name, ...fileHash(path) }
   })
-  const materialNames = ['package.json', 'package-lock.json', 'supply-chain-policy.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json']
+  const crewRuntimeBundle = readCrewRuntimeBundle(appRoot, undefined, { verifyArchives: false })
+  const materialNames = [
+    'package.json',
+    'package-lock.json',
+    'supply-chain-policy.json',
+    'src-tauri/Cargo.toml',
+    'src-tauri/Cargo.lock',
+    'src-tauri/tauri.conf.json',
+    ...(crewRuntimeBundle?.materialPaths ?? []),
+  ]
   const materials = materialNames.map((name) => ({ path: name.replaceAll('\\', '/'), ...fileHash(join(appRoot, name)) }))
   const provenance = {
     schemaVersion: 1,

@@ -13,7 +13,8 @@ export type MemoryEntry = {
   category: string
   key: string
   content: string
-  source_session_id: string | null
+  scope_ref: string | null
+  source_run_id: string | null
   confidence: number
   access_count: number
   last_accessed_at: string
@@ -58,9 +59,10 @@ export type MemoryHint = {
 }
 
 type BackendFrozenSnapshot = {
-  sessionId: string
+  threadId: string
   agentEntries: MemoryEntry[]
   sharedEntries: MemoryEntry[]
+  chatEntries?: MemoryEntry[]
   userProfile: UserProfileEntry[]
   createdAt: string
 }
@@ -93,6 +95,37 @@ function setLocalProfile(entries: UserProfileEntry[]): void {
   try { localStorage.setItem(LOCAL_PROFILE_KEY, JSON.stringify(entries)) } catch { /* noop */ }
 }
 
+function mirrorMemoryToDaemon(entry: {
+  id: string
+  scope: string
+  scopeRef?: string | null
+  category: string
+  key: string
+  content: string
+  confidence?: number
+  sourceRunId?: string | null
+}): void {
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => mirrorDurableLocalEntity('memory', entry.id, {
+      scope: entry.scope,
+      scope_ref: entry.scope === 'chat' ? entry.scopeRef ?? null : null,
+      category: entry.category,
+      key: entry.key,
+      content: entry.content,
+      target: entry.scope === 'user' ? 'user' : 'memory',
+      source_run_id: entry.sourceRunId ?? null,
+      confidence: entry.confidence ?? 1,
+      source: 'desktop',
+    }))
+    .catch((error) => console.warn('[memoryStore] Daemon memory mirror failed', error))
+}
+
+function tombstoneMemoryInDaemon(id: string): void {
+  void import('../runtime/localDaemonEntities')
+    .then(({ tombstoneDurableLocalEntity }) => tombstoneDurableLocalEntity('memory', id))
+    .catch((error) => console.warn('[memoryStore] Daemon memory delete failed', error))
+}
+
 /* ── Store ────────────────────────────────────────────────────────────── */
 
 type MemoryState = {
@@ -105,9 +138,18 @@ type MemoryState = {
   loading: boolean
   error: string | null
 
-  loadEntries: (scope?: string, category?: string, limit?: number) => Promise<void>
+  loadEntries: (scope?: string, category?: string, limit?: number, scopeRef?: string | null) => Promise<void>
   searchEntries: (query: string, limit?: number) => Promise<void>
-  upsertEntry: (entry: { id: string; scope: string; category: string; key: string; content: string; confidence?: number }) => Promise<void>
+  upsertEntry: (entry: {
+    id: string
+    scope: string
+    scopeRef?: string | null
+    category: string
+    key: string
+    content: string
+    confidence?: number
+    sourceRunId?: string | null
+  }) => Promise<void>
   importKnowledgeText: (title: string, content: string) => Promise<number>
   deleteEntry: (id: string) => Promise<void>
   compactEntries: (scope: string, minConfidence: number) => Promise<{ removed: number; remaining: number }>
@@ -133,11 +175,12 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
   loading: false,
   error: null,
 
-  loadEntries: async (scope, category, limit = 200) => {
+  loadEntries: async (scope, category, limit = 200, scopeRef = null) => {
     set({ loading: true, error: null })
     try {
       const entries = await safeInvoke<MemoryEntry[]>('memory_search', {
         scope: scope ?? null,
+        scopeRef: scope === 'chat' ? scopeRef : null,
         category: category ?? null,
         keyword: null,
         limit,
@@ -171,9 +214,11 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       await safeInvoke('memory_upsert', {
         id: entry.id,
         scope: entry.scope,
+        scopeRef: entry.scope === 'chat' ? entry.scopeRef ?? null : null,
         category: entry.category,
         key: entry.key,
         content: entry.content,
+        sourceRunId: entry.sourceRunId ?? null,
         confidence: entry.confidence ?? 1.0,
       }, undefined)
     } catch {
@@ -191,7 +236,8 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
         key: entry.key,
         content: entry.content,
         confidence: entry.confidence ?? 1.0,
-        source_session_id: null,
+        scope_ref: entry.scope === 'chat' ? entry.scopeRef ?? null : null,
+        source_run_id: entry.sourceRunId ?? null,
         access_count: 0,
         last_accessed_at: now,
         created_at: now,
@@ -201,6 +247,7 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       else local.unshift(full)
       setLocalEntries(local)
     }
+    mirrorMemoryToDaemon(entry)
   },
 
   importKnowledgeText: async (title, content) => {
@@ -224,6 +271,7 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       setLocalEntries(local)
       set((s) => ({ entries: s.entries.filter((e) => e.id !== id) }))
     }
+    tombstoneMemoryInDaemon(id)
   },
 
   compactEntries: async (scope, minConfidence) => {
@@ -244,7 +292,7 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
   createSnapshot: async () => {
     try {
       const backend = await safeInvoke<BackendFrozenSnapshot>('memory_snapshot')
-      const entries = [...backend.agentEntries, ...backend.sharedEntries]
+      const entries = [...backend.agentEntries, ...backend.sharedEntries, ...(backend.chatEntries ?? [])]
       const snapshot: FrozenSnapshot = {
         timestamp: backend.createdAt,
         entries,
@@ -286,7 +334,8 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
   },
 
   upsertProfile: async (key, value, source = 'manual', confidence = 1.0) => {
-    const id = `prof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const existingProfile = get().profileEntries.find((entry) => entry.key === key)
+    const id = existingProfile?.id ?? `prof-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     try {
       await safeInvoke('user_profile_upsert', { id, key, value, source, confidence }, undefined)
     } catch {
@@ -299,9 +348,18 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       else local.unshift(full)
       setLocalProfile(local)
     }
+    mirrorMemoryToDaemon({
+      id: `profile:${id}`,
+      scope: 'user',
+      category: 'profile',
+      key,
+      content: value,
+      confidence,
+    })
   },
 
   deleteProfile: async (key) => {
+    const existing = get().profileEntries.find((entry) => entry.key === key)
     try {
       await safeInvoke('user_profile_delete', { key }, undefined)
       set((s) => ({ profileEntries: s.profileEntries.filter((p) => p.key !== key) }))
@@ -310,6 +368,7 @@ export const useMemoryStore = create<MemoryState>()((set, get) => ({
       setLocalProfile(local)
       set((s) => ({ profileEntries: s.profileEntries.filter((p) => p.key !== key) }))
     }
+    if (existing) tombstoneMemoryInDaemon(`profile:${existing.id}`)
   },
 
   loadProviders: async () => {

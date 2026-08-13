@@ -1,0 +1,1 @@
+-keep class dev.opencowork.mobile_push.** { *; }

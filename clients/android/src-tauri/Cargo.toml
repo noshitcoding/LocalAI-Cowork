@@ -1,0 +1,25 @@
+[package]
+name = "open-cowork-android"
+version = "0.3.3"
+description = "Thin Android remote-control shell for Open Cowork"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "open_cowork_android_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+tauri = { version = "2.10.3", features = [] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-biometric = "2.3.2"
+tauri-plugin-mobile-secure = { path = "../plugins/mobile-secure" }
+tauri-plugin-mobile-push = { path = "../plugins/mobile-push" }

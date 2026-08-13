@@ -8,6 +8,8 @@ const openAiProfile = {
   id: 'default-openai-compatible',
   name: 'OpenAI-compatible',
   provider: 'openai-compatible' as const,
+  preset: 'custom' as const,
+  authMode: 'bearer' as const,
   baseUrl: 'https://mlis.example.test/v1',
   model: '0xSero/Hy3-preview-nvfp4',
   apiKey: 'sk-test',
@@ -36,6 +38,7 @@ function createContext(): ChatProviderContext {
     availableModels: [],
     llmProfiles: [openAiProfile],
     defaultLlmProfileIds: {
+      api: openAiProfile.id,
       ollama: 'default-ollama',
       'openai-compatible': openAiProfile.id,
       openrouter: 'default-openrouter',
@@ -49,7 +52,7 @@ function createContext(): ChatProviderContext {
 describe('getChatProviderState', () => {
   it('falls back to the profile model when a stored external thread model is no longer listed', () => {
     const state = getChatProviderState(createContext(), 'openai-compatible', {
-      provider: 'openai-compatible',
+      backend: 'openai-compatible',
       profileId: openAiProfile.id,
       model: 'Hy3-preview-nvfp4',
     })
@@ -62,7 +65,7 @@ describe('getChatProviderState', () => {
     context.llmProfileModels[openAiProfile.id] = []
 
     const state = getChatProviderState(context, 'openai-compatible', {
-      provider: 'openai-compatible',
+      backend: 'openai-compatible',
       profileId: openAiProfile.id,
       model: 'custom-model',
     })
@@ -75,7 +78,7 @@ describe('getChatProviderState', () => {
     context.llmProfileModels[openAiProfile.id] = []
 
     const state = getChatProviderState(context, 'openai-compatible', {
-      provider: 'openai-compatible',
+      backend: 'openai-compatible',
       profileId: openAiProfile.id,
       model: 'Hy3-preview-nvfp4',
     })
@@ -83,7 +86,7 @@ describe('getChatProviderState', () => {
     expect(state.model).toBe('0xSero/Hy3-preview-nvfp4')
   })
 
-  it('lists configured models from every profile for the selected external provider', () => {
+  it('lists only models belonging to the selected API profile', () => {
     const context = createContext()
     context.llmProfiles = [openAiProfile, secondOpenAiProfile]
     context.llmProfileModels[secondOpenAiProfile.id] = ['custom/loaded-model']
@@ -92,8 +95,6 @@ describe('getChatProviderState', () => {
 
     expect(state.selectableModels).toEqual([
       '0xSero/Hy3-preview-nvfp4',
-      'custom/loaded-model',
-      'custom/manual-model',
     ])
   })
 
@@ -103,8 +104,8 @@ describe('getChatProviderState', () => {
     context.llmProfileModels[secondOpenAiProfile.id] = ['google/gemma-4-31B-it']
 
     const state = getChatProviderState(context, 'openai-compatible', {
-      provider: 'openai-compatible',
-      profileId: openAiProfile.id,
+      backend: 'openai-compatible',
+      profileId: secondOpenAiProfile.id,
       model: 'google/gemma-4-31B-it',
     })
 
@@ -121,6 +122,8 @@ describe('getChatProviderState', () => {
         id: 'default-ollama',
         name: 'Lokales Ollama',
         provider: 'ollama',
+        preset: 'ollama',
+        authMode: 'none',
         baseUrl: 'http://localhost:11434',
         model: 'qwen2.5:14b',
         apiKey: '',
@@ -131,7 +134,10 @@ describe('getChatProviderState', () => {
       },
     ]
 
-    const state = getChatProviderState(context, 'ollama')
+    const state = getChatProviderState(context, 'openai-compatible', {
+      backend: 'openai-compatible',
+      profileId: 'default-ollama',
+    })
 
     expect(state.selectableModels).toEqual(['llama3.1:8b', 'qwen2.5:14b'])
   })

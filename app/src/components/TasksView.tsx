@@ -1,20 +1,32 @@
 import { open } from '@tauri-apps/plugin-dialog'
-import { listen } from '@tauri-apps/api/event'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { CalendarClock, ListTodo, PlayCircle } from 'lucide-react'
 import { useChatStore, type CrewLiveState, type CrewLiveStatus } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import { useCoworkStore, type ScheduledTask } from '../stores/coworkStore'
 import { resolveCrewAgentsWithProfiles, useCrewStore, type CrewPersonalityProfile } from '../stores/crewStore'
 import { usePersonalityStore } from '../stores/personalityStore'
-import { useProjectStore } from '../stores/projectStore'
+import { getProjectForThread, useProjectStore } from '../stores/projectStore'
 import { useTaskTemplatesStore } from '../stores/taskTemplatesStore'
 import { useUiStore } from '../stores/uiStore'
 import { useWorkTasksStore, type WorkTask, type WorkTaskRunner } from '../stores/workTasksStore'
-import { tr } from '../i18n'
-import { safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
-import { streamChatTurn } from '../utils/ollamaStreaming'
+import { useEngineStore } from '../stores/engineStore'
+import type { EngineEvent } from '../engine/core/queryEngine'
+import { extractTextContent } from '../engine/types'
+import i18n, { tr } from '../i18n'
+import { hasTauriRuntime, safeInvoke } from '../utils/safeInvoke'
+import { getChatProviderState } from '../utils/chatProvider'
+import {
+  createDurableLocalRun,
+  createDurableCrewRun,
+  createDurableCodexRun,
+  deleteDurableLocalSchedule,
+  upsertDurableCrewSchedule,
+  upsertDurableCodexSchedule,
+  upsertDurableLocalSchedule,
+} from '../runtime/localDaemonExecution'
+import { attachDurableLocalRun, cancelLatestDurableRun } from '../runtime/localDaemonChat'
+import { useCodexStore } from '../stores/codexStore'
 import {
   appendCrewLiveEntry,
   applyCrewDefaultModel,
@@ -23,11 +35,12 @@ import {
   buildCrewRuntimeTasks,
   buildWorkTaskCrewGuidelines,
   createCrewLiveEntry,
+  resolveEffectiveCrewProvider,
   resolveCrewRuntimeConfig,
   resolveExternalProviderConfig,
   type CrewExecutionLog,
-  type CrewExecutionLogEvent,
   type CrewExecutionResponse,
+  type CrewResolvedProviderConfigs,
 } from '../engine/crew/workTaskCrewRuntime'
 import {
   buildCrewRunOutput,
@@ -46,6 +59,11 @@ import {
   readCrewScheduleSnapshotMetadata,
   resolveCrewScheduleSource,
 } from '../engine/tasks/workTaskScheduleService'
+import {
+  appendTaskProjectPrompt,
+  resolveTaskProjectRunContext,
+  type TaskProjectRunContext,
+} from '../utils/taskProjectContext'
 import TaskCreatePanel from './tasks/TaskCreatePanel'
 import TaskDetailPane from './tasks/TaskDetailPane'
 import TaskListPane from './tasks/TaskListPane'
@@ -66,14 +84,20 @@ export default function TasksView() {
   const addChatMessage = useChatStore((s) => s.addMessage)
   const updateChatMessage = useChatStore((s) => s.updateMessage)
   const projects = useProjectStore((s) => s.projects)
+  const activeProjectId = useProjectStore((s) => s.activeProjectId)
+  const attachProjectThread = useProjectStore((s) => s.attachThread)
+  const detachProjectThreadFromAll = useProjectStore((s) => s.detachThreadFromAll)
   const setActiveMode = useUiStore((s) => s.setActiveMode)
   const setWorkingFolder = useUiStore((s) => s.setWorkingFolder)
+  const sendEngineMessage = useEngineStore((s) => s.sendMessage)
+  const abortEngine = useEngineStore((s) => s.abort)
 
   const templates = useTaskTemplatesStore((s) => s.templates)
   const removeTemplate = useTaskTemplatesStore((s) => s.removeTemplate)
 
   const {
     scheduledTasks,
+    policyFlags,
     loadScheduledTasks,
     upsertScheduledTask,
     toggleScheduledTask,
@@ -82,7 +106,11 @@ export default function TasksView() {
 
   const ollamaConfig = useConfigStore((s) => s.ollama)
   const defaultLlmProfileIds = useConfigStore((s) => s.defaultLlmProfileIds)
+  const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
   const llmProfiles = useConfigStore((s) => s.llmProfiles)
+  const availableModels = useConfigStore((s) => s.availableModels)
+  const mcpServer = useConfigStore((s) => s.mcpServer)
+  const mcpServers = useConfigStore((s) => s.mcpServers)
 
   const personalityProfiles = useMemo<CrewPersonalityProfile[]>(() => (
     personalities.map((personality) => ({
@@ -107,6 +135,8 @@ export default function TasksView() {
   const [newRunner, setNewRunner] = useState<WorkTaskRunner>('crew')
   const [newCrewId, setNewCrewId] = useState<string>('')
   const [newModel, setNewModel] = useState<string>('')
+  const [newUseProjectContext, setNewUseProjectContext] = useState(false)
+  const [newProjectId, setNewProjectId] = useState<string>('')
   const [createPanelOpen, setCreatePanelOpen] = useState(tasks.length === 0)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [importCrewId, setImportCrewId] = useState<string>('')
@@ -134,6 +164,15 @@ export default function TasksView() {
     if (newCrewId && crews.some((crew) => crew.id === newCrewId)) return
     setNewCrewId(crews[0]?.id ?? '')
   }, [crews, newCrewId, newRunner])
+
+  useEffect(() => {
+    if (newProjectId && projects.some((project) => project.id === newProjectId)) return
+    const preferredProjectId = activeProjectId && projects.some((project) => project.id === activeProjectId)
+      ? activeProjectId
+      : projects[0]?.id ?? ''
+    setNewProjectId(preferredProjectId)
+    if (!preferredProjectId) setNewUseProjectContext(false)
+  }, [activeProjectId, newProjectId, projects])
 
   useEffect(() => {
     if (importCrewId && crews.some((crew) => crew.id === importCrewId)) return
@@ -258,15 +297,9 @@ export default function TasksView() {
   const selectedScheduledTask = selectedTask ? findScheduledTask(scheduledTasks, selectedTask.id) : null
   const selectedProjectContext = useMemo(() => {
     if (!selectedTask?.threadId) return null
-    const project = projects.find((item) => item.threadIds.includes(selectedTask.threadId as string))
-    return project ? { title: project.title } : null
+    const project = getProjectForThread(projects, selectedTask.threadId)
+    return project ? { id: project.id, title: project.title } : null
   }, [projects, selectedTask?.threadId])
-
-  const ensureAllowedTaskFolder = async (workDir: string) => {
-    const normalized = workDir.trim()
-    if (!normalized || !isAbsolutePath(normalized)) return
-    await safeInvokeVoid('fs_add_allowed_folder', { path: normalized })
-  }
 
   const createTaskThread = (task: WorkTask, preserveCurrentThread = true): string => {
     const existingThreadId = task.threadId && useChatStore.getState().threads.some((thread) => thread.id === task.threadId)
@@ -274,6 +307,19 @@ export default function TasksView() {
       : null
 
     if (existingThreadId) {
+      const existingThread = useChatStore.getState().threads.find((thread) => thread.id === existingThreadId)
+      useChatStore.getState().setThreadRunner(
+        existingThreadId,
+        task.runner,
+        task.runner === 'crew' ? task.crewId : null,
+      )
+      if (task.runner === 'model') {
+        if (task.backendSelection) {
+          useChatStore.getState().setThreadProviderSettings(existingThreadId, task.backendSelection)
+        } else if (existingThread?.providerSettings) {
+          updateTask(task.id, { backendSelection: existingThread.providerSettings })
+        }
+      }
       return existingThreadId
     }
 
@@ -312,7 +358,12 @@ export default function TasksView() {
       })
     }
     if (!task.threadId) {
-      updateTask(task.id, { threadId: ensuredThread.id })
+      updateTask(task.id, {
+        threadId: ensuredThread.id,
+        ...(task.runner === 'model' && providerSettings ? { backendSelection: providerSettings } : {}),
+      })
+    } else if (task.runner === 'model' && providerSettings && !task.backendSelection) {
+      updateTask(task.id, { backendSelection: providerSettings })
     }
 
     if (preserveCurrentThread) {
@@ -325,7 +376,6 @@ export default function TasksView() {
   const applyTaskWorkingFolder = async (task: WorkTask) => {
     const normalizedWorkDir = task.workDir.trim()
     if (normalizedWorkDir && isAbsolutePath(normalizedWorkDir)) {
-      await ensureAllowedTaskFolder(normalizedWorkDir)
       setWorkingFolder(normalizedWorkDir)
       return
     }
@@ -350,7 +400,6 @@ export default function TasksView() {
     const selected = await pickWorkDir()
     if (selected) {
       setNewWorkDir(selected)
-      await ensureAllowedTaskFolder(selected)
     }
   }
 
@@ -359,9 +408,6 @@ export default function TasksView() {
     if (selected === null) return
 
     updateTask(task.id, { workDir: selected })
-    if (isAbsolutePath(selected)) {
-      await ensureAllowedTaskFolder(selected)
-    }
   }
 
   const handleOpenTaskChat = async (task: WorkTask) => {
@@ -400,13 +446,21 @@ export default function TasksView() {
         runner: newRunner,
         crewId: newRunner === 'crew' ? newCrewId : null,
         model: newRunner === 'model' ? newModel : '',
+        backendSelection: newRunner === 'model'
+          ? threads.find((thread) => thread.id === activeThreadId)?.providerSettings ?? {
+              backend: 'openai-compatible',
+              profileId: defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama,
+            }
+          : undefined,
       })
       createdTask = useWorkTasksStore.getState().tasks.find((task) => task.id === id)
     }
 
     if (createdTask) {
-      void ensureAllowedTaskFolder(createdTask.workDir)
-      createTaskThread(createdTask, true)
+      const threadId = createTaskThread(createdTask, true)
+      if (newUseProjectContext && newProjectId) {
+        attachProjectThread(newProjectId, threadId)
+      }
       setSelectedTaskId(createdTask.id)
       setCreatePanelOpen(false)
     }
@@ -416,6 +470,27 @@ export default function TasksView() {
     setNewPrompt('')
     setNewExpectedOutput('')
     setNewWorkDir('')
+    setNewUseProjectContext(false)
+  }
+
+  const handleTaskProjectContextEnabledChange = (task: WorkTask, enabled: boolean) => {
+    if (!enabled) {
+      if (task.threadId) detachProjectThreadFromAll(task.threadId)
+      return
+    }
+
+    const projectId = activeProjectId && projects.some((project) => project.id === activeProjectId)
+      ? activeProjectId
+      : projects[0]?.id
+    if (!projectId) return
+    const threadId = createTaskThread(task, true)
+    attachProjectThread(projectId, threadId)
+  }
+
+  const handleTaskProjectChange = (task: WorkTask, projectId: string) => {
+    if (!projects.some((project) => project.id === projectId)) return
+    const threadId = createTaskThread(task, true)
+    attachProjectThread(projectId, threadId)
   }
 
   const handleImportCrewTasks = () => {
@@ -444,10 +519,12 @@ export default function TasksView() {
       return
     }
 
+    if (runningTaskControllersRef.current.has(task.id)) return
+
     const taskForRun = normalizedWorkDir ? { ...task, workDir: normalizedWorkDir } : task
-    await loadChatFromDb()
-    const threadId = createTaskThread(taskForRun, true)
     const startedAt = Date.now()
+    const abortController = new AbortController()
+    runningTaskControllersRef.current.set(task.id, abortController)
 
     updateTask(task.id, {
       status: 'running',
@@ -455,10 +532,30 @@ export default function TasksView() {
       error: null,
     })
     canceledTaskIdsRef.current.delete(task.id)
-    const abortController = new AbortController()
-    runningTaskControllersRef.current.set(task.id, abortController)
 
-    await ensureAllowedTaskFolder(normalizedWorkDir)
+    let threadId: string
+    let projectRunContext: TaskProjectRunContext
+    try {
+      await loadChatFromDb()
+      threadId = createTaskThread(taskForRun, true)
+      projectRunContext = await resolveTaskProjectRunContext({
+        taskId: task.id,
+        threadId,
+        prompt: task.prompt,
+        workDir: normalizedWorkDir,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      updateTask(task.id, {
+        status: 'failed',
+        error: message,
+        output: message,
+        lastRunAt: Date.now(),
+      })
+      runningTaskControllersRef.current.delete(task.id)
+      return
+    }
+
     addChatMessage(threadId, {
       role: 'system',
       content: [
@@ -469,18 +566,21 @@ export default function TasksView() {
       visibleInChat: true,
       timestamp: startedAt,
     })
-    addChatMessage(threadId, {
+    if (projectRunContext.warnings.length > 0) {
+      addChatMessage(threadId, {
+        role: 'system',
+        content: `${tr('Project context warnings')}:\n${projectRunContext.warnings.map((warning) => `- ${warning}`).join('\n')}`,
+        visibleInChat: true,
+        timestamp: Date.now(),
+      })
+    }
+    const taskPromptMessageId = addChatMessage(threadId, {
       role: 'user',
       content: buildTaskPromptMessage(taskForRun),
       timestamp: startedAt,
     })
 
     if (task.runner === 'model') {
-      const model = task.model.trim() || ollamaConfig.model
-      const config = {
-        ...ollamaConfig,
-        model,
-      }
       const assistantMessageId = addChatMessage(threadId, {
         role: 'assistant',
         content: '',
@@ -490,20 +590,129 @@ export default function TasksView() {
 
       try {
         let buffered = ''
-        const response = await streamChatTurn(
+        let engineError = ''
+        const promptWithProjectContext = appendTaskProjectPrompt(task.prompt, projectRunContext)
+        const taskThread = useChatStore.getState().threads.find((thread) => thread.id === threadId)
+        const providerSelection = task.backendSelection
+          ?? taskThread?.providerSettings
+          ?? resolveWorkTaskChatProviderSettings(task, {
+            crews,
+            ollamaModel: ollamaConfig.model,
+            defaultLlmProfileIds,
+            llmProfiles,
+          })
+        if (!providerSelection) throw new Error('No backend is configured for this task.')
+
+        if (hasTauriRuntime() && (providerSelection.backend === 'openai-compatible' || providerSelection.backend === 'codex')) {
+          const providerState = getChatProviderState({
+            ollama: ollamaConfig,
+            availableModels,
+            llmProfiles,
+            defaultLlmProfileIds,
+            llmProfileModels,
+          }, providerSelection.backend, providerSelection)
+          const project = getProjectForThread(projects, threadId)
+          const permissionMode = useEngineStore.getState().config.permissionMode
+          const workspacePath = (projectRunContext.preferredCwd ?? normalizedWorkDir) || ''
+          if (providerState.provider === 'codex') await useCodexStore.getState().load()
+          const codexProfile = providerState.provider === 'codex'
+            ? useCodexStore.getState().profiles.find((profile) => profile.id === providerState.authProfileId && profile.status === 'ready')
+              ?? useCodexStore.getState().profiles.find((profile) => profile.status === 'ready')
+            : null
+          const durable = providerState.provider === 'codex'
+            ? await createDurableCodexRun({
+                clientThreadId: threadId,
+                clientProjectId: project?.id ?? `standalone:${workspacePath || 'no-workspace'}`,
+                clientTaskId: task.id,
+                assistantMessageId,
+                userMessageId: taskPromptMessageId,
+                prompt: promptWithProjectContext,
+                history: (taskThread?.messages ?? [])
+                  .filter((message) => message.id !== taskPromptMessageId && message.id !== assistantMessageId && message.role !== 'system')
+                  .map((message) => ({
+                    role: message.role as 'user' | 'assistant',
+                    content: message.content,
+                  })),
+                workspacePath,
+                projectRevision: project?.updatedAt ?? 1,
+                taskRevision: task.updatedAt,
+                toolPolicy: permissionMode === 'strict' || permissionMode === 'plan' ? 'read_only' : 'autonomous',
+                profileId: codexProfile?.id ?? '',
+                model: providerState.model || undefined,
+                reasoningEffort: providerState.reasoningEffort,
+                timeoutMs: providerState.timeoutMs,
+                source: 'task',
+              })
+            : await createDurableLocalRun({
+            clientThreadId: threadId,
+            clientProjectId: project?.id ?? `standalone:${(projectRunContext.preferredCwd ?? normalizedWorkDir) || 'no-workspace'}`,
+            clientTaskId: task.id,
+            assistantMessageId,
+            userMessageId: taskPromptMessageId,
+            prompt: promptWithProjectContext,
+            history: (taskThread?.messages ?? [])
+              .filter((message) => message.id !== taskPromptMessageId && message.id !== assistantMessageId && message.role !== 'system')
+              .map((message) => ({
+                role: message.role as 'user' | 'assistant',
+                content: message.content,
+              })),
+            workspacePath: workspacePath || null,
+            projectRevision: project?.updatedAt ?? 1,
+            taskRevision: task.updatedAt,
+            toolPolicy: permissionMode === 'strict' || permissionMode === 'plan' ? 'read_only' : 'autonomous',
+            provider: providerState,
+            mcpServers: policyFlags.allowMcpToolCalls
+              ? (mcpServers.length > 0 ? mcpServers : [mcpServer])
+              : [],
+            source: 'task',
+          })
+          const { client, run } = durable
+          await attachDurableLocalRun(client, run)
+          return
+        }
+
+        const onEngineEvent = (event: EngineEvent) => {
+          if (abortController.signal.aborted) return
+          if (event.type === 'text_delta') {
+            buffered += event.text
+          } else if (event.type === 'assistant_message') {
+            const finalText = extractTextContent(event.message)
+            if (finalText.trim()) buffered = finalText
+          } else if (event.type === 'error') {
+            engineError = event.error
+          } else {
+            return
+          }
+          updateTask(task.id, { output: buffered || engineError })
+          updateChatMessage(threadId, assistantMessageId, { content: buffered || engineError })
+        }
+
+        await sendEngineMessage(
+          promptWithProjectContext,
+          projectRunContext.preferredCwd ?? normalizedWorkDir,
+          onEngineEvent,
           {
-            prompt: task.prompt,
-            history: normalizedWorkDir ? [{ role: 'system', content: `Working directory: ${normalizedWorkDir}` }] : [],
-            config,
+            threadId,
+            ownerKind: 'task',
+            ownerId: task.id,
+            messages: (taskThread?.messages ?? [])
+              .filter((message) => message.id !== taskPromptMessageId && message.id !== assistantMessageId)
+              .map((message) => ({
+                role: message.role,
+                content: message.content,
+                debugContent: message.debugContent,
+              })),
           },
-          (chunk) => {
-            if (abortController.signal.aborted) return
-            buffered += chunk
-            updateTask(task.id, { output: buffered })
-            updateChatMessage(threadId, assistantMessageId, { content: buffered })
+          providerSelection,
+          {
+            mode: useEngineStore.getState().config.permissionMode,
+            allowedDirectories: projectRunContext.authorizedPaths
+              .filter((entry) => entry.kind === 'folder')
+              .map((entry) => entry.path),
+            authorizedPaths: projectRunContext.authorizedPaths,
           },
-          { signal: abortController.signal },
         )
+        if (engineError) throw new Error(engineError)
 
         if (abortController.signal.aborted || canceledTaskIdsRef.current.has(task.id)) {
           const message = tr('Task canceled.')
@@ -524,11 +733,11 @@ export default function TasksView() {
 
         updateTask(task.id, {
           status: 'completed',
-          output: response.assistantMessage,
+          output: buffered,
           lastRunAt: Date.now(),
         })
         updateChatMessage(threadId, assistantMessageId, {
-          content: response.assistantMessage,
+          content: buffered,
           streaming: false,
         }, {
           persist: true,
@@ -558,7 +767,6 @@ export default function TasksView() {
 
     const crewStreamId = createCrewStreamId()
     const streamedCrewLogIds = new Set<string>()
-    let unlistenCrewLogs: (() => void) | null = null
     let crewLiveState: CrewLiveState = {
       streamId: crewStreamId,
       title: `${deriveTaskName(taskForRun)} - Crew-Execution`,
@@ -619,21 +827,23 @@ export default function TasksView() {
       const enabledAgentIds = new Set(enabledAgents.map((agent) => agent.id))
       const runtimeTasks = buildCrewRuntimeTasks(crew, task, enabledAgentIds)
 
-      const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
-        ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible')
-      const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
-        ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
+      const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.preset === 'openai')
+        ?? llmProfiles.find((profile) => profile.preset === 'openai')
+      const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.preset === 'openrouter')
+        ?? llmProfiles.find((profile) => profile.preset === 'openrouter')
 
-      let providerConfigs = {
+      let providerConfigs: CrewResolvedProviderConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
           defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+          defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
         ),
         openRouter: resolveExternalProviderConfig(
           crew.providerProfiles.openRouter,
           defaultOpenRouterProfile,
           defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+          defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
         ),
       }
 
@@ -645,28 +855,25 @@ export default function TasksView() {
       const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
       config = appliedCrewDefault.config
       providerConfigs = appliedCrewDefault.providerConfigs
-      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
+      const crewDefaultProvider = resolveEffectiveCrewProvider(
+        crew.defaultProvider ?? 'ollama',
+        config,
+        providerConfigs,
+      )
       runningCrewTaskIdsRef.current.set(task.id, crew.id)
 
-      try {
-        unlistenCrewLogs = await listen<CrewExecutionLogEvent>('crew-execution-log', (event) => {
-          const payload = event.payload
-          if (!payload || payload.streamId !== crewStreamId) return
-          appendCrewLogToMonitor(payload.log)
-        })
-      } catch {
-        // In browser-only tests or fallback environments the Tauri event bus is unavailable.
-      }
-
-      const response = await safeInvoke<CrewExecutionResponse>('crew_execute', {
-        request: {
+      const crewRequest = {
           id: crew.id,
           streamId: crewStreamId,
           name: crew.name,
           description: crew.description,
           executionSubject: crew.executionSubject,
-          executionGuidelines: buildWorkTaskCrewGuidelines(crew, taskForRun),
+          executionGuidelines: appendTaskProjectPrompt(
+            buildWorkTaskCrewGuidelines(crew, taskForRun),
+            projectRunContext,
+          ),
           knowledgeFocus: crew.knowledgeFocus,
+          responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
           governanceMode: crew.governanceMode,
           outputMode: crew.outputMode,
           stopOnFailure: crew.stopOnFailure,
@@ -699,10 +906,38 @@ export default function TasksView() {
             maxIterations: agent.maxIterations,
           })),
           tasks: runtimeTasks,
-          cwd: normalizedWorkDir || null,
+          cwd: projectRunContext.preferredCwd,
+          authorizedPaths: projectRunContext.authorizedPaths,
           config,
-        },
+      }
+      const assistantMessageId = addChatMessage(threadId, {
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        streaming: true,
       })
+      const project = getProjectForThread(projects, threadId)
+      const { client, run } = await createDurableCrewRun({
+        clientThreadId: threadId,
+        clientProjectId: project?.id ?? `standalone:${(projectRunContext.preferredCwd ?? normalizedWorkDir) || 'no-workspace'}`,
+        clientTaskId: task.id,
+        assistantMessageId,
+        crewLiveMessageId,
+        crewLiveTitle: crewLiveState.title,
+        prompt: appendTaskProjectPrompt(task.prompt, projectRunContext),
+        workspacePath: (projectRunContext.preferredCwd ?? normalizedWorkDir) || null,
+        projectRevision: project?.updatedAt ?? 1,
+        taskRevision: task.updatedAt,
+        crewId: crew.id,
+        crewRequest,
+        source: 'task',
+      })
+      const finalRun = await attachDurableLocalRun(client, run)
+      const response = ((finalRun.result as Record<string, unknown> | null)?.crew_response
+        ?? null) as CrewExecutionResponse | null
+      if (!response) {
+        throw new Error(finalRun.error?.message || `Crew run ended in state ${finalRun.state}`)
+      }
 
       const mappedStatus = response.status === 'completed' ? 'completed' : 'failed'
       if (canceledTaskIdsRef.current.has(task.id) || response.status === 'canceled') {
@@ -713,11 +948,10 @@ export default function TasksView() {
           error: null,
           lastRunAt: Date.now(),
         })
-        addChatMessage(threadId, {
-          role: 'assistant',
+        updateChatMessage(threadId, assistantMessageId, {
           content: tr('Task canceled.'),
-          timestamp: Date.now(),
-        })
+          streaming: false,
+        }, { persist: true })
         return
       }
       const output = buildCrewRunOutput(response, task.id)
@@ -727,11 +961,10 @@ export default function TasksView() {
       }
       finishCrewLive(mappedStatus === 'completed' ? 'completed' : 'failed')
 
-      addChatMessage(threadId, {
-        role: 'assistant',
+      updateChatMessage(threadId, assistantMessageId, {
         content: output,
-        timestamp: Date.now(),
-      })
+        streaming: false,
+      }, { persist: true })
 
       updateTask(task.id, {
         status: mappedStatus,
@@ -756,7 +989,6 @@ export default function TasksView() {
         lastRunAt: Date.now(),
       })
     } finally {
-      unlistenCrewLogs?.()
       runningTaskControllersRef.current.delete(task.id)
       runningCrewTaskIdsRef.current.delete(task.id)
       canceledTaskIdsRef.current.delete(task.id)
@@ -766,8 +998,12 @@ export default function TasksView() {
   const handleCancelTask = async (task: WorkTask) => {
     canceledTaskIdsRef.current.add(task.id)
     runningTaskControllersRef.current.get(task.id)?.abort()
+    const canceledDurable = task.threadId
+      ? await cancelLatestDurableRun(task.threadId)
+      : false
+    if (task.runner === 'model' && !canceledDurable) abortEngine()
     const crewId = runningCrewTaskIdsRef.current.get(task.id)
-    if (crewId) {
+    if (crewId && !canceledDurable) {
       await safeInvoke('crew_stop', { request: { crewId } }, null)
     }
     updateTask(task.id, {
@@ -790,10 +1026,6 @@ export default function TasksView() {
       updateTask(task.id, { scheduleEnabled: false })
       return
     }
-    if (normalizedWorkDir) {
-      await ensureAllowedTaskFolder(normalizedWorkDir)
-    }
-
     let scheduled: ScheduledTask | null = findScheduledTask(scheduledTasks, task.id)
     const active = activeOverride ?? scheduled?.active ?? task.scheduleEnabled
 
@@ -825,21 +1057,23 @@ export default function TasksView() {
         return
       }
 
-      const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
-        ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible')
-      const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
-        ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
+      const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.preset === 'openai')
+        ?? llmProfiles.find((profile) => profile.preset === 'openai')
+      const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.preset === 'openrouter')
+        ?? llmProfiles.find((profile) => profile.preset === 'openrouter')
 
-      let providerConfigs = {
+      let providerConfigs: CrewResolvedProviderConfigs = {
         openAICompatible: resolveExternalProviderConfig(
           crew.providerProfiles.openAICompatible,
           defaultOpenAICompatibleProfile,
           defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+          defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
         ),
         openRouter: resolveExternalProviderConfig(
           crew.providerProfiles.openRouter,
           defaultOpenRouterProfile,
           defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+          defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
         ),
       }
 
@@ -851,7 +1085,11 @@ export default function TasksView() {
       const appliedCrewDefault = applyCrewDefaultModel(crew, config, providerConfigs)
       config = appliedCrewDefault.config
       providerConfigs = appliedCrewDefault.providerConfigs
-      const crewDefaultProvider = crew.defaultProvider ?? 'ollama'
+      const crewDefaultProvider = resolveEffectiveCrewProvider(
+        crew.defaultProvider ?? 'ollama',
+        config,
+        providerConfigs,
+      )
 
       const crewSnapshotJson = JSON.stringify({
         id: crew.id,
@@ -860,6 +1098,7 @@ export default function TasksView() {
         executionSubject: crew.executionSubject,
         executionGuidelines: buildWorkTaskCrewGuidelines(crew, task),
         knowledgeFocus: crew.knowledgeFocus,
+        responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
         governanceMode: crew.governanceMode,
         outputMode: crew.outputMode,
         stopOnFailure: crew.stopOnFailure,
@@ -890,6 +1129,42 @@ export default function TasksView() {
         definitionSavedAt: metadata.definitionSavedAt,
       })
 
+      let daemonCrewSchedule: Awaited<ReturnType<typeof upsertDurableCrewSchedule>> | null = null
+      if (hasTauriRuntime()) {
+        await loadChatFromDb()
+        const threadId = createTaskThread(task, true)
+        const projectRunContext = await resolveTaskProjectRunContext({
+          taskId: task.id,
+          threadId,
+          prompt: task.prompt,
+          workDir: normalizedWorkDir,
+        })
+        const project = getProjectForThread(projects, threadId)
+        const crewRequest = JSON.parse(crewSnapshotJson) as Record<string, unknown>
+        crewRequest.executionGuidelines = appendTaskProjectPrompt(
+          String(crewRequest.executionGuidelines ?? ''),
+          projectRunContext,
+        )
+        crewRequest.cwd = projectRunContext.preferredCwd
+        crewRequest.authorizedPaths = projectRunContext.authorizedPaths
+        daemonCrewSchedule = await upsertDurableCrewSchedule({
+          scheduleClientId: task.id,
+          expression: scheduleExpr,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          enabled: Boolean(active),
+          clientThreadId: threadId,
+          clientProjectId: project?.id ?? `standalone:${(projectRunContext.preferredCwd ?? normalizedWorkDir) || 'no-workspace'}`,
+          clientTaskId: task.id,
+          crewLiveTitle: `${deriveTaskName(task)} - Crew-Execution`,
+          prompt: appendTaskProjectPrompt(task.prompt, projectRunContext),
+          workspacePath: (projectRunContext.preferredCwd ?? normalizedWorkDir) || null,
+          projectRevision: project?.updatedAt ?? 1,
+          taskRevision: task.updatedAt,
+          crewId: crew.id,
+          crewRequest,
+        })
+      }
+
       scheduled = {
         id: task.id,
         name: deriveTaskName(task),
@@ -898,12 +1173,16 @@ export default function TasksView() {
         taskKind: 'crew',
         crewId: crew.id,
         crewSnapshotJson,
-        modelConfigJson: null,
+        modelConfigJson: daemonCrewSchedule
+          ? JSON.stringify({ executorTarget: 'personal_device_daemon' })
+          : null,
         priority: scheduled?.priority ?? 100,
         dependsOnTaskIds: scheduled?.dependsOnTaskIds ?? [],
         active: Boolean(active),
         lastRunAt: scheduled?.lastRunAt ?? null,
-        nextRunAt: scheduled?.nextRunAt ?? null,
+        nextRunAt: daemonCrewSchedule?.next_run_at
+          ? Date.parse(daemonCrewSchedule.next_run_at)
+          : scheduled?.nextRunAt ?? null,
       }
     } else {
       scheduled = {
@@ -915,8 +1194,12 @@ export default function TasksView() {
         crewId: null,
         crewSnapshotJson: null,
         modelConfigJson: JSON.stringify({
-          ...ollamaConfig,
-          model: task.model.trim() || ollamaConfig.model,
+          executorTarget: 'personal_device_daemon',
+          backendSelection: task.backendSelection ?? {
+            backend: 'openai-compatible',
+            profileId: defaultLlmProfileIds.api ?? defaultLlmProfileIds.ollama,
+            ...(task.model.trim() ? { model: task.model.trim() } : {}),
+          },
           cwd: normalizedWorkDir || null,
         }),
         priority: scheduled?.priority ?? 100,
@@ -927,6 +1210,84 @@ export default function TasksView() {
       }
     }
 
+    if (task.runner === 'model' && hasTauriRuntime()) {
+      await loadChatFromDb()
+      const threadId = createTaskThread(task, true)
+      const projectRunContext = await resolveTaskProjectRunContext({
+        taskId: task.id,
+        threadId,
+        prompt: task.prompt,
+        workDir: normalizedWorkDir,
+      })
+      const taskThread = useChatStore.getState().threads.find((thread) => thread.id === threadId)
+      const project = getProjectForThread(projects, threadId)
+      const providerSelection = task.backendSelection
+        ?? taskThread?.providerSettings
+        ?? resolveWorkTaskChatProviderSettings(task, {
+          crews,
+          ollamaModel: ollamaConfig.model,
+          defaultLlmProfileIds,
+          llmProfiles,
+        })
+      if (!providerSelection) throw new Error('Persistent local schedules require a model profile.')
+      const providerState = getChatProviderState({
+        ollama: ollamaConfig,
+        availableModels,
+        llmProfiles,
+        defaultLlmProfileIds,
+        llmProfileModels,
+      }, providerSelection.backend, providerSelection)
+      const permissionMode = useEngineStore.getState().config.permissionMode
+      const workspacePath = (projectRunContext.preferredCwd ?? normalizedWorkDir) || ''
+      if (providerState.provider === 'codex') await useCodexStore.getState().load()
+      const codexProfile = providerState.provider === 'codex'
+        ? useCodexStore.getState().profiles.find((profile) => profile.id === providerState.authProfileId && profile.status === 'ready')
+          ?? useCodexStore.getState().profiles.find((profile) => profile.status === 'ready')
+        : null
+      const scheduleToolPolicy = permissionMode === 'strict' || permissionMode === 'plan'
+        ? 'read_only' as const
+        : 'autonomous' as const
+      const scheduleInput = {
+        scheduleClientId: task.id,
+        expression: scheduleExpr,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        enabled: Boolean(active),
+        clientThreadId: threadId,
+        clientProjectId: project?.id ?? `standalone:${(projectRunContext.preferredCwd ?? normalizedWorkDir) || 'no-workspace'}`,
+        clientTaskId: task.id,
+        prompt: appendTaskProjectPrompt(task.prompt, projectRunContext),
+        history: (taskThread?.messages ?? [])
+          .filter((message) => message.role !== 'system')
+          .map((message) => ({
+            role: message.role as 'user' | 'assistant',
+            content: message.content,
+          })),
+        workspacePath,
+        projectRevision: project?.updatedAt ?? 1,
+        taskRevision: task.updatedAt,
+        toolPolicy: scheduleToolPolicy,
+      }
+      const daemonSchedule = providerState.provider === 'codex'
+        ? await upsertDurableCodexSchedule({
+            ...scheduleInput,
+            profileId: codexProfile?.id ?? '',
+            model: providerState.model || undefined,
+            reasoningEffort: providerState.reasoningEffort,
+            timeoutMs: providerState.timeoutMs,
+          })
+        : await upsertDurableLocalSchedule({
+            ...scheduleInput,
+            provider: providerState,
+            mcpServers: policyFlags.allowMcpToolCalls
+              ? (mcpServers.length > 0 ? mcpServers : [mcpServer])
+              : [],
+          })
+      scheduled = {
+        ...scheduled,
+        nextRunAt: daemonSchedule.next_run_at ? Date.parse(daemonSchedule.next_run_at) : null,
+        lastRunAt: daemonSchedule.last_triggered_at ? Date.parse(daemonSchedule.last_triggered_at) : scheduled.lastRunAt,
+      }
+    }
     await upsertScheduledTask(scheduled)
   }
 
@@ -934,6 +1295,10 @@ export default function TasksView() {
     updateTask(task.id, { scheduleEnabled: enabled })
     const scheduled = findScheduledTask(scheduledTasks, task.id)
     if (scheduled) {
+      if (hasTauriRuntime()) {
+        await handleUpsertSchedule({ ...task, scheduleEnabled: enabled }, enabled)
+        return
+      }
       await toggleScheduledTask(task.id, enabled)
       return
     }
@@ -949,12 +1314,18 @@ export default function TasksView() {
     if (scheduled) {
       await removeScheduledTask(task.id)
     }
+    if (hasTauriRuntime()) {
+      await deleteDurableLocalSchedule(task.id)
+    }
   }
 
   const handleDeleteTask = async (task: WorkTask) => {
     const scheduled = findScheduledTask(scheduledTasks, task.id)
     if (scheduled) {
       await removeScheduledTask(task.id)
+    }
+    if (hasTauriRuntime()) {
+      await deleteDurableLocalSchedule(task.id)
     }
     removeTask(task.id)
   }
@@ -967,26 +1338,11 @@ export default function TasksView() {
   const selectedCrewScheduleMetadata = selectedTask?.runner === 'crew'
     ? readCrewScheduleSnapshotMetadata(selectedScheduledTask?.crewSnapshotJson)
     : null
-  const activeTaskCount = tasks.filter((task) => task.status === 'running' || task.status === 'waiting_approval').length
-  const scheduledTaskCount = tasks.filter((task) => Boolean(findScheduledTask(scheduledTasks, task.id))).length
-
   return (
     <div className="task-view" data-doc-id="view:/tasks">
-      <header className="task-view-header">
-        <div className="task-view-heading">
-          <span className="task-view-kicker">{tr('Task command center')}</span>
-          <h1>{tr('Tasks')}</h1>
-          <p>{tr('Create tasks, assign a crew or model, start them, and schedule each task.')}</p>
-        </div>
-        <div className="task-view-metrics" aria-label={tr('Task overview')}>
-          <span><ListTodo size={16} aria-hidden="true" /><strong>{tasks.length}</strong>{tr('Total')}</span>
-          <span><PlayCircle size={16} aria-hidden="true" /><strong>{activeTaskCount}</strong>{tr('Active')}</span>
-          <span><CalendarClock size={16} aria-hidden="true" /><strong>{scheduledTaskCount}</strong>{tr('Scheduled')}</span>
-        </div>
-      </header>
-
       <TaskCreatePanel
         crews={crews}
+        projects={projects}
         defaultModel={ollamaConfig.model}
         open={createPanelOpen}
         title={newTitle}
@@ -996,6 +1352,8 @@ export default function TasksView() {
         runner={newRunner}
         crewId={newCrewId}
         model={newModel}
+        useProjectContext={newUseProjectContext}
+        projectId={newProjectId}
         canCreateTask={canCreateTask}
         onOpenChange={setCreatePanelOpen}
         onTitleChange={setNewTitle}
@@ -1005,6 +1363,8 @@ export default function TasksView() {
         onRunnerChange={setNewRunner}
         onCrewIdChange={setNewCrewId}
         onModelChange={setNewModel}
+        onUseProjectContextChange={setNewUseProjectContext}
+        onProjectIdChange={setNewProjectId}
         onPickWorkDir={() => void handlePickNewWorkDir()}
         onCreateTask={handleCreateTask}
       />
@@ -1024,10 +1384,13 @@ export default function TasksView() {
         <TaskDetailPane
           task={selectedTask}
           crews={crews}
+          projects={projects}
           defaultModel={ollamaConfig.model}
           scheduled={selectedScheduledTask}
           crewScheduleMetadata={selectedCrewScheduleMetadata}
           projectContext={selectedProjectContext}
+          onProjectContextEnabledChange={handleTaskProjectContextEnabledChange}
+          onProjectContextProjectChange={handleTaskProjectChange}
           onUpdateTask={updateTask}
           onPickWorkDir={(task) => void handlePickTaskWorkDir(task)}
           onOpenChat={(task) => void handleOpenTaskChat(task)}

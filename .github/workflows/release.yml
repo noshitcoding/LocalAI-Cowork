@@ -1,0 +1,651 @@
+name: open-cowork-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish, for example v0.2.0'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark a SemVer prerelease tag as prerelease'
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Validate release source
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate release tag
+        id: release
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REQUESTED_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tags must be valid SemVer prefixed with v: ${tag}" >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ "${tag_commit}" != "${checked_out_commit}" ]]; then
+            echo "Checked-out commit does not match ${tag}." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${tag_commit}" origin/main; then
+            echo "Release tags must point to a commit contained in origin/main." >&2
+            exit 1
+          fi
+          prerelease=false
+          if [[ "${tag}" == *-* ]]; then
+            prerelease=true
+          elif [[ "${REQUESTED_PRERELEASE}" == "true" ]]; then
+            echo "Stable SemVer tags cannot be manually marked as prereleases; add a prerelease suffix." >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${tag_commit}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Install locked frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Validate version, workflow, and updater scripts
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          npm run test:scripts
+          npm run contracts:check
+          node --input-type=module -e "import { releaseVersion } from './scripts/supply-chain.mjs'; console.log('Validated release version', releaseVersion(process.cwd(), process.env.RELEASE_TAG))"
+
+  windows:
+    name: Build and verify Windows x64
+    needs: gate
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      release_notice: ${{ steps.signing_mode.outputs.release_notice }}
+
+    env:
+      TAURI_BUILD_TARGET: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Python for the bundled CrewAI runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: app/src-tauri/python/crew_runtime/requirements.lock
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install Chromium for UI quality gates
+        working-directory: app
+        run: npm exec -- playwright install --with-deps chromium
+
+      - name: Prepare and verify bundled CrewAI runtime
+        working-directory: app
+        run: npm run prepare:crew-runtime -- -Force
+
+      - name: Verify release source
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          npm run verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run supply-chain:check -- --tag "$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm audit --audit-level=high
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Audit pinned Python dependencies
+        working-directory: app
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          python -m pip_audit `
+            -r src-tauri/python/crew_runtime/requirements.lock `
+            --disable-pip `
+            --no-deps `
+            --ignore-vuln PYSEC-2026-311 `
+            --strict
+
+      - name: Audit Rust dependencies
+        shell: pwsh
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file app/src-tauri/Cargo.lock
+
+      - name: Build Windows installer
+        working-directory: app
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw 'LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required for signed in-app updates.'
+          }
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'localai-cowork-target'
+          npm run installer
+
+      - name: Prepare Windows release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          Copy-Item -LiteralPath dist-installers\LocalAI-Cowork-Setup.exe -Destination release-assets\LocalAI-Cowork-Setup-x64.exe -Force
+
+      - name: Verify installed CrewAI payload
+        shell: pwsh
+        run: |
+          $version = "${{ needs.gate.outputs.tag }}".TrimStart('v')
+          .\app\scripts\installer-crew-runtime-smoke.ps1 `
+            -InstallerPath release-assets\LocalAI-Cowork-Setup-x64.exe `
+            -ExpectedVersion $version `
+            -UninstallAfterVerification
+
+      - name: Resolve installer signing mode
+        id: signing_mode
+        shell: pwsh
+        env:
+          LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE: ${{ vars.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE }}
+          LOCALAI_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 || secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
+          LOCALAI_COWORK_CODESIGN_PASSWORD: ${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD || secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
+          LOCALAI_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT || secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
+        run: |
+          $signingValues = @(
+            $env:LOCALAI_COWORK_CODESIGN_PFX_BASE64
+            $env:LOCALAI_COWORK_CODESIGN_PASSWORD
+            $env:LOCALAI_COWORK_CODESIGN_THUMBPRINT
+          )
+          $configuredValues = @($signingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($configuredValues -eq $signingValues.Count) {
+            "sign=true" >> $env:GITHUB_OUTPUT
+            "unsigned=false" >> $env:GITHUB_OUTPUT
+            "release_notice=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($configuredValues -ne 0) {
+            throw 'The Authenticode configuration is incomplete. Configure all three code-signing secrets.'
+          }
+          if ($env:LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE -ne 'true') {
+            throw 'Authenticode secrets are required unless the LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE repository variable is explicitly set to true.'
+          }
+          "sign=false" >> $env:GITHUB_OUTPUT
+          "unsigned=true" >> $env:GITHUB_OUTPUT
+          "release_notice=WARNING: The Windows installer in this release is not Authenticode-signed. Windows may display Unknown publisher. Verify SHA256SUMS and the GitHub artifact attestations before running it." >> $env:GITHUB_OUTPUT
+          @"
+          WARNING: This Windows installer is not Authenticode-signed.
+          Windows may display "Unknown publisher".
+
+          Release: ${{ needs.gate.outputs.tag }}
+          Commit: ${{ needs.gate.outputs.sha }}
+
+          Verify SHA256SUMS and the GitHub artifact attestations before running it.
+          This exception required the LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE repository variable.
+          "@ | Set-Content -LiteralPath release-assets\UNSIGNED-WINDOWS-INSTALLER.txt -Encoding utf8
+
+      - name: Sign and verify Windows installer
+        if: ${{ steps.signing_mode.outputs.sign == 'true' }}
+        shell: pwsh
+        env:
+          LOCALAI_COWORK_CODESIGN_PFX_BASE64: ${{ secrets.LOCALAI_COWORK_CODESIGN_PFX_BASE64 || secrets.OPEN_COWORK_CODESIGN_PFX_BASE64 }}
+          LOCALAI_COWORK_CODESIGN_PASSWORD: ${{ secrets.LOCALAI_COWORK_CODESIGN_PASSWORD || secrets.OPEN_COWORK_CODESIGN_PASSWORD }}
+          LOCALAI_COWORK_CODESIGN_THUMBPRINT: ${{ secrets.LOCALAI_COWORK_CODESIGN_THUMBPRINT || secrets.OPEN_COWORK_CODESIGN_THUMBPRINT }}
+        run: |
+          .\app\scripts\sign-windows-installer.ps1 -InstallerPath release-assets\LocalAI-Cowork-Setup-x64.exe
+
+      - name: Verify unsigned installer exception
+        if: ${{ steps.signing_mode.outputs.unsigned == 'true' }}
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath release-assets\LocalAI-Cowork-Setup-x64.exe
+          if ($signature.Status -ne 'NotSigned') {
+            throw "Expected an unsigned installer, but Authenticode reported $($signature.Status)."
+          }
+
+      - name: Sign Windows in-app updater artifact
+        working-directory: app
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $artifact = Resolve-Path ..\release-assets\LocalAI-Cowork-Setup-x64.exe
+          npm exec -- tauri signer sign "$artifact"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Generate release SBOM and notices
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: npm run supply-chain:sbom -- --output ..\release-assets --tag "$env:RELEASE_TAG"
+
+      - name: Preserve verified CrewAI manifest for release provenance
+        shell: pwsh
+        run: |
+          Copy-Item `
+            -LiteralPath app\src-tauri\python\crew_runtime\runtime-bundle-manifest.json `
+            -Destination release-assets\crew-runtime-bundle-manifest.json `
+            -Force
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows
+          path: release-assets/*
+          if-no-files-found: error
+
+  linux:
+    name: Build and verify Linux x64
+    needs: gate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libarchive-tools \
+            patchelf \
+            rpm
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Prepare and verify bundled Codex runtime
+        working-directory: app
+        run: npm run prepare:codex-runtime
+
+      - name: Verify Linux source and Rust backend
+        working-directory: app
+        run: |
+          npm run test:scripts
+          npm run lint:ci
+          npm run typecheck
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Build AppImage, DEB, and RPM
+        working-directory: app
+        env:
+          NO_STRIP: '1'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+            echo 'LOCALAI_COWORK_UPDATER_PRIVATE_KEY is required for signed in-app updates.' >&2
+            exit 1
+          fi
+          export CARGO_TARGET_DIR="${RUNNER_TEMP}/localai-cowork-target"
+          npm run tauri build -- --bundles appimage,deb,rpm
+
+      - name: Prepare and smoke-test Linux release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_root="${RUNNER_TEMP}/localai-cowork-target/release/bundle"
+          appimage="$(find "${target_root}/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          deb="$(find "${target_root}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          rpm_file="$(find "${target_root}/rpm" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
+          for artifact in "${appimage}" "${appimage}.sig" "${deb}" "${rpm_file}"; do
+            test -s "${artifact}"
+          done
+          mkdir -p release-assets
+          cp "${appimage}" release-assets/LocalAI-Cowork-x86_64.AppImage
+          cp "${appimage}.sig" release-assets/LocalAI-Cowork-x86_64.AppImage.sig
+          cp "${deb}" release-assets/LocalAI-Cowork-x86_64.deb
+          cp "${rpm_file}" release-assets/LocalAI-Cowork-x86_64.rpm
+          chmod +x release-assets/LocalAI-Cowork-x86_64.AppImage
+          extraction_root="$(mktemp -d)"
+          (
+            cd "${extraction_root}"
+            "${GITHUB_WORKSPACE}/release-assets/LocalAI-Cowork-x86_64.AppImage" --appimage-extract >/dev/null
+            test -d squashfs-root/usr
+          )
+          dpkg-deb --info release-assets/LocalAI-Cowork-x86_64.deb >/dev/null
+          rpm --query --package --info release-assets/LocalAI-Cowork-x86_64.rpm >/dev/null
+
+          verify_codex_payload() {
+            local package_root="$1"
+            local manifest
+            manifest="$(find "${package_root}" -type f -path '*/codex/runtime-bundle-manifest.json' -print -quit)"
+            if [[ -z "${manifest}" ]]; then
+              echo "Packaged Codex runtime manifest is missing from ${package_root}." >&2
+              exit 1
+            fi
+            node app/scripts/verify-codex-bundle.mjs \
+              --root "$(dirname "${manifest}")" \
+              --target linux-x64
+          }
+
+          verify_codex_payload "${extraction_root}/squashfs-root"
+          deb_root="$(mktemp -d)"
+          dpkg-deb --extract release-assets/LocalAI-Cowork-x86_64.deb "${deb_root}"
+          verify_codex_payload "${deb_root}"
+          rpm_root="$(mktemp -d)"
+          bsdtar --extract \
+            --file release-assets/LocalAI-Cowork-x86_64.rpm \
+            --directory "${rpm_root}"
+          verify_codex_payload "${rpm_root}"
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-linux
+          path: release-assets/*
+          if-no-files-found: error
+
+  server-images:
+    name: Publish ${{ matrix.name }} image
+    needs: gate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server
+            image: open-cowork-server
+            dockerfile: server/Dockerfile
+          - name: runner
+            image: open-cowork-runner
+            dockerfile: server/cowork-runner/Dockerfile
+          - name: web
+            image: open-cowork-web
+            dockerfile: app/Dockerfile.web
+          - name: egress-proxy
+            image: open-cowork-egress-proxy
+            dockerfile: deploy/egress-proxy/Dockerfile
+          - name: sandbox-core
+            image: open-cowork-sandbox-core
+            dockerfile: deploy/sandboxes/core/Dockerfile
+          - name: sandbox-gui
+            image: open-cowork-sandbox-gui
+            dockerfile: deploy/sandboxes/gui/Dockerfile
+          - name: sandbox-crew
+            image: open-cowork-sandbox-crew
+            dockerfile: deploy/sandboxes/crew/Dockerfile
+
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Resolve container version
+        id: image
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: echo "version=${RELEASE_TAG#v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, attest, and publish
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ghcr.io/noshitcoding/${{ matrix.image }}:${{ steps.image.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+            org.opencontainers.image.version=${{ steps.image.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=release-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.name }}
+
+      - name: Record immutable digest
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir image-digest
+          printf '%s\n' "${DIGEST}" > "image-digest/${{ matrix.image }}.txt"
+
+      - name: Upload image digest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest-${{ matrix.name }}
+          path: image-digest/*.txt
+          if-no-files-found: error
+
+  publish:
+    name: Attest and publish release
+    needs: [gate, windows, linux, server-images]
+    runs-on: ubuntu-22.04
+    environment: release
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified platform assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download server-image digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-digest-*
+          path: image-digests
+          merge-multiple: true
+
+      - name: Record immutable server images
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          : > release-assets/SERVER-IMAGES.txt
+          for digest_file in image-digests/*.txt; do
+            image="$(basename "${digest_file}" .txt)"
+            printf 'ghcr.io/noshitcoding/%s:%s@%s\n' \
+              "${image}" "${version}" "$(cat "${digest_file}")" \
+              >> release-assets/SERVER-IMAGES.txt
+          done
+
+      - name: Add versioned API contract artifacts
+        shell: bash
+        run: |
+          cp contracts/generated/v2/openapi.json release-assets/openapi-v2.json
+          cp contracts/generated/v2/contracts.schema.json release-assets/contracts-v2.schema.json
+
+      - name: Restore verified CrewAI manifest for release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_asset="release-assets/crew-runtime-bundle-manifest.json"
+          test -s "${manifest_asset}"
+          cp "${manifest_asset}" app/src-tauri/python/crew_runtime/runtime-bundle-manifest.json
+          rm "${manifest_asset}"
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Create cross-platform updater manifest
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          node ./scripts/create-updater-manifest.mjs \
+            --tag "${RELEASE_TAG}" \
+            --platform windows-x86_64=../release-assets/LocalAI-Cowork-Setup-x64.exe \
+            --platform linux-x86_64=../release-assets/LocalAI-Cowork-x86_64.AppImage \
+            --output ../release-assets/latest.json \
+            --repository noshitcoding/LocalAI-Cowork
+
+      - name: Generate combined provenance and checksums
+        working-directory: app
+        env:
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+          TAURI_BUILD_TARGET: multi-platform-x86_64
+        run: npm run supply-chain:release -- --output ../release-assets --tag "${RELEASE_TAG}"
+
+      - name: Attest release assets
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release-assets/*
+
+      - name: Attest Windows installer SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: release-assets/LocalAI-Cowork-Setup-x64.exe
+          sbom-path: release-assets/localai-cowork.cdx.json
+
+      - name: Upload complete release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: LocalAI-Cowork-${{ needs.gate.outputs.tag }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.gate.outputs.tag }}
+          name: LocalAI Cowork ${{ needs.gate.outputs.tag }}
+          target_commitish: ${{ needs.gate.outputs.sha }}
+          prerelease: ${{ needs.gate.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.gate.outputs.prerelease != 'true' }}
+          generate_release_notes: true
+          body: ${{ needs.windows.outputs.release_notice }}
+          files: release-assets/*

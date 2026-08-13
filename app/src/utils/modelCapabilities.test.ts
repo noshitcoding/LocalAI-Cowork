@@ -4,13 +4,17 @@ import type { ChatProviderState } from './chatProvider'
 
 function createProviderState(patch: Partial<ChatProviderState>): ChatProviderState {
   return {
-    provider: 'openrouter',
-    label: 'OpenRouter',
+    provider: 'openai-compatible',
+    backend: 'openai-compatible',
+    preset: 'openrouter',
+    compatibilityProvider: 'openrouter',
+    label: 'OpenAI-kompatible API',
     endpoint: 'https://openrouter.ai/api/v1',
     model: 'openai/gpt-4o-mini',
     apiKey: '',
     timeoutMs: 600000,
     verifyTlsCertificates: true,
+    contextWindow: 128000,
     selectableModels: [],
     ...patch,
   }
@@ -36,7 +40,9 @@ describe('detectProviderModelCapabilities', () => {
 
   it('keeps text-only Ollama models without vision support', () => {
     const capabilities = detectProviderModelCapabilities(createProviderState({
-      provider: 'ollama',
+      provider: 'openai-compatible',
+      backend: 'openai-compatible',
+      preset: 'ollama',
       label: 'Ollama',
       endpoint: 'http://localhost:11434',
       model: 'llama3.1:8b',
@@ -53,7 +59,9 @@ describe('detectProviderModelCapabilities', () => {
     markModelVisionUnsupported('openrouter', 'openai/gpt-4o-mini')
 
     const capabilities = detectProviderModelCapabilities(createProviderState({
-      provider: 'openrouter',
+      provider: 'openai-compatible',
+      backend: 'openai-compatible',
+      preset: 'openrouter',
       model: 'openai/gpt-4o-mini',
     }))
 

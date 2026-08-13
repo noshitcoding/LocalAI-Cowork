@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useCrewStore, type CrewAgent } from './crewStore'
+import {
+  crewDefinitionForDaemon,
+  crewFromDaemonDefinition,
+  resolveCrewAgentWithProfile,
+  useCrewStore,
+  type CrewAgent,
+} from './crewStore'
 import { usePersonalityStore } from './personalityStore'
 import { safeInvoke } from '../utils/safeInvoke'
 
@@ -59,6 +65,42 @@ describe('crewStore', () => {
     expect(useCrewStore.getState().crews[0].agents[0].id).toBe('agent-researcher')
   })
 
+  it('keeps a crew-scoped model choice ahead of a linked personality model', () => {
+    const inherited = resolveCrewAgentWithProfile({
+      ...duplicateAgent,
+      personalityId: 'profile-agent',
+      inheritCrewModel: true,
+    }, [{
+      id: 'profile-agent',
+      name: 'Profile Agent',
+      description: 'Profile agent',
+      role: 'researcher',
+      goal: 'Research',
+      systemPrompt: 'Research carefully.',
+      skillsMarkdown: '',
+      modelOverride: 'qwen3:14b',
+    }])
+
+    const overridden = resolveCrewAgentWithProfile({
+      ...duplicateAgent,
+      personalityId: 'profile-agent',
+      modelOverride: 'llama3.2:latest',
+      inheritCrewModel: false,
+    }, [{
+      id: 'profile-agent',
+      name: 'Profile Agent',
+      description: 'Profile agent',
+      role: 'researcher',
+      goal: 'Research',
+      systemPrompt: 'Research carefully.',
+      skillsMarkdown: '',
+      modelOverride: 'qwen3:14b',
+    }])
+
+    expect(inherited.modelOverride).toBeNull()
+    expect(overridden.modelOverride).toBe('llama3.2:latest')
+  })
+
   it('creates a runnable starter crew with plan, execution, and review stages', () => {
     const crewId = useCrewStore.getState().createStarterCrew(
       'Release Crew',
@@ -75,6 +117,30 @@ describe('crewStore', () => {
     expect(crew?.tasks[1].dependencies).toEqual([crew?.tasks[0].id])
     expect(crew?.tasks[2].dependencies).toEqual([crew?.tasks[1].id])
     expect(crew?.knowledgeFocus).toBe('Prepare and verify the release candidate')
+  })
+
+  it('syncs crew definitions without secrets, endpoints, or volatile run output', () => {
+    const crewId = useCrewStore.getState().createStarterCrew('Sync Crew', 'Verify sync privacy')
+    const crew = useCrewStore.getState().crews.find((entry) => entry.id === crewId)!
+    crew.providerProfiles.openAICompatible.apiKey = 'secret-key'
+    crew.providerProfiles.openAICompatible.baseUrl = 'http://127.0.0.1:8000/v1'
+    crew.runtimeConfig.baseUrl = 'http://127.0.0.1:11434'
+    crew.tasks[0].status = 'completed'
+    crew.tasks[0].output = 'volatile output'
+
+    const payload = crewDefinitionForDaemon(crew)
+    const serialized = JSON.stringify(payload)
+    expect(serialized).not.toContain('secret-key')
+    expect(serialized).not.toContain('127.0.0.1')
+    expect(serialized).not.toContain('volatile output')
+    expect(serialized).not.toContain('apiKey')
+
+    const restored = crewFromDaemonDefinition(payload, crew)
+    expect(restored).toMatchObject({ id: crewId, name: 'Sync Crew' })
+    expect(restored?.runtimeConfig.baseUrl).toBe('http://127.0.0.1:11434')
+    expect(restored?.providerProfiles.openAICompatible.baseUrl).toBe('http://127.0.0.1:8000/v1')
+    expect(restored?.providerProfiles.openAICompatible.apiKey).toBe('')
+    expect(restored?.tasks[0]).toMatchObject({ status: 'completed', output: 'volatile output' })
   })
 
   it('syncs global profile fields while preserving crew-specific permissions', () => {
@@ -152,20 +218,35 @@ describe('crewStore', () => {
       ],
     })
 
-    useCrewStore.getState().syncAgentsFromPersonalityProfiles([{
-      id: 'pers-shared',
-      name: 'Shared Analyst',
-      description: 'Analyse',
-      role: 'analyst',
-      goal: 'Globale Analyse',
-      systemPrompt: 'Global background',
-      skillsMarkdown: '# Skills',
-      modelOverride: 'qwen3:14b',
-    }])
+    useCrewStore.getState().syncAgentsFromPersonalityProfiles([
+      {
+        id: 'pers-shared',
+        name: 'Shared Analyst',
+        description: 'Analyse',
+        role: 'analyst',
+        goal: 'Globale Analyse',
+        systemPrompt: 'Global background',
+        skillsMarkdown: '# Skills',
+        modelOverride: 'qwen3:14b',
+      },
+      {
+        id: 'pers-unassigned',
+        name: 'Unassigned Writer',
+        description: 'Writes text',
+        role: 'writer',
+        goal: 'Write',
+        systemPrompt: 'Write clearly.',
+        skillsMarkdown: '',
+        modelOverride: null,
+      },
+    ])
 
     const [crewA, crewB] = useCrewStore.getState().crews
     expect(crewA.agents[0]).toMatchObject({ name: 'Shared Analyst', role: 'analyst', goal: 'Globale Analyse', tools: ['read_file'], enabled: true })
     expect(crewB.agents[0]).toMatchObject({ name: 'Shared Analyst', role: 'analyst', goal: 'Globale Analyse', tools: ['edit_file'], enabled: false })
+    expect(crewA.agents).toHaveLength(1)
+    expect(crewB.agents).toHaveLength(1)
+    expect(useCrewStore.getState().agents.some((agent) => agent.personalityId === 'pers-unassigned')).toBe(true)
   })
 
   it('keeps a local snapshot when a used profile is deleted', () => {

@@ -1,0 +1,29 @@
+[
+  {
+    "name": "company-files",
+    "transport": "stdio",
+    "command": "C:\\Program Files\\nodejs\\node.exe",
+    "args": [
+      "C:\\OpenCowork\\McpServers\\company-files\\server.js"
+    ],
+    "environment": {
+      "COMPANY_FILES_API_TOKEN": "replace-with-an-executor-local-secret"
+    }
+  },
+  {
+    "name": "remote-company-search",
+    "transport": "streamable_http",
+    "url": "https://mcp.example.com/mcp",
+    "headers": {
+      "Authorization": "replace-with-an-executor-local-authorization-value"
+    }
+  },
+  {
+    "name": "legacy-company-search",
+    "transport": "sse",
+    "url": "https://mcp.example.com/events",
+    "headers": {
+      "Authorization": "replace-with-an-executor-local-authorization-value"
+    }
+  }
+]

@@ -1,28 +1,21 @@
 import { useEffect, useState } from 'react'
-import type { KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
   Bell,
   Bot,
-  Brain,
-  CheckCircle2,
   Database,
   Download,
   FileText,
-  Folder,
-  FolderOpen,
   HardDrive,
   Info,
   LockKeyhole,
   Palette,
   PlugZap,
   Save,
-  Search,
   Settings2,
   ShieldCheck,
-  SquareTerminal,
   Zap,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -37,7 +30,6 @@ import InsightsPanel from './InsightsPanel'
 import ProcessPanel from './ProcessPanel'
 import TerminalPanel from './TerminalPanel'
 import PersonalitySelector from './PersonalitySelector'
-import SessionSearchPanel from './SessionSearchPanel'
 import PipelinePanel from './PipelinePanel'
 import ConnectorPanel from './ConnectorPanel'
 import McpView from './McpView'
@@ -123,6 +115,115 @@ type StartupRecoveryReport = {
   workerSandboxes: number
   managedProcesses: number
   terminalBackends: number
+}
+
+type SandboxSetupStatus = {
+  supported: boolean
+  ready: boolean
+  version: number
+  account: string
+  group: string
+  reason?: string | null
+}
+
+function SandboxSetupCard() {
+  const [status, setStatus] = useState<SandboxSetupStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [settingUp, setSettingUp] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      setStatus(await safeInvoke<SandboxSetupStatus>('sandbox_setup_status'))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void refresh()
+  }, [])
+
+  const startSetup = async () => {
+    const confirmed = window.confirm(tr('The setup creates a low-privilege local Windows account and group. Windows will ask for administrator approval. Continue?'))
+    if (!confirmed) return
+    setSettingUp(true)
+    setError(null)
+    try {
+      const next = await safeInvoke<SandboxSetupStatus>('sandbox_setup_start')
+      setStatus(next)
+      window.dispatchEvent(new CustomEvent('lacowork-sandbox-status-changed', { detail: next }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      try {
+        setStatus(await safeInvoke<SandboxSetupStatus>('sandbox_setup_status'))
+      } catch {
+        // Keep the actionable setup failure visible if the follow-up status check also fails.
+      }
+    } finally {
+      setSettingUp(false)
+    }
+  }
+
+  const stateLabel = settingUp
+    ? tr('Setting up')
+    : loading
+      ? tr('Checking')
+      : status?.ready
+        ? tr('Ready')
+        : error
+          ? tr('Error')
+          : tr('Not configured')
+
+  const stateTone = error
+    ? 'danger'
+    : settingUp || loading
+      ? 'info'
+      : status?.ready
+        ? 'success'
+        : 'warning'
+
+  return (
+    <div id="ai-sandbox">
+      <Section title={tr('AI Sandbox')} icon={ShieldCheck}>
+        <div className="card sandbox-setup-card">
+          <div className="sandbox-setup-summary">
+            <span className={`sandbox-status-badge sandbox-status-badge-${stateTone}`} aria-live="polite">
+              {stateLabel}
+            </span>
+            <p>
+              {status?.ready
+                ? tr('Every normal AI chat automatically uses the native Windows sandbox. Original files are changed only after diff confirmation.')
+                : tr('Chat, web, MCP, and explicitly shared files remain available. Without setup, local file access is read-only and AI shell commands are disabled.')}
+            </p>
+          </div>
+          <dl className="about-cowork-details sandbox-setup-details">
+            <div><dt>{tr('Account')}</dt><dd>{status?.account ?? 'LACoworkOnline'}</dd></div>
+            <div><dt>{tr('Group')}</dt><dd>{status?.group ?? 'LACoworkSandbox'}</dd></div>
+            <div><dt>{tr('Setup version')}</dt><dd>{status?.version ?? '\u2014'}</dd></div>
+          </dl>
+          {error && (
+            <p className="sandbox-setup-note sandbox-setup-note-error" role="alert">{error}</p>
+          )}
+          {!error && status?.reason && (
+            <p className="sandbox-setup-note">{status.reason}</p>
+          )}
+          <div className="sandbox-setup-actions">
+            <button type="button" className="sandbox-setup-button sandbox-setup-button-primary" onClick={() => void startSetup()} disabled={loading || settingUp || status?.supported === false}>
+              {status?.ready ? tr('Set up again') : tr('Set up sandbox')}
+            </button>
+            <button type="button" className="sandbox-setup-button sandbox-setup-button-secondary" onClick={() => void refresh()} disabled={loading || settingUp}>
+              {tr('Check readiness')}
+            </button>
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
 }
 
 const EMPTY_GATEWAY_HEALTH: GatewayHealth = {
@@ -295,58 +396,12 @@ function SupportBundlePanel() {
 
 /* Category definitions */
 
-const CATEGORIES = [
-  { key: 'ai', label: 'AI & model', description: 'Configure multiple LLM profiles, global provider defaults, and personalities', keywords: ['API key needed', 'Endpoint', 'Model', 'Streaming', 'Manage personalities'], icon: Bot },
-  { key: 'agent', label: 'Agent & Skills', description: 'Control agent behavior, manage skills, and configure pipelines', keywords: ['Agent behavior', 'Permission mode', 'System prompts', 'Crew configuration', 'Skills'], icon: Zap },
-  { key: 'memory', label: 'Memory', description: 'Manage agent memory, profile, provider, and notes', keywords: ['Knowledge import'], icon: Brain },
-  { key: 'sessions', label: 'Sessions & Insights', description: 'Search past sessions and review usage statistics', keywords: ['Insights dashboard'], icon: FolderOpen },
-  { key: 'terminal', label: 'Terminal & Processes', description: 'Configure terminal backends and managed processes', keywords: ['Terminal backends'], icon: SquareTerminal },
-  { key: 'mcp', label: 'MCP Server', description: 'Manage and test Model Context Protocol servers', keywords: ['MCP Settings', 'Manual JSON import'], icon: PlugZap },
-  { key: 'ui', label: 'Interface', description: 'Customize display, notifications, and audio feedback', keywords: ['Appearance', 'Desktop notifications', 'Font size (%)', 'Focus mode', 'Compact mode'], icon: Palette },
-  { key: 'security', label: 'Security & data', description: 'Configure file access, command filters, and data retention', keywords: ['File security', 'Allowed commands (allowlist)', 'Blocked commands (blacklist)', 'Backup interval (hours)'], icon: ShieldCheck },
-  { key: 'system', label: 'System & Info', description: 'Workspace paths, startup, and app information', keywords: ['Workspace & System', 'Default workspace path', 'Create support bundle'], icon: Folder },
-] as const
+const CATEGORY_KEYS = ['ai', 'agent', 'memory', 'runs', 'terminal', 'mcp', 'ui', 'sandbox', 'security', 'system'] as const
 
-type CategoryKey = (typeof CATEGORIES)[number]['key']
+type CategoryKey = (typeof CATEGORY_KEYS)[number]
 
 const isCategoryKey = (value: string | null): value is CategoryKey =>
-  CATEGORIES.some((category) => category.key === value)
-
-const normalizeSettingsSearch = (value: string) => value
-  .toLocaleLowerCase()
-  .replaceAll('\u00e4', 'ae')
-  .replaceAll('\u00f6', 'oe')
-  .replaceAll('\u00fc', 'ue')
-  .replaceAll('\u00df', 'ss')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .replace(/[^a-z0-9]+/g, ' ')
-  .trim()
-
-const getTabId = (key: CategoryKey) => `settings-tab-${key}`
-const getPanelId = (key: CategoryKey) => `settings-panel-${key}`
-const getPanelProps = (key: CategoryKey) => ({
-  id: getPanelId(key),
-  role: 'tabpanel' as const,
-  'aria-labelledby': getTabId(key),
-})
-
-function SettingsPageHeader({ category }: { category: CategoryKey }) {
-  const config = CATEGORIES.find((item) => item.key === category) ?? CATEGORIES[0]
-  const Icon = config.icon
-
-  return (
-    <header className="settings-page-header">
-      <span className="settings-page-icon" aria-hidden="true"><Icon size={20} strokeWidth={1.9} /></span>
-      <div className="settings-page-heading">
-        <span className="settings-page-kicker">{tr('Workspace preferences')}</span>
-        <h1>{tr(config.label)}</h1>
-        <p>{tr(config.description)}</p>
-      </div>
-      <span className="settings-save-state"><CheckCircle2 size={15} aria-hidden="true" />{tr('Saved automatically')}</span>
-    </header>
-  )
-}
+  CATEGORY_KEYS.includes(value as CategoryKey)
 
 /* Main component */
 
@@ -370,134 +425,27 @@ export default function SettingsView() {
   const activeToolsetPolicyId = useCoworkStore((s) => s.activeToolsetPolicyId)
   const toolsetPolicies = useCoworkStore((s) => s.toolsetPolicies)
   const setActiveToolsetPolicy = useCoworkStore((s) => s.setActiveToolsetPolicy)
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams] = useSearchParams()
+  const location = useLocation()
   const categoryParam = searchParams.get('section')
   const activeCategory: CategoryKey = isCategoryKey(categoryParam) ? categoryParam : 'ai'
   const activeToolsetPolicy = toolsetPolicies.find((policy) => policy.id === activeToolsetPolicyId)
-  const [categorySearch, setCategorySearch] = useState('')
-  const normalizedCategorySearch = normalizeSettingsSearch(categorySearch)
-  const getVisibleCategories = (search: string) => {
-    const searchTokens = normalizeSettingsSearch(search).split(' ').filter(Boolean)
-    if (searchTokens.length === 0) return CATEGORIES
-
-    return CATEGORIES.filter((category) => {
-      const categoryText = normalizeSettingsSearch([tr(category.label), tr(category.description), ...category.keywords.map((keyword) => tr(keyword))].join(' '))
-      return searchTokens.every((token) => categoryText.includes(token))
-    })
-  }
-  const visibleCategories = getVisibleCategories(categorySearch)
-  const activeCategoryMatchesSearch = visibleCategories.some((category) => category.key === activeCategory)
-
-  const setActiveCategory = (category: CategoryKey) => {
-    const nextParams = new URLSearchParams(searchParams)
-    if (category === 'ai') {
-      nextParams.delete('section')
-    } else {
-      nextParams.set('section', category)
-    }
-    setSearchParams(nextParams)
-  }
-
-  const handleCategorySearchChange = (value: string) => {
-    setCategorySearch(value)
-    const matches = getVisibleCategories(value)
-    if (matches.length > 0 && !matches.some((category) => category.key === activeCategory)) {
-      setActiveCategory(matches[0].key)
-    }
-  }
-
-  const handleCategoryKeyDown = (event: KeyboardEvent<HTMLButtonElement>, category: CategoryKey) => {
-    const currentIndex = visibleCategories.findIndex((item) => item.key === category)
-    if (currentIndex < 0 || !visibleCategories.length) return
-
-    let nextIndex: number
-    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % visibleCategories.length
-    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + visibleCategories.length) % visibleCategories.length
-    else if (event.key === 'Home') nextIndex = 0
-    else if (event.key === 'End') nextIndex = visibleCategories.length - 1
-    else return
-
-    event.preventDefault()
-    const nextCategory = visibleCategories[nextIndex].key
-    setActiveCategory(nextCategory)
-    window.requestAnimationFrame(() => document.getElementById(getTabId(nextCategory))?.focus())
-  }
 
   const pref = <K extends keyof AppPreferences>(key: K) => ({
     checked: preferences[key] as boolean,
     onChange: (v: boolean) => setPreference(key, v as AppPreferences[K]),
   })
 
+  if (categoryParam === 'security' && location.hash === '#ai-sandbox') {
+    return <Navigate to="/settings?section=sandbox" replace />
+  }
+
   return (
     <div className="settings-layout">
-      {/* Sidebar navigation */}
-      <aside className="settings-sidebar">
-        <label className="settings-category-search">
-          <Search size={15} aria-hidden="true" />
-          <input
-            type="search"
-            value={categorySearch}
-            onChange={(event) => handleCategorySearchChange(event.currentTarget.value)}
-            aria-label={tr('Search settings')}
-            placeholder={tr('Search settings')}
-          />
-          {normalizedCategorySearch ? <span>{visibleCategories.length}</span> : null}
-        </label>
-        <select
-          className="settings-category-select"
-          value={activeCategoryMatchesSearch ? activeCategory : ''}
-          onChange={(event) => setActiveCategory(event.currentTarget.value as CategoryKey)}
-          aria-label={tr('Settings categories')}
-          disabled={!visibleCategories.length}
-        >
-          {visibleCategories.map((category) => (
-            <option key={category.key} value={category.key}>{tr(category.label)}</option>
-          ))}
-        </select>
-        <nav className="settings-nav-list" role="tablist" aria-label={tr("Settings categories")}>
-          {visibleCategories.map((cat) => {
-            const Icon = cat.icon
-            return (
-              <button
-                key={cat.key}
-                id={getTabId(cat.key)}
-                type="button"
-                role="tab"
-                tabIndex={activeCategory === cat.key ? 0 : -1}
-                className={`settings-nav-item${activeCategory === cat.key ? ' active' : ''}`}
-                aria-selected={activeCategory === cat.key}
-                aria-controls={getPanelId(cat.key)}
-                onClick={() => setActiveCategory(cat.key)}
-                onKeyDown={(event) => handleCategoryKeyDown(event, cat.key)}
-              >
-                <Icon className="settings-nav-icon" size={16} strokeWidth={1.8} aria-hidden="true" />
-                <span className="settings-nav-label">{tr(cat.label)}</span>
-              </button>
-            )
-          })}
-          {!visibleCategories.length ? (
-            <p className="settings-category-empty">{tr('No settings sections match your search')}</p>
-          ) : null}
-        </nav>
-      </aside>
-
-      {/* Content area */}
       <div className="settings-content">
-        {!visibleCategories.length ? (
-          <div className="settings-view" role="status">
-            <Section title={tr('No settings sections match your search')} icon={Search}>
-              <p className="hint-text">{categorySearch}</p>
-              <div className="settings-inline-actions">
-                <button type="button" className="btn-sm" onClick={() => setCategorySearch('')}>{tr('Leeren')}</button>
-              </div>
-            </Section>
-          </div>
-        ) : null}
-
         {/* AI and model */}
-        {activeCategoryMatchesSearch && activeCategory === 'ai' && (
-          <div className="settings-view" {...getPanelProps('ai')}>
-            <SettingsPageHeader category="ai" />
+        {activeCategory === 'ai' && (
+          <div className="settings-view" aria-label={tr('AI & model')}>
 
             <LlmProfilesPanel />
 
@@ -509,9 +457,8 @@ export default function SettingsView() {
         )}
 
         {/* Agent and skills */}
-        {activeCategoryMatchesSearch && activeCategory === 'agent' && (
-          <div className="settings-view settings-view-wide" {...getPanelProps('agent')}>
-            <SettingsPageHeader category="agent" />
+        {activeCategory === 'agent' && (
+          <div className="settings-view settings-view-wide" aria-label={tr('Agent & Skills')}>
 
             <Section title={tr("Agent behavior")} icon={Zap}>
               <Toggle label={tr("Automatically approve safe tools")} hint={tr("Execute read operations without confirmation")} {...pref('autoApproveSafeTools')} />
@@ -527,11 +474,6 @@ export default function SettingsView() {
             <Section title={tr("Engine configuration")} icon={Settings2}>
               <div className="grid">
                 <label>{tr("Max turns per request")}<input type="number" min={1} max={100} value={engineConfig.maxTurns} onChange={(e) => setEngineConfig({ maxTurns: Number(e.target.value) })} />
-                </label>
-                <label>{tr("Session Persistence")}<select value={engineConfig.sessionPersistence ? 'enabled' : 'disabled'} onChange={(e) => setEngineConfig({ sessionPersistence: e.target.value === 'enabled' })}>
-                    <option value="enabled">{tr("Enabled")}</option>
-                    <option value="disabled">{tr("Disabled")}</option>
-                  </select>
                 </label>
                 <label>{tr("Permission mode")}<select value={engineConfig.permissionMode} onChange={(e) => setEngineConfig({ permissionMode: e.target.value as 'default' | 'plan' | 'bypass' | 'strict' })}>
                     <option value="default">{tr("Standard")}</option>
@@ -587,36 +529,31 @@ export default function SettingsView() {
         )}
 
         {/* Memory */}
-        {activeCategoryMatchesSearch && activeCategory === 'memory' && (
-          <div className="settings-view" {...getPanelProps('memory')}>
-            <SettingsPageHeader category="memory" />
+        {activeCategory === 'memory' && (
+          <div className="settings-view" aria-label={tr('Memory')}>
             <MemoryPanel />
           </div>
         )}
 
-        {/* Sessions and insights */}
-        {activeCategoryMatchesSearch && activeCategory === 'sessions' && (
-          <div className="settings-view" {...getPanelProps('sessions')}>
-            <SettingsPageHeader category="sessions" />
-            <SessionSearchPanel />
+        {/* Runs and insights */}
+        {activeCategory === 'runs' && (
+          <div className="settings-view" aria-label={tr('Runs & Insights')}>
             <InsightsPanel />
             <RunPanel />
           </div>
         )}
 
         {/* Terminal and processes */}
-        {activeCategoryMatchesSearch && activeCategory === 'terminal' && (
-          <div className="settings-view" {...getPanelProps('terminal')}>
-            <SettingsPageHeader category="terminal" />
+        {activeCategory === 'terminal' && (
+          <div className="settings-view" aria-label={tr('Terminal & Processes')}>
             <TerminalPanel />
             <ProcessPanel />
           </div>
         )}
 
         {/* MCP server */}
-        {activeCategoryMatchesSearch && activeCategory === 'mcp' && (
-          <div className="settings-view" {...getPanelProps('mcp')}>
-            <SettingsPageHeader category="mcp" />
+        {activeCategory === 'mcp' && (
+          <div className="settings-view" aria-label={tr('MCP Server')}>
 
             <Section title={tr("MCP Settings")} icon={PlugZap}>
               <Toggle label={tr("Auto-reconnect")} hint={tr("Reconnect MCP servers automatically after connection loss")} {...pref('mcpAutoReconnect')} />
@@ -630,9 +567,8 @@ export default function SettingsView() {
         )}
 
         {/* Interface */}
-        {activeCategoryMatchesSearch && activeCategory === 'ui' && (
-          <div className="settings-view" {...getPanelProps('ui')}>
-            <SettingsPageHeader category="ui" />
+        {activeCategory === 'ui' && (
+          <div className="settings-view" aria-label={tr('Interface')}>
 
             <Section title={tr("Appearance")} icon={Palette}>
               <Toggle label={tr("Focus mode")} hint={tr("Hide sidebars and distractions")} {...pref('focusMode')} />
@@ -663,11 +599,16 @@ export default function SettingsView() {
           </div>
         )}
 
-        {/* Security and data */}
-        {activeCategoryMatchesSearch && activeCategory === 'security' && (
-          <div className="settings-view" {...getPanelProps('security')}>
-            <SettingsPageHeader category="security" />
+        {/* AI Sandbox */}
+        {activeCategory === 'sandbox' && (
+          <div className="settings-view" aria-label={tr('AI Sandbox')}>
+            <SandboxSetupCard />
+          </div>
+        )}
 
+        {/* Security and data */}
+        {activeCategory === 'security' && (
+          <div className="settings-view" aria-label={tr('Security & data')}>
             <Section title={tr("File security")} icon={LockKeyhole}>
               <Toggle label={tr("Read-only mode")} hint={tr("No file writes or deletes")} {...pref('readOnlyFsMode')} />
               <div className="grid settings-command-grid">
@@ -759,9 +700,8 @@ export default function SettingsView() {
         )}
 
         {/* System and info */}
-        {activeCategoryMatchesSearch && activeCategory === 'system' && (
-          <div className="settings-view" {...getPanelProps('system')}>
-            <SettingsPageHeader category="system" />
+        {activeCategory === 'system' && (
+          <div className="settings-view" aria-label={tr('System & Info')}>
 
             <Section title={tr("Workspace & System")} icon={HardDrive}>
               <Toggle label={tr("Launch at system startup")} hint={tr("Start the app automatically with Windows")} {...pref('launchAtStartup')} />

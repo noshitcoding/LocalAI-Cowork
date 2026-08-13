@@ -12,6 +12,8 @@ export type ChatAttachment = {
   mediaType?: string
   dataUrl?: string
   source?: 'path' | 'inline'
+  access?: 'read_only' | 'read_write'
+  isPrimary?: boolean
 }
 
 type FileWithPath = File & { path?: string }

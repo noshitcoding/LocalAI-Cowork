@@ -101,7 +101,6 @@ export type TaskRun = {
   status: TaskRunStatus
   taskId: string
   threadId: string
-  sessionId: string
   provider: providerKind
   model: string
   permissionMode: string

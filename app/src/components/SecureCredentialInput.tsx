@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { tr } from '../i18n'
 
 type SecureCredentialInputProps = {
@@ -22,6 +22,7 @@ export default function SecureCredentialInput({
 }: SecureCredentialInputProps) {
   const [draft, setDraft] = useState(value)
   const [error, setError] = useState(false)
+  useEffect(() => setDraft(value), [value])
   const commit = async () => {
     if (draft === value) return
     try {

@@ -1,24 +1,19 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { SessionSummary } from '../engine'
 import { useChatStore } from '../stores/chatStore'
 import { useUiStore } from '../stores/uiStore'
 import { useConfigStore } from '../stores/configStore'
 import { useEngineStore } from '../stores/engineStore'
-import { useTaskStore } from '../stores/taskStore'
-import { useWorkTasksStore, type WorkTask, type WorkTaskStatus } from '../stores/workTasksStore'
+import { useWorkTasksStore } from '../stores/workTasksStore'
 import { useProjectStore } from '../stores/projectStore'
-import { useCrewStore } from '../stores/crewStore'
-import { resolveWorkTaskChatProviderSettings } from '../engine/tasks/workTaskExecutionService'
 import { createChatProviderSelection, getChatProviderState } from '../utils/chatProvider'
-import { ContextPanel, DocumentWorkspacePanel, OutputsPanel, ProgressPanel, WorkingFolderPanel } from './RightSidebar'
 import { tr } from '../i18n'
 
 function getThreadDisplayTitle(title: string): string {
   return title === 'New chat' ? tr('New chat') : title
 }
-import { Activity, ChevronDown, ChevronRight, FolderPlus, MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderPlus, MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
 import { getProductRouteById, type ProductRouteId } from '../product/routeRegistry'
 
 const THREAD_DND_MIME = 'application/localai-cowork-thread-id'
@@ -38,40 +33,6 @@ type PointerThreadDrag = {
 type ThreadDropTarget =
   | { type: 'project'; projectId: string }
   | { type: 'chats' }
-
-function isAbsolutePath(path: string): boolean {
-  const trimmed = path.trim()
-  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(trimmed)
-}
-
-function getTaskSidebarTitle(task: WorkTask): string {
-  const title = task.title.trim()
-  if (title) return title
-
-  const prompt = task.prompt.trim().replace(/\s+/g, ' ')
-  if (!prompt) return task.id
-  return prompt.length > 36 ? `${prompt.slice(0, 36)}...` : prompt
-}
-
-function formatWorkTaskStatus(status: WorkTaskStatus): string {
-  switch (status) {
-    case 'idle': return tr('Idle')
-    case 'waiting_approval': return tr('Waiting for approval')
-    case 'running': return tr('Running')
-    case 'completed': return tr('Completed')
-    case 'failed': return tr('Failed')
-    case 'canceled': return tr('Canceled')
-  }
-}
-
-function buildTaskSidebarSummary(task: WorkTask): string {
-  return [
-    `${tr('Task created')}: ${getTaskSidebarTitle(task)}`,
-    `${tr('Runner')}: ${task.runner === 'crew' ? tr('Crew') : tr('Model')}`,
-    task.expectedOutput.trim() ? `${tr('Expected output')}: ${task.expectedOutput.trim()}` : '',
-    task.workDir.trim() ? `${tr('Working folder')}: ${task.workDir.trim()}` : '',
-  ].filter(Boolean).join('\n')
-}
 
 function readDraggedThreadId(event: DragEvent): string {
   const typed = event.dataTransfer.getData(THREAD_DND_MIME).trim()
@@ -98,29 +59,17 @@ export default function LeftSidebar() {
     threads,
     activeThreadId,
     addThread,
-    ensureThread,
-    loadFromDb: loadChatFromDb,
-    addMessage,
     setActiveThread,
     deleteThread,
   } = useChatStore()
   const setActiveMode = useUiStore((s) => s.setActiveMode)
-  const setWorkingFolder = useUiStore((s) => s.setWorkingFolder)
   const ollama = useConfigStore((s) => s.ollama)
   const availableModels = useConfigStore((s) => s.availableModels)
   const llmProfiles = useConfigStore((s) => s.llmProfiles)
   const defaultLlmProfileIds = useConfigStore((s) => s.defaultLlmProfileIds)
   const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
   const workTasks = useWorkTasksStore((s) => s.tasks)
-  const updateWorkTask = useWorkTasksStore((s) => s.updateTask)
-  const crews = useCrewStore((s) => s.crews)
-  const tasks = useTaskStore((s) => s.tasks)
-  const activeTaskId = useTaskStore((s) => s.activeTaskId)
   const activeProvider = useEngineStore((s) => s.activeProvider)
-  const getSessions = useEngineStore((s) => s.getSessions)
-  const loadSessionById = useEngineStore((s) => s.loadSessionById)
-  const currentSessionId = useEngineStore((s) => s.currentSessionId)
-  const deleteSessionById = useEngineStore((s) => s.deleteSessionById)
   const {
     projects,
     activeProjectId,
@@ -129,13 +78,8 @@ export default function LeftSidebar() {
     attachThread,
     detachThreadFromAll,
   } = useProjectStore()
-  const [persistedSessions, setPersistedSessions] = useState<SessionSummary[]>([])
-  const [loadingSessions, setLoadingSessions] = useState(false)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set())
   const [chatsCollapsed, setChatsCollapsed] = useState(false)
-  const [tasksCollapsed, setTasksCollapsed] = useState(false)
-  const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
-  const [workspaceStatusOpen, setWorkspaceStatusOpen] = useState(Boolean(activeTaskId))
   const [dropProjectId, setDropProjectId] = useState<string | null>(null)
   const [chatsDropActive, setChatsDropActive] = useState(false)
   const [pointerDrag, setPointerDrag] = useState<PointerThreadDrag | null>(null)
@@ -157,8 +101,6 @@ export default function LeftSidebar() {
     }, activeProvider, activeThread?.providerSettings),
     [activeProvider, activeThread?.providerSettings, availableModels, defaultLlmProfileIds, llmProfileModels, llmProfiles, ollama],
   )
-  const activeTask = tasks.find((task) => task.id === activeTaskId)
-
   const navigateToProductRoute = (routeId: ProductRouteId) => {
     const route = getProductRouteById(routeId)
     if (route.activeMode) {
@@ -166,22 +108,6 @@ export default function LeftSidebar() {
     }
     navigate(route.path)
   }
-
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      setLoadingSessions(true)
-      try {
-        const sessions = await getSessions()
-        if (!cancelled) setPersistedSessions(sessions)
-      } catch {
-        if (!cancelled) setPersistedSessions([])
-      } finally {
-        if (!cancelled) setLoadingSessions(false)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [getSessions, currentSessionId])
 
   const threadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads])
   const threadById = useMemo(() => new Map(threads.map((thread) => [thread.id, thread])), [threads])
@@ -282,13 +208,6 @@ export default function LeftSidebar() {
     navigateToProductRoute('projects')
   }
 
-  const handleOpenProjects = () => {
-    if (!activeProjectId && projects[0]) {
-      setActiveProject(projects[0].id)
-    }
-    navigateToProductRoute('projects')
-  }
-
   const handleOpenProject = (projectId: string) => {
     setActiveProject(projectId)
     navigateToProductRoute('projects')
@@ -300,54 +219,6 @@ export default function LeftSidebar() {
       return
     }
     setActiveThread(threadId)
-    navigateToProductRoute('cowork')
-  }
-
-  const handleOpenTaskThread = async (task: WorkTask) => {
-    await loadChatFromDb()
-    const loadedThreadIds = new Set(useChatStore.getState().threads.map((thread) => thread.id))
-    const existingThreadId = task.threadId && loadedThreadIds.has(task.threadId)
-      ? task.threadId
-      : null
-    const taskProviderSettings = resolveWorkTaskChatProviderSettings(task, {
-      crews,
-      ollamaModel: ollama.model,
-      defaultLlmProfileIds,
-      llmProfiles,
-      fallbackProviderSettings: createChatProviderSelection(providerState),
-    })
-
-    const ensuredThread = existingThreadId
-      ? { id: existingThreadId, created: false }
-      : task.threadId
-        ? ensureThread(task.threadId, getTaskSidebarTitle(task), taskProviderSettings)
-        : { id: addThread(getTaskSidebarTitle(task), taskProviderSettings), created: true }
-    const threadId = ensuredThread.id
-
-    if (ensuredThread.created) {
-      addMessage(threadId, {
-        role: 'system',
-        content: buildTaskSidebarSummary(task),
-        visibleInChat: true,
-        timestamp: Date.now(),
-      })
-      if (!task.threadId) {
-        updateWorkTask(task.id, { threadId })
-      }
-    }
-
-    const workDir = task.workDir.trim()
-    setWorkingFolder(workDir && isAbsolutePath(workDir) ? workDir : null)
-    setActiveThread(threadId)
-    navigateToProductRoute('cowork')
-  }
-
-  const handleOpenSession = async (sessionId: string) => {
-    const session = await loadSessionById(sessionId)
-    if (!session) return
-    if (session.threadId && threadIds.has(session.threadId)) {
-      setActiveThread(session.threadId)
-    }
     navigateToProductRoute('cowork')
   }
 
@@ -449,40 +320,16 @@ export default function LeftSidebar() {
 
   return (
     <aside className="left-sidebar" data-doc-id="element:/app/left-sidebar" aria-label={tr("Workspace sidebar")}>
-      <div className="sidebar-primary-actions">
-        <button type="button" className="sidebar-primary-action" aria-label={tr("+ New chat")} data-doc-id="button:/app/left-sidebar/new-chat" onClick={() => handleNewChat()}>
-          <MessageSquarePlus size={17} aria-hidden="true" />
-          <span>{tr("New chat")}</span>
-        </button>
-        <button type="button" className="sidebar-primary-action" aria-label={tr("+ New project")} data-doc-id="button:/app/left-sidebar/new-project" onClick={handleNewProject}>
-          <FolderPlus size={17} aria-hidden="true" />
-          <span>{tr("New project")}</span>
-        </button>
-      </div>
-      <div className="sidebar-utility-actions">
-        <button type="button" className="sidebar-utility-link" data-doc-id="button:/app/left-sidebar/manage-projects" onClick={handleOpenProjects}>{tr("Manage projects")}</button>
-        <button type="button" className="sidebar-utility-link" data-doc-id="button:/app/left-sidebar/open-crew" onClick={() => navigateToProductRoute('crew')}>{tr("Crew Studio")}</button>
-      </div>
-
-      <div className={`sidebar-status-group${workspaceStatusOpen ? ' open' : ''}`}>
-        <button
-          type="button"
-          className="sidebar-status-toggle"
-          aria-expanded={workspaceStatusOpen}
-          onClick={() => setWorkspaceStatusOpen((open) => !open)}
-        >
-          <span><Activity size={15} aria-hidden="true" />{tr("Workspace status")}</span>
-          {workspaceStatusOpen ? <ChevronDown size={15} aria-hidden="true" /> : <ChevronRight size={15} aria-hidden="true" />}
-        </button>
-        {workspaceStatusOpen && (
-          <div className="sidebar-status-panels">
-            <ProgressPanel task={activeTask} />
-            <DocumentWorkspacePanel />
-            <WorkingFolderPanel />
-            <OutputsPanel task={activeTask} />
-            <ContextPanel />
-          </div>
-        )}
+      <div className="sidebar-compact-header">
+        <strong>{tr('Projects & chats')}</strong>
+        <div>
+          <button type="button" aria-label={tr("+ New chat")} title={tr("New chat")} data-doc-id="button:/app/left-sidebar/new-chat" onClick={() => handleNewChat()}>
+            <MessageSquarePlus size={15} aria-hidden="true" />
+          </button>
+          <button type="button" aria-label={tr("+ New project")} title={tr("New project")} data-doc-id="button:/app/left-sidebar/new-project" onClick={handleNewProject}>
+            <FolderPlus size={15} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       <div className="sidebar-section">
@@ -604,53 +451,6 @@ export default function LeftSidebar() {
                 </div>
               ))}
               {unassignedThreads.length === 0 && <p className="hint-text">{tr("No unassigned chats")}</p>}
-            </div>
-          )}
-        </div>
-
-        <div className="sidebar-group">
-          <button type="button" className="sidebar-group-toggle" aria-expanded={!tasksCollapsed} onClick={() => setTasksCollapsed((value) => !value)}>
-            <span>{tasksCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Tasks")}</span>
-            <span>{workTasks.length}</span>
-          </button>
-          {!tasksCollapsed && (
-            <div className="sidebar-thread-list">
-              {workTasks.map((task) => (
-                <div key={task.id} className={`sidebar-thread-row${task.threadId === activeThreadId ? ' active' : ''}`}>
-                  <button type="button" className="sidebar-row-main sidebar-task-row-main" data-doc-id="button:/app/left-sidebar/open-task-chat" onClick={() => void handleOpenTaskThread(task)}>
-                    <span className="sidebar-task-title">{getTaskSidebarTitle(task)}</span>
-                    <span className={`task-pill task-status task-status-${task.status}`}>{formatWorkTaskStatus(task.status)}</span>
-                  </button>
-                </div>
-              ))}
-              {workTasks.length === 0 && <p className="hint-text">{tr("No tasks")}</p>}
-            </div>
-          )}
-        </div>
-
-        <div className="sidebar-group">
-          <button type="button" className="sidebar-group-toggle" aria-expanded={!sessionsCollapsed} onClick={() => setSessionsCollapsed((value) => !value)}>
-            <span>{sessionsCollapsed ? <ChevronRight size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}{tr("Sessions")}</span>
-            <span>{persistedSessions.length}</span>
-          </button>
-          {!sessionsCollapsed && (
-            <div className="sidebar-thread-list">
-              {persistedSessions.map((session) => (
-                <div key={session.id} className={`sidebar-thread-row${session.id === currentSessionId ? ' active' : ''}`}>
-                  <button type="button" className="sidebar-row-main" onClick={() => void handleOpenSession(session.id)}>
-                    {session.title}
-                  </button>
-                  <button
-                    type="button"
-                    className="sidebar-row-action"
-                    onClick={(event) => { event.stopPropagation(); void deleteSessionById(session.id) }}
-                    title={tr("Delete")}
-                    aria-label={tr("Delete session")}
-                  ><Trash2 size={14} aria-hidden="true" /></button>
-                </div>
-              ))}
-              {loadingSessions && <p className="hint-text">{tr("Loading sessions...")}</p>}
-              {!loadingSessions && persistedSessions.length === 0 && <p className="hint-text">{tr("No persisted sessions")}</p>}
             </div>
           )}
         </div>

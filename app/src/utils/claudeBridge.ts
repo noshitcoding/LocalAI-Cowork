@@ -106,37 +106,3 @@ export function isToolDeniedByRules(toolId: string, target: string | null, rules
     return trimmed.toLowerCase() === toolId.toLowerCase()
   })
 }
-
-export function compactHistoryForPrompt(
-  messages: Array<{ role: string; content: string }>,
-  maxItems: number,
-): { compacted: Array<{ role: string; content: string }>; droppedCount: number } {
-  if (messages.length <= maxItems) {
-    return {
-      compacted: messages,
-      droppedCount: 0,
-    }
-  }
-
-  const keepTail = Math.max(2, maxItems - 1)
-  const dropped = messages.slice(0, messages.length - keepTail)
-  const tail = messages.slice(messages.length - keepTail)
-
-  const summary = dropped
-    .slice(-6)
-    .map((entry, idx) => {
-      const snippet = entry.content.replace(/\s+/g, ' ').slice(0, 140)
-      return `${idx + 1}. ${entry.role}: ${snippet}`
-    })
-    .join('\n')
-
-  const synthetic = {
-    role: 'system',
-    content: `[HISTORY_COMPACTED]\nReduzierte Messages: ${dropped.length}\nLetzte Kernaussagen:\n${summary}\n[/HISTORY_COMPACTED]`,
-  }
-
-  return {
-    compacted: [synthetic, ...tail],
-    droppedCount: dropped.length,
-  }
-}

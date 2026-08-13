@@ -1,0 +1,56 @@
+# Compose v2.24+ overlay for a pre-created external S3-compatible bucket.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.external-s3.yml up -d
+services:
+  api:
+    environment:
+      COWORK_S3_ENDPOINT: ${COWORK_S3_ENDPOINT:?set COWORK_S3_ENDPOINT for external S3}
+      COWORK_S3_REGION: ${COWORK_S3_REGION:?set COWORK_S3_REGION for external S3}
+      COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:?set COWORK_S3_BUCKET for external S3}
+      COWORK_S3_ADDRESSING_STYLE: ${COWORK_S3_ADDRESSING_STYLE:-virtual_hosted}
+      COWORK_S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      COWORK_S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+    secrets: !override
+      - bootstrap_token
+      - database_url
+      - s3_access_key
+      - s3_secret_key
+      - storage_master_key
+      - runner_signing_key
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      runner:
+        condition: service_healthy
+
+  worker:
+    environment:
+      COWORK_S3_ENDPOINT: ${COWORK_S3_ENDPOINT:?set COWORK_S3_ENDPOINT for external S3}
+      COWORK_S3_REGION: ${COWORK_S3_REGION:?set COWORK_S3_REGION for external S3}
+      COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:?set COWORK_S3_BUCKET for external S3}
+      COWORK_S3_ADDRESSING_STYLE: ${COWORK_S3_ADDRESSING_STYLE:-virtual_hosted}
+      COWORK_S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      COWORK_S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+    secrets: !override
+      - bootstrap_token
+      - database_url
+      - runner_signing_key
+      - s3_access_key
+      - s3_secret_key
+      - storage_master_key
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      runner:
+        condition: service_healthy
+
+  minio:
+    profiles: [bundled-storage]
+
+  minio-init:
+    profiles: [bundled-storage]
+
+secrets:
+  s3_access_key:
+    file: ${COWORK_S3_ACCESS_KEY_PATH:?set COWORK_S3_ACCESS_KEY_PATH}
+  s3_secret_key:
+    file: ${COWORK_S3_SECRET_KEY_PATH:?set COWORK_S3_SECRET_KEY_PATH}

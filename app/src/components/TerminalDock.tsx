@@ -16,9 +16,11 @@ type TerminalDockProps = {
 }
 
 function getSessionLabel(session: TerminalSession) {
+  if (session.kind === 'sandbox') return 'AI Sandbox'
   if (session.currentAiCommand) return 'AI running'
   if (session.kind === 'ai') return session.title || 'AI Shell'
-  return session.title || session.shell
+  if (session.title.includes('user-controlled')) return session.title
+  return `Host ${session.title || 'PowerShell'} – user-controlled`
 }
 
 function getStatusLabel(session: TerminalSession | null) {
@@ -111,7 +113,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
 
   useEffect(() => {
     if (!activeSession && sessions.length === 0) {
-      void createSession({ threadId, cwd, title: 'PowerShell' })
+      void createSession({ threadId, cwd, title: 'Host PowerShell – user-controlled' })
     }
   }, [activeSession, createSession, cwd, sessions.length, threadId])
 
@@ -172,7 +174,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
   }
 
   const handleNewSession = async () => {
-    const session = await createSession({ threadId, cwd, title: 'PowerShell' })
+    const session = await createSession({ threadId, cwd, title: 'Host PowerShell – user-controlled' })
     setActiveSession(threadId, session.id)
   }
 
@@ -193,7 +195,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
 
   const sendInput = async () => {
     const command = input
-    if (!activeSession || !command) return
+    if (!activeSession || activeSession.kind === 'sandbox' || !command) return
     if (!confirmAiIntervention(activeSession)) return
     if (!confirmRisk(command)) return
     setInput('')
@@ -201,7 +203,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
   }
 
   const sendDirectTerminalInput = useCallback(async (data: string) => {
-    if (!activeSession || !data || activeSession.status === 'exited') return
+    if (!activeSession || activeSession.kind === 'sandbox' || !data || activeSession.status === 'exited') return
     if (!confirmAiIntervention(activeSession)) return
     await writeToSession(activeSession.id, data)
   }, [activeSession, confirmAiIntervention, writeToSession])
@@ -213,7 +215,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
   }, [sendDirectTerminalInput])
 
   const handleTerminalPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
-    if (!activeSession || activeSession.status === 'exited') return
+    if (!activeSession || activeSession.kind === 'sandbox' || activeSession.status === 'exited') return
     const text = event.clipboardData.getData('text')
     if (!text) return
     event.preventDefault()
@@ -264,7 +266,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
           type="button"
           className="terminal-icon-button"
           onClick={() => activeSession && interruptSession(activeSession.id)}
-          disabled={!activeSession || activeSession.status === 'exited'}
+          disabled={!activeSession || activeSession.kind === 'sandbox' || activeSession.status === 'exited'}
           title={tr('Stop')}
           aria-label={tr('Stop')}
         >
@@ -274,7 +276,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
           type="button"
           className="terminal-icon-button"
           onClick={() => activeSession && killSession(activeSession.id)}
-          disabled={!activeSession || activeSession.status === 'exited'}
+          disabled={!activeSession || activeSession.kind === 'sandbox' || activeSession.status === 'exited'}
           title={tr('Kill terminal')}
           aria-label={tr('Kill terminal')}
         >
@@ -297,7 +299,7 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
         aria-live={activeSession?.status === 'running' ? 'polite' : undefined}
         aria-label={tr('Terminal output')}
         onPaste={handleTerminalPaste}
-        title={tr('Terminal focus: type directly here')}
+        title={activeSession?.kind === 'sandbox' ? tr('AI Sandbox output (read-only)') : tr('Terminal focus: type directly here')}
       />
       <div className="terminal-dock-input-row">
         <span className="terminal-prompt">{tr('PS')}</span>
@@ -311,10 +313,10 @@ export default function TerminalDock({ threadId, cwd }: TerminalDockProps) {
               void sendInput()
             }
           }}
-          placeholder={activeSession?.currentAiCommand ? tr('AI command running; manual input requires confirmation') : tr('Enter command...')}
-          disabled={!activeSession || activeSession.status === 'exited'}
+          placeholder={activeSession?.kind === 'sandbox' ? tr('AI Sandbox output is read-only') : activeSession?.currentAiCommand ? tr('AI command running; manual input requires confirmation') : tr('Enter command...')}
+          disabled={!activeSession || activeSession.kind === 'sandbox' || activeSession.status === 'exited'}
         />
-        <button type="button" className="btn-sm" onClick={() => void sendInput()} disabled={!activeSession || !input.trim()}>
+        <button type="button" className="btn-sm" onClick={() => void sendInput()} disabled={!activeSession || activeSession.kind === 'sandbox' || !input.trim()}>
           {tr('Send')}
         </button>
       </div>

@@ -6,10 +6,14 @@ import { safeInvoke } from '../utils/safeInvoke'
 import { crewProviderLocator, deleteCredential, setCredential } from '../security/credentialVault'
 import { sanitizeCrewsForPersistence } from '../security/credentialPersistence'
 import { redactText } from '../security/redaction'
+import { resolveEffectiveCrewProvider, resolveExternalProviderConfig } from '../engine/crew/workTaskCrewRuntime'
+import i18n from '../i18n'
+import { normalizeChatProviderSelection, type ChatProviderSelection } from '../utils/chatProvider'
 
 export type AgentRole = 'researcher' | 'writer' | 'reviewer' | 'planner' | 'executor' | 'analyst' | 'custom'
 export type CrewProcess = 'sequential' | 'parallel' | 'hierarchical'
-export type CrewProviderKind = 'ollama' | 'openai-compatible' | 'openrouter'
+/** Legacy execution hint retained for one migration release. */
+export type CrewProviderKind = 'ollama' | 'openai-compatible' | 'openrouter' | 'codex'
 export type CrewOutputMode = 'standard' | 'bullet-report' | 'json'
 export type CrewGovernanceMode = 'allow-all' | 'ask-risky' | 'ask-all' | 'read-only'
 
@@ -22,7 +26,9 @@ export type CrewAgent = {
   skillsMarkdown: string
   personalityId: string | null
   modelOverride: string | null
+  inheritCrewModel?: boolean
   providerKind: CrewProviderKind
+  backendSelection?: ChatProviderSelection
   tools: string[]
   mcpServerNames: string[]
   enabled: boolean
@@ -55,6 +61,7 @@ export type CrewExternalProviderConfig = {
   baseUrl: string
   model: string
   apiKey: string
+  hasApiKey?: boolean
   timeoutMs: number
   verifyTlsCertificates: boolean
 }
@@ -80,6 +87,7 @@ export type Crew = {
   shareAllTaskOutputs: boolean
   sharedOutputCharLimit: number
   defaultProvider?: CrewProviderKind
+  defaultBackendSelection?: ChatProviderSelection
   defaultModel?: string
   providerProfiles: CrewProviderProfiles
   agents: CrewAgent[]
@@ -431,7 +439,11 @@ export function resolveCrewAgentWithProfile(agent: CrewAgent, profiles: CrewPers
     goal: profile.goal || profile.description || `Work in the style of ${profile.name}.`,
     backstory: profile.systemPrompt,
     skillsMarkdown: profile.skillsMarkdown,
-    modelOverride: profile.modelOverride?.trim() || null,
+    modelOverride: agent.inheritCrewModel === true
+      ? null
+      : agent.inheritCrewModel === false
+        ? agent.modelOverride?.trim() || null
+        : profile.modelOverride?.trim() || null,
     tools: [...agent.tools],
     mcpServerNames: [...agent.mcpServerNames],
   }
@@ -510,25 +522,29 @@ function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig?: OllamaConfig) {
   }
 }
 
-function resolveExternalProviderConfig(
-  config: CrewExternalProviderConfig,
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string; verifyTlsCertificates?: boolean } | undefined,
-  fallbackBaseUrl: string,
-) {
-  if (!config.enabled) {
-    return undefined
-  }
-
-  return {
-    baseUrl: config.baseUrl.trim() || fallbackConfig?.baseUrl?.trim() || fallbackBaseUrl,
-    model: config.model.trim() || fallbackConfig?.model?.trim() || '',
-    apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
-    timeoutMs: Math.max(1000, config.timeoutMs || DEFAULT_EXTERNAL_PROVIDER_CONFIG.timeoutMs),
-    verifyTlsCertificates: (config.verifyTlsCertificates ?? true) && (fallbackConfig?.verifyTlsCertificates ?? true),
-  }
-}
-
 function normalizeCrewStateEntry(crew: Crew): Crew {
+  const config = useConfigStore.getState()
+  const legacySelection = (provider: CrewProviderKind | undefined, model?: string): ChatProviderSelection => {
+    if (provider === 'codex') {
+      return { backend: 'codex', ...(model?.trim() ? { model: model.trim() } : {}) }
+    }
+    const preset = provider === 'openrouter' ? 'openrouter' : provider === 'ollama' ? 'ollama' : undefined
+    const profileId = provider === 'openrouter'
+      ? config.defaultLlmProfileIds.openrouter
+      : provider === 'ollama'
+        ? config.defaultLlmProfileIds.ollama
+        : config.defaultLlmProfileIds.api ?? config.defaultLlmProfileIds['openai-compatible']
+    const profile = config.llmProfiles.find((entry) => entry.id === profileId)
+      ?? config.llmProfiles.find((entry) => !preset || entry.preset === preset)
+      ?? config.llmProfiles[0]
+    return {
+      backend: 'openai-compatible',
+      profileId: profile?.id ?? '',
+      ...(model?.trim() ? { model: model.trim() } : {}),
+    }
+  }
+  const defaultBackendSelection = normalizeChatProviderSelection(crew.defaultBackendSelection)
+    ?? legacySelection(crew.defaultProvider, crew.defaultModel)
   return {
     ...crew,
     executionSubject: crew.executionSubject ?? 'workspace-user',
@@ -544,6 +560,7 @@ function normalizeCrewStateEntry(crew: Crew): Crew {
     sharedOutputCharLimit: crew.sharedOutputCharLimit ?? 0,
     defaultProvider: crew.defaultProvider ?? DEFAULT_CREW_PROVIDER,
     defaultModel: crew.defaultModel ?? '',
+    defaultBackendSelection,
     providerProfiles: {
       openAICompatible: {
         ...DEFAULT_CREW_PROVIDER_PROFILES.openAICompatible,
@@ -554,12 +571,147 @@ function normalizeCrewStateEntry(crew: Crew): Crew {
         ...crew.providerProfiles?.openRouter,
       },
     },
-    agents: dedupeCrewAgents(crew.agents),
+    agents: dedupeCrewAgents(crew.agents).map((agent) => ({
+      ...agent,
+      backendSelection: normalizeChatProviderSelection(agent.backendSelection),
+    })),
     runtimeConfig: {
       ...DEFAULT_CREW_RUNTIME_CONFIG,
       ...crew.runtimeConfig,
     },
   }
+}
+
+export function crewDefinitionForDaemon(crew: Crew): Record<string, unknown> {
+  return {
+    definition: {
+      id: crew.id,
+      name: crew.name,
+      description: crew.description,
+      executionSubject: crew.executionSubject,
+      executionGuidelines: crew.executionGuidelines,
+      knowledgeFocus: crew.knowledgeFocus,
+      governanceMode: crew.governanceMode,
+      outputMode: crew.outputMode,
+      stopOnFailure: crew.stopOnFailure,
+      retryCount: crew.retryCount,
+      managerReviewEnabled: crew.managerReviewEnabled,
+      managerReviewGuidelines: crew.managerReviewGuidelines,
+      shareAllTaskOutputs: crew.shareAllTaskOutputs,
+      sharedOutputCharLimit: crew.sharedOutputCharLimit,
+      defaultProvider: crew.defaultProvider,
+      defaultBackendSelection: normalizeChatProviderSelection(crew.defaultBackendSelection),
+      defaultModel: crew.defaultModel,
+      providerProfiles: {
+        openAICompatible: {
+          enabled: crew.providerProfiles.openAICompatible.enabled,
+          model: crew.providerProfiles.openAICompatible.model,
+          hasApiKey: crew.providerProfiles.openAICompatible.hasApiKey === true,
+          timeoutMs: crew.providerProfiles.openAICompatible.timeoutMs,
+          verifyTlsCertificates: crew.providerProfiles.openAICompatible.verifyTlsCertificates,
+        },
+        openRouter: {
+          enabled: crew.providerProfiles.openRouter.enabled,
+          model: crew.providerProfiles.openRouter.model,
+          hasApiKey: crew.providerProfiles.openRouter.hasApiKey === true,
+          timeoutMs: crew.providerProfiles.openRouter.timeoutMs,
+          verifyTlsCertificates: crew.providerProfiles.openRouter.verifyTlsCertificates,
+        },
+      },
+      agents: crew.agents.map((agent) => ({
+        ...cloneCrewAgent(agent),
+        backendSelection: normalizeChatProviderSelection(agent.backendSelection),
+      })),
+      tasks: crew.tasks.map((task) => ({
+        id: task.id,
+        description: task.description,
+        expectedOutput: task.expectedOutput,
+        agentId: task.agentId,
+        context: [...task.context],
+        dependencies: [...task.dependencies],
+        asyncExecution: task.asyncExecution,
+      })),
+      runtimeConfig: {
+        enabled: crew.runtimeConfig.enabled,
+        model: crew.runtimeConfig.model,
+        timeoutMs: crew.runtimeConfig.timeoutMs,
+      },
+      process: crew.process,
+      managerAgentId: crew.managerAgentId,
+      verbose: crew.verbose,
+      maxRpm: crew.maxRpm,
+      maxParallelTasks: crew.maxParallelTasks,
+      createdAt: crew.createdAt,
+    },
+    source: 'desktop',
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+export function crewFromDaemonDefinition(
+  payload: Record<string, unknown>,
+  current?: Crew,
+): Crew | null {
+  const definition = recordValue(payload.definition)
+  const id = typeof definition.id === 'string' ? definition.id.trim() : ''
+  const name = typeof definition.name === 'string' ? definition.name.trim() : ''
+  if (!id || !name) return null
+
+  const providerProfiles = recordValue(definition.providerProfiles)
+  const openAICompatible = recordValue(providerProfiles.openAICompatible)
+  const openRouter = recordValue(providerProfiles.openRouter)
+  const runtimeConfig = recordValue(definition.runtimeConfig)
+  const rawTasks = Array.isArray(definition.tasks) ? definition.tasks : []
+  const currentTasks = new Map((current?.tasks ?? []).map((task) => [task.id, task]))
+  const tasks = rawTasks.map((value) => {
+    const task = recordValue(value)
+    const taskId = typeof task.id === 'string' ? task.id : ''
+    const local = currentTasks.get(taskId)
+    return {
+      ...task,
+      id: taskId,
+      status: local?.status ?? 'pending',
+      output: local?.output ?? null,
+    } as CrewTask
+  }).filter((task) => task.id)
+
+  return normalizeCrewStateEntry({
+    ...(definition as unknown as Crew),
+    id,
+    name,
+    providerProfiles: {
+      openAICompatible: {
+        ...DEFAULT_CREW_PROVIDER_PROFILES.openAICompatible,
+        ...(current?.providerProfiles.openAICompatible ?? {}),
+        ...openAICompatible,
+        baseUrl: current?.providerProfiles.openAICompatible.baseUrl ?? DEFAULT_CREW_PROVIDER_PROFILES.openAICompatible.baseUrl,
+        apiKey: '',
+      },
+      openRouter: {
+        ...DEFAULT_CREW_PROVIDER_PROFILES.openRouter,
+        ...(current?.providerProfiles.openRouter ?? {}),
+        ...openRouter,
+        baseUrl: current?.providerProfiles.openRouter.baseUrl ?? DEFAULT_CREW_PROVIDER_PROFILES.openRouter.baseUrl,
+        apiKey: '',
+      },
+    },
+    runtimeConfig: {
+      ...DEFAULT_CREW_RUNTIME_CONFIG,
+      ...(current?.runtimeConfig ?? {}),
+      ...runtimeConfig,
+      baseUrl: current?.runtimeConfig.baseUrl ?? '',
+    },
+    agents: Array.isArray(definition.agents) ? definition.agents as CrewAgent[] : [],
+    tasks,
+    status: current?.status ?? 'idle',
+    createdAt: typeof definition.createdAt === 'number' ? definition.createdAt : current?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  })
 }
 
 function dedupeCrewAgents(agents: CrewAgent[]): CrewAgent[] {
@@ -733,7 +885,22 @@ export const useCrewStore = create<CrewState>()(
         set((state) => ({
           crews: state.crews.map((crew) => (
             crew.id === id
-              ? { ...crew, providerProfiles: profiles, updatedAt: Date.now() }
+              ? {
+                  ...crew,
+                  providerProfiles: {
+                    openAICompatible: {
+                      ...profiles.openAICompatible,
+                      apiKey: '',
+                      hasApiKey: Boolean(profiles.openAICompatible.apiKey) || profiles.openAICompatible.hasApiKey,
+                    },
+                    openRouter: {
+                      ...profiles.openRouter,
+                      apiKey: '',
+                      hasApiKey: Boolean(profiles.openRouter.apiKey) || profiles.openRouter.hasApiKey,
+                    },
+                  },
+                  updatedAt: Date.now(),
+                }
               : crew
           )),
         }))
@@ -831,7 +998,7 @@ export const useCrewStore = create<CrewState>()(
           let crewsChanged = false
           const nextCrews = state.crews.map((crew) => {
             let crewAgentsChanged = false
-            let nextCrewAgents = crew.agents.map((agent) => {
+            const nextCrewAgents = crew.agents.map((agent) => {
               if (!agent.personalityId) {
                 return cloneCrewAgent(agent)
               }
@@ -844,13 +1011,13 @@ export const useCrewStore = create<CrewState>()(
               crewAgentsChanged = true
               return applyPersonalityProfileToAgent(agent, profile)
             })
-            const missingAgents = syncedAgents.filter(
-              (agent) => !nextCrewAgents.some((existingAgent) => isSamePersonalityAgent(existingAgent, agent.personalityId ?? '')),
-            )
 
-            if (missingAgents.length > 0) {
+            for (const profile of syncableProfiles.filter((entry) => entry.isDefault === false)) {
+              if (nextCrewAgents.some((agent) => isSamePersonalityAgent(agent, profile.id))) {
+                continue
+              }
+              nextCrewAgents.push(buildCrewAgentFromPersonality(profile))
               crewAgentsChanged = true
-              nextCrewAgents = [...nextCrewAgents, ...missingAgents.map(cloneCrewAgent)]
             }
 
             if (!crewAgentsChanged) {
@@ -1036,21 +1203,23 @@ export const useCrewStore = create<CrewState>()(
         let providerConfigs = undefined
         try {
           config = useConfigStore.getState().ollama
-          const { defaultLlmProfileIds, llmProfiles } = useConfigStore.getState()
-          const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.provider === 'openai-compatible')
-            ?? llmProfiles.find((profile) => profile.provider === 'openai-compatible')
-          const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.provider === 'openrouter')
-            ?? llmProfiles.find((profile) => profile.provider === 'openrouter')
+          const { defaultLlmProfileIds, llmProfileModels, llmProfiles } = useConfigStore.getState()
+          const defaultOpenAICompatibleProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds['openai-compatible'] && profile.preset === 'openai')
+            ?? llmProfiles.find((profile) => profile.preset === 'openai')
+          const defaultOpenRouterProfile = llmProfiles.find((profile) => profile.id === defaultLlmProfileIds.openrouter && profile.preset === 'openrouter')
+            ?? llmProfiles.find((profile) => profile.preset === 'openrouter')
           providerConfigs = {
             openAICompatible: resolveExternalProviderConfig(
               crew.providerProfiles.openAICompatible,
               defaultOpenAICompatibleProfile,
               defaultOpenAICompatibleProfile?.baseUrl || crew.providerProfiles.openAICompatible.baseUrl || 'https://api.openai.com/v1',
+              defaultOpenAICompatibleProfile ? llmProfileModels[defaultOpenAICompatibleProfile.id] ?? [] : [],
             ),
             openRouter: resolveExternalProviderConfig(
               crew.providerProfiles.openRouter,
               defaultOpenRouterProfile,
               defaultOpenRouterProfile?.baseUrl || crew.providerProfiles.openRouter.baseUrl || 'https://openrouter.ai/api/v1',
+              defaultOpenRouterProfile ? llmProfileModels[defaultOpenRouterProfile.id] ?? [] : [],
             ),
           }
         } catch {
@@ -1058,16 +1227,16 @@ export const useCrewStore = create<CrewState>()(
         }
 
         config = resolveCrewRuntimeConfig(crew, config)
-        const crewDefaultProvider = crew.defaultProvider ?? DEFAULT_CREW_PROVIDER
+        const requestedCrewProvider = crew.defaultProvider ?? DEFAULT_CREW_PROVIDER
         const crewDefaultModel = crew.defaultModel?.trim() ?? ''
 
         if (crewDefaultModel) {
-          if (crewDefaultProvider === 'ollama') {
+          if (requestedCrewProvider === 'ollama') {
             config = {
               ...(config ?? {}),
               model: crewDefaultModel,
             }
-          } else if (crewDefaultProvider === 'openai-compatible' && providerConfigs?.openAICompatible) {
+          } else if (requestedCrewProvider === 'openai-compatible' && providerConfigs?.openAICompatible) {
             providerConfigs = {
               ...providerConfigs,
               openAICompatible: {
@@ -1075,7 +1244,7 @@ export const useCrewStore = create<CrewState>()(
                 model: crewDefaultModel,
               },
             }
-          } else if (crewDefaultProvider === 'openrouter' && providerConfigs?.openRouter) {
+          } else if (requestedCrewProvider === 'openrouter' && providerConfigs?.openRouter) {
             providerConfigs = {
               ...providerConfigs,
               openRouter: {
@@ -1085,6 +1254,12 @@ export const useCrewStore = create<CrewState>()(
             }
           }
         }
+
+        const crewDefaultProvider = resolveEffectiveCrewProvider(
+          requestedCrewProvider,
+          config,
+          providerConfigs,
+        )
 
         const personalityProfiles = await loadPersonalityProfilesForRuntime()
         const resolvedCrewAgents = resolveCrewAgentsWithProfiles(crew.agents, personalityProfiles)
@@ -1162,6 +1337,7 @@ export const useCrewStore = create<CrewState>()(
               executionSubject: crew.executionSubject,
               executionGuidelines: crew.executionGuidelines,
               knowledgeFocus: crew.knowledgeFocus,
+              responseLanguage: i18n.resolvedLanguage ?? i18n.language ?? 'en',
               governanceMode: crew.governanceMode,
               outputMode: crew.outputMode,
               stopOnFailure: crew.stopOnFailure,
@@ -1186,6 +1362,7 @@ export const useCrewStore = create<CrewState>()(
                 personalityId: agent.personalityId,
                 modelOverride: agent.modelOverride?.trim() ? agent.modelOverride : null,
                 providerKind: crewDefaultProvider,
+                backendSelection: agent.backendSelection ?? crew.defaultBackendSelection,
                 tools: agent.tools,
                 mcpServerNames: agent.mcpServerNames,
                 enabled: agent.enabled,

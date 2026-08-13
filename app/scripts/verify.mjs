@@ -42,17 +42,37 @@ for (const [name, executable] of Object.entries(localBins)) {
 runStep('Toolchain doctor', node, [join(root, 'scripts', 'doctor.mjs'), '--ci'])
 runStep('Release script tests', node, [
   '--test',
+  join(root, 'scripts', 'create-updater-manifest.test.mjs'),
   join(root, 'scripts', 'process-utils.test.mjs'),
   join(root, 'scripts', 'supply-chain.test.mjs'),
 ])
+runStep('Bundled CrewAI runtime', 'powershell', [
+  '-NoProfile',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-File',
+  join(root, 'scripts', 'prepare-crew-runtime.ps1'),
+])
+runStep('Bundled Codex runtime', node, [join(root, 'scripts', 'prepare-codex-runtime.mjs')])
+runStep('Bundled local daemon', node, [join(root, 'scripts', 'prepare-local-daemon.mjs')])
 runStep('Supply-chain policy', node, [join(root, 'scripts', 'supply-chain.mjs'), 'check'])
+runStep('Distributed contract artifacts', node, [join(root, 'scripts', 'generate-contract-artifacts.mjs'), '--check'])
 runStep('TypeScript', node, [localBins.tsc, '-b'])
 runStep('ESLint', node, [localBins.eslint, '.', '--max-warnings', '0'])
 runStep('i18n audit', node, [join(root, 'scripts', 'i18n-audit.mjs')])
-runStep('Vitest', node, [localBins.vitest, 'run'])
+runStep('Vitest', node, [localBins.vitest, 'run', '--maxWorkers=4'])
 runStep('Vite production build', node, [localBins.vite, 'build'])
 runStep('Frontend build budgets', node, [join(root, 'scripts', 'check-budgets.mjs')])
 runStep('UI accessibility and visual regressions', node, [localBins.playwright, 'test'])
+runStep('Vite isolated web build', node, [localBins.vite, 'build', '--mode', 'web'])
+runStep('Web platform boundary', node, [
+  localBins.playwright,
+  'test',
+  '-c',
+  join(root, 'playwright.web.config.ts'),
+  '--project=chromium',
+  'e2e/web-runtime.spec.ts',
+])
 runStep('Rust cargo check', 'cargo', ['check'], join(root, 'src-tauri'))
 runStep('Rust tests', 'cargo', ['test'], join(root, 'src-tauri'))
 runStep('Rust clippy', 'cargo', ['clippy', '--', '-D', 'warnings'], join(root, 'src-tauri'))

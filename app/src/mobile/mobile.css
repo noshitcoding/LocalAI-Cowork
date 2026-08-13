@@ -1,0 +1,174 @@
+:root {
+  color-scheme: dark;
+}
+
+body:has(.mobile-shell),
+body:has(.mobile-lock-screen),
+body:has(.mobile-login-screen) {
+  margin: 0;
+  overflow: auto;
+  background: #070b12;
+  color: #edf3fb;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.mobile-lock-screen,
+.mobile-login-screen {
+  min-height: 100dvh;
+  display: flex;
+  box-sizing: border-box;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  padding: max(28px, env(safe-area-inset-top)) 24px max(28px, env(safe-area-inset-bottom));
+  background: radial-gradient(circle at 50% 0, #16304d, #070b12 48%);
+}
+
+.mobile-lock-screen > svg,
+.mobile-brand > svg { color: #53d3bd; }
+.mobile-lock-screen h1,
+.mobile-login-screen h1 { margin: 0; font-size: 28px; }
+.mobile-lock-screen p,
+.mobile-login-screen p { margin: 0; color: #aab9cb; line-height: 1.5; }
+.mobile-brand { display: flex; align-items: center; gap: 12px; }
+
+.mobile-lock-screen form,
+.mobile-login-screen form { display: grid; gap: 12px; }
+.mobile-login-screen label { display: grid; gap: 6px; color: #c5d1df; font-size: 13px; }
+.mobile-lock-screen input,
+.mobile-login-screen input,
+.mobile-lock-screen button,
+.mobile-login-screen button,
+.mobile-shell button {
+  min-height: 46px;
+  box-sizing: border-box;
+  border: 1px solid #2a3a4f;
+  border-radius: 12px;
+  padding: 10px 13px;
+  background: #111a27;
+  color: inherit;
+}
+.mobile-lock-screen form button,
+.mobile-login-screen form button { background: #1ea88f; border-color: #34c5aa; color: #04120f; font-weight: 750; }
+.mobile-login-screen .mobile-auth-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.mobile-login-screen .mobile-auth-modes button { min-height: 40px; padding: 7px; border-color: #2a3a4f; background: #111a27; color: #aab9cb; font-size: 11px; }
+.mobile-login-screen .mobile-auth-modes button[aria-pressed="true"] { border-color: #34c5aa; background: #102a29; color: #8de6d6; }
+.mobile-link-button { display: flex; align-items: center; justify-content: center; gap: 8px; }
+
+.mobile-shell { min-height: 100dvh; padding-bottom: env(safe-area-inset-bottom); background: #070b12; }
+.mobile-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  gap: 12px;
+  padding: env(safe-area-inset-top) 12px 0;
+  border-bottom: 1px solid #1c2939;
+  background: color-mix(in srgb, #0b111b 94%, transparent);
+  backdrop-filter: blur(14px);
+}
+.mobile-header > div { display: grid; flex: 1; min-width: 0; }
+.mobile-header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-header small { color: #8fa1b6; }
+.mobile-header button { min-width: 44px; padding: 8px; border: 0; background: transparent; }
+.mobile-offline-banner,
+.mobile-outbox { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: #40310e; color: #ffd986; font-size: 13px; }
+.mobile-outbox { background: #122b33; color: #82dfd0; }
+.mobile-outbox-list,
+.mobile-offline-reply { display: grid; gap: 9px; margin: 12px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-outbox-list article { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid #1f3043; padding-top: 9px; }
+.mobile-outbox-list article > span { display: grid; min-width: 0; gap: 3px; }
+.mobile-outbox-list small { overflow: hidden; color: #8fa1b6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-outbox-list em { color: #ffb2bc; font-size: 10px; font-style: normal; }
+.mobile-outbox-list button { min-height: 36px; padding: 7px 10px; }
+.mobile-offline-reply h2 { margin: 0; font-size: 16px; }
+.mobile-offline-reply p,
+.mobile-offline-reply small { margin: 0; color: #8fa1b6; font-size: 11px; line-height: 1.5; }
+.mobile-offline-reply form { display: grid; gap: 8px; }
+.mobile-offline-reply textarea { box-sizing: border-box; width: 100%; border: 1px solid #2a3a4f; border-radius: 10px; padding: 10px 12px; background: #111a27; color: inherit; resize: vertical; }
+.mobile-offline-reply button { display: flex; align-items: center; justify-content: center; gap: 7px; border-color: #34c5aa; background: #1ea88f; color: #04120f; font-weight: 750; }
+.mobile-push-banner {
+  width: calc(100% - 24px);
+  margin: 10px 12px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-color: #215d55 !important;
+  background: #102a29 !important;
+  color: #8de6d6 !important;
+}
+.mobile-section-heading { display: flex; align-items: center; justify-content: space-between; padding: 14px 14px 8px; }
+.mobile-section-heading h1 { margin: 0; font-size: 22px; }
+.mobile-section-heading button { min-height: 38px; display: flex; align-items: center; gap: 6px; }
+.mobile-run-list { display: grid; }
+.mobile-run-list > .remote-run-composer { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-schedule-manager { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-security-settings { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-governance-panel { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-management-panel { min-width: 0; margin: 0 12px 10px; border: 1px solid #1f3043; border-radius: 15px; padding: 13px; background: #0e1723; }
+.mobile-run-list > .remote-governance-panel form { grid-template-columns: 1fr; }
+.mobile-run-list > .remote-governance-panel form > * { grid-column: 1; }
+.mobile-run-list > .remote-run-composer > header button { min-height: 38px; }
+.mobile-run-list > .remote-run-composer form select,
+.mobile-run-list > .remote-run-composer form input,
+.mobile-run-list > .remote-run-composer form textarea,
+.mobile-run-list > .remote-schedule-manager form select,
+.mobile-run-list > .remote-schedule-manager form input,
+.mobile-run-list > .remote-schedule-manager form textarea { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
+.mobile-run-list > .remote-security-settings input { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
+.mobile-run-list > .remote-governance-panel input,
+.mobile-run-list > .remote-governance-panel select,
+.mobile-run-list > .remote-governance-panel textarea { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
+.mobile-run-list > .remote-management-panel input,
+.mobile-run-list > .remote-management-panel select,
+.mobile-run-list > .remote-management-panel textarea { min-height: 44px; box-sizing: border-box; border: 1px solid #2a3a4f; border-radius: 10px; padding: 9px 11px; background: #111a27; color: inherit; }
+.mobile-run-list > .remote-run-composer form button { display: flex; align-items: center; justify-content: center; gap: 7px; background: #1ea88f; border-color: #34c5aa; color: #04120f; font-weight: 750; }
+.mobile-run-list > .remote-schedule-manager > header button,
+.mobile-run-list > .remote-schedule-manager button { min-height: 42px; }
+.mobile-run-list > .remote-security-settings button { min-height: 42px; }
+.mobile-run-list > .remote-governance-panel button { min-height: 42px; }
+.mobile-run-list > .remote-management-panel button { min-height: 42px; }
+.mobile-run-list > .remote-device-settings .remote-device-list li { grid-template-columns: 1fr; align-items: stretch; }
+.mobile-run-list > button { display: flex; min-height: 78px; align-items: center; justify-content: space-between; gap: 12px; margin: 0 12px 9px; text-align: left; }
+.mobile-run-list > button > span { display: grid; min-width: 0; gap: 5px; }
+.mobile-run-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-run-list small { color: #8fa1b6; }
+.mobile-state { flex: none; border-radius: 999px; padding: 5px 8px; background: #253247; color: #cbd9ea; font-size: 10px; font-style: normal; text-transform: uppercase; }
+.mobile-state.state-running { background: #12473d; color: #8ef1db; }
+.mobile-state.state-failed { background: #4b1e24; color: #ffabb5; }
+.mobile-state.state-completed { background: #1c3d24; color: #9de8ac; }
+.mobile-run-card { display: grid; gap: 9px; margin: 12px; padding: 15px; border: 1px solid #1f3043; border-radius: 15px; background: #0e1723; }
+.mobile-run-card code { overflow-wrap: anywhere; color: #8296ad; font-size: 11px; }
+.mobile-run-card p { margin: 0; color: #a5b4c6; }
+.mobile-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.mobile-actions button { display: flex; align-items: center; gap: 7px; }
+.mobile-actions .danger { border-color: #6c2833; color: #ffadb8; }
+.mobile-events { margin: 12px; padding: 14px; border: 1px solid #1f3043; border-radius: 15px; background: #0e1723; }
+.mobile-events h2 { margin: 0 0 12px; font-size: 17px; }
+.mobile-events ol { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.mobile-events li { display: grid; grid-template-columns: auto 1fr auto; gap: 9px; font-size: 12px; color: #a8b7c9; }
+.mobile-events li strong { color: #dce6f2; font-weight: 550; }
+.mobile-error { margin: 10px 12px; border: 1px solid #7b2b37; border-radius: 10px; padding: 10px; background: #36151b; color: #ffc2ca; }
+.mobile-empty { display: grid; place-items: center; gap: 8px; min-height: 220px; color: #8294a9; }
+.mobile-shell .remote-desktop-panel,
+.mobile-shell .remote-terminal-panel,
+.mobile-shell .run-intervention-panel,
+.mobile-shell .run-artifact-panel { margin: 12px; }
+.mobile-shell .remote-desktop-toolbar { align-items: flex-start; }
+.mobile-shell .remote-desktop-actions { width: 100%; overflow-x: auto; flex-wrap: nowrap; }
+.mobile-shell .remote-desktop-viewport { min-height: 260px; max-height: 60dvh; }
+.mobile-shell .remote-clipboard-tools { grid-template-columns: 1fr; }
+.mobile-shell .remote-terminal-output { height: min(52dvh, 430px); }
+.mobile-shell .remote-terminal-toolbar { align-items: flex-start; flex-direction: column; }
+.mobile-shell .remote-terminal-toolbar > div:last-child { width: 100%; }
+.mobile-shell .remote-terminal-toolbar button { min-height: 40px; }
+.mobile-shell .remote-terminal-keys button { min-height: 42px; }
+.mobile-shell .run-intervention-title { align-items: flex-start; flex-wrap: wrap; }
+.mobile-shell .run-intervention-title time { width: 100%; margin-left: 22px; }
+.mobile-shell .run-intervention-actions button { min-height: 42px; }
+.mobile-hidden-input {
+  display: none;
+}

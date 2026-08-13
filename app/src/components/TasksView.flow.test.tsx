@@ -140,16 +140,20 @@ describe('TasksView crew mission flow', () => {
       llmProfiles: [{
         id: 'openrouter-free',
         name: 'OpenRouter Free',
-        provider: 'openrouter',
+        provider: 'openai-compatible',
+        preset: 'openrouter',
+        authMode: 'bearer',
         baseUrl: 'https://openrouter.ai/api/v1',
         model: freeModel,
-        apiKey: 'or-test',
+        apiKey: '',
+        hasApiKey: true,
         timeoutMs: 600000,
         verifyTlsCertificates: true,
         contextWindow: null,
         temperature: null,
       }],
       defaultLlmProfileIds: {
+        api: 'openrouter-free',
         ollama: 'default-ollama',
         'openai-compatible': 'default-openai-compatible',
         openrouter: 'openrouter-free',
@@ -198,11 +202,110 @@ describe('TasksView crew mission flow', () => {
     expect(task.prompt).toBe(crew.description)
     expect(task.threadId).toBe(thread.id)
     expect(thread.providerSettings).toEqual({
-      provider: 'openrouter',
+      backend: 'openai-compatible',
       model: freeModel,
       profileId: 'openrouter-free',
     })
     expect(screen.getByRole('button', { name: 'Mission created' })).toBeDisabled()
+  })
+
+  it('assigns, moves, and detaches a new task through its task chat', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    useProjectStore.setState({
+      activeProjectId: 'project-1',
+      projects: [
+        {
+          id: 'project-1',
+          title: 'Project One',
+          instructions: '',
+          resources: [],
+          threadIds: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'project-2',
+          title: 'Project Two',
+          instructions: '',
+          resources: [],
+          threadIds: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    })
+
+    render(
+      <MemoryRouter>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    await user.type(screen.getByPlaceholderText('What should the task do?'), 'Build the project report')
+    await user.click(screen.getByRole('checkbox', { name: /Use project context/ }))
+    expect(screen.getByRole('combobox', { name: 'Project' })).toHaveValue('project-1')
+    await user.click(screen.getByRole('button', { name: 'Create task' }))
+
+    const task = useWorkTasksStore.getState().tasks[0]
+    expect(task.threadId).toBeTruthy()
+    expect(useProjectStore.getState().projects[0]?.threadIds).toContain(task.threadId)
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'project-2')
+    expect(useProjectStore.getState().projects.find((project) => project.id === 'project-1')?.threadIds).not.toContain(task.threadId)
+    expect(useProjectStore.getState().projects.find((project) => project.id === 'project-2')?.threadIds).toContain(task.threadId)
+
+    await user.click(screen.getByRole('checkbox', { name: /Use project context/ }))
+    expect(useProjectStore.getState().projects.every((project) => !project.threadIds.includes(task.threadId as string))).toBe(true)
+  })
+
+  it('creates and assigns a chat when project context is enabled for a legacy task', async () => {
+    const user = userEvent.setup()
+    const now = Date.now()
+    useProjectStore.setState({
+      activeProjectId: 'legacy-project',
+      projects: [{
+        id: 'legacy-project',
+        title: 'Legacy Project',
+        instructions: '',
+        resources: [],
+        threadIds: [],
+        createdAt: now,
+        updatedAt: now,
+      }],
+    })
+    useWorkTasksStore.setState({
+      tasks: [{
+        id: 'legacy-task',
+        title: 'Legacy task',
+        prompt: 'Continue',
+        expectedOutput: '',
+        workDir: '',
+        threadId: null,
+        runner: 'model',
+        crewId: null,
+        model: '',
+        scheduleExpr: '',
+        scheduleEnabled: false,
+        status: 'idle',
+        output: null,
+        error: null,
+        lastRunAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }],
+    })
+
+    render(
+      <MemoryRouter>
+        <TasksView />
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('checkbox', { name: /Use project context/ }))
+    const task = useWorkTasksStore.getState().tasks[0]
+    expect(task.threadId).toBeTruthy()
+    expect(useProjectStore.getState().projects[0]?.threadIds).toContain(task.threadId)
   })
 
   it('keeps the task workbench prominent when a task already exists', async () => {

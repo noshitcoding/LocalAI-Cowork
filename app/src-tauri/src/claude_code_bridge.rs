@@ -82,16 +82,15 @@ pub struct ClaudeCodeToolInfo {
 /// All known Claude Code slash commands by category
 pub fn get_claude_code_commands() -> Vec<ClaudeCodeCommandInfo> {
     let commands = vec![
-        // Session Management
-        ("clear", "Clear context and start a new session", "session"),
-        ("compact", "Compact conversation to save tokens", "session"),
-        ("resume", "Resume previous session", "session"),
-        ("recap", "Summary of the current session", "session"),
-        ("exit", "End session", "session"),
-        ("cost", "Show current costs and token usage", "session"),
-        ("stats", "Show session statistics", "session"),
-        ("status", "Status of the current session", "session"),
-        ("export", "Export session", "session"),
+        // Chat management
+        ("clear", "Clear the current chat", "chat"),
+        ("resume", "Resume a previous chat", "chat"),
+        ("recap", "Summary of the current chat", "chat"),
+        ("exit", "Close the current chat", "chat"),
+        ("cost", "Show current run costs and token usage", "chat"),
+        ("stats", "Show chat and run statistics", "chat"),
+        ("status", "Status of the current run", "chat"),
+        ("export", "Export chat", "chat"),
         // Configuration
         ("config", "Show and edit configuration", "config"),
         ("model", "Switch model (e.g. opus, sonnet)", "config"),

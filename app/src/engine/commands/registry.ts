@@ -60,7 +60,7 @@ const helpCommand: Command = {
   name: '/help',
   description: 'Shows all available commands.',
   shortDescription: 'Help',
-  category: 'session',
+  category: 'chat',
   examples: ['/help', '/help config'],
   async call(args) {
     const commands = args
@@ -92,9 +92,9 @@ const helpCommand: Command = {
 
 const clearCommand: Command = {
   name: '/clear',
-  description: 'Deletes the chat history of the current session.',
+  description: 'Deletes the history of the current chat.',
   shortDescription: 'Clear chat',
-  category: 'session',
+  category: 'chat',
   async call(_args, context) {
     // The UI layer handles the actual clearing
     context.setAppState(prev => ({
@@ -122,13 +122,13 @@ const modelCommand: Command = {
 
 const statusCommand: Command = {
   name: '/status',
-  description: 'Shows the current session status.',
-  shortDescription: 'Session status',
-  category: 'session',
+  description: 'Shows the current chat and run status.',
+  shortDescription: 'Chat status',
+  category: 'chat',
   async call(_args, context) {
     const state = context.getAppState()
     return [
-      '### Session status',
+      '### Chat status',
       `- **Model:** ${context.model}`,
       `- **CWD:** ${state.cwd}`,
       `- **Turns:** ${state.turnCount}`,
@@ -155,22 +155,11 @@ const planCommand: Command = {
   },
 }
 
-const compactCommand: Command = {
-  name: '/compact',
-  description: 'Compacts chat history to save tokens.',
-  shortDescription: 'Compact chat',
-  category: 'session',
-  async call(_args) {
-    // Compaction is handled by the memory system
-    return 'Chat history is being compacted...'
-  },
-}
-
 const costCommand: Command = {
   name: '/cost',
-  description: 'Shows the API costs accumulated in this session.',
+  description: 'Shows the API costs accumulated in the current run.',
   shortDescription: 'Show costs',
-  category: 'session',
+  category: 'chat',
   async call(_args, context) {
     const state = context.getAppState()
     return [
@@ -329,7 +318,6 @@ export function registerBuiltinCommands(): void {
     modelCommand,
     statusCommand,
     planCommand,
-    compactCommand,
     costCommand,
     debugCommand,
     cwdCommand,

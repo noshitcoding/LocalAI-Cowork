@@ -27,5 +27,10 @@ under their respective licenses. Bundled third-party license files, dependency
 manifests, and package metadata should be reviewed and preserved where required
 by the corresponding licenses.
 
+The native Windows sandbox design and selected implementation techniques are
+derived from and adapted with reference to OpenAI Codex's
+`codex-rs/windows-sandbox-rs` implementation, Copyright OpenAI, licensed under
+the Apache License, Version 2.0. LocalAI Cowork does not bundle the Codex binary.
+
 This NOTICE file is provided for attribution and informational purposes only. It
 does not modify the Apache License, Version 2.0.

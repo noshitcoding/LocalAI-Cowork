@@ -2,7 +2,7 @@
 // Mirrors: claude-code-main/src/config/ + context.ts
 // Centralizes all configuration for the engine
 //
-// Enhanced: Ollama-first defaults, context manager config, session persistence
+// Enhanced: Ollama-first defaults and deterministic context management.
 
 import type { AnthropicConfig } from '../api/anthropicClient'
 import { ANTHROPIC_MODELS } from '../api/anthropicClient'
@@ -38,8 +38,6 @@ export type FullEngineConfig = {
   mcpConnections: MCPConnection[]
   /** Thinking/reasoning configuration */
   thinking: ThinkingConfig
-  /** Auto-compaction threshold (tokens) */
-  compactionThreshold: number
   /** Context manager configuration */
   contextManager: ContextManagerConfig
   /** Locale for responses */
@@ -48,8 +46,6 @@ export type FullEngineConfig = {
   appendSystemPrompt: string
   /** Global memory directory */
   globalMemoryDir: string
-  /** Enable session persistence */
-  sessionPersistence: boolean
   /** Enable parent directory walking for CLAUDE.md */
   walkParentDirs: boolean
 }
@@ -92,12 +88,10 @@ export const DEFAULT_CONFIG: FullEngineConfig = {
   agentDefinitions: [],
   mcpConnections: [],
   thinking: { type: 'disabled' },
-  compactionThreshold: 100000,
   contextManager: DEFAULT_CONTEXT_MANAGER_CONFIG,
   locale: 'de',
   appendSystemPrompt: '',
   globalMemoryDir: '',
-  sessionPersistence: true,
   walkParentDirs: true,
 }
 
@@ -156,7 +150,6 @@ export type PersistedConfig = {
   permissionMode: string
   thinkingEnabled: boolean
   thinkingBudget: number
-  autoCompact: boolean
   appendSystemPrompt: string
   // Ollama-specific
   ollamaBaseUrl: string
@@ -164,8 +157,6 @@ export type PersistedConfig = {
   ollamaContextWindow: number
   ollamaThinkingEnabled: boolean
   ollamaKeepAlive: string
-  // Session
-  sessionPersistence: boolean
   walkParentDirs: boolean
 }
 
@@ -178,14 +169,12 @@ export function toPersistedConfig(config: FullEngineConfig): PersistedConfig {
     permissionMode: config.permissions.mode,
     thinkingEnabled: config.thinking.type === 'enabled',
     thinkingBudget: config.thinking.type === 'enabled' ? config.thinking.budgetTokens : 0,
-    autoCompact: config.compactionThreshold > 0,
     appendSystemPrompt: config.appendSystemPrompt,
     ollamaBaseUrl: config.ollama.baseUrl,
     ollamaModel: config.ollama.model,
     ollamaContextWindow: config.ollama.contextWindow ?? 128000,
     ollamaThinkingEnabled: config.ollama.thinkingEnabled ?? false,
     ollamaKeepAlive: config.ollama.keepAlive ?? '30m',
-    sessionPersistence: config.sessionPersistence,
     walkParentDirs: config.walkParentDirs,
   }
 }
@@ -213,7 +202,6 @@ export function fromPersistedConfig(persisted: PersistedConfig): Partial<FullEng
       ? { type: 'enabled', budgetTokens: persisted.thinkingBudget || 10000 }
       : { type: 'disabled' },
     appendSystemPrompt: persisted.appendSystemPrompt,
-    sessionPersistence: persisted.sessionPersistence ?? true,
     walkParentDirs: persisted.walkParentDirs ?? true,
   }
 }

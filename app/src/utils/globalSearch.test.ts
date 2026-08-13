@@ -1,5 +1,4 @@
 ﻿import { describe, expect, it } from 'vitest'
-import type { SessionSummary } from '../engine'
 import type { ChatThread } from '../stores/chatStore'
 import type { Project } from '../stores/projectStore'
 import type { WorkTask } from '../stores/workTasksStore'
@@ -47,6 +46,8 @@ const project: Project = {
       kind: 'file',
       label: 'Smoke Test',
       enabled: true,
+      access: 'read_write',
+      isPrimary: true,
       addedAt: 2,
     },
   ],
@@ -55,23 +56,12 @@ const project: Project = {
   updatedAt: 5,
 }
 
-const session: SessionSummary = {
-  id: 'session-1',
-  title: 'Approval Flow',
-  threadId: 'thread-1',
-  cwd: 'C:/workspace',
-  messageCount: 8,
-  createdAt: 1,
-  updatedAt: 6,
-}
-
 describe('globalSearch', () => {
   it('indexes workspace objects and static destinations', () => {
     const entries = buildSearchIndex({
       threads: [thread],
       tasks: [task],
       projects: [project],
-      sessions: [session],
     })
 
     expect(entries.some((entry) => entry.id === 'thread:thread-1')).toBe(true)
@@ -79,7 +69,6 @@ describe('globalSearch', () => {
     expect(entries.some((entry) => entry.id === 'task:task-1')).toBe(true)
     expect(entries.some((entry) => entry.id === 'project:project-1')).toBe(true)
     expect(entries.some((entry) => entry.id === 'project-resource:project-1:resource-1')).toBe(true)
-    expect(entries.some((entry) => entry.id === 'session:session-1')).toBe(true)
     expect(entries.some((entry) => entry.id === 'setting-safety')).toBe(true)
   })
 
@@ -88,7 +77,6 @@ describe('globalSearch', () => {
       threads: [thread],
       tasks: [task],
       projects: [project],
-      sessions: [session],
     })
 
     const results = filterSearchIndex(entries, 'Release')
@@ -96,16 +84,15 @@ describe('globalSearch', () => {
     expect(results[0].id).toBe('thread:thread-1')
   })
 
-  it('finds tasks, sessions, resources and settings', () => {
+  it('finds tasks, chat messages, resources and settings', () => {
     const entries = buildSearchIndex({
       threads: [thread],
       tasks: [task],
       projects: [project],
-      sessions: [session],
     })
 
     expect(filterSearchIndex(entries, 'permissions').some((entry) => entry.id === 'task:task-1')).toBe(true)
-    expect(filterSearchIndex(entries, 'approval').some((entry) => entry.id === 'session:session-1')).toBe(true)
+    expect(filterSearchIndex(entries, 'migration').some((entry) => entry.id === 'message:thread-1:m-2')).toBe(true)
     expect(filterSearchIndex(entries, 'smoke').some((entry) => entry.id === 'project-resource:project-1:resource-1')).toBe(true)
     expect(filterSearchIndex(entries, 'allowlist').some((entry) => entry.id === 'setting-safety')).toBe(true)
   })

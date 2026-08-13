@@ -12,7 +12,7 @@ type ProductTheme = 'light' | 'dark'
 const PRODUCT_SURFACES: ProductSurface[] = [
   { id: 'cowork', path: '/', ready: '.cowork-pane' },
   { id: 'tasks', path: '/tasks', ready: '[data-doc-id="view:/tasks"]' },
-  { id: 'crew', path: '/crew', ready: '.crew-shell-top' },
+  { id: 'crew', path: '/crew', ready: '.crew-shell' },
   { id: 'projects', path: '/projects', ready: '.project-view' },
   { id: 'features', path: '/features', ready: '.feature-workbench' },
   { id: 'settings', path: '/settings', ready: '.settings-layout' },
@@ -87,7 +87,7 @@ test.beforeEach(async ({ context, page }) => {
       state: {
         activeMode: 'work',
         leftSidebarOpen: true,
-        leftSidebarWidth: 320,
+        leftSidebarWidth: 260,
         theme,
       },
       version: 0,
@@ -123,35 +123,143 @@ for (const theme of THEMES) {
   }
 }
 
-test('guided onboarding stays discoverable and prepares a safe first task', async ({ page }) => {
+test('chat dropdowns open upward and stay inside fullscreen dimensions', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 })
+
+  for (const theme of THEMES) {
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' })
+    await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: withTheme('/', theme) })
+    await page.getByRole('button', { name: 'Chat settings' }).click()
+
+    const controls = page.locator('.chat-input-toolbar-compact .chat-dropdown-toggle')
+    await expect(controls).toHaveCount(4)
+
+    const readability = await controls.evaluateAll((toggles) => {
+      const rgb = (value: string) => (value.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number)
+      const luminance = (value: string) => {
+        const channels = rgb(value).map((channel) => {
+          const normalized = channel / 255
+          return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
+        })
+        return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2])
+      }
+      const contrast = (foreground: string, background: string) => {
+        const lighter = Math.max(luminance(foreground), luminance(background))
+        const darker = Math.min(luminance(foreground), luminance(background))
+        return (lighter + 0.05) / (darker + 0.05)
+      }
+
+      return toggles.map((toggle) => {
+        const style = getComputedStyle(toggle)
+        return {
+          height: toggle.getBoundingClientRect().height,
+          fontSize: Number.parseFloat(style.fontSize),
+          contrast: contrast(style.color, style.backgroundColor),
+        }
+      })
+    })
+
+    for (const control of readability) {
+      expect(control.height).toBeGreaterThanOrEqual(36)
+      expect(control.fontSize).toBeGreaterThanOrEqual(12)
+      expect(control.contrast).toBeGreaterThanOrEqual(4.5)
+    }
+
+    const modelToggle = page.getByRole('combobox', { name: 'Model' })
+    await modelToggle.click()
+    const modelList = page.getByRole('listbox', { name: 'Model' })
+    await expect(modelList).toBeVisible()
+    await expect(modelList.getByRole('option').first()).toBeVisible()
+
+    const dropdownAccessibility = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze()
+    expect(formatViolations(dropdownAccessibility.violations)).toEqual([])
+
+    const geometry = await modelList.evaluate((listbox) => {
+      const toggle = listbox.parentElement!.querySelector<HTMLElement>('.chat-dropdown-toggle')!
+      const listboxBox = listbox.getBoundingClientRect()
+      const toggleBox = toggle.getBoundingClientRect()
+      return {
+        listboxTop: listboxBox.top,
+        listboxBottom: listboxBox.bottom,
+        toggleTop: toggleBox.top,
+      }
+    })
+
+    expect(geometry.listboxTop).toBeGreaterThanOrEqual(0)
+    expect(geometry.listboxBottom).toBeLessThan(geometry.toggleTop)
+  }
+})
+
+test('minimal shell keeps onboarding and context inside the two drawers', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 650 })
   await openStableSurface(page, PRODUCT_SURFACES[0])
 
-  await expect(page.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toBeVisible()
-  await page.getByRole('button', { name: 'Run context' }).click()
+  await expect(page.getByRole('heading', { name: 'Set up LocalAI Cowork' })).toHaveCount(0)
+  await expect(page.getByText(/Getting started is available in the main menu/)).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible()
+  await expect(page.getByRole('complementary', { name: 'Run context' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  const menu = page.getByRole('dialog', { name: 'Main menu' })
+  await expect(menu).toBeVisible()
+  await expect(menu.getByRole('searchbox', { name: 'Search areas and commands' })).toBeFocused()
+  await menu.getByText('Getting started', { exact: true }).click()
+  await expect(menu.getByText('Choose a model in the chat controls.')).toBeVisible()
+
+  await menu.getByRole('button', { name: /Context & status/ }).click()
+  await expect(menu).toHaveCount(0)
   await expect(page.getByRole('complementary', { name: 'Run context' })).toBeVisible()
   await page.getByRole('button', { name: 'Close run context' }).click()
-  await expect(page.getByRole('complementary', { name: 'Run context' })).toBeHidden()
-  await page.getByRole('button', { name: 'Dismiss onboarding' }).click()
-  await page.getByRole('button', { name: 'Open getting started' }).click()
-  await page.evaluate(() => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      configurable: true,
-      value: {
-        invoke: async (command: string) => (
-          command === 'plugin:dialog|open' ? ['C:\\workspace'] : null
-        ),
-      },
-    })
-  })
-  await page.getByRole('button', { name: 'Context', exact: true }).click()
-  await page.getByRole('button', { name: 'Choose a working folder' }).click()
-  await expect(page.getByRole('button', { name: 'Choose another folder' })).toBeVisible()
-  await page.getByRole('button', { name: 'Control' }).click()
-  await page.getByRole('button', { name: 'Use starter task' }).click()
+  await expect(page.getByRole('complementary', { name: 'Run context' })).toHaveCount(0)
+})
 
-  await expect(page.getByRole('textbox', { name: 'Message input' })).toHaveValue(/create a concise project brief/i)
-  await expect(page.getByRole('button', { name: 'Open getting started' })).toBeVisible()
+test('burger navigation has deterministic focus and closes on route changes', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 650 })
+  await openStableSurface(page, PRODUCT_SURFACES[0])
+
+  await page.keyboard.press('Control+K')
+  const menu = page.getByRole('dialog', { name: 'Main menu' })
+  const search = menu.getByRole('searchbox', { name: 'Search areas and commands' })
+  await expect(search).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(menu.getByRole('button', { name: 'Close menu' })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(search).toBeFocused()
+
+  const menuAccessibility = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze()
+  expect(formatViolations(menuAccessibility.violations)).toEqual([])
+  await expect(page).toHaveScreenshot('burger-menu-light-compact.png', { fullPage: false })
+
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Open main menu' })).toBeFocused()
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  await menu.getByRole('button', { name: /^Settings/ }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page.getByRole('heading', { name: 'AI & model' })).toBeVisible()
+  await expect(menu).toHaveCount(0)
+
+  const settingsContent = page.locator('.settings-content')
+  const settingsScrollRange = await settingsContent.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }))
+  expect(settingsScrollRange.scrollHeight).toBeGreaterThan(settingsScrollRange.clientHeight)
+  await settingsContent.hover()
+  await page.mouse.wheel(0, 600)
+  await expect.poll(() => settingsContent.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  const settingsSections = menu.getByLabel('Settings Sections')
+  await expect(settingsSections.getByRole('button')).toHaveCount(10)
+  await settingsSections.getByRole('button', { name: 'AI Sandbox' }).click()
+  await expect(page).toHaveURL(/\/settings\?section=sandbox$/)
+  await expect(page.getByRole('heading', { name: 'AI Sandbox', level: 2 })).toBeVisible()
 })
 
 test('run context renders persisted events and artifacts', async ({ page }) => {
@@ -192,6 +300,16 @@ test('run context renders persisted events and artifacts', async ({ page }) => {
           if (command === 'plugin:event|listen') return args?.handler ?? 1
           if (command.startsWith('plugin:event|') || command.startsWith('plugin:window|')) return null
           if (command === 'credential_get') return { value: null }
+          if (command === 'credential_exists') return { exists: false }
+          if (command === 'credential_copy') return { copied: false }
+          if (command === 'backend_defaults_read') {
+            return {
+              backend: 'openai-compatible',
+              apiProfileId: 'default-ollama',
+              setupCompleted: true,
+              updatedAt: '2026-07-12T20:00:00Z',
+            }
+          }
           if (command === 'engine_run_event_list') {
             return [
               { id: 'event-2', run_id: 'run-visual-evidence', sequence: 2, event_type: 'artifact_written', summary: 'Wrote release report', created_at: '2026-07-12T20:01:00Z' },
@@ -215,6 +333,8 @@ test('run context renders persisted events and artifacts', async ({ page }) => {
   })
 
   await openStableSurface(page, { ...PRODUCT_SURFACES[0], path: '/?preserve-e2e-state=1' })
+  await page.getByRole('button', { name: 'Open main menu' }).click()
+  await page.getByRole('dialog', { name: 'Main menu' }).getByRole('button', { name: /Context & status/ }).click()
   await expect(page.getByText('Wrote release report')).toBeVisible()
   await expect(page.getByText('Release report', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Open output: Release report' }).click()

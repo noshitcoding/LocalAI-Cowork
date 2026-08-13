@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useTerminalStore } from '../../stores/terminalStore'
 
 const invokeMock = vi.fn()
+const listenMock = vi.fn(async (_event?: string, _handler?: unknown) => () => {})
 const runAiCommandMock = vi.fn()
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -9,7 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: (event: string, handler: unknown) => listenMock(event, handler),
 }))
 
 vi.mock('../../utils/safeInvoke', () => ({
@@ -18,11 +19,24 @@ vi.mock('../../utils/safeInvoke', () => ({
   safeInvokeVoid: vi.fn(),
 }))
 
-describe('Bash terminal integration', () => {
+describe('Bash native sandbox integration', () => {
   beforeEach(() => {
     invokeMock.mockReset()
-    invokeMock.mockResolvedValue(undefined)
+    listenMock.mockClear()
     runAiCommandMock.mockReset()
+    invokeMock.mockResolvedValue({
+      stdout: 'Hallo',
+      stderr: '',
+      exitCode: 0,
+      status: 'completed',
+      timedOut: false,
+      durationMs: 12,
+      sandboxId: 'native:run-bash',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    })
     useTerminalStore.setState({
       backends: [],
       loading: false,
@@ -37,79 +51,81 @@ describe('Bash terminal integration', () => {
     })
   })
 
-  it('routes Bash through the active terminal thread instead of exec_command', async () => {
-    runAiCommandMock.mockResolvedValue({
-      sessionId: 'term-ai-1',
-      stdout: 'hello from terminal',
-      stderr: '',
-      exitCode: 0,
-      currentCwd: 'C:\\workspace\\nested',
-      interruptedByUser: true,
-      timedOut: false,
-    })
-
+  it('routes Bash exclusively through sandbox_exec_command and mirrors an output-only tab', async () => {
     const { registerAllBuiltinTools, getAllTools } = await import('./registry')
     registerAllBuiltinTools()
     const tool = getAllTools().find((entry) => entry.name === 'Bash')
-    expect(tool).toBeTruthy()
-
-    let appState = { cwd: 'C:\\workspace' }
-    const onProgress = vi.fn()
 
     const result = await tool!.call(
-      { command: 'Set-Location nested; Write-Output hello', timeout: 1234 },
-      {
-        cwd: 'C:\\workspace',
-        runId: 'run-terminal-bash',
-        setAppState: (updater: (prev: typeof appState) => typeof appState) => {
-          appState = updater(appState)
-        },
-      } as never,
-      onProgress,
+      { command: 'cmd /c echo Hallo', timeout: 1234, shell: 'cmd' },
+      { cwd: 'C:\\sandbox\\workspace', runId: 'run-bash', threadId: 'thread-1' } as never,
     )
 
-    expect(runAiCommandMock).toHaveBeenCalledWith({
-      threadId: 'thread-1',
-      command: 'Set-Location nested; Write-Output hello',
-      cwd: 'C:\\workspace',
-      timeoutMs: 1234,
-    })
-    expect(invokeMock).toHaveBeenCalledWith('shell_command_validate', {
-      command: 'Set-Location nested; Write-Output hello',
-      cwd: 'C:\\workspace',
-      runId: 'run-terminal-bash',
+    expect(invokeMock).toHaveBeenCalledWith('sandbox_exec_command', {
+      request: {
+        runId: 'run-bash',
+        command: 'cmd /c echo Hallo',
+        shell: 'cmd',
+        cwd: 'C:\\sandbox\\workspace',
+        timeoutMs: 1234,
+        streamId: expect.any(String),
+      },
     })
     expect(invokeMock).not.toHaveBeenCalledWith('exec_command', expect.anything())
-    expect(appState.cwd).toBe('C:\\workspace\\nested')
-    expect(result.data).toContain('stdout:\nhello from terminal')
-    expect(result.data).toContain('note: user manually intervened')
-    expect(result.data).toContain('current cwd: C:\\workspace\\nested')
-    expect(result.data).toContain('exit code: 0')
-    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ output: 'terminal: starting command' }),
-    }))
-    expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ output: 'cwd: C:\\workspace\\nested' }),
-    }))
+    expect(invokeMock).not.toHaveBeenCalledWith('terminal_write', expect.anything())
+    expect(invokeMock).not.toHaveBeenCalledWith('desktop_launch_app', expect.anything())
+    expect(runAiCommandMock).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ isError: false })
+    expect(result.data).toContain('stdout:\nHallo')
+    expect(useTerminalStore.getState().sessionsByThread['thread-1']?.[0]).toMatchObject({
+      title: 'AI Sandbox',
+      kind: 'sandbox',
+    })
   })
 
-  it('does not write a command to the PTY when backend policy validation fails', async () => {
-    invokeMock.mockRejectedValueOnce(new Error('command blocked: path traversal'))
-
+  it('returns setup and policy failures as real tool errors without a host fallback', async () => {
+    invokeMock.mockRejectedValueOnce(new Error('native sandbox setup is required'))
     const { registerAllBuiltinTools, getAllTools } = await import('./registry')
     registerAllBuiltinTools()
     const tool = getAllTools().find((entry) => entry.name === 'Bash')
 
     const result = await tool!.call(
       { command: 'Get-Content ..\\secret.txt' },
-      {
-        cwd: 'C:\\workspace',
-        runId: 'run-terminal-denied',
-        setAppState: vi.fn(),
-      } as never,
+      { cwd: 'C:\\sandbox\\workspace', runId: 'run-denied', threadId: 'thread-1' } as never,
     )
 
+    expect(result.isError).toBe(true)
+    expect(result.data).toContain('native sandbox setup is required')
     expect(runAiCommandMock).not.toHaveBeenCalled()
-    expect(result.data).toContain('command blocked: path traversal')
+    expect(invokeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('terminates the sandbox job when the engine run is aborted', async () => {
+    let finishCommand: ((value: unknown) => void) | undefined
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'sandbox_exec_cancel') return Promise.resolve(true)
+      if (command === 'sandbox_exec_command') {
+        return new Promise((resolve) => { finishCommand = resolve })
+      }
+      return Promise.resolve(undefined)
+    })
+    const { registerAllBuiltinTools, getAllTools } = await import('./registry')
+    registerAllBuiltinTools()
+    const tool = getAllTools().find((entry) => entry.name === 'Bash')!
+    const abortController = new AbortController()
+    const resultPromise = tool.call(
+      { command: 'Start-Sleep -Seconds 30' },
+      { cwd: 'C:\\sandbox\\workspace', runId: 'run-abort', threadId: 'thread-1', abortController } as never,
+    )
+    await vi.waitFor(() => expect(finishCommand).toBeTypeOf('function'))
+    abortController.abort()
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith('sandbox_exec_cancel', { streamId: expect.any(String) }))
+    finishCommand!({
+      stdout: '', stderr: 'cancelled', exitCode: 130, status: 'failed', timedOut: false,
+      durationMs: 3, sandboxId: 'native:run-abort', stdoutTruncated: false,
+      stderrTruncated: false, stdoutInvalidUtf8: false, stderrInvalidUtf8: false,
+    })
+    const result = await resultPromise
+    expect(result.isError).toBe(true)
   })
 })

@@ -1,8 +1,7 @@
 ﻿// ── Query Engine (Core) ─────────────────────────────────────────────────────
 // Mirrors: claude-code-main/src/core/query.ts + QueryEngine.ts
 // The agentic loop: send messages → get response → execute tools → repeat
-// Enhanced with: auto-compaction, context management, retry logic,
-// tool result budgets, session persistence
+// Enhanced with deterministic context trimming, retry logic, and tool-result budgets.
 
 import type {
   Message,
@@ -59,16 +58,19 @@ import {
 } from '../api/openaiCompatibleClient'
 import { getAllTools, getToolDefinitions, registerAllBuiltinTools } from '../tools/registry'
 import { ContextManager } from '../services/contextManager'
+import { estimateTokens } from '../services/compact'
+import type { CodexEngineConfig } from '../codex/codexAppServerEngine'
 
 // ── Engine Configuration ───────────────────────────────────────────────────
 
-export type EngineBackend = 'ollama' | 'anthropic' | 'openai-compatible' | 'openrouter'
+export type EngineBackend = 'codex' | 'ollama' | 'anthropic' | 'openai-compatible' | 'openrouter'
 
 export type EngineConfig = {
   backend: EngineBackend
   anthropic?: AnthropicConfig
   ollama?: OllamaEngineConfig
   openAiCompatible?: OpenAiCompatibleConfig
+  codex?: CodexEngineConfig
   cwd: string
   systemPrompt: string
   maxTurns?: number
@@ -92,12 +94,16 @@ export type EngineConfig = {
   appendSystemPrompt?: string
   /** Current persisted run ID */
   runId?: string
-  /** Current session ID */
-  sessionId?: string
+  /** Chat that owns the current run */
+  threadId?: string
   /** Active toolset policy used for this run */
   toolsetPolicyId?: string
   /** Current worker sandbox ID */
   sandboxId?: string
+  /** Desktop mutation tools require an explicit, separate run profile. */
+  desktopControlEnabled?: boolean
+  /** Effective capability ceiling after sandbox mode and policy intersection. */
+  availableToolNames?: string[]
 }
 
 // ── Stream Events (yielded from queryEngine) ───────────────────────────────
@@ -108,13 +114,13 @@ export type EngineEvent =
   | { type: 'request_debug'; provider: 'ollama' | 'openai-compatible' | 'openrouter'; payload: string }
   | { type: 'tool_call_delta'; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_use_start'; toolUseId: string; toolName: string; input: Record<string, unknown> }
-  | { type: 'tool_use_complete'; toolUseId: string; toolName: string; result: string }
+  | { type: 'tool_use_complete'; toolUseId: string; toolName: string; result: string; isError?: boolean }
   | { type: 'tool_progress'; toolUseId: string; data: ToolProgressData }
   | { type: 'assistant_message'; message: AssistantMessage }
   | { type: 'usage_update'; usage: TokenUsage; costUsd: number; totalCostUsd: number }
   | { type: 'turn_complete'; turnCount: number; stopReason: string | null }
   | { type: 'approval_required'; request: ApprovalRequest }
-  | { type: 'compaction'; removedCount: number; summary: string }
+  | { type: 'context_coverage'; totalPrevious: number; sentPrevious: number; omittedPrevious: number; maxInputTokens: number }
   | { type: 'context_warning'; level: 'warning' | 'critical'; estimatedTokens: number }
   | { type: 'retry'; reason: string; attempt: number }
   | { type: 'error'; error: string }
@@ -146,9 +152,8 @@ export class QueryEngine {
     // Initialize context manager (Claude Code feature)
     this.contextManager = new ContextManager(
       {
-        autoCompactEnabled: true,
         toolResultBudgetEnabled: true,
-        maxPromptTooLongRetries: 2,
+        maxPromptTooLongRetries: 3,
       },
       config.ollama?.contextWindow ?? 120000,
     )
@@ -159,11 +164,27 @@ export class QueryEngine {
       this.initialized = true
     }
 
-    const builtins = getAllTools()
-    this.tools = config.customTools
-      ? [...builtins, ...config.customTools]
-      : builtins
+    this.tools = []
+    this.refreshTools()
     this.coordinator = new AgentCoordinator(this.config)
+  }
+
+  private refreshTools(): void {
+    const desktopTools = new Set([
+      'Desktopscreenshot', 'DesktopPrimaryDisplay', 'DesktopListWindows',
+      'DesktopFocusWindow', 'DesktopLaunchApp', 'DesktopClick', 'DesktopMoveMouse',
+      'DesktopTypeText', 'DesktopKeypress', 'DesktopScroll',
+    ])
+    const capabilityCeiling = this.config.availableToolNames === undefined
+      ? null
+      : new Set(this.config.availableToolNames)
+    const availableTools = this.config.customTools
+      ? [...getAllTools(), ...this.config.customTools]
+      : getAllTools()
+    this.tools = availableTools.filter((tool) => (
+      (this.config.desktopControlEnabled || !desktopTools.has(tool.name))
+      && (capabilityCeiling === null || capabilityCeiling.has(tool.name))
+    ))
   }
 
   /** Set callback for tool UI (approval dialogs, progress etc.) */
@@ -193,6 +214,12 @@ export class QueryEngine {
   /** Update configuration */
   updateConfig(partial: Partial<EngineConfig>): void {
     this.config = { ...this.config, ...partial }
+    if ('availableToolNames' in partial || 'desktopControlEnabled' in partial || 'customTools' in partial) {
+      this.refreshTools()
+    }
+    if (partial.cwd) {
+      this.appState = { ...this.appState, cwd: partial.cwd }
+    }
     this.coordinator = new AgentCoordinator(this.config)
     // Update context manager if context window changed
     if (partial.ollama?.contextWindow) {
@@ -203,18 +230,6 @@ export class QueryEngine {
   /** Get context snapshot for UI display */
   getContextSnapshot(messages: Message[]) {
     return this.contextManager.getSnapshot(messages)
-  }
-
-  /** Force manual compaction */
-  async forceCompact(messages: Message[]): Promise<{ messages: Message[]; summary: string }> {
-    if (!this.config.ollama) {
-      return { messages, summary: '' }
-    }
-    const result = await this.contextManager.compactIfNeeded(messages, this.config.ollama)
-    return {
-      messages: result.messages,
-      summary: result.summary ?? '',
-    }
   }
 
   // ── The Main Query Loop (async generator) ────────────────────────────────
@@ -249,7 +264,37 @@ export class QueryEngine {
 
     // Build system prompt
     const fullSystemPrompt = this.buildSystemPrompt()
-    const toolDefs = getToolDefinitions()
+    const toolDefs = this.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+      aliases: tool.aliases,
+    }))
+    const fixedOverheadTokens = estimateTokens(fullSystemPrompt)
+      + estimateTokens(JSON.stringify(toolDefs))
+    const totalPrevious = messages.length
+    const initialTrim = this.contextManager.trimToBudget(
+      conversation,
+      fixedOverheadTokens,
+      0.8,
+    )
+    conversation = initialTrim.messages
+    let omittedPrevious = Math.min(totalPrevious, initialTrim.droppedCount)
+
+    yield {
+      type: 'context_coverage',
+      totalPrevious,
+      sentPrevious: Math.max(0, totalPrevious - initialTrim.droppedCount),
+      omittedPrevious,
+      maxInputTokens: initialTrim.maxInputTokens,
+    }
+
+    if (!initialTrim.fits) {
+      const error = `The current message and required instructions exceed this model's context limit (${initialTrim.maxInputTokens} input tokens). Shorten the message or select a model with a larger context window.`
+      yield { type: 'error', error }
+      yield { type: 'done', messages: conversation, totalUsage, totalCostUsd }
+      return
+    }
 
     // ── Agentic Loop ──────────────────────────────────────────────────────
     while (turnCount < maxTurns) {
@@ -260,28 +305,6 @@ export class QueryEngine {
 
       turnCount++
       this.appState = { ...this.appState, turnCount }
-
-      // ── Auto-Compaction (Claude Code feature) ────────────────────────────
-      // Check context size before API call, compact if needed
-      if (this.config.ollama && this.contextManager.shouldCompact(conversation)) {
-        try {
-          const compactResult = await this.contextManager.compactIfNeeded(
-            conversation,
-            this.config.ollama,
-            this.abortController.signal,
-          )
-          if (compactResult.didCompact) {
-            conversation = compactResult.messages
-            yield {
-              type: 'compaction',
-              removedCount: conversation.length,
-              summary: compactResult.summary ?? '',
-            }
-          }
-        } catch {
-          // compaction failure is non-fatal
-        }
-      }
 
       // ── Context Warning ──────────────────────────────────────────────────
       const snapshot = this.contextManager.getSnapshot(conversation)
@@ -302,7 +325,7 @@ export class QueryEngine {
       // ── Stream from API (with retry for prompt-too-long) ─────────────────
       let sampleResult: SampleResult
       let retryAttempt = 0
-      const MAX_RETRIES = 2
+      const RETRY_INPUT_RATIOS = [0.6, 0.4, 0.2] as const
 
       while (true) {
         try {
@@ -371,18 +394,29 @@ export class QueryEngine {
             msg.toLowerCase().includes('maximum context') ||
             msg.includes('num_ctx')
 
-          if (isPromptTooLong && retryAttempt < MAX_RETRIES && this.config.ollama) {
+          if (isPromptTooLong && retryAttempt < RETRY_INPUT_RATIOS.length) {
             retryAttempt++
-            yield { type: 'retry', reason: 'Context zu lang — komprimiere...', attempt: retryAttempt }
-
-            const compacted = await this.contextManager.handlePromptTooLong(
+            const retryTrim = this.contextManager.trimToBudget(
               conversation,
-              this.config.ollama,
-              this.abortController.signal,
+              fixedOverheadTokens,
+              RETRY_INPUT_RATIOS[retryAttempt - 1],
             )
+            yield {
+              type: 'retry',
+              reason: 'Context too long — omitting additional oldest chat turns.',
+              attempt: retryAttempt,
+            }
 
-            if (compacted) {
-              conversation = compacted
+            if (retryTrim.fits && retryTrim.droppedCount > 0) {
+              conversation = retryTrim.messages
+              yield {
+                type: 'context_coverage',
+                totalPrevious,
+                sentPrevious: Math.max(0, totalPrevious - Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount)),
+                omittedPrevious: Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount),
+                maxInputTokens: retryTrim.maxInputTokens,
+              }
+              omittedPrevious = Math.min(totalPrevious, omittedPrevious + retryTrim.droppedCount)
               // Rebuild API messages and retry
               const newApiMessages = this.toAPIConversation(
                 this.contextManager.applyBudget(conversation),
@@ -539,7 +573,7 @@ export class QueryEngine {
               content: `Tool "${tool.name}" denied: ${approved.reason}`,
               is_error: true,
             })
-            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Denied: ${approved.reason}` }
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Denied: ${approved.reason}`, isError: true }
             continue
           }
         }
@@ -570,6 +604,7 @@ export class QueryEngine {
               type: 'tool_result',
               tool_use_id: block.id,
               content: resultStr,
+              is_error: result.isError,
             })
             if (result.newMessages) {
               injectedMessages.push(...result.newMessages)
@@ -577,15 +612,17 @@ export class QueryEngine {
             if (result.awaitUserInput) {
               shouldAwaitUserInput = true
             }
-            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: resultStr }
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: resultStr, isError: result.isError }
           } else {
             const block = concurrentTools[results.indexOf(r)].block
+            const message = `Error: ${r.reason}`
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
-              content: `Error: ${r.reason}`,
+              content: message,
               is_error: true,
             })
+            yield { type: 'tool_use_complete', toolUseId: block.id, toolName: block.name, result: message, isError: true }
           }
         }
       }
@@ -605,6 +642,7 @@ export class QueryEngine {
             type: 'tool_result',
             tool_use_id: block.id,
             content: resultStr,
+            is_error: result.isError,
           })
           if (result.newMessages) {
             injectedMessages.push(...result.newMessages)
@@ -612,7 +650,7 @@ export class QueryEngine {
           if (result.awaitUserInput) {
             shouldAwaitUserInput = true
           }
-          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: resultStr }
+          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: resultStr, isError: result.isError }
 
           // Apply context modifier if present
           if (result.contextModifier) {
@@ -626,7 +664,7 @@ export class QueryEngine {
             content: `Error: ${msg}`,
             is_error: true,
           })
-          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Error: ${msg}` }
+          yield { type: 'tool_use_complete', toolUseId: block.id, toolName: tool.name, result: `Error: ${msg}`, isError: true }
         }
       }
 
@@ -669,6 +707,7 @@ export class QueryEngine {
 
     // Base system prompt
     parts.push(this.config.systemPrompt)
+    parts.push('\n\nShell security invariant: Bash is the only AI shell route and runs exclusively inside the prepared native sandbox. If it fails or is unavailable on this operating system, return the tool error. Never use desktop automation, text input, app launchers, or a terminal application as a shell fallback.')
 
     // Memory content
     if (this.config.memoryContent) {
@@ -798,7 +837,7 @@ export class QueryEngine {
       return null
     }
 
-    return 'Execute the last described next step now using the available tools. Use shell, file, or desktop tools immediately instead of continuing to describe the plan. If a step fails, try the next plausible tool call and verify the result instead of only stating intent.'
+    return 'Execute the last described next step now using the available workspace tools. Bash is the only AI shell path and runs in the native sandbox. If Bash fails or is unavailable on this operating system, report the tool error; never launch or type into a terminal application as a fallback.'
   }
 
   private toAPIConversation(messages: Message[]): Array<{ role: 'user' | 'assistant'; content: string | ContentBlock[] }> {
@@ -807,10 +846,16 @@ export class QueryEngine {
     for (const msg of messages) {
       switch (msg.type) {
         case 'user':
-          apiMsgs.push({ role: 'user', content: msg.content })
+          apiMsgs.push({
+            role: 'user',
+            content: msg.content.filter((block) => block.type !== 'thinking'),
+          })
           break
         case 'assistant':
-          apiMsgs.push({ role: 'assistant', content: msg.content })
+          apiMsgs.push({
+            role: 'assistant',
+            content: msg.content.filter((block) => block.type !== 'thinking'),
+          })
           break
         case 'system':
           // System messages become user messages with [system] prefix
@@ -888,7 +933,7 @@ export class QueryEngine {
       agentDefinitions: this.config.agentDefinitions ?? [],
       memoryContent: this.config.memoryContent,
       runId: this.config.runId,
-      sessionId: this.config.sessionId,
+      threadId: this.config.threadId,
       sandboxId: this.config.sandboxId,
       messages,
     }

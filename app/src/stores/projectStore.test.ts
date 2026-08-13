@@ -3,6 +3,7 @@ import {
   getEnabledProjectAttachments,
   getEnabledProjectLinks,
   getProjectForThread,
+  projectMetadataForDaemon,
   useProjectStore,
 } from './projectStore'
 
@@ -40,11 +41,58 @@ describe('projectStore', () => {
     const project = useProjectStore.getState().projects[0]
     expect(project.resources).toHaveLength(3)
     expect(getEnabledProjectAttachments(project)).toEqual([
-      { path: 'C:/docs/spec.md', kind: 'file', label: undefined },
+      {
+        path: 'C:/docs/spec.md',
+        kind: 'file',
+        label: undefined,
+        access: 'read_write',
+        isPrimary: true,
+      },
     ])
     expect(getEnabledProjectLinks(project).map((resource) => resource.path)).toEqual([
       'https://example.com/spec',
     ])
+  })
+
+  it('keeps local project paths outside synchronized metadata', () => {
+    const id = useProjectStore.getState().addProject('Private workspace', 'Local only files.')
+    useProjectStore.getState().addResources(id, [
+      { path: 'C:/secret/customer-data', kind: 'folder' },
+    ])
+    useProjectStore.getState().attachThread(id, 'thread-1')
+
+    const payload = projectMetadataForDaemon(useProjectStore.getState().projects[0])
+    expect(payload).toMatchObject({
+      title: 'Private workspace',
+      instructions: 'Local only files.',
+      thread_ids: ['thread-1'],
+      project_kind: 'private',
+      files_location: 'personal_device',
+    })
+    expect(JSON.stringify(payload)).not.toContain('customer-data')
+    expect(payload).not.toHaveProperty('resources')
+  })
+
+  it('stores per-resource access, rejects overlapping writable roots, and reassigns the primary root', () => {
+    const id = useProjectStore.getState().addProject('Workspace')
+    useProjectStore.getState().addResources(id, [
+      { path: 'C:/repo', kind: 'folder', access: 'read_write' },
+      { path: 'D:/docs', kind: 'folder', access: 'read_write' },
+      { path: 'C:/repo/packages', kind: 'folder', access: 'read_only' },
+    ])
+
+    let project = useProjectStore.getState().projects[0]
+    expect(project.resources.filter((resource) => resource.access === 'read_write')).toHaveLength(2)
+    expect(project.resources.find((resource) => resource.path === 'C:/repo')?.isPrimary).toBe(true)
+
+    const nested = project.resources.find((resource) => resource.path === 'C:/repo/packages')!
+    expect(useProjectStore.getState().setResourceAccess(id, nested.id, 'read_write')).toBe(false)
+
+    const docs = project.resources.find((resource) => resource.path === 'D:/docs')!
+    useProjectStore.getState().setPrimaryResource(id, docs.id)
+    project = useProjectStore.getState().projects[0]
+    expect(project.resources.find((resource) => resource.path === 'D:/docs')?.isPrimary).toBe(true)
+    expect(project.resources.find((resource) => resource.path === 'C:/repo')?.isPrimary).toBe(false)
   })
 
   it('moves chats between projects exclusively', () => {

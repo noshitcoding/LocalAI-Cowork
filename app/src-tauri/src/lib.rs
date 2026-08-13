@@ -6,17 +6,23 @@ mod audit_service;
 mod audit_sink;
 mod capability_model;
 mod claude_code_bridge;
+mod codex_runtime;
 mod context;
 mod cowork_features;
 mod credential_store;
 mod crew_python_bridge;
 mod db;
+mod developer_browser;
 mod event_sink;
 mod file_safety;
 mod file_watch;
+mod github_integration;
 mod insights;
+mod local_daemon_bridge;
+mod local_daemon_manager;
 mod mcp;
 mod memory_engine;
+mod native_windows_sandbox;
 mod network_safety;
 mod office_integration;
 mod ollama;
@@ -39,7 +45,24 @@ use crew_python_bridge::{
     crew_runtime_bootstrap, crew_runtime_execute_request, crew_runtime_status,
     crew_runtime_validate_definition, CrewPythonBridge, CrewRuntimeExecutionLog,
 };
-use db::Database;
+use db::{
+    ApiProfileRow, AppBackendDefaultsRow, CodexAuthProfileRow, CodexThreadBindingRow, Database,
+    ProviderFallbackApprovalRow,
+};
+use developer_browser::{
+    developer_browser_cdp_call, developer_browser_click, developer_browser_history,
+    developer_browser_inspect, developer_browser_keypress, developer_browser_navigate,
+    developer_browser_reload, developer_browser_scroll, developer_browser_snapshot,
+    developer_browser_start, developer_browser_status, developer_browser_stop,
+    developer_browser_type_text, DeveloperBrowserState,
+};
+use github_integration::{
+    git_repository_commit, git_repository_create_branch, git_repository_diff, git_repository_pull,
+    git_repository_push, git_repository_stage, git_repository_status, git_repository_unstage,
+    github_connection_status, github_create_pull_request, github_get_pull_request,
+    github_list_pull_requests, github_merge_pull_request, github_post_pull_request_comment,
+    github_submit_pull_request_review,
+};
 use mcp::{
     call_tool, probe_server, runtime_call_tool, runtime_has_server, runtime_list_servers,
     runtime_probe_server, runtime_restart_server, runtime_start_server, runtime_stop_server,
@@ -55,7 +78,7 @@ use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error as StdError;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -109,7 +132,6 @@ fn is_local_screenshot_mcp_command(command: &str) -> bool {
 }
 const POLICY_FLAG_WEB_FETCH: &str = "allowWebFetch";
 const POLICY_FLAG_FILE_READ: &str = "allowFileReadExtraction";
-const POLICY_FLAG_AUTO_COMPACT: &str = "autoCompactLongContext";
 const POLICY_FLAG_SHELL_EXECUTION: &str = "allowShellExecution";
 const POLICY_FLAG_WEB_SEARCH: &str = "allowWebSearch";
 const POLICY_SETTING_ACTIVE_TOOLSET: &str = "activeToolsetPolicyId";
@@ -383,8 +405,6 @@ struct PolicyFlagsPayload {
     #[serde(default = "default_true")]
     allow_file_read_extraction: bool,
     #[serde(default = "default_true")]
-    auto_compact_long_context: bool,
-    #[serde(default = "default_true")]
     allow_shell_execution: bool,
     #[serde(default = "default_true")]
     allow_web_search: bool,
@@ -427,7 +447,6 @@ struct EngineRunCreateRequest {
     id: String,
     parent_run_id: Option<String>,
     thread_id: Option<String>,
-    session_id: Option<String>,
     title: String,
     input_summary: Option<String>,
     source: Option<String>,
@@ -446,6 +465,8 @@ struct EngineRunCreateRequest {
     resumed_from_run_id: Option<String>,
     checkpoint_json: Option<String>,
     metadata_json: Option<String>,
+    #[serde(default)]
+    authorized_paths: Option<Vec<AuthorizedTaskPath>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -458,6 +479,9 @@ struct EngineRunUpdateRequest {
     result_summary: Option<String>,
     error: Option<String>,
     metadata_json: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -529,6 +553,60 @@ struct WorkerSandboxUpdateRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SandboxRunPrepareRequest {
+    run_id: String,
+    source_cwd: Option<String>,
+    parent_run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxRunPrepareResponse {
+    sandbox_id: String,
+    workspace_root: String,
+    copied_files: u64,
+    skipped_files: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineRunPrepareContextRequest {
+    run_id: String,
+    #[serde(default)]
+    authorized_paths: Vec<AuthorizedTaskPath>,
+    preferred_cwd: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineRunPrepareContextResponse {
+    mode: String,
+    sandbox_id: Option<String>,
+    workspace_root: String,
+    allowed_directories: Vec<String>,
+    roots: Vec<worker_sandbox::WorkspaceRootMapping>,
+    copied_files: u64,
+    skipped_files: u64,
+    warning: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxRunRequest {
+    run_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SandboxCommandChunk {
+    stream_id: String,
+    sequence: u64,
+    channel: String,
+    bytes_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PolicyEvaluateRequest {
     tool: String,
     target: String,
@@ -564,6 +642,7 @@ struct ConnectorReachabilityResponse {
 #[serde(rename_all = "camelCase")]
 struct CrewProviderHealthCheckRequest {
     provider_kind: String,
+    profile_id: Option<String>,
     base_url: String,
     api_key: Option<String>,
     #[serde(default)]
@@ -586,6 +665,7 @@ struct CrewProviderHealthCheckResponse {
 #[serde(rename_all = "camelCase")]
 struct CrewProviderModelsRequest {
     provider_kind: String,
+    profile_id: Option<String>,
     base_url: String,
     api_key: Option<String>,
     #[serde(default)]
@@ -597,7 +677,10 @@ struct CrewProviderModelsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenAiCompatibleChatCompletionRequest {
+    profile_id: Option<String>,
+    preset: Option<String>,
     endpoint: String,
+    #[serde(default)]
     headers: HashMap<String, String>,
     body: String,
     timeout_ms: Option<u64>,
@@ -766,6 +849,8 @@ struct ThreadRow {
     updated_at: String,
     provider_settings_json: Option<String>,
     permission_config_json: Option<String>,
+    runner: String,
+    crew_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -786,6 +871,8 @@ struct ProjectResourceRecord {
     path: String,
     label: Option<String>,
     enabled: bool,
+    access: String,
+    is_primary: bool,
     added_at: String,
 }
 
@@ -820,6 +907,8 @@ struct ProjectResourceUpsertRequest {
     path: String,
     label: Option<String>,
     enabled: Option<bool>,
+    access: Option<String>,
+    is_primary: Option<bool>,
     added_at: Option<String>,
 }
 
@@ -868,6 +957,7 @@ struct WorkTaskUpsertRequest {
     last_run_at: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
+    backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -900,6 +990,7 @@ struct WorkTaskRecord {
     last_run_at: Option<String>,
     created_at: String,
     updated_at: String,
+    backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1095,6 +1186,8 @@ struct CrewExecuteAgentRequest {
     model_override: Option<String>,
     provider_kind: Option<String>,
     #[serde(default)]
+    backend_selection: Option<ScheduledBackendSelection>,
+    #[serde(default)]
     tools: Vec<String>,
     #[serde(default)]
     mcp_server_names: Vec<String>,
@@ -1129,6 +1222,8 @@ struct CrewExecuteRequest {
     execution_guidelines: String,
     #[serde(default)]
     knowledge_focus: String,
+    #[serde(default)]
+    response_language: Option<String>,
     #[serde(default = "default_crew_governance_mode")]
     governance_mode: String,
     #[serde(default)]
@@ -1159,8 +1254,44 @@ struct CrewExecuteRequest {
     provider_configs: CrewProviderConfigsRequest,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    authorized_paths: Option<Vec<AuthorizedTaskPath>>,
     #[serde(default)]
     stream_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizedTaskPath {
+    #[serde(default)]
+    id: Option<String>,
+    path: String,
+    kind: String,
+    access: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskProjectContextResolveRequest {
+    task_id: Option<String>,
+    thread_id: Option<String>,
+    prompt: String,
+    work_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TaskProjectRunContext {
+    project_id: Option<String>,
+    project_title: Option<String>,
+    prompt_context: String,
+    authorized_paths: Vec<AuthorizedTaskPath>,
+    preferred_cwd: Option<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1181,6 +1312,7 @@ struct CrewGovernancePayload {
     subject: String,
     subject_roles: Vec<String>,
     policy_strict: bool,
+    deny_rules: Vec<String>,
     pending_approval_types: Vec<String>,
     agent_access: Vec<CrewGovernanceAgentAccessPayload>,
 }
@@ -1224,20 +1356,164 @@ struct CrewMemoryPayload {
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct CrewProviderConfigsRequest {
-    #[serde(default)]
+    #[serde(default, rename = "openAICompatible", alias = "openAiCompatible")]
     open_ai_compatible: Option<CrewExternalProviderConfigRequest>,
     #[serde(default)]
     open_router: Option<CrewExternalProviderConfigRequest>,
 }
 
+fn provider_model_suffix(value: &str) -> String {
+    value
+        .trim()
+        .rsplit('/')
+        .next()
+        .unwrap_or(value.trim())
+        .to_ascii_lowercase()
+}
+
+fn provider_models_share_stem(configured: &str, candidate: &str) -> bool {
+    let configured_suffix = provider_model_suffix(configured);
+    let candidate_suffix = provider_model_suffix(candidate);
+    !configured_suffix.is_empty()
+        && !candidate_suffix.is_empty()
+        && (configured_suffix == candidate_suffix
+            || candidate_suffix.starts_with(&format!("{}-", configured_suffix))
+            || configured_suffix.starts_with(&format!("{}-", candidate_suffix)))
+}
+
+fn enrich_provider_model_from_successful_runs(
+    database: &Arc<Database>,
+    provider: &str,
+    config: &mut Option<CrewExternalProviderConfigRequest>,
+) {
+    let Some(config) = config.as_mut() else {
+        return;
+    };
+    if !config.models.is_empty() || config.model.trim().is_empty() {
+        return;
+    }
+
+    let Ok(runs) = database.list_engine_runs(100, Some("completed")) else {
+        return;
+    };
+    let candidate = runs.into_iter().find_map(|run| {
+        let run_provider = run.provider.as_deref()?.trim();
+        let run_model = run.model.as_deref()?.trim();
+        let has_result = run
+            .result_summary
+            .as_deref()
+            .is_some_and(|result| !result.trim().is_empty());
+        let has_error = run
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty());
+        (run_provider == provider
+            && has_result
+            && !has_error
+            && provider_models_share_stem(&config.model, run_model))
+        .then(|| run_model.to_string())
+    });
+
+    if let Some(candidate) = candidate {
+        config.model = candidate.clone();
+        config.models = vec![candidate];
+    }
+}
+
+fn enrich_crew_provider_models_from_history(
+    database: &Arc<Database>,
+    request: &mut CrewExecuteRequest,
+) {
+    enrich_provider_model_from_successful_runs(
+        database,
+        "openai-compatible",
+        &mut request.provider_configs.open_ai_compatible,
+    );
+    enrich_provider_model_from_successful_runs(
+        database,
+        "openrouter",
+        &mut request.provider_configs.open_router,
+    );
+}
+
+fn resolve_effective_crew_provider(
+    requested_provider: &str,
+    has_ollama: bool,
+    has_openai_compatible: bool,
+    has_openrouter: bool,
+) -> String {
+    let requested = match requested_provider.trim() {
+        "openai-compatible" => "openai-compatible",
+        "openrouter" => "openrouter",
+        _ => "ollama",
+    };
+    let is_available = |provider: &str| match provider {
+        "openai-compatible" => has_openai_compatible,
+        "openrouter" => has_openrouter,
+        _ => has_ollama,
+    };
+
+    if is_available(requested) {
+        return requested.to_string();
+    }
+
+    let fallbacks = match requested {
+        "openai-compatible" => ["openrouter", "ollama"],
+        "openrouter" => ["openai-compatible", "ollama"],
+        _ => ["openrouter", "openai-compatible"],
+    };
+
+    fallbacks
+        .into_iter()
+        .find(|provider| is_available(provider))
+        .unwrap_or(requested)
+        .to_string()
+}
+
+fn normalize_crew_agent_providers(request: &mut CrewExecuteRequest) {
+    let has_ollama = request
+        .config
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+    let has_openai_compatible = request
+        .provider_configs
+        .open_ai_compatible
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+    let has_openrouter = request
+        .provider_configs
+        .open_router
+        .as_ref()
+        .map(|config| !config.model.trim().is_empty())
+        .unwrap_or(false);
+
+    for agent in &mut request.agents {
+        let requested = agent.provider_kind.as_deref().unwrap_or("ollama");
+        agent.provider_kind = Some(resolve_effective_crew_provider(
+            requested,
+            has_ollama,
+            has_openai_compatible,
+            has_openrouter,
+        ));
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct CrewExternalProviderConfigRequest {
+    #[serde(default)]
+    profile_id: Option<String>,
     base_url: String,
     model: String,
     #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
     api_key: String,
     timeout_ms: u64,
+    #[serde(default = "default_true")]
+    verify_tls_certificates: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1604,24 +1880,65 @@ fn build_crew_memory_query(request: &CrewExecuteRequest) -> String {
     dedupe_strings(parts).join(" | ")
 }
 
+fn crew_request_needs_live_news(request: &CrewExecuteRequest) -> bool {
+    let searchable = build_crew_memory_query(request).to_ascii_lowercase();
+    [
+        "fresh-news",
+        "daily news",
+        "world news",
+        "last 24 hours",
+        "nachrichten",
+    ]
+    .iter()
+    .any(|marker| searchable.contains(marker))
+}
+
+fn crew_memory_entry_is_relevant(entry: &db::MemoryEntryRow, live_news: bool) -> bool {
+    if entry.scope.eq_ignore_ascii_case("legacy") || entry.confidence < 0.5 {
+        return false;
+    }
+
+    if entry.category.eq_ignore_ascii_case("crew-run") {
+        if live_news {
+            return false;
+        }
+        let content = entry.content.to_ascii_lowercase();
+        if content.contains("status: failed") || content.contains("status: canceled") {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn collect_crew_memory_payload(
     database: &Arc<Database>,
     request: &CrewExecuteRequest,
 ) -> CrewMemoryPayload {
     let query = build_crew_memory_query(request);
-    let mut entries = if query.is_empty() {
+    let live_news = crew_request_needs_live_news(request);
+    let candidates = if query.is_empty() {
         Vec::new()
     } else {
         database
-            .search_memory_entries(&query, None, None, 8)
+            .search_memory_entries(&query, None, None, None, 32)
             .unwrap_or_default()
     };
+    let mut entries = candidates
+        .into_iter()
+        .filter(|entry| crew_memory_entry_is_relevant(entry, live_news))
+        .take(8)
+        .collect::<Vec<_>>();
 
-    if entries.is_empty() {
+    if entries.is_empty() && !live_news {
         entries = database
             .list_memory_entries("shared", None, 4)
             .or_else(|_| database.list_memory_entries("agent", None, 4))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| crew_memory_entry_is_relevant(entry, false))
+            .take(4)
+            .collect();
     }
 
     for entry in &entries {
@@ -1909,6 +2226,7 @@ fn collect_crew_governance_payload(
         subject,
         subject_roles,
         policy_strict: policy.flags.strict_policy_enforcement,
+        deny_rules: policy.deny_rules,
         pending_approval_types,
         agent_access,
     })
@@ -1972,6 +2290,7 @@ fn persist_crew_run_memory_summary(
         let _ = database.upsert_memory_entry(
             &uuid::Uuid::new_v4().to_string(),
             "shared",
+            None,
             "crew-run",
             &key,
             &summary,
@@ -2238,6 +2557,10 @@ fn extract_replay_provider_config(
     }
 
     Some(CrewExternalProviderConfigRequest {
+        profile_id: profile
+            .get("profileId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         base_url: profile
             .get("baseUrl")
             .and_then(Value::as_str)
@@ -2248,11 +2571,26 @@ fn extract_replay_provider_config(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        models: profile
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         api_key: profile
             .get("apiKey")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        verify_tls_certificates: profile
+            .get("verifyTlsCertificates")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         timeout_ms: profile
             .get("timeoutMs")
             .and_then(Value::as_u64)
@@ -2391,16 +2729,306 @@ fn persist_crew_execution_response(
     persist_crew_run_memory_summary(database, request, run_id, response);
 }
 
+async fn execute_mixed_crew_request(
+    app: &tauri::AppHandle,
+    database: &Arc<Database>,
+    registry: &CrewExecutionRegistry,
+    request: &CrewExecuteRequest,
+    run_id: &str,
+) -> CrewExecutionResponse {
+    let mut pending = request.tasks.clone();
+    let mut outputs: HashMap<String, String> = HashMap::new();
+    let mut task_results = Vec::new();
+    let mut logs = Vec::new();
+    let cwd = request
+        .cwd
+        .clone()
+        .or_else(|| {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| ".".to_string());
+    let max_parallel = request.max_parallel_tasks.unwrap_or(1).max(1) as usize;
+
+    while !pending.is_empty() {
+        let ready = pending
+            .iter()
+            .filter(|task| {
+                task.dependencies
+                    .iter()
+                    .all(|dependency| outputs.contains_key(dependency))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if ready.is_empty() {
+            return CrewExecutionResponse {
+                crew_id: request.id.clone(),
+                status: "failed".to_string(),
+                task_results,
+                logs,
+                error: Some(
+                    "Crew dependency graph contains a cycle or failed dependency".to_string(),
+                ),
+            };
+        }
+
+        for batch in ready.chunks(max_parallel) {
+            let dependency_outputs = outputs.clone();
+            let futures = batch.iter().cloned().map(|task| {
+                let app = app.clone();
+                let database = database.clone();
+                let request = request.clone();
+                let cwd = cwd.clone();
+                let dependency_outputs = dependency_outputs.clone();
+                async move {
+                    let agent = request
+                        .agents
+                        .iter()
+                        .find(|agent| agent.id == task.agent_id && agent.enabled)
+                        .cloned()
+                        .ok_or_else(|| format!("Crew task '{}' has no active agent", task.id))?;
+                    let context = task
+                        .dependencies
+                        .iter()
+                        .filter_map(|dependency| {
+                            dependency_outputs
+                                .get(dependency)
+                                .map(|output| format!("Dependency {dependency} output:\n{output}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    let prompt = [
+                        format!(
+                            "You are {}. Role: {}. Goal: {}.",
+                            agent.name, agent.role, agent.goal
+                        ),
+                        agent.backstory.clone(),
+                        agent.skills_markdown.clone(),
+                        request.execution_guidelines.clone(),
+                        format!("Task:\n{}", task.description),
+                        format!("Expected output:\n{}", task.expected_output),
+                        context,
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+
+                    let mut last_error = String::new();
+                    for _ in 0..=request.retry_count.max(0) {
+                        let result = match agent.backend_selection.as_ref() {
+                            Some(ScheduledBackendSelection::Codex {
+                                auth_profile_id,
+                                model,
+                                reasoning_effort,
+                            }) => {
+                                let app = app.clone();
+                                let database = database.clone();
+                                let crew_id = request.id.clone();
+                                let agent_id = agent.id.clone();
+                                let model = model.clone().or(agent.model_override.clone());
+                                let auth_profile_id = auth_profile_id.clone();
+                                let reasoning_effort = reasoning_effort.clone();
+                                let prompt = prompt.clone();
+                                let cwd = cwd.clone();
+                                tauri::async_runtime::spawn_blocking(move || {
+                                    run_codex_turn(
+                                        &app,
+                                        database.as_ref(),
+                                        "crew",
+                                        &crew_id,
+                                        Some(&agent_id),
+                                        auth_profile_id.as_deref(),
+                                        model.as_deref(),
+                                        reasoning_effort.as_deref(),
+                                        &prompt,
+                                        &cwd,
+                                    )
+                                })
+                                .await
+                                .map_err(|error| error.to_string())?
+                            }
+                            Some(ScheduledBackendSelection::OpenAiCompatible {
+                                profile_id,
+                                model,
+                            }) => {
+                                run_scheduled_api_turn(
+                                    &app,
+                                    database.as_ref(),
+                                    profile_id,
+                                    agent.model_override.as_deref().or(model.as_deref()),
+                                    &prompt,
+                                )
+                                .await
+                            }
+                            None if agent.provider_kind.as_deref().unwrap_or("ollama")
+                                == "ollama" =>
+                            {
+                                chat_turn_internal(
+                                    request.config.clone(),
+                                    prompt.clone(),
+                                    vec![],
+                                    vec![],
+                                )
+                                .await
+                                .map(|response| response.assistant_message)
+                                .map_err(|error| error.to_string())
+                            }
+                            None => Err(format!(
+                                "Crew member '{}' has no migrated backend profile",
+                                agent.name
+                            )),
+                        };
+                        match result {
+                            Ok(output) => return Ok((task, agent, output)),
+                            Err(error) => last_error = error,
+                        }
+                    }
+                    Err(last_error)
+                }
+            });
+
+            for result in futures_util::future::join_all(futures).await {
+                match result {
+                    Ok((task, agent, output)) => {
+                        let provider = match agent.backend_selection.as_ref() {
+                            Some(ScheduledBackendSelection::Codex { .. }) => "codex",
+                            Some(ScheduledBackendSelection::OpenAiCompatible { .. }) => {
+                                "openai-compatible"
+                            }
+                            None => agent.provider_kind.as_deref().unwrap_or("ollama"),
+                        };
+                        let log = CrewExecutionLogRow {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            crew_id: request.id.clone(),
+                            agent_id: agent.id.clone(),
+                            task_id: task.id.clone(),
+                            action: "task_completed".to_string(),
+                            result: output.clone(),
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            agent_name: Some(agent.name.clone()),
+                            source_agent: None,
+                            target_agent: None,
+                            provider: Some(provider.to_string()),
+                            model: agent.model_override.clone(),
+                            task_title: Some(task.description.clone()),
+                            phase: Some("execution".to_string()),
+                            summary: Some(format!("{} completed", task.id)),
+                            detail: None,
+                            severity: Some("info".to_string()),
+                            provider_reasoning: None,
+                        };
+                        emit_crew_execution_log_event(
+                            app,
+                            request.stream_id.clone(),
+                            Some(run_id.to_string()),
+                            log.clone(),
+                        );
+                        outputs.insert(task.id.clone(), output.clone());
+                        task_results.push(CrewTaskExecutionRow {
+                            task_id: task.id.clone(),
+                            agent_id: agent.id,
+                            status: "completed".to_string(),
+                            output: Some(output),
+                        });
+                        logs.push(log);
+                    }
+                    Err(error) => {
+                        task_results.push(CrewTaskExecutionRow {
+                            task_id: "mixed-runtime".to_string(),
+                            agent_id: "runtime".to_string(),
+                            status: "failed".to_string(),
+                            output: None,
+                        });
+                        if request.stop_on_failure {
+                            return CrewExecutionResponse {
+                                crew_id: request.id.clone(),
+                                status: "failed".to_string(),
+                                task_results,
+                                logs,
+                                error: Some(error),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        let ready_ids = ready
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<HashSet<_>>();
+        pending.retain(|task| !ready_ids.contains(task.id.as_str()));
+        if registry
+            .canceled
+            .lock()
+            .is_ok_and(|canceled| canceled.contains(&request.id))
+        {
+            return CrewExecutionResponse {
+                crew_id: request.id.clone(),
+                status: "canceled".to_string(),
+                task_results,
+                logs,
+                error: None,
+            };
+        }
+    }
+
+    CrewExecutionResponse {
+        crew_id: request.id.clone(),
+        status: "completed".to_string(),
+        task_results,
+        logs,
+        error: None,
+    }
+}
+
 async fn execute_crew_request(
     app: &tauri::AppHandle,
     database: &Arc<Database>,
     registry: &CrewExecutionRegistry,
     bridge: &CrewPythonBridge,
-    request: CrewExecuteRequest,
+    mut request: CrewExecuteRequest,
 ) -> Result<CrewExecutionResponse, String> {
     if request.tasks.is_empty() {
         return Err("Crew contains no tasks".to_string());
     }
+
+    let credential_store = app.state::<Arc<credential_store::CredentialStore>>();
+    for (config, field) in [
+        (
+            request.provider_configs.open_ai_compatible.as_mut(),
+            "openai_compatible_api_key",
+        ),
+        (
+            request.provider_configs.open_router.as_mut(),
+            "openrouter_api_key",
+        ),
+    ] {
+        if let Some(config) = config {
+            let (scope, owner_id, field) = if let Some(profile_id) = config.profile_id.as_deref() {
+                ("llm_profile", profile_id.to_string(), "api_key")
+            } else {
+                ("crew", request.id.clone(), field)
+            };
+            let stored = credential_store
+                .get(&credential_store::CredentialLocator {
+                    scope: scope.to_string(),
+                    owner_id,
+                    field: field.to_string(),
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(secret) = stored {
+                config.api_key = secret;
+            } else {
+                config.api_key.clear();
+            }
+        }
+    }
+
+    enrich_crew_provider_models_from_history(database, &mut request);
+    normalize_crew_agent_providers(&mut request);
 
     let enabled_agents: HashMap<String, CrewExecuteAgentRequest> = request
         .agents
@@ -2513,6 +3141,27 @@ async fn execute_crew_request(
             provider_reasoning: None,
         },
     );
+
+    if request.agents.iter().any(|agent| {
+        matches!(
+            agent.backend_selection,
+            Some(ScheduledBackendSelection::Codex { .. })
+        )
+    }) {
+        let response = execute_mixed_crew_request(app, database, registry, &request, &run_id).await;
+        persist_crew_execution_response(
+            database,
+            &request,
+            &run_id,
+            &started_at,
+            &request_snapshot_json,
+            &response,
+        );
+        if let Ok(mut canceled) = registry.canceled.lock() {
+            canceled.remove(&request.id);
+        }
+        return Ok(response);
+    }
 
     let app_for_runtime_logs = app.clone();
     let stream_id_for_runtime_logs = request.stream_id.clone();
@@ -4033,6 +4682,35 @@ async fn desktop_launch_app(
     request: DesktopLaunchRequest,
 ) -> Result<DesktopLaunchResponse, String> {
     ensure_windows_desktop_support()?;
+    let executable_name = Path::new(&request.path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if [
+        "cmd",
+        "cmd.exe",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "wt",
+        "wt.exe",
+        "windowsterminal",
+        "windowsterminal.exe",
+        "wsl",
+        "wsl.exe",
+        "bash",
+        "bash.exe",
+        "sh",
+        "sh.exe",
+        "conhost",
+        "conhost.exe",
+    ]
+    .contains(&executable_name.as_str())
+    {
+        return Err("desktop policy blocks shell and terminal applications; use Bash in the native AI sandbox".to_string());
+    }
     let args = request.args.unwrap_or_default();
     let mut command = Command::new(&request.path);
     if !args.is_empty() {
@@ -4147,6 +4825,18 @@ async fn desktop_keypress(
     request: DesktopKeypressRequest,
 ) -> Result<DesktopActionResponse, String> {
     ensure_windows_desktop_support()?;
+    let normalized = request
+        .keys
+        .iter()
+        .map(|key| key.to_ascii_uppercase())
+        .collect::<Vec<_>>();
+    if normalized
+        .iter()
+        .any(|key| matches!(key.as_str(), "WIN" | "WINDOWS" | "META"))
+        && normalized.iter().any(|key| key == "R")
+    {
+        return Err("desktop policy blocks Windows+R for AI-controlled runs".to_string());
+    }
     let keys_json = serde_json::to_string(&request.keys).map_err(|err| err.to_string())?;
     let keys_json = escape_powershell_single_quoted(&keys_json);
     let script = format!(
@@ -4786,6 +5476,471 @@ fn exec_command(
 
 // -- Persistence commands ---------------------------------------------------
 
+const TASK_PROJECT_MAX_CONTEXT_CHARS: usize = 60_000;
+const TASK_PROJECT_MAX_SOURCE_CHARS: usize = 10_000;
+const TASK_PROJECT_MAX_FILES: usize = 24;
+const TASK_PROJECT_MAX_LINK_CHARS: usize = 4_000;
+
+fn add_authorized_task_path(
+    authorized_paths: &mut Vec<AuthorizedTaskPath>,
+    seen_paths: &mut HashSet<String>,
+    path: &Path,
+    kind: &str,
+    id: Option<&str>,
+    label: Option<&str>,
+    access: &str,
+    is_primary: bool,
+) {
+    let rendered = path.display().to_string();
+    let key = rendered.to_lowercase();
+    if !seen_paths.insert(key) {
+        return;
+    }
+    authorized_paths.push(AuthorizedTaskPath {
+        id: id.map(str::to_string),
+        path: rendered,
+        kind: kind.to_string(),
+        access: if access == "read_only" {
+            "read_only".to_string()
+        } else {
+            "read_write".to_string()
+        },
+        label: label.map(str::to_string),
+        is_primary,
+    });
+}
+
+fn collect_project_folder_files(root: &Path, max_files: usize) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    let mut pending = VecDeque::from([root.to_path_buf()]);
+
+    while let Some(directory) = pending.pop_front() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            if result.len() >= max_files {
+                return result;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if ![".git", ".next", ".venv", "dist", "node_modules", "target"]
+                    .contains(&name.as_str())
+                {
+                    pending.push_back(entry.path());
+                }
+            } else if file_type.is_file() {
+                result.push(entry.path());
+            }
+        }
+    }
+
+    result
+}
+
+fn append_bounded_project_context(output: &mut String, block: &str) -> bool {
+    if output.chars().count() >= TASK_PROJECT_MAX_CONTEXT_CHARS {
+        return false;
+    }
+    let remaining = TASK_PROJECT_MAX_CONTEXT_CHARS.saturating_sub(output.chars().count());
+    let bounded = truncate_chars(block, remaining);
+    if !output.is_empty() {
+        output.push_str("\n\n");
+    }
+    output.push_str(&bounded);
+    bounded.chars().count() == block.chars().count()
+}
+
+async fn resolve_task_project_run_context(
+    database: &Arc<Database>,
+    request: &TaskProjectContextResolveRequest,
+) -> Result<TaskProjectRunContext, String> {
+    let task = request
+        .task_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| {
+            database
+                .get_work_task(id)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?
+        .flatten();
+    let thread_id = request
+        .thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| task.as_ref().and_then(|row| row.thread_id.clone()));
+    let explicit_work_dir = request
+        .work_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            task.as_ref()
+                .map(|row| row.work_dir.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+
+    let mut warnings = Vec::new();
+    let mut authorized_paths = Vec::new();
+    let mut seen_paths = HashSet::new();
+    let mut preferred_cwd = None;
+
+    if let Some(work_dir) = explicit_work_dir {
+        let path = PathBuf::from(&work_dir);
+        if path.is_absolute() && path.is_dir() {
+            match path.canonicalize() {
+                Ok(canonical) => {
+                    preferred_cwd = Some(canonical.display().to_string());
+                    add_authorized_task_path(
+                        &mut authorized_paths,
+                        &mut seen_paths,
+                        &canonical,
+                        "folder",
+                        None,
+                        Some("Task working folder"),
+                        "read_write",
+                        true,
+                    );
+                }
+                Err(error) => warnings.push(format!(
+                    "Task working folder could not be resolved ({}): {}",
+                    work_dir, error
+                )),
+            }
+        } else {
+            warnings.push(format!(
+                "Task working folder is missing or not an absolute folder: {}",
+                work_dir
+            ));
+        }
+    }
+
+    let Some(thread_id) = thread_id else {
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+    let project_id = database
+        .list_project_threads()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find_map(|(project_id, candidate_thread_id)| {
+            (candidate_thread_id == thread_id).then_some(project_id)
+        });
+    let Some(project_id) = project_id else {
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+    let project = database
+        .list_projects()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|project| project.id == project_id);
+    let Some(project) = project else {
+        warnings.push(
+            "The assigned project no longer exists; the task will run without it.".to_string(),
+        );
+        return Ok(TaskProjectRunContext {
+            project_id: None,
+            project_title: None,
+            prompt_context: String::new(),
+            authorized_paths,
+            preferred_cwd,
+            warnings,
+        });
+    };
+
+    let resources = database
+        .list_project_resources()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|resource| resource.project_id == project.id && resource.enabled)
+        .collect::<Vec<_>>();
+    let mut prompt_context = format!("Project context: \"{}\"", project.title);
+    if !project.instructions.trim().is_empty() {
+        append_bounded_project_context(
+            &mut prompt_context,
+            &format!("Project instructions:\n{}", project.instructions.trim()),
+        );
+    }
+    if !request.prompt.trim().is_empty() {
+        append_bounded_project_context(
+            &mut prompt_context,
+            &format!(
+                "Resolve the following project sources for the current task focus:\n{}",
+                truncate_chars(request.prompt.trim(), 1_000)
+            ),
+        );
+    }
+
+    let source_overview = resources
+        .iter()
+        .map(|resource| {
+            format!(
+                "- {}: {} ({})",
+                resource.kind,
+                resource.label.as_deref().unwrap_or(&resource.path),
+                resource.path
+            )
+        })
+        .collect::<Vec<_>>();
+    let source_overview_context = if source_overview.is_empty() {
+        "Enabled project sources: none".to_string()
+    } else {
+        format!("Enabled project sources:\n{}", source_overview.join("\n"))
+    };
+    append_bounded_project_context(&mut prompt_context, &source_overview_context);
+
+    let mut extracted_file_count = 0_usize;
+    let policy = load_policy_state(database)?;
+    for resource in &resources {
+        match resource.kind.as_str() {
+            "folder" => {
+                let source = PathBuf::from(&resource.path);
+                if !source.is_dir() {
+                    warnings.push(format!("Project folder is missing: {}", resource.path));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(
+                    &policy,
+                    "read_file",
+                    &resource.path,
+                    policy.flags.allow_file_read_extraction,
+                ) {
+                    warnings.push(format!(
+                        "Project folder context was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                let canonical = match source.canonicalize() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Project folder could not be resolved ({}): {}",
+                            resource.path, error
+                        ));
+                        continue;
+                    }
+                };
+                if preferred_cwd.is_none() {
+                    preferred_cwd = Some(canonical.display().to_string());
+                }
+                add_authorized_task_path(
+                    &mut authorized_paths,
+                    &mut seen_paths,
+                    &canonical,
+                    "folder",
+                    Some(&resource.id),
+                    resource.label.as_deref(),
+                    &resource.access,
+                    resource.is_primary,
+                );
+                let remaining_files = TASK_PROJECT_MAX_FILES.saturating_sub(extracted_file_count);
+                for file in collect_project_folder_files(&canonical, remaining_files) {
+                    if extracted_file_count >= TASK_PROJECT_MAX_FILES {
+                        break;
+                    }
+                    if enforce_tool_policy(
+                        &policy,
+                        "read_file",
+                        &file.display().to_string(),
+                        policy.flags.allow_file_read_extraction,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    if let Ok((text, truncated)) = artifact_pipeline::extract_text_for_llm_limited(
+                        &file,
+                        TASK_PROJECT_MAX_SOURCE_CHARS,
+                    ) {
+                        extracted_file_count += 1;
+                        let relative = file.strip_prefix(&canonical).unwrap_or(&file);
+                        let block = format!(
+                            "Project file: {}/{}\n{}{}",
+                            resource.label.as_deref().unwrap_or(&resource.path),
+                            relative.display(),
+                            text,
+                            if truncated { "\n[truncated]" } else { "" }
+                        );
+                        if !append_bounded_project_context(&mut prompt_context, &block) {
+                            break;
+                        }
+                    }
+                }
+            }
+            "file" => {
+                let source = PathBuf::from(&resource.path);
+                if !source.is_file() {
+                    warnings.push(format!("Project file is missing: {}", resource.path));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(
+                    &policy,
+                    "read_file",
+                    &resource.path,
+                    policy.flags.allow_file_read_extraction,
+                ) {
+                    warnings.push(format!(
+                        "Project file context was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                let canonical = match source.canonicalize() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        warnings.push(format!(
+                            "Project file could not be resolved ({}): {}",
+                            resource.path, error
+                        ));
+                        continue;
+                    }
+                };
+                add_authorized_task_path(
+                    &mut authorized_paths,
+                    &mut seen_paths,
+                    &canonical,
+                    "file",
+                    Some(&resource.id),
+                    resource.label.as_deref(),
+                    &resource.access,
+                    resource.is_primary,
+                );
+                if extracted_file_count < TASK_PROJECT_MAX_FILES {
+                    if let Ok((text, truncated)) = artifact_pipeline::extract_text_for_llm_limited(
+                        &canonical,
+                        TASK_PROJECT_MAX_SOURCE_CHARS,
+                    ) {
+                        extracted_file_count += 1;
+                        append_bounded_project_context(
+                            &mut prompt_context,
+                            &format!(
+                                "Project file: {}\n{}{}",
+                                resource.label.as_deref().unwrap_or(&resource.path),
+                                text,
+                                if truncated { "\n[truncated]" } else { "" }
+                            ),
+                        );
+                    }
+                }
+            }
+            "link" => {
+                if !policy.flags.allow_web_fetch {
+                    warnings.push(format!(
+                        "Project link was not loaded because web fetch is disabled: {}",
+                        resource.path
+                    ));
+                    continue;
+                }
+                if let Err(error) = enforce_tool_policy(&policy, "web_fetch", &resource.path, true)
+                {
+                    warnings.push(format!(
+                        "Project link was blocked ({}): {}",
+                        resource.path, error
+                    ));
+                    continue;
+                }
+                match network_safety::fetch_public_text(
+                    &resource.path,
+                    network_safety::MAX_TEXT_RESPONSE_BYTES,
+                )
+                .await
+                {
+                    Ok(response) => {
+                        if !response.status.is_success() {
+                            warnings.push(format!(
+                                "Project link returned HTTP {}: {}",
+                                response.status.as_u16(),
+                                resource.path
+                            ));
+                            continue;
+                        }
+                        let text = strip_html_like_content(&response.body);
+                        append_bounded_project_context(
+                            &mut prompt_context,
+                            &format!(
+                                "Project link: {}\nURL: {}\n{}{}",
+                                resource.label.as_deref().unwrap_or(&resource.path),
+                                response.final_url,
+                                truncate_chars(text.trim(), TASK_PROJECT_MAX_LINK_CHARS),
+                                if response.truncated
+                                    || text.chars().count() > TASK_PROJECT_MAX_LINK_CHARS
+                                {
+                                    "\n[truncated]"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        );
+                    }
+                    Err(error) => warnings.push(format!(
+                        "Project link could not be loaded ({}): {}",
+                        resource.path, error
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if extracted_file_count >= TASK_PROJECT_MAX_FILES {
+        warnings.push(format!(
+            "Project file context was limited to {} files.",
+            TASK_PROJECT_MAX_FILES
+        ));
+    }
+    if prompt_context.chars().count() >= TASK_PROJECT_MAX_CONTEXT_CHARS {
+        warnings.push(format!(
+            "Project prompt context was limited to {} characters.",
+            TASK_PROJECT_MAX_CONTEXT_CHARS
+        ));
+    }
+
+    Ok(TaskProjectRunContext {
+        project_id: Some(project.id),
+        project_title: Some(project.title),
+        prompt_context,
+        authorized_paths,
+        preferred_cwd,
+        warnings,
+    })
+}
+
+#[tauri::command]
+async fn task_project_context_resolve(
+    state: tauri::State<'_, Arc<Database>>,
+    request: TaskProjectContextResolveRequest,
+) -> Result<TaskProjectRunContext, String> {
+    resolve_task_project_run_context(state.inner(), &request).await
+}
+
 #[tauri::command]
 fn project_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ProjectRecord>, String> {
     let projects = state.list_projects().map_err(|e| e.to_string())?;
@@ -4804,6 +5959,8 @@ fn project_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ProjectRec
                 path: resource.path,
                 label: resource.label,
                 enabled: resource.enabled,
+                access: resource.access,
+                is_primary: resource.is_primary,
                 added_at: resource.added_at,
             });
     }
@@ -4889,6 +6046,8 @@ fn project_resource_upsert(
                 .map(str::trim)
                 .filter(|label| !label.is_empty()),
             request.enabled.unwrap_or(true),
+            request.access.as_deref().unwrap_or("read_write"),
+            request.is_primary.unwrap_or(false),
             request.added_at.as_deref().unwrap_or(&now),
         )
         .map_err(|e| e.to_string())
@@ -4945,7 +6104,14 @@ fn db_save_thread(
     created_at: String,
     provider_settings_json: Option<String>,
     permission_config_json: Option<String>,
+    runner: Option<String>,
+    crew_id: Option<String>,
 ) -> Result<(), String> {
+    let normalized_runner = if runner.as_deref() == Some("crew") {
+        "crew"
+    } else {
+        "model"
+    };
     state
         .insert_thread(
             &id,
@@ -4953,6 +6119,12 @@ fn db_save_thread(
             &created_at,
             provider_settings_json.as_deref(),
             permission_config_json.as_deref(),
+            normalized_runner,
+            if normalized_runner == "crew" {
+                crew_id.as_deref()
+            } else {
+                None
+            },
         )
         .map_err(|e| e.to_string())
 }
@@ -4962,13 +6134,24 @@ fn db_list_threads(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ThreadR
     state.list_threads().map_err(|e| e.to_string()).map(|rows| {
         rows.into_iter()
             .map(
-                |(id, title, ca, ua, provider_settings_json, permission_config_json)| ThreadRow {
+                |(
+                    id,
+                    title,
+                    ca,
+                    ua,
+                    provider_settings_json,
+                    permission_config_json,
+                    runner,
+                    crew_id,
+                )| ThreadRow {
                     id,
                     title,
                     created_at: ca,
                     updated_at: ua,
                     provider_settings_json,
                     permission_config_json,
+                    runner,
+                    crew_id,
                 },
             )
             .collect()
@@ -4987,6 +6170,21 @@ fn db_update_thread_provider_settings(
 }
 
 #[tauri::command]
+fn db_update_thread_title(
+    state: tauri::State<'_, Arc<Database>>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    let normalized = title.trim();
+    if normalized.is_empty() {
+        return Err("Thread name must not be empty".to_string());
+    }
+    state
+        .update_thread_title(id.trim(), normalized)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn db_update_thread_permission_config(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
@@ -4994,6 +6192,18 @@ fn db_update_thread_permission_config(
 ) -> Result<(), String> {
     state
         .update_thread_permission_config(&id, permission_config_json.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_update_thread_runner(
+    state: tauri::State<'_, Arc<Database>>,
+    id: String,
+    runner: String,
+    crew_id: Option<String>,
+) -> Result<(), String> {
+    state
+        .update_thread_runner(&id, &runner, crew_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -5128,6 +6338,52 @@ fn normalize_work_task_status(status: Option<&str>) -> Result<String, String> {
     }
 }
 
+fn normalize_backend_selection_json(value: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = value
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+    else {
+        return Ok(None);
+    };
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|_| "WorkTask backend selection is not valid JSON.".to_string())?;
+    let object = parsed
+        .as_object()
+        .ok_or_else(|| "WorkTask backend selection must be an object.".to_string())?;
+    let backend = object
+        .get("backend")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "WorkTask backend selection is missing its backend.".to_string())?;
+    let allowed: &[&str] = match backend {
+        "codex" => &["backend", "authProfileId", "model", "reasoningEffort"],
+        "openai-compatible" => {
+            let profile_id = object
+                .get("profileId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if profile_id.is_empty() {
+                return Err("OpenAI-compatible task selection requires a profileId.".to_string());
+            }
+            &["backend", "profileId", "model"]
+        }
+        _ => return Err("WorkTask backend must be 'codex' or 'openai-compatible'.".to_string()),
+    };
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("WorkTask backend selection contains unsupported fields.".to_string());
+    }
+    if object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "backend")
+        .any(|(_, value)| !value.is_string())
+    {
+        return Err("WorkTask backend selection fields must be strings.".to_string());
+    }
+    serde_json::to_string(&parsed)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
 fn map_work_task_record(row: db::WorkTaskRow) -> WorkTaskRecord {
     WorkTaskRecord {
         id: row.id,
@@ -5147,6 +6403,7 @@ fn map_work_task_record(row: db::WorkTaskRow) -> WorkTaskRecord {
         last_run_at: row.last_run_at,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        backend_selection_json: row.backend_selection_json,
     }
 }
 
@@ -5175,6 +6432,11 @@ fn work_task_upsert(
     let now = chrono::Utc::now().to_rfc3339();
     let created_at = request.created_at.unwrap_or_else(|| now.clone());
     let updated_at = request.updated_at.unwrap_or_else(|| now.clone());
+    let backend_selection_json = if runner == "model" {
+        normalize_backend_selection_json(request.backend_selection_json)?
+    } else {
+        None
+    };
 
     let row = db::WorkTaskRow {
         id: id.to_string(),
@@ -5220,6 +6482,7 @@ fn work_task_upsert(
         last_run_at: request.last_run_at,
         created_at,
         updated_at,
+        backend_selection_json,
     };
 
     state
@@ -5468,12 +6731,51 @@ async fn credential_get(
     state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: credential_store::CredentialLocator,
 ) -> Result<credential_store::CredentialReadResponse, String> {
-    credential_store::validate_frontend_access(&request).map_err(|error| error.to_string())?;
+    credential_store::validate_frontend_read_access(&request).map_err(|error| error.to_string())?;
     let store = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         store
             .get(&request)
             .map(|value| credential_store::CredentialReadResponse { value })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "credential storage worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn credential_exists(
+    state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: credential_store::CredentialLocator,
+) -> Result<credential_store::CredentialExistsResponse, String> {
+    credential_store::validate_frontend_access(&request).map_err(|error| error.to_string())?;
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .get(&request)
+            .map(|value| credential_store::CredentialExistsResponse {
+                exists: value.is_some(),
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "credential storage worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn credential_copy(
+    state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: credential_store::CredentialCopyRequest,
+) -> Result<credential_store::CredentialCopyResponse, String> {
+    credential_store::validate_frontend_access(&request.source)
+        .map_err(|error| error.to_string())?;
+    credential_store::validate_frontend_access(&request.destination)
+        .map_err(|error| error.to_string())?;
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .copy_if_destination_empty(&request.source, &request.destination)
+            .map(|copied| credential_store::CredentialCopyResponse { copied })
             .map_err(|error| error.to_string())
     })
     .await
@@ -6654,6 +7956,296 @@ fn map_scheduled_task_row(
     }
 }
 
+async fn run_scheduled_api_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    profile_id: &str,
+    model_override: Option<&str>,
+    prompt: &str,
+) -> Result<String, String> {
+    let profile = database
+        .get_api_profile(profile_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Scheduled API profile '{profile_id}' does not exist"))?;
+    let model = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(profile.model.trim());
+    if model.is_empty() {
+        return Err(format!(
+            "API profile '{}' has no model selected",
+            profile.name
+        ));
+    }
+    let endpoint = format!(
+        "{}/chat/completions",
+        profile.base_url.trim().trim_end_matches('/')
+    );
+    let parsed =
+        Url::parse(&endpoint).map_err(|error| format!("Invalid API profile URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("API profile URL must use HTTP or HTTPS".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(profile.timeout_ms.max(1_000) as u64))
+        .danger_accept_invalid_certs(!profile.verify_tls_certificates)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client
+        .post(parsed)
+        .header("User-Agent", "OpenCowork/0.2")
+        .json(&serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false
+        }));
+    if profile.auth_mode == "bearer" {
+        let credentials = app.state::<Arc<credential_store::CredentialStore>>();
+        let api_key = credentials
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile.id.clone(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "API profile '{}' has no key in the OS credential store",
+                    profile.name
+                )
+            })?;
+        request = request.bearer_auth(api_key);
+    }
+    if profile.preset == "openrouter" {
+        request = request
+            .header("HTTP-Referer", "https://open-cowork.local")
+            .header("X-Title", "OpenCowork");
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "API profile '{}' returned {}: {}",
+            profile.name,
+            status,
+            response_excerpt(&body)
+        ));
+    }
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| format!("API profile returned invalid JSON: {error}"))?;
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "API response contained no assistant message".to_string())
+}
+
+fn update_codex_runtime_status(
+    database: &Database,
+    profile_id: &str,
+    status: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let mut profile = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    profile.status = status.to_string();
+    profile.quota_json = Some(serde_json::json!({ "runtimeReason": reason }).to_string());
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    database
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+fn run_scheduled_codex_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    task_id: &str,
+    auth_profile_id: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    prompt: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    run_codex_turn(
+        app,
+        database,
+        "schedule",
+        task_id,
+        None,
+        auth_profile_id,
+        model,
+        reasoning_effort,
+        prompt,
+        cwd,
+    )
+}
+
+fn run_codex_turn(
+    app: &tauri::AppHandle,
+    database: &Database,
+    owner_kind: &str,
+    owner_id: &str,
+    member_id: Option<&str>,
+    auth_profile_id: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    prompt: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    let runtime = app.state::<Arc<codex_runtime::CodexRuntimeManager>>();
+    let profile_count = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .len()
+        .max(1);
+
+    for _ in 0..profile_count {
+        let opened = codex_thread_open_impl(
+            database,
+            runtime.inner().as_ref(),
+            CodexThreadOpenRequest {
+                owner_kind: owner_kind.to_string(),
+                owner_id: owner_id.to_string(),
+                member_id: member_id.map(str::to_string),
+                auth_profile_id: auth_profile_id.map(str::to_string),
+                cwd: cwd.to_string(),
+                model: model.map(str::to_string),
+                permission_mode: "plan".to_string(),
+                dynamic_tools: Vec::new(),
+            },
+        )?;
+        let profile_id = opened
+            .get("authProfileId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule returned no account profile".to_string())?
+            .to_string();
+        let thread_id = opened
+            .get("result")
+            .and_then(|value| value.get("thread"))
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule returned no thread".to_string())?
+            .to_string();
+        let receiver = runtime.subscribe(&profile_id)?;
+        let started = runtime.request(
+            &profile_id,
+            "turn/start",
+            Some(serde_json::json!({
+                "threadId": thread_id,
+                "input": [{ "type": "text", "text": prompt }],
+                "cwd": cwd,
+                "approvalPolicy": "untrusted",
+                "sandboxPolicy": { "type": "readOnly", "networkAccess": false },
+                "model": model,
+                "effort": reasoning_effort
+            })),
+        )?;
+        let turn_id = started
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Codex schedule turn returned no id".to_string())?;
+        let mut output = String::new();
+
+        loop {
+            let payload = receiver
+                .recv_timeout(Duration::from_secs(30 * 60))
+                .map_err(|_| "Scheduled Codex turn timed out".to_string())?;
+            let method = payload.get("method").and_then(Value::as_str).unwrap_or("");
+            let params = payload.get("params").cloned().unwrap_or(Value::Null);
+            let event_thread_id = params.get("threadId").and_then(Value::as_str).unwrap_or("");
+            let event_turn_id = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    params
+                        .get("turn")
+                        .and_then(|turn| turn.get("id"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("");
+            if (!event_thread_id.is_empty() && event_thread_id != thread_id)
+                || (!event_turn_id.is_empty() && event_turn_id != turn_id)
+            {
+                continue;
+            }
+            if payload.get("id").and_then(Value::as_u64).is_some()
+                && method.ends_with("/requestApproval")
+            {
+                if let Some(request_id) = payload.get("id").and_then(Value::as_u64) {
+                    let _ = runtime.respond(
+                        &profile_id,
+                        request_id,
+                        serde_json::json!({ "decision": "decline" }),
+                    );
+                }
+                return Err("Scheduled Codex run requires an interactive tool approval".to_string());
+            }
+            match method {
+                "item/agentMessage/delta" => {
+                    if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                        output.push_str(delta);
+                    }
+                }
+                "item/completed" if output.is_empty() => {
+                    if let Some(text) = params
+                        .get("item")
+                        .filter(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                        })
+                        .and_then(|item| item.get("text"))
+                        .and_then(Value::as_str)
+                    {
+                        output.push_str(text);
+                    }
+                }
+                "turn/completed" => {
+                    let turn = params.get("turn").cloned().unwrap_or(Value::Null);
+                    let status = turn.get("status").and_then(Value::as_str).unwrap_or("");
+                    if status == "completed" {
+                        return Ok(output);
+                    }
+                    let message = turn
+                        .get("error")
+                        .and_then(|error| error.get("message").or_else(|| error.get("code")))
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex schedule failed")
+                        .to_string();
+                    if auth_profile_id.is_none() && message.to_ascii_lowercase().contains("limit") {
+                        update_codex_runtime_status(database, &profile_id, "limited", &message)?;
+                        break;
+                    }
+                    if message.contains("invalid_grant")
+                        || message.to_ascii_lowercase().contains("unauthorized")
+                    {
+                        update_codex_runtime_status(
+                            database,
+                            &profile_id,
+                            "requires_reauth",
+                            &message,
+                        )?;
+                    }
+                    return Err(message);
+                }
+                "runtime/stopped" | "runtime/protocolError" => {
+                    return Err("Codex App Server stopped during the scheduled run".to_string())
+                }
+                _ => {}
+            }
+        }
+    }
+    Err("All automatically usable Codex accounts have reached their limits".to_string())
+}
+
 fn run_scheduled_task_once(
     app: &tauri::AppHandle,
     database: &Arc<Database>,
@@ -6676,6 +8268,40 @@ fn run_scheduled_task_once(
     if !claimed {
         return Err("scheduled task already has a running execution".to_string());
     }
+    let scheduled_work_task_exists = database
+        .get_work_task(task_id)
+        .map(|task| task.is_some())
+        .unwrap_or(false);
+    let project_context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+        database,
+        &TaskProjectContextResolveRequest {
+            task_id: Some(task_id.to_string()),
+            thread_id: None,
+            prompt: task_prompt.to_string(),
+            work_dir: None,
+        },
+    ))
+    .unwrap_or_else(|error| TaskProjectRunContext {
+        project_id: None,
+        project_title: None,
+        prompt_context: String::new(),
+        authorized_paths: Vec::new(),
+        preferred_cwd: None,
+        warnings: vec![format!("Project context could not be resolved: {}", error)],
+    });
+    let project_warnings = if project_context.warnings.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Project context warnings:\n{}",
+            project_context
+                .warnings
+                .iter()
+                .map(|warning| format!("- {}", warning))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     let execution_result: Result<(String, Option<String>, Option<String>), String> = if task_kind
         .eq_ignore_ascii_case("crew")
     {
@@ -6685,7 +8311,20 @@ fn run_scheduled_task_once(
 
         match snapshot {
             Ok(snapshot_json) => match serde_json::from_str::<CrewExecuteRequest>(snapshot_json) {
-                Ok(request) => {
+                Ok(mut request) => {
+                    request.execution_guidelines = [
+                        request.execution_guidelines.trim(),
+                        project_context.prompt_context.trim(),
+                        project_warnings.trim(),
+                    ]
+                    .into_iter()
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                    if scheduled_work_task_exists || project_context.project_id.is_some() {
+                        request.authorized_paths = Some(project_context.authorized_paths.clone());
+                    }
+                    request.cwd = project_context.preferred_cwd.clone().or(request.cwd);
                     let registry = app.state::<CrewExecutionRegistry>();
                     let bridge = app.state::<CrewPythonBridge>();
                     match tauri::async_runtime::block_on(execute_crew_request(
@@ -6722,34 +8361,86 @@ fn run_scheduled_task_once(
 
         match runtime_config {
             Ok(runtime_config) => {
-                let config = runtime_config.as_ref().map(|entry| entry.config.clone());
-                let history = runtime_config
+                let effective_cwd = project_context.preferred_cwd.as_deref().or_else(|| {
+                    runtime_config
+                        .as_ref()
+                        .and_then(|entry| entry.cwd.as_deref())
+                });
+                let prompt = [
+                    task_prompt.trim(),
+                    project_context.prompt_context.trim(),
+                    project_warnings.trim(),
+                ]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+                let backend = runtime_config
                     .as_ref()
-                    .and_then(|entry| entry.cwd.as_deref())
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(|value| {
-                        vec![ChatMessage {
-                            role: "system".to_string(),
-                            content: format!("Working directory: {}", value),
-                        }]
-                    })
-                    .unwrap_or_default();
+                    .and_then(|entry| entry.backend_selection.as_ref());
 
-                tauri::async_runtime::block_on(chat_turn_internal(
-                    config,
-                    task_prompt.to_string(),
-                    history,
-                    vec![],
-                ))
-                .map(|response| {
-                    (
-                        "succeeded".to_string(),
-                        Some(response.assistant_message),
-                        None,
-                    )
-                })
-                .map_err(|error| error.to_string())
+                let result = match backend {
+                    Some(ScheduledBackendSelection::Codex {
+                        auth_profile_id,
+                        model,
+                        reasoning_effort,
+                    }) => {
+                        let cwd = effective_cwd
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                            .or_else(|| {
+                                app.path()
+                                    .app_data_dir()
+                                    .ok()
+                                    .map(|path| path.to_string_lossy().into_owned())
+                            })
+                            .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+                        run_scheduled_codex_turn(
+                            app,
+                            database,
+                            task_id,
+                            auth_profile_id.as_deref(),
+                            model.as_deref(),
+                            reasoning_effort.as_deref(),
+                            &prompt,
+                            &cwd,
+                        )
+                    }
+                    Some(ScheduledBackendSelection::OpenAiCompatible { profile_id, model }) => {
+                        tauri::async_runtime::block_on(run_scheduled_api_turn(
+                            app,
+                            database,
+                            profile_id,
+                            model.as_deref(),
+                            &prompt,
+                        ))
+                    }
+                    None => {
+                        let config = runtime_config
+                            .as_ref()
+                            .and_then(ScheduledPromptRuntimeConfig::legacy_ollama_config);
+                        let history = effective_cwd
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|value| {
+                                vec![ChatMessage {
+                                    role: "system".to_string(),
+                                    content: format!("Working directory: {}", value),
+                                }]
+                            })
+                            .unwrap_or_default();
+                        tauri::async_runtime::block_on(chat_turn_internal(
+                            config,
+                            prompt,
+                            history,
+                            vec![],
+                        ))
+                        .map(|response| response.assistant_message)
+                        .map_err(|error| error.to_string())
+                    }
+                };
+                result.map(|output| ("succeeded".to_string(), Some(output), None))
             }
             Err(error) => Err(error),
         }
@@ -6792,6 +8483,47 @@ fn run_scheduled_task_once(
         }
         Err(err) => {
             let error_text = err.to_string();
+            let waiting_for_fallback = error_text
+                .contains("All automatically usable Codex accounts have reached their limits")
+                || error_text.contains("No automatically usable Codex account is available");
+            if waiting_for_fallback {
+                let approval = ProviderFallbackApprovalRow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    api_profile_id: None,
+                    status: "pending".to_string(),
+                    reason: error_text.clone(),
+                    created_at: finished_at.clone(),
+                    resolved_at: None,
+                    consumed_at: None,
+                };
+                database
+                    .create_provider_fallback_approval(&approval)
+                    .map_err(|error| error.to_string())?;
+                database
+                    .insert_scheduled_run(
+                        &run_id,
+                        task_id,
+                        "waiting_approval",
+                        &started_at,
+                        None,
+                        None,
+                        Some(&error_text),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if scheduled_work_task_exists {
+                    let _ = database.update_work_task_status(
+                        task_id,
+                        "waiting_approval",
+                        None,
+                        Some(&error_text),
+                        Some(&started_at),
+                        &finished_at,
+                    );
+                }
+                let _ = app.emit("provider-fallback-approval-created", &approval);
+                return Ok(());
+            }
             database
                 .insert_scheduled_run(
                     &run_id,
@@ -6888,6 +8620,28 @@ fn start_scheduler_worker(app: tauri::AppHandle, database: Arc<Database>) {
             task_last_run_at,
         ) in due_tasks
         {
+            let daemon_owned = model_config_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|value| {
+                    value
+                        .get("executorTarget")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|target| target == "personal_device_daemon")
+                })
+                .unwrap_or(false);
+            if daemon_owned {
+                let next_run_at =
+                    scheduler::next_run_from_expression(&schedule_expr, chrono::Utc::now())
+                        .ok()
+                        .map(|next| next.to_rfc3339());
+                let _ = database.update_scheduled_task_runtime(
+                    &task_id,
+                    task_last_run_at.as_deref(),
+                    next_run_at.as_deref(),
+                );
+                continue;
+            }
             if !scheduled_task_dependencies_ready(
                 &database,
                 &depends_on_task_ids_json,
@@ -7704,7 +9458,10 @@ fn build_local_gateway_subsystems(
     rows
 }
 
-async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsystemPayload {
+async fn gateway_provider_probe(
+    credential_store: &credential_store::CredentialStore,
+    request: &GatewayHealthRequest,
+) -> GatewaySubsystemPayload {
     let provider_kind = request
         .provider_kind
         .as_deref()
@@ -7724,6 +9481,7 @@ async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsys
     }
 
     let health_request = CrewProviderHealthCheckRequest {
+        profile_id: None,
         provider_kind: provider_kind.to_string(),
         base_url: base_url.to_string(),
         api_key: request.api_key.clone(),
@@ -7731,7 +9489,7 @@ async fn gateway_provider_probe(request: &GatewayHealthRequest) -> GatewaySubsys
         verify_tls_certificates: request.verify_tls_certificates,
     };
 
-    match crew_provider_health_check(health_request).await {
+    match crew_provider_health_check_impl(credential_store, health_request).await {
         Ok(response) => gateway_subsystem(
             "provider",
             "Active provider",
@@ -7812,8 +9570,8 @@ fn map_provider_url_for_runtime(
     })
 }
 
-#[tauri::command]
-async fn crew_provider_health_check(
+async fn crew_provider_health_check_impl(
+    credential_state: &credential_store::CredentialStore,
     request: CrewProviderHealthCheckRequest,
 ) -> Result<CrewProviderHealthCheckResponse, String> {
     let checked_at = chrono::Utc::now().to_rfc3339();
@@ -7844,7 +9602,18 @@ async fn crew_provider_health_check(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let api_key = request.api_key.as_deref();
+    let stored_api_key = if let Some(profile_id) = request.profile_id.as_deref() {
+        credential_state
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile_id.to_string(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let api_key = stored_api_key.as_deref().or(request.api_key.as_deref());
     if is_openai_compatible_provider(&request.provider_kind) {
         let mut last_status = None;
         let mut last_endpoint = request.base_url.trim().to_string();
@@ -8006,7 +9775,16 @@ async fn crew_provider_health_check(
 }
 
 #[tauri::command]
+async fn crew_provider_health_check(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
+    request: CrewProviderHealthCheckRequest,
+) -> Result<CrewProviderHealthCheckResponse, String> {
+    crew_provider_health_check_impl(credential_state.inner().as_ref(), request).await
+}
+
+#[tauri::command]
 async fn crew_provider_models_list(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: CrewProviderModelsRequest,
 ) -> Result<CrewProviderModelsResponse, String> {
     let endpoints = build_provider_model_urls(&request.provider_kind, &request.base_url)?;
@@ -8016,7 +9794,18 @@ async fn crew_provider_models_list(
         .build()
         .map_err(|error| error.to_string())?;
 
-    let api_key = request.api_key.as_deref();
+    let stored_api_key = if let Some(profile_id) = request.profile_id.as_deref() {
+        credential_state
+            .get(&credential_store::CredentialLocator {
+                scope: "llm_profile".to_string(),
+                owner_id: profile_id.to_string(),
+                field: "api_key".to_string(),
+            })
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let api_key = stored_api_key.as_deref().or(request.api_key.as_deref());
     let mut last_error = None;
     let mut last_endpoint = request.base_url.trim().to_string();
     let mut received_response = false;
@@ -8068,6 +9857,7 @@ async fn crew_provider_models_list(
 
 #[tauri::command]
 async fn openai_compatible_chat_completion(
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: OpenAiCompatibleChatCompletionRequest,
 ) -> Result<OpenAiCompatibleChatCompletionResponse, String> {
     let endpoint = Url::parse(request.endpoint.trim())
@@ -8082,10 +9872,38 @@ async fn openai_compatible_chat_completion(
     let mut call = client
         .post(endpoint)
         .header("User-Agent", "LocalAI-Cowork/1.0")
+        .header("Content-Type", "application/json")
         .body(request.body);
 
+    if let Some(profile_id) = request
+        .profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let locator = credential_store::CredentialLocator {
+            scope: "llm_profile".to_string(),
+            owner_id: profile_id.to_string(),
+            field: "api_key".to_string(),
+        };
+        if let Some(api_key) = credential_state
+            .get(&locator)
+            .map_err(|error| error.to_string())?
+        {
+            call = call.bearer_auth(api_key);
+        }
+    }
+    if request.preset.as_deref() == Some("openrouter") {
+        call = call
+            .header("HTTP-Referer", "https://open-cowork.local")
+            .header("X-Title", "OpenCowork");
+    }
+
     for (name, value) in request.headers {
-        if name.eq_ignore_ascii_case("host") || name.eq_ignore_ascii_case("content-length") {
+        if name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("authorization")
+        {
             continue;
         }
         let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
@@ -8171,11 +9989,12 @@ fn gateway_status(
 async fn gateway_health(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Database>>,
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: Option<GatewayHealthRequest>,
 ) -> Result<GatewayHealthPayload, String> {
     let mut rows = build_local_gateway_subsystems(&app, state.inner());
     if let Some(request) = request.filter(|entry| entry.include_provider_probe) {
-        rows.push(gateway_provider_probe(&request).await);
+        rows.push(gateway_provider_probe(credential_state.inner().as_ref(), &request).await);
     }
     Ok(gateway_payload(rows))
 }
@@ -8184,6 +10003,7 @@ async fn gateway_health(
 async fn gateway_probe(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<Database>>,
+    credential_state: tauri::State<'_, Arc<credential_store::CredentialStore>>,
     request: GatewayProbeRequest,
 ) -> Result<GatewaySubsystemPayload, String> {
     let subsystem = request.subsystem.trim().to_ascii_lowercase();
@@ -8196,7 +10016,7 @@ async fn gateway_probe(
             model: None,
             verify_tls_certificates: true,
         });
-        return Ok(gateway_provider_probe(&provider).await);
+        return Ok(gateway_provider_probe(credential_state.inner().as_ref(), &provider).await);
     }
 
     let rows = build_local_gateway_subsystems(&app, state.inner());
@@ -8304,12 +10124,6 @@ fn policy_set(
         .map_err(|err| err.to_string())?;
     state
         .set_policy_flag(
-            POLICY_FLAG_AUTO_COMPACT,
-            request.flags.auto_compact_long_context,
-        )
-        .map_err(|err| err.to_string())?;
-    state
-        .set_policy_flag(
             POLICY_FLAG_SHELL_EXECUTION,
             request.flags.allow_shell_execution,
         )
@@ -8353,7 +10167,6 @@ fn policy_evaluate(
         Some(POLICY_FLAG_MCP) => policy.flags.allow_mcp_tool_calls,
         Some(POLICY_FLAG_WEB_FETCH) => policy.flags.allow_web_fetch,
         Some(POLICY_FLAG_FILE_READ) => policy.flags.allow_file_read_extraction,
-        Some(POLICY_FLAG_AUTO_COMPACT) => policy.flags.auto_compact_long_context,
         Some(POLICY_FLAG_SHELL_EXECUTION) => policy.flags.allow_shell_execution,
         Some(POLICY_FLAG_WEB_SEARCH) => policy.flags.allow_web_search,
         _ => true,
@@ -8371,6 +10184,87 @@ fn policy_evaluate(
     }
 }
 
+fn register_run_authorized_paths(
+    database: &Arc<Database>,
+    run_id: &str,
+    cwd: Option<&str>,
+    authorized_paths: &[AuthorizedTaskPath],
+) -> Result<(), String> {
+    if let Some(existing) = database
+        .get_worker_sandbox_by_run(run_id)
+        .map_err(|error| error.to_string())?
+    {
+        database
+            .delete_worker_sandbox(&existing.id)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in authorized_paths {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let source = PathBuf::from(entry.path.trim());
+        if !source.is_absolute() || !source.exists() {
+            continue;
+        }
+        let canonical = source.canonicalize().map_err(|error| error.to_string())?;
+        if (entry.kind == "folder" && !canonical.is_dir())
+            || (entry.kind == "file" && !canonical.is_file())
+        {
+            continue;
+        }
+        let rendered = canonical.display().to_string();
+        if seen.insert(rendered.to_lowercase()) {
+            roots.push(rendered);
+        }
+    }
+
+    let source_cwd = authorized_paths
+        .iter()
+        .find(|entry| entry.is_primary && entry.kind == "folder")
+        .map(|entry| entry.path.clone())
+        .or_else(|| {
+            authorized_paths
+                .iter()
+                .find(|entry| entry.kind == "folder")
+                .map(|entry| entry.path.clone())
+        })
+        .or_else(|| cwd.map(str::to_string))
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .display()
+                .to_string()
+        });
+    let policy = load_policy_state(database)?;
+    let sandbox_id = format!("readonly-run-{}", run_id);
+    let roots_json = serde_json::to_string(&roots).map_err(|error| error.to_string())?;
+    database
+        .insert_worker_sandbox(
+            &sandbox_id,
+            run_id,
+            None,
+            None,
+            "active",
+            "host_read_only_broker",
+            &source_cwd,
+            &source_cwd,
+            &roots_json,
+            Some(&roots_json),
+            policy.flags.allow_file_read_extraction,
+            false,
+            false,
+            policy.flags.allow_web_fetch,
+            policy.flags.allow_web_search,
+            policy.flags.allow_mcp_tool_calls,
+            None,
+            Some(r#"{"source":"explicit_run_context","lifetime":"run","hostAccess":"read_only"}"#),
+        )
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn engine_run_create(
     state: tauri::State<'_, Arc<Database>>,
@@ -8385,7 +10279,6 @@ fn engine_run_create(
             &request.id,
             request.parent_run_id.as_deref(),
             request.thread_id.as_deref(),
-            request.session_id.as_deref(),
             &request.title,
             request.input_summary.as_deref(),
             status,
@@ -8423,7 +10316,16 @@ fn engine_run_create(
             Some(&event_payload),
             None,
         )
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    register_run_authorized_paths(
+        state.inner(),
+        &request.id,
+        request.cwd.as_deref(),
+        request.authorized_paths.as_deref().unwrap_or(&[]),
+    )?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -8446,6 +10348,19 @@ fn engine_run_update(
             request.metadata_json.as_deref(),
         )
         .map_err(|err| err.to_string())?;
+    if request.input_tokens.is_some()
+        || request.output_tokens.is_some()
+        || request.cost_usd.is_some()
+    {
+        state
+            .update_engine_run_usage(
+                &request.id,
+                request.input_tokens,
+                request.output_tokens,
+                request.cost_usd,
+            )
+            .map_err(|err| err.to_string())?;
+    }
 
     if let (Some(before), Some(after)) = (previous_status, request.status.as_deref()) {
         if before != after {
@@ -8465,6 +10380,19 @@ fn engine_run_update(
                     None,
                 )
                 .map_err(|err| err.to_string())?;
+        }
+    }
+
+    if request
+        .status
+        .as_deref()
+        .is_some_and(|status| ["completed", "failed", "canceled", "interrupted"].contains(&status))
+    {
+        if let Some(sandbox) = state
+            .get_worker_sandbox_by_run(&request.id)
+            .map_err(|error| error.to_string())?
+        {
+            let _ = state.update_worker_sandbox(&sandbox.id, request.status.as_deref(), None);
         }
     }
 
@@ -8572,7 +10500,6 @@ fn engine_run_retry(state: tauri::State<'_, Arc<Database>>, id: String) -> Resul
             &new_id,
             existing.parent_run_id.as_deref(),
             existing.thread_id.as_deref(),
-            existing.session_id.as_deref(),
             &existing.title,
             existing.input_summary.as_deref(),
             "pending",
@@ -8803,6 +10730,933 @@ fn authorize_worker_sandbox_source(
         return Err("source_cwd must be an allowed directory".to_string());
     }
     Ok(canonical_source)
+}
+
+pub fn dispatch_native_sandbox_helper() -> Option<i32> {
+    native_windows_sandbox::dispatch_helper_from_args()
+}
+
+fn sandbox_readiness_original_paths(root: &Path) -> Vec<PathBuf> {
+    let mut result = vec![root.to_path_buf()];
+    let mut pending = VecDeque::from([root.to_path_buf()]);
+    while let Some(directory) = pending.pop_front() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if result.len() >= 9 {
+                return result;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                pending.push_back(entry.path());
+            }
+            if kind.is_file() {
+                result.push(entry.path());
+            }
+        }
+    }
+    result
+}
+
+#[tauri::command]
+fn sandbox_setup_status(
+    app: tauri::AppHandle,
+) -> Result<native_windows_sandbox::SetupStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(native_windows_sandbox::setup_status(&app_data_dir))
+}
+
+#[tauri::command]
+async fn sandbox_setup_start(
+    app: tauri::AppHandle,
+) -> Result<native_windows_sandbox::SetupStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let setup_data_dir = app_data_dir.clone();
+    let setup = tauri::async_runtime::spawn_blocking(move || {
+        native_windows_sandbox::setup_start(&setup_data_dir)
+    })
+    .await
+    .map_err(|error| format!("sandbox setup worker failed: {error}"));
+    let result = match setup {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) | Err(error) => {
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "native_setup_failed",
+                Some(serde_json::json!({ "redacted": true })),
+            );
+            return Err(error);
+        }
+    };
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "native_setup_completed",
+        Some(serde_json::json!({ "version": result.version, "ready": result.ready })),
+    );
+    Ok(result)
+}
+
+fn normalize_native_snapshot_roots(
+    authorized_paths: &[AuthorizedTaskPath],
+) -> Result<(Vec<worker_sandbox::SnapshotRootInput>, Vec<String>), String> {
+    let mut roots = Vec::<worker_sandbox::SnapshotRootInput>::new();
+    let mut warnings = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, entry) in authorized_paths.iter().enumerate() {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let candidate = PathBuf::from(entry.path.trim());
+        if !candidate.is_absolute() || !candidate.exists() {
+            warnings.push(format!(
+                "Shared path is unavailable and was skipped: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if (entry.kind == "folder" && !canonical.is_dir())
+            || (entry.kind == "file" && !canonical.is_file())
+        {
+            warnings.push(format!(
+                "Shared path kind does not match and was skipped: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let key = canonical.display().to_string().to_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        let access = if entry.access == "read_write" {
+            "read_write"
+        } else {
+            "read_only"
+        };
+        let overlaps_writable = roots.iter().any(|existing| {
+            if access != "read_write" || existing.access != "read_write" {
+                return false;
+            }
+            let existing_path = &existing.source_path;
+            canonical.starts_with(existing_path) || existing_path.starts_with(&canonical)
+        });
+        if overlaps_writable {
+            warnings.push(format!(
+                "Overlapping writable root was rejected for this run: {}",
+                entry.path
+            ));
+            continue;
+        }
+        let contained_by_writable = roots.iter().any(|existing| {
+            access == "read_only"
+                && existing.access == "read_write"
+                && existing.kind == "folder"
+                && canonical.starts_with(&existing.source_path)
+        });
+        if contained_by_writable {
+            continue;
+        }
+        roots.push(worker_sandbox::SnapshotRootInput {
+            root_id: format!("root-{index:03}"),
+            root_label: entry
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    canonical
+                        .file_name()
+                        .map(|value| value.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| format!("Root {}", index + 1)),
+            source_path: canonical,
+            kind: entry.kind.clone(),
+            access: access.to_string(),
+            is_primary: entry.is_primary,
+        });
+    }
+    if !roots
+        .iter()
+        .any(|root| root.is_primary && root.access == "read_write")
+    {
+        if let Some(root) = roots.iter_mut().find(|root| root.access == "read_write") {
+            root.is_primary = true;
+        }
+    }
+    Ok((roots, warnings))
+}
+
+fn read_only_context_response(
+    database: &Arc<Database>,
+    request: &EngineRunPrepareContextRequest,
+    warning: Option<String>,
+) -> Result<EngineRunPrepareContextResponse, String> {
+    register_run_authorized_paths(
+        database,
+        &request.run_id,
+        request.preferred_cwd.as_deref(),
+        &request.authorized_paths,
+    )?;
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, entry) in request.authorized_paths.iter().enumerate() {
+        if !matches!(entry.kind.as_str(), "file" | "folder") {
+            continue;
+        }
+        let candidate = PathBuf::from(entry.path.trim());
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        let rendered = canonical.display().to_string();
+        if !seen.insert(rendered.to_lowercase()) {
+            continue;
+        }
+        roots.push(worker_sandbox::WorkspaceRootMapping {
+            root_id: format!("root-{index:03}"),
+            root_label: entry.label.clone().unwrap_or_else(|| {
+                canonical
+                    .file_name()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Shared path".to_string())
+            }),
+            source_path: rendered.clone(),
+            workspace_path: rendered,
+            kind: entry.kind.clone(),
+            access: "read_only".to_string(),
+            is_primary: entry.is_primary,
+        });
+    }
+    Ok(EngineRunPrepareContextResponse {
+        mode: "host_read_only_broker".to_string(),
+        sandbox_id: None,
+        workspace_root: roots
+            .iter()
+            .find(|root| root.kind == "folder" && root.is_primary)
+            .or_else(|| roots.iter().find(|root| root.kind == "folder"))
+            .map(|root| root.workspace_path.clone())
+            .unwrap_or_default(),
+        allowed_directories: roots
+            .iter()
+            .map(|root| root.workspace_path.clone())
+            .collect(),
+        roots,
+        copied_files: 0,
+        skipped_files: 0,
+        warning,
+    })
+}
+
+#[tauri::command]
+fn engine_run_prepare_context(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: EngineRunPrepareContextRequest,
+) -> Result<EngineRunPrepareContextResponse, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("runId must not be empty".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let readiness = native_windows_sandbox::setup_status(&app_data_dir);
+    if !readiness.ready {
+        let reason = readiness
+            .reason
+            .unwrap_or_else(|| "sandbox setup is not ready".to_string());
+        let response = read_only_context_response(
+            state.inner(),
+            &request,
+            Some(format!(
+                "Native sandbox unavailable; local access is read-only: {reason}"
+            )),
+        )?;
+        let _ = state.insert_engine_run_event(
+            &uuid::Uuid::new_v4().to_string(),
+            &request.run_id,
+            "run_context_read_only",
+            Some(r#"{"mode":"host_read_only_broker","reason":"setup_not_ready"}"#),
+        );
+        return Ok(response);
+    }
+
+    let prepare_native = (|| -> Result<EngineRunPrepareContextResponse, String> {
+        let bundled_python =
+            native_windows_sandbox::prepare_bundled_python(&resource_dir, &app_data_dir)?;
+        let (inputs, warnings) = normalize_native_snapshot_roots(&request.authorized_paths)?;
+        let sandbox_id = format!("native-run-{}", request.run_id);
+        worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+        let prepared =
+            worker_sandbox::prepare_workspace_snapshot_multi(&app_data_dir, &sandbox_id, &inputs)?;
+        let workspace_root = PathBuf::from(&prepared.workspace_root);
+        let scratch = workspace_root.join("scratch");
+        fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
+        let mut writable_roots = prepared
+            .roots
+            .iter()
+            .filter(|root| root.access == "read_write")
+            .map(|root| PathBuf::from(&root.workspace_path))
+            .collect::<Vec<_>>();
+        writable_roots.push(scratch.clone());
+        let capability_sid = native_windows_sandbox::grant_workspace_access_for_roots(
+            &app_data_dir,
+            &request.run_id,
+            &workspace_root,
+            &writable_roots,
+        )?;
+        native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+
+        let primary_cwd = prepared
+            .roots
+            .iter()
+            .find(|root| root.is_primary && root.access == "read_write")
+            .or_else(|| {
+                prepared
+                    .roots
+                    .iter()
+                    .find(|root| root.access == "read_write")
+            })
+            .map(|root| root.workspace_path.clone())
+            .unwrap_or_else(|| scratch.display().to_string());
+        let original_probe = inputs
+            .iter()
+            .map(|root| {
+                format!(
+                    "(Test-Path -LiteralPath '{}')",
+                    root.source_path.display().to_string().replace('\'', "''")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" -or ");
+        let original_probe = if original_probe.is_empty() {
+            "$false".to_string()
+        } else {
+            original_probe
+        };
+        let read_only_probe = prepared
+            .roots
+            .iter()
+            .find(|root| root.access == "read_only")
+            .map(|root| {
+                let path = PathBuf::from(&root.workspace_path).join(".lacowork-readonly-probe");
+                format!("$ro='{}'; Set-Content -LiteralPath $ro -Value 'blocked' -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $ro) {{ Remove-Item -LiteralPath $ro -Force; exit 43 }};", path.display().to_string().replace('\'', "''"))
+            })
+            .unwrap_or_default();
+        let readiness_command = format!(
+            "$ErrorActionPreference='SilentlyContinue'; $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name; if (-not $identity.EndsWith('\\LACoworkOnline',[StringComparison]::OrdinalIgnoreCase)) {{ exit 40 }}; if ({original_probe}) {{ exit 41 }}; {read_only_probe} $p=Join-Path '{}' '.lacowork-readiness'; Set-Content -LiteralPath $p -Value 'ready'; if (!(Test-Path -LiteralPath $p)) {{ exit 42 }}; Remove-Item -LiteralPath $p -Force; exit 0",
+            scratch.display().to_string().replace('\'', "''")
+        );
+        let probe = native_windows_sandbox::execute(
+            &app_data_dir,
+            &native_windows_sandbox::ExecRequest {
+                run_id: request.run_id.clone(),
+                command: readiness_command,
+                shell: Some("powershell".to_string()),
+                cwd: scratch.display().to_string(),
+                timeout_ms: Some(20_000),
+                stream_id: format!("readiness-{}", request.run_id),
+            },
+            |_, _, _| {},
+        )?;
+        if probe.exit_code != Some(0) {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(match probe.exit_code {
+                Some(40) => {
+                    "sandbox readiness failed: process identity is not LACoworkOnline".to_string()
+                }
+                Some(41) => {
+                    "sandbox readiness failed: original shared paths are visible".to_string()
+                }
+                Some(42) => {
+                    "sandbox readiness failed: scratch workspace is not writable".to_string()
+                }
+                Some(43) => "sandbox readiness failed: a read-only root was writable".to_string(),
+                _ => format!("sandbox readiness probe failed ({})", probe.status),
+            });
+        }
+
+        if let Some(existing) = state
+            .get_worker_sandbox_by_run(&request.run_id)
+            .map_err(|error| error.to_string())?
+        {
+            state
+                .delete_worker_sandbox(&existing.id)
+                .map_err(|error| error.to_string())?;
+        }
+        let mut allowed_roots = prepared
+            .roots
+            .iter()
+            .map(|root| root.workspace_path.clone())
+            .collect::<Vec<_>>();
+        allowed_roots.push(scratch.display().to_string());
+        let read_only_roots = prepared
+            .roots
+            .iter()
+            .filter(|root| root.access == "read_only")
+            .map(|root| root.workspace_path.clone())
+            .collect::<Vec<_>>();
+        let policy = load_policy_state(&state)?;
+        let metadata = serde_json::json!({
+            "setupVersion": readiness.version,
+            "manifestVersion": 2,
+            "workspaceStrategy": "multi_root_snapshot_copy",
+            "rootCount": prepared.roots.len(),
+            "copiedFiles": prepared.copied_files,
+            "skippedFiles": prepared.skipped_files,
+            "network": "enabled",
+        })
+        .to_string();
+        state
+            .insert_worker_sandbox(
+                &sandbox_id,
+                &request.run_id,
+                None,
+                None,
+                "active",
+                "windows_native_elevated",
+                request.preferred_cwd.as_deref().unwrap_or(""),
+                &primary_cwd,
+                &serde_json::to_string(&allowed_roots).map_err(|error| error.to_string())?,
+                if read_only_roots.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::to_string(&read_only_roots)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
+                .as_deref(),
+                true,
+                true,
+                policy.flags.allow_shell_execution,
+                policy.flags.allow_web_fetch,
+                policy.flags.allow_web_search,
+                policy.flags.allow_mcp_tool_calls,
+                None,
+                Some(&metadata),
+            )
+            .map_err(|error| error.to_string())?;
+        let event = serde_json::json!({
+            "sandboxId": sandbox_id,
+            "mode": "windows_native_elevated",
+            "manifestVersion": 2,
+            "rootCount": prepared.roots.len(),
+            "copiedFiles": prepared.copied_files,
+            "skippedFiles": prepared.skipped_files,
+        })
+        .to_string();
+        let _ = state.insert_engine_run_event(
+            &uuid::Uuid::new_v4().to_string(),
+            &request.run_id,
+            "sandbox_run_prepared",
+            Some(&event),
+        );
+        Ok(EngineRunPrepareContextResponse {
+            mode: "windows_native_elevated".to_string(),
+            sandbox_id: Some(sandbox_id),
+            workspace_root: primary_cwd,
+            allowed_directories: allowed_roots,
+            roots: prepared.roots,
+            copied_files: prepared.copied_files,
+            skipped_files: prepared.skipped_files,
+            warning: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings.join(" "))
+            },
+        })
+    })();
+
+    match prepare_native {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(
+                &app_data_dir,
+                &format!("native-run-{}", request.run_id),
+            );
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "native_prepare_downgraded",
+                Some(serde_json::json!({ "runId": request.run_id, "redacted": true })),
+            );
+            read_only_context_response(
+                state.inner(),
+                &request,
+                Some(format!(
+                    "Native sandbox preparation failed; local access is read-only: {error}"
+                )),
+            )
+        }
+    }
+}
+
+#[tauri::command]
+fn sandbox_run_prepare(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunPrepareRequest,
+) -> Result<SandboxRunPrepareResponse, String> {
+    if request.run_id.trim().is_empty() {
+        return Err("runId must not be empty".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let readiness = native_windows_sandbox::setup_status(&app_data_dir);
+    if !readiness.ready {
+        return Err(format!(
+            "native sandbox setup is required: {}",
+            readiness.reason.unwrap_or_else(|| "not ready".to_string())
+        ));
+    }
+    let bundled_python =
+        native_windows_sandbox::prepare_bundled_python(&resource_dir, &app_data_dir)?;
+
+    let existing = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(existing) = existing
+        .as_ref()
+        .filter(|row| row.mode == "windows_native_elevated")
+    {
+        let capability_sid = native_windows_sandbox::grant_workspace_access(
+            &app_data_dir,
+            &request.run_id,
+            Path::new(&existing.workspace_root),
+        )?;
+        native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+        return Ok(SandboxRunPrepareResponse {
+            sandbox_id: existing.id.clone(),
+            workspace_root: existing.workspace_root.clone(),
+            copied_files: 0,
+            skipped_files: 0,
+        });
+    }
+    if let Some(parent_run_id) = request.parent_run_id.as_deref() {
+        if let Some(parent) = state
+            .get_worker_sandbox_by_run(parent_run_id)
+            .map_err(|error| error.to_string())?
+        {
+            if parent.mode != "windows_native_elevated" || parent.status != "active" {
+                return Err("child run requires an active native parent sandbox".to_string());
+            }
+            if let Some(existing) = existing.as_ref() {
+                state
+                    .delete_worker_sandbox(&existing.id)
+                    .map_err(|error| error.to_string())?;
+            }
+            let sandbox_id = format!("native-child-run-{}", request.run_id);
+            worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+            let capability_sid = native_windows_sandbox::grant_workspace_access(
+                &app_data_dir,
+                &request.run_id,
+                Path::new(&parent.workspace_root),
+            )?;
+            native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+            state
+                .insert_worker_sandbox(
+                    &sandbox_id,
+                    &request.run_id,
+                    Some(parent_run_id),
+                    None,
+                    "active",
+                    "windows_native_elevated",
+                    &parent.source_cwd,
+                    &parent.workspace_root,
+                    &parent.allowed_roots_json,
+                    parent.read_only_roots_json.as_deref(),
+                    parent.allow_file_read,
+                    parent.allow_file_write,
+                    parent.allow_shell_execution,
+                    parent.allow_web_fetch,
+                    parent.allow_web_search,
+                    parent.allow_mcp,
+                    None,
+                    Some(r#"{"workspaceStrategy":"shared_parent_native_copy"}"#),
+                )
+                .map_err(|error| error.to_string())?;
+            return Ok(SandboxRunPrepareResponse {
+                sandbox_id,
+                workspace_root: parent.workspace_root,
+                copied_files: 0,
+                skipped_files: 0,
+            });
+        }
+    }
+    let requested_source = request
+        .source_cwd
+        .as_deref()
+        .or_else(|| existing.as_ref().map(|row| row.source_cwd.as_str()))
+        .ok_or_else(|| "sandbox run has no authorized source workspace".to_string())?;
+    let source = if let Some(existing) = existing.as_ref() {
+        let roots = parse_json_string_array(&existing.allowed_roots_json)?;
+        let canonical = file_safety::ensure_path_allowed(Path::new(requested_source), &roots)?;
+        if !canonical.is_dir() {
+            return Err("sandbox source must be a directory".to_string());
+        }
+        canonical
+    } else {
+        authorize_worker_sandbox_source(&state, request.parent_run_id.as_deref(), requested_source)?
+    };
+    let sandbox_id = format!("native-run-{}", request.run_id);
+    worker_sandbox::validate_sandbox_id(&sandbox_id)?;
+    let workspace =
+        worker_sandbox::prepare_workspace_snapshot(&app_data_dir, &sandbox_id, &source)?;
+    worker_sandbox::write_run_manifest(&app_data_dir, &sandbox_id, &source)?;
+    let capability_sid = native_windows_sandbox::grant_workspace_access(
+        &app_data_dir,
+        &request.run_id,
+        Path::new(&workspace.workspace_root),
+    )?;
+    native_windows_sandbox::grant_capability_read_access(&bundled_python, &capability_sid)?;
+
+    let workspace_literal = workspace.workspace_root.replace('\'', "''");
+    let original_probe = sandbox_readiness_original_paths(&source)
+        .into_iter()
+        .map(|path| {
+            format!(
+                "(Test-Path -LiteralPath '{}')",
+                path.display().to_string().replace('\'', "''")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" -or ");
+    let readiness_command = format!(
+        "$ErrorActionPreference='SilentlyContinue'; $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name; if (-not $identity.EndsWith('\\LACoworkOnline',[StringComparison]::OrdinalIgnoreCase)) {{ exit 40 }}; if ({original_probe}) {{ exit 41 }}; $p=Join-Path '{workspace_literal}' '.lacowork-readiness'; Set-Content -LiteralPath $p -Value 'ready'; if (!(Test-Path -LiteralPath $p)) {{ exit 42 }}; Remove-Item -LiteralPath $p -Force; exit 0"
+    );
+    let readiness_exec = native_windows_sandbox::ExecRequest {
+        run_id: request.run_id.clone(),
+        command: readiness_command,
+        shell: Some("powershell".to_string()),
+        cwd: workspace.workspace_root.clone(),
+        timeout_ms: Some(20_000),
+        stream_id: format!("readiness-{}", request.run_id),
+    };
+    let probe = native_windows_sandbox::execute(&app_data_dir, &readiness_exec, |_, _, _| {});
+    match probe {
+        Ok(response) if response.exit_code == Some(0) => {}
+        Ok(response) if response.exit_code == Some(41) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err("sandbox readiness failed closed: the low-privilege account can read the original project".to_string());
+        }
+        Ok(response) if response.exit_code == Some(40) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(
+                "sandbox readiness failed closed: the command did not run as LACoworkOnline"
+                    .to_string(),
+            );
+        }
+        Ok(response) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(format!(
+                "sandbox readiness probe failed ({})",
+                response.status
+            ));
+        }
+        Err(error) => {
+            let _ = worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox_id);
+            return Err(format!("sandbox readiness probe failed: {error}"));
+        }
+    }
+
+    if let Some(existing) = existing.as_ref() {
+        state
+            .delete_worker_sandbox(&existing.id)
+            .map_err(|error| error.to_string())?;
+    }
+    let policy = load_policy_state(&state)?;
+    let allowed_roots = serde_json::to_string(&vec![workspace.workspace_root.clone()])
+        .map_err(|error| error.to_string())?;
+    let metadata = serde_json::json!({
+        "setupVersion": readiness.version,
+        "workspaceStrategy": "snapshot_copy",
+        "copiedFiles": workspace.copied_files,
+        "skippedFiles": workspace.skipped_files,
+        "network": "enabled",
+    })
+    .to_string();
+    state
+        .insert_worker_sandbox(
+            &sandbox_id,
+            &request.run_id,
+            None,
+            None,
+            "active",
+            "windows_native_elevated",
+            &source.display().to_string(),
+            &workspace.workspace_root,
+            &allowed_roots,
+            None,
+            true,
+            true,
+            policy.flags.allow_shell_execution,
+            policy.flags.allow_web_fetch,
+            policy.flags.allow_web_search,
+            policy.flags.allow_mcp_tool_calls,
+            None,
+            Some(&metadata),
+        )
+        .map_err(|error| error.to_string())?;
+    let event = serde_json::json!({
+        "sandboxId": sandbox_id,
+        "mode": "windows_native_elevated",
+        "copiedFiles": workspace.copied_files,
+        "skippedFiles": workspace.skipped_files,
+    })
+    .to_string();
+    let _ = state.insert_engine_run_event(
+        &uuid::Uuid::new_v4().to_string(),
+        &request.run_id,
+        "sandbox_run_prepared",
+        Some(&event),
+    );
+    Ok(SandboxRunPrepareResponse {
+        sandbox_id,
+        workspace_root: workspace.workspace_root,
+        copied_files: workspace.copied_files,
+        skipped_files: workspace.skipped_files,
+    })
+}
+
+#[tauri::command]
+async fn sandbox_exec_command(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: native_windows_sandbox::ExecRequest,
+) -> Result<native_windows_sandbox::ExecResponse, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "native sandbox run was not prepared".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("AI shell execution requires windows_native_elevated mode".to_string());
+    }
+    enforce_worker_sandbox_flag(&sandbox, sandbox.allow_shell_execution, "shell-ausfuehrung")?;
+    validate_shell_execution_request(
+        &state,
+        &request.command,
+        Some(&request.cwd),
+        Some(&request.run_id),
+    )?;
+    let effective_cwd = ensure_run_cwd(&state, Some(&request.run_id), Some(&request.cwd))?
+        .ok_or_else(|| "sandbox cwd is missing".to_string())?;
+    let mut effective_request = request.clone();
+    effective_request.cwd = effective_cwd;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let stream_id = effective_request.stream_id.clone();
+    let emitter = app.clone();
+    let execution_data_dir = app_data_dir.clone();
+    let execution_request = effective_request.clone();
+    let execution = tauri::async_runtime::spawn_blocking(move || {
+        native_windows_sandbox::execute(
+            &execution_data_dir,
+            &execution_request,
+            move |channel, sequence, bytes| {
+                let _ = emitter.emit(
+                    "sandbox-command-chunk",
+                    SandboxCommandChunk {
+                        stream_id: stream_id.clone(),
+                        sequence,
+                        channel: channel.to_string(),
+                        bytes_base64: base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            bytes,
+                        ),
+                    },
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("sandbox execution worker failed: {error}"));
+    let response = match execution {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) | Err(error) => {
+            let redacted_event = serde_json::json!({
+                "shell": effective_request.shell,
+                "status": "failed",
+                "redacted": true,
+            })
+            .to_string();
+            let _ = state.insert_engine_run_event(
+                &uuid::Uuid::new_v4().to_string(),
+                &effective_request.run_id,
+                "sandbox_exec_failed",
+                Some(&redacted_event),
+            );
+            let _ = audit::append_audit_event(
+                app_data_dir,
+                "sandbox",
+                "exec_failed",
+                Some(serde_json::json!({
+                    "runId": effective_request.run_id,
+                    "redacted": true,
+                })),
+            );
+            return Err(error);
+        }
+    };
+    let event = serde_json::json!({
+        "shell": effective_request.shell,
+        "status": response.status,
+        "exitCode": response.exit_code,
+        "timedOut": response.timed_out,
+        "durationMs": response.duration_ms,
+        "stdoutBytes": response.stdout.len(),
+        "stderrBytes": response.stderr.len(),
+        "stdoutTruncated": response.stdout_truncated,
+        "stderrTruncated": response.stderr_truncated,
+    })
+    .to_string();
+    let _ = state.insert_engine_run_event(
+        &uuid::Uuid::new_v4().to_string(),
+        &effective_request.run_id,
+        "sandbox_exec_command",
+        Some(&event),
+    );
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "exec_command",
+        Some(serde_json::json!({
+            "runId": effective_request.run_id, "status": response.status, "durationMs": response.duration_ms,
+        })),
+    );
+    Ok(response)
+}
+
+#[tauri::command]
+fn sandbox_exec_cancel(stream_id: String) -> Result<bool, String> {
+    if stream_id.trim().is_empty() {
+        return Err("streamId must not be empty".to_string());
+    }
+    native_windows_sandbox::cancel(&stream_id)
+}
+
+#[tauri::command]
+fn sandbox_run_diff(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<worker_sandbox::RunDiff, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("run is not a native Windows sandbox".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let diff = worker_sandbox::run_diff(&app_data_dir, &sandbox.id)?;
+    if diff.changes.is_empty() {
+        worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+        state
+            .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(diff)
+}
+
+#[tauri::command]
+fn sandbox_run_apply(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<worker_sandbox::ApplyResult, String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    if sandbox.mode != "windows_native_elevated" {
+        return Err("run is not a native Windows sandbox".to_string());
+    }
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let result = worker_sandbox::apply_run_diff(&app_data_dir, &sandbox.id)?;
+    let _ = audit::append_audit_event(
+        app_data_dir.clone(),
+        "sandbox",
+        "apply_changes",
+        Some(serde_json::json!({
+            "runId": request.run_id,
+            "applied": result.applied.len(),
+            "conflicts": result.conflicts.len(),
+            "rejected": result.rejected.len(),
+        })),
+    );
+    if result.conflicts.is_empty() && result.rejected.is_empty() {
+        worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+        state
+            .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+            .map_err(|error| error.to_string())?;
+    } else {
+        state
+            .update_worker_sandbox(&sandbox.id, Some("apply_conflicts"), None)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn sandbox_run_discard(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: SandboxRunRequest,
+) -> Result<(), String> {
+    let sandbox = state
+        .get_worker_sandbox_by_run(&request.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "sandbox run not found".to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    worker_sandbox::destroy_workspace_snapshot(&app_data_dir, &sandbox.id)?;
+    state
+        .update_worker_sandbox(&sandbox.id, Some("destroyed"), None)
+        .map_err(|error| error.to_string())?;
+    let _ = audit::append_audit_event(
+        app_data_dir,
+        "sandbox",
+        "discard_run_copy",
+        Some(serde_json::json!({ "runId": request.run_id })),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -9059,7 +11913,6 @@ fn default_policy_flags() -> PolicyFlagsPayload {
         allow_mcp_tool_calls: true,
         allow_web_fetch: true,
         allow_file_read_extraction: true,
-        auto_compact_long_context: true,
         allow_shell_execution: true,
         allow_web_search: true,
     }
@@ -9068,10 +11921,46 @@ fn default_policy_flags() -> PolicyFlagsPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScheduledPromptRuntimeConfig {
-    #[serde(flatten)]
-    config: OllamaConfig,
+    #[serde(default)]
+    backend_selection: Option<ScheduledBackendSelection>,
     #[serde(default)]
     cwd: Option<String>,
+    // One-release compatibility for existing Ollama schedule snapshots.
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "backend")]
+enum ScheduledBackendSelection {
+    #[serde(rename = "codex", rename_all = "camelCase")]
+    Codex {
+        auth_profile_id: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    },
+    #[serde(rename = "openai-compatible", rename_all = "camelCase")]
+    OpenAiCompatible {
+        profile_id: String,
+        model: Option<String>,
+    },
+}
+
+impl ScheduledPromptRuntimeConfig {
+    fn legacy_ollama_config(&self) -> Option<OllamaConfig> {
+        self.base_url.as_ref().map(|base_url| OllamaConfig {
+            base_url: base_url.clone(),
+            model: self
+                .model
+                .clone()
+                .unwrap_or_else(|| "llama3.1:8b".to_string()),
+            timeout_ms: self.timeout_ms.unwrap_or(600_000),
+        })
+    }
 }
 
 fn wildcard_match(pattern: &str, text: &str) -> bool {
@@ -9205,9 +12094,9 @@ fn build_toolset_policy(
 fn toolset_policy_definitions() -> Vec<ToolsetPolicyPayload> {
     vec![
         build_toolset_policy(
-            "host_full",
-            "Host full",
-            "Full local agent profile for trusted workspace automation.",
+            "sandbox_full",
+            "Sandbox full",
+            "Full local agent profile inside the native Windows sandbox.",
             "high",
             DEFAULT_POLICY_ENABLED_TOOL_IDS,
         ),
@@ -9278,6 +12167,11 @@ fn find_toolset_policy(policy_id: &str) -> Option<ToolsetPolicyPayload> {
 
 fn normalize_active_toolset_policy_id(input: Option<&str>) -> Result<String, String> {
     let candidate = input.unwrap_or(CUSTOM_TOOLSET_POLICY_ID).trim();
+    let candidate = if candidate == "host_full" {
+        "sandbox_full"
+    } else {
+        candidate
+    };
     if candidate.is_empty() || candidate == CUSTOM_TOOLSET_POLICY_ID {
         return Ok(CUSTOM_TOOLSET_POLICY_ID.to_string());
     }
@@ -9291,6 +12185,11 @@ fn normalize_active_toolset_policy_id(input: Option<&str>) -> Result<String, Str
 
 fn infer_active_toolset_policy_id(stored_id: Option<&str>, enabled_tool_ids: &[String]) -> String {
     if let Some(stored_id) = stored_id.map(str::trim) {
+        let stored_id = if stored_id == "host_full" {
+            "sandbox_full"
+        } else {
+            stored_id
+        };
         if stored_id == CUSTOM_TOOLSET_POLICY_ID {
             return CUSTOM_TOOLSET_POLICY_ID.to_string();
         }
@@ -9684,7 +12583,6 @@ fn load_policy_state(state: &Arc<Database>) -> Result<PolicyStatePayload, String
             POLICY_FLAG_MCP => flags.allow_mcp_tool_calls = value,
             POLICY_FLAG_WEB_FETCH => flags.allow_web_fetch = value,
             POLICY_FLAG_FILE_READ => flags.allow_file_read_extraction = value,
-            POLICY_FLAG_AUTO_COMPACT => flags.auto_compact_long_context = value,
             POLICY_FLAG_SHELL_EXECUTION => flags.allow_shell_execution = value,
             POLICY_FLAG_WEB_SEARCH => flags.allow_web_search = value,
             _ => {}
@@ -10271,25 +13169,29 @@ fn memory_upsert(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
     scope: String,
+    scope_ref: Option<String>,
     category: String,
     key: String,
     content: String,
-    source_session_id: Option<String>,
+    source_run_id: Option<String>,
     confidence: Option<f64>,
 ) -> Result<(), String> {
     memory_engine::validate_scope(&scope)?;
     let conf = confidence.unwrap_or(1.0);
-    if memory_engine::is_duplicate_memory(&state, &scope, &category, &key, &content) {
+    if scope != "chat"
+        && memory_engine::is_duplicate_memory(&state, &scope, &category, &key, &content)
+    {
         return Ok(());
     }
     state
         .upsert_memory_entry(
             &id,
             &scope,
+            scope_ref.as_deref(),
             &category,
             &key,
             &content,
-            source_session_id.as_deref(),
+            source_run_id.as_deref(),
             conf,
         )
         .map_err(|e| e.to_string())
@@ -10302,7 +13204,7 @@ fn memory_mutate(
     target: String,
     content: Option<String>,
     old_text: Option<String>,
-    source_session_id: Option<String>,
+    source_run_id: Option<String>,
 ) -> Result<memory_engine::MemoryMutationResponse, String> {
     let db_arc = state.inner().clone();
     memory_engine::mutate_curated_memory(
@@ -10311,7 +13213,7 @@ fn memory_mutate(
         &target,
         content.as_deref(),
         old_text.as_deref(),
-        source_session_id.as_deref(),
+        source_run_id.as_deref(),
     )
 }
 
@@ -10324,14 +13226,21 @@ fn memory_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<(
 fn memory_search(
     state: tauri::State<'_, Arc<Database>>,
     scope: Option<String>,
+    scope_ref: Option<String>,
     category: Option<String>,
     keyword: Option<String>,
     limit: Option<i64>,
 ) -> Result<Vec<db::MemoryEntryRow>, String> {
     let lim = limit.unwrap_or(100);
-    if let Some(ref kw) = keyword {
+    let rows = if let Some(ref kw) = keyword {
         state
-            .search_memory_entries(kw, scope.as_deref(), category.as_deref(), lim)
+            .search_memory_entries(
+                kw,
+                scope.as_deref(),
+                scope_ref.as_deref(),
+                category.as_deref(),
+                lim,
+            )
             .map_err(|e| e.to_string())
     } else if let Some(requested_scope) = scope {
         state
@@ -10341,7 +13250,15 @@ fn memory_search(
         state
             .list_all_memory_entries(category.as_deref(), lim)
             .map_err(|e| e.to_string())
-    }
+    }?;
+    Ok(rows
+        .into_iter()
+        .filter(|entry| {
+            scope_ref
+                .as_deref()
+                .is_none_or(|expected| entry.scope_ref.as_deref() == Some(expected))
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -10497,126 +13414,48 @@ fn skill_auto_generate(
     ))
 }
 
-// -- Session commands -------------------------------------------------------
+// -- Chat context commands --------------------------------------------------
 
 #[tauri::command]
-fn session_create(
+fn chat_memory_snapshot(
     state: tauri::State<'_, Arc<Database>>,
-    id: String,
-    thread_id: Option<String>,
-    title: String,
-    model_used: Option<String>,
-    provider: Option<String>,
-    personality: Option<String>,
-) -> Result<(), String> {
-    let db_arc = state.inner().clone();
-    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = id.clone();
-    let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
-    state
-        .insert_session(
-            &id,
-            thread_id.as_deref(),
-            &title,
-            Some(&snapshot_json),
-            model_used.as_deref(),
-            provider.as_deref(),
-            personality.as_deref(),
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_memory_snapshot(
-    state: tauri::State<'_, Arc<Database>>,
-    session_id: String,
+    thread_id: String,
 ) -> Result<memory_engine::FrozenMemorySnapshot, String> {
     if let Some(snapshot_json) = state
-        .get_session_memory_snapshot(&session_id)
+        .get_chat_memory_snapshot(&thread_id)
         .map_err(|error| error.to_string())?
     {
-        return serde_json::from_str(&snapshot_json).map_err(|error| error.to_string());
+        let mut snapshot: memory_engine::FrozenMemorySnapshot =
+            serde_json::from_str(&snapshot_json).map_err(|error| error.to_string())?;
+        snapshot.thread_id = thread_id.clone();
+        snapshot.chat_entries = state
+            .list_memory_entries_for_ref("chat", &thread_id, 500)
+            .map_err(|error| error.to_string())?;
+        return Ok(snapshot);
     }
 
     let db_arc = state.inner().clone();
     let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = session_id.clone();
+    snapshot.thread_id = thread_id.clone();
+    snapshot.chat_entries = state
+        .list_memory_entries_for_ref("chat", &thread_id, 500)
+        .map_err(|error| error.to_string())?;
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
     state
-        .save_session_snapshot(&session_id, &snapshot_json)
+        .save_chat_memory_snapshot(&thread_id, &snapshot_json)
         .map_err(|error| error.to_string())?;
     Ok(snapshot)
 }
 
 #[tauri::command]
-fn session_end(
-    state: tauri::State<'_, Arc<Database>>,
-    id: String,
-    summary: Option<String>,
-    total_messages: Option<i32>,
-    total_tokens_est: Option<i64>,
-    outcome: Option<String>,
-) -> Result<(), String> {
-    state
-        .end_session(
-            &id,
-            summary.as_deref(),
-            total_messages.unwrap_or(0),
-            total_tokens_est.unwrap_or(0),
-            outcome.as_deref(),
-            None,
-            None,
-        )
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_list(
-    state: tauri::State<'_, Arc<Database>>,
-    limit: Option<i64>,
-) -> Result<Vec<db::SessionRow>, String> {
-    state
-        .list_sessions(limit.unwrap_or(100))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_search(
+fn chat_search(
     state: tauri::State<'_, Arc<Database>>,
     query: String,
     limit: Option<i64>,
-) -> Result<Vec<db::SessionSearchResultRow>, String> {
+) -> Result<Vec<db::ChatSearchResultRow>, String> {
     state
-        .fulltext_search_sessions(&query, limit.unwrap_or(50))
+        .fulltext_search_chats(&query, limit.unwrap_or(50))
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_freeze_snapshot(
-    state: tauri::State<'_, Arc<Database>>,
-    session_id: String,
-) -> Result<String, String> {
-    let db_arc = state.inner().clone();
-    let mut snapshot = memory_engine::create_memory_snapshot(&db_arc)?;
-    snapshot.session_id = session_id.clone();
-    let snapshot_json = serde_json::to_string(&snapshot).map_err(|e| e.to_string())?;
-    state
-        .save_session_snapshot(&session_id, &snapshot_json)
-        .map_err(|e| e.to_string())?;
-    Ok(snapshot_json)
-}
-
-#[tauri::command]
-fn session_get(
-    state: tauri::State<'_, Arc<Database>>,
-    id: String,
-) -> Result<Option<db::SessionRow>, String> {
-    state.get_session(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn session_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<(), String> {
-    state.delete_session(&id).map_err(|e| e.to_string())
 }
 
 // -- Learning outcome commands ----------------------------------------------
@@ -10625,7 +13464,8 @@ fn session_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<
 fn learning_upsert(
     state: tauri::State<'_, Arc<Database>>,
     id: String,
-    session_id: Option<String>,
+    run_id: Option<String>,
+    thread_id: Option<String>,
     task_id: Option<String>,
     outcome_type: String,
     description: String,
@@ -10635,7 +13475,8 @@ fn learning_upsert(
     state
         .insert_learning_outcome(
             &id,
-            session_id.as_deref(),
+            run_id.as_deref(),
+            thread_id.as_deref(),
             task_id.as_deref(),
             &outcome_type,
             &description,
@@ -10912,6 +13753,130 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_authorization_without_native_setup_is_explicitly_read_only_and_empty_by_default() {
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        database
+            .insert_engine_run(
+                "read-only-run",
+                None,
+                None,
+                "Read-only test",
+                None,
+                "running",
+                "llm_turn",
+                None,
+                None,
+                None,
+                0,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        register_run_authorized_paths(&database, "read-only-run", None, &[]).unwrap();
+
+        let sandbox = database
+            .get_worker_sandbox_by_run("read-only-run")
+            .unwrap()
+            .expect("run security context should exist");
+        assert_eq!(sandbox.mode, "host_read_only_broker");
+        assert!(!sandbox.allow_file_write);
+        assert!(!sandbox.allow_shell_execution);
+        assert_eq!(
+            parse_json_string_array(&sandbox.allowed_roots_json).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_json_string_array(sandbox.read_only_roots_json.as_deref().unwrap()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn crew_provider_config_uses_python_runtime_key() {
+        let configs = CrewProviderConfigsRequest {
+            open_ai_compatible: Some(CrewExternalProviderConfigRequest {
+                profile_id: Some("profile-example".to_string()),
+                base_url: "https://inference.example.test/v1".to_string(),
+                model: "example/model".to_string(),
+                models: vec!["vendor/example-model".to_string()],
+                api_key: "test-key".to_string(),
+                timeout_ms: 600_000,
+                verify_tls_certificates: false,
+            }),
+            open_router: None,
+        };
+
+        let value = serde_json::to_value(&configs).unwrap();
+        assert!(value.get("openAICompatible").is_some());
+        assert!(value.get("openAiCompatible").is_none());
+        assert_eq!(value["openAICompatible"]["verifyTlsCertificates"], false);
+        assert_eq!(
+            value["openAICompatible"]["models"][0],
+            "vendor/example-model"
+        );
+
+        let parsed: CrewProviderConfigsRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.open_ai_compatible.unwrap().model, "example/model");
+    }
+
+    #[test]
+    fn crew_provider_falls_back_from_missing_openai_to_openrouter() {
+        assert_eq!(
+            resolve_effective_crew_provider("openai-compatible", true, false, true),
+            "openrouter"
+        );
+    }
+
+    #[test]
+    fn crew_provider_keeps_configured_requested_provider() {
+        assert_eq!(
+            resolve_effective_crew_provider("openai-compatible", true, true, true),
+            "openai-compatible"
+        );
+    }
+
+    #[test]
+    fn crew_provider_model_alias_matches_a_successful_quantized_model() {
+        assert!(provider_models_share_stem(
+            "google/gemma-4-31B-it",
+            "RedHatAI/gemma-4-31B-it-FP8-block"
+        ));
+        assert!(!provider_models_share_stem(
+            "google/gemma-4-31B-it",
+            "vendor/unrelated-model"
+        ));
+    }
+
+    #[test]
+    fn live_news_memory_rejects_stale_and_failed_crew_runs() {
+        let entry = db::MemoryEntryRow {
+            id: "memory".to_string(),
+            scope: "shared".to_string(),
+            category: "crew-run".to_string(),
+            key: "crew::news::latest".to_string(),
+            content: "Crew: News\nStatus: completed\nYesterday's report".to_string(),
+            scope_ref: None,
+            source_run_id: None,
+            confidence: 0.82,
+            access_count: 0,
+            last_accessed_at: None,
+            created_at: "2026-07-22".to_string(),
+            updated_at: "2026-07-22".to_string(),
+        };
+
+        assert!(!crew_memory_entry_is_relevant(&entry, true));
+        assert!(crew_memory_entry_is_relevant(&entry, false));
+
+        let failed = db::MemoryEntryRow {
+            content: "Crew: News\nStatus: failed\nNo model configured".to_string(),
+            confidence: 0.45,
+            ..entry
+        };
+        assert!(!crew_memory_entry_is_relevant(&failed, false));
+    }
+
+    #[test]
     fn toolset_policy_definitions_are_canonical() {
         let safe_research = find_toolset_policy("safe_research").unwrap();
 
@@ -10980,6 +13945,103 @@ mod tests {
             "C:\\workspace\\generated"
         )
         .is_err());
+    }
+
+    #[test]
+    fn task_project_context_resolves_current_enabled_sources_and_rights() {
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let now = chrono::Utc::now().to_rfc3339();
+        let root = std::env::temp_dir().join(format!(
+            "localai-cowork-task-project-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let enabled_file = root.join("enabled.txt");
+        let disabled_file = root.with_extension("disabled.txt");
+        fs::write(&enabled_file, "current enabled content").unwrap();
+        fs::write(&disabled_file, "must stay hidden").unwrap();
+
+        database
+            .upsert_project(
+                "project-1",
+                "Resolver project",
+                "Always use the current project instruction.",
+                &now,
+                &now,
+            )
+            .unwrap();
+        database
+            .insert_thread("thread-1", "Task chat", &now, None, None, "model", None)
+            .unwrap();
+        database
+            .attach_project_thread("project-1", "thread-1")
+            .unwrap();
+        database
+            .upsert_project_resource(
+                "resource-folder",
+                "project-1",
+                "folder",
+                &root.display().to_string(),
+                Some("Workspace"),
+                true,
+                "read_write",
+                true,
+                &now,
+            )
+            .unwrap();
+        database
+            .upsert_project_resource(
+                "resource-disabled",
+                "project-1",
+                "file",
+                &disabled_file.display().to_string(),
+                Some("Disabled"),
+                false,
+                "read_only",
+                false,
+                &now,
+            )
+            .unwrap();
+
+        let context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+            &database,
+            &TaskProjectContextResolveRequest {
+                task_id: None,
+                thread_id: Some("thread-1".to_string()),
+                prompt: "Use the source".to_string(),
+                work_dir: None,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(context.project_id.as_deref(), Some("project-1"));
+        assert!(context.prompt_context.contains("current enabled content"));
+        assert!(!context.prompt_context.contains("must stay hidden"));
+        assert_eq!(
+            context.preferred_cwd,
+            Some(root.canonicalize().unwrap().display().to_string())
+        );
+        assert!(context
+            .authorized_paths
+            .iter()
+            .any(|entry| entry.kind == "folder"
+                && entry.path == root.canonicalize().unwrap().display().to_string()));
+
+        database.delete_project("project-1", false).unwrap();
+        let deleted_context = tauri::async_runtime::block_on(resolve_task_project_run_context(
+            &database,
+            &TaskProjectContextResolveRequest {
+                task_id: None,
+                thread_id: Some("thread-1".to_string()),
+                prompt: "Continue".to_string(),
+                work_dir: None,
+            },
+        ))
+        .unwrap();
+        assert!(deleted_context.project_id.is_none());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(disabled_file);
     }
 
     #[test]
@@ -11087,7 +14149,6 @@ mod tests {
         database
             .insert_engine_run(
                 "run-sandboxed",
-                None,
                 None,
                 None,
                 "Sandboxed test run",
@@ -11226,7 +14287,6 @@ mod tests {
                 "run-secure",
                 None,
                 None,
-                None,
                 "Secure config migration",
                 None,
                 "running",
@@ -11347,6 +14407,27 @@ mod tests {
         assert!(!context.contains("must-not-reach-model"));
         assert!(!context.contains("Configuration"));
     }
+
+    #[test]
+    fn update_backup_input_rejects_unsafe_versions_and_legacy_secret_storage() {
+        assert!(validate_update_version("v1.2.3").is_ok());
+        assert!(validate_update_version("../../escape").is_err());
+
+        let safe = HashMap::from([(
+            "open-cowork-config".to_string(),
+            r#"{"preferences":{"theme":"dark"}}"#.to_string(),
+        )]);
+        assert!(validate_update_storage(&safe).is_ok());
+
+        let legacy_secret = HashMap::from([(
+            "open-cowork-providers-local".to_string(),
+            r#"{"apiKey":"secret"}"#.to_string(),
+        )]);
+        assert!(validate_update_storage(&legacy_secret).is_err());
+
+        let unrelated = HashMap::from([("other-app".to_string(), "data".to_string())]);
+        assert!(validate_update_storage(&unrelated).is_err());
+    }
 }
 
 // -- Insights commands ------------------------------------------------------
@@ -11358,7 +14439,8 @@ fn insights_record(
     category: String,
     value_num: Option<f64>,
     value_text: Option<String>,
-    session_id: Option<String>,
+    run_id: Option<String>,
+    thread_id: Option<String>,
     metadata_json: Option<String>,
 ) -> Result<String, String> {
     let db_arc = state.inner().clone();
@@ -11367,7 +14449,8 @@ fn insights_record(
         category,
         value_num,
         value_text,
-        session_id,
+        run_id,
+        thread_id,
         metadata_json,
     };
     insights::record_event(&db_arc, &req)
@@ -11730,24 +14813,841 @@ fn secure_config_migrate(
     migrate_secure_config_rows(&state, &credential_state)
 }
 
+const MAX_UPDATE_BACKUP_ITEMS: usize = 128;
+const MAX_UPDATE_BACKUP_VALUE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UPDATE_BACKUP_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBackupRequest {
+    target_version: String,
+    local_storage: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBackupResponse {
+    path: String,
+    database_backup: String,
+    local_storage_backup: String,
+    item_count: usize,
+    created_at: String,
+}
+
+fn validate_update_version(version: &str) -> Result<&str, String> {
+    let value = version.trim().trim_start_matches('v');
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".+-".contains(character))
+    {
+        return Err("invalid update version".to_string());
+    }
+    Ok(value)
+}
+
+fn validate_update_storage(storage: &HashMap<String, String>) -> Result<(), String> {
+    if storage.len() > MAX_UPDATE_BACKUP_ITEMS {
+        return Err("too many local storage entries for update backup".to_string());
+    }
+    let mut total_bytes = 0usize;
+    for (key, value) in storage {
+        if !(key.starts_with("open-cowork") || key.starts_with("localai-cowork")) {
+            return Err(format!("unsupported local storage key: {key}"));
+        }
+        if matches!(
+            key.as_str(),
+            "open-cowork-providers-local" | "open-cowork-gateway"
+        ) {
+            return Err(
+                "legacy secret-bearing storage cannot be written to update backups".to_string(),
+            );
+        }
+        if value.len() > MAX_UPDATE_BACKUP_VALUE_BYTES {
+            return Err(format!("local storage value is too large: {key}"));
+        }
+        total_bytes = total_bytes
+            .checked_add(key.len() + value.len())
+            .ok_or_else(|| "local storage backup size overflow".to_string())?;
+        if total_bytes > MAX_UPDATE_BACKUP_TOTAL_BYTES {
+            return Err("local storage update backup is too large".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn update_backup_create(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: UpdateBackupRequest,
+) -> Result<UpdateBackupResponse, String> {
+    let target_version = validate_update_version(&request.target_version)?;
+    validate_update_storage(&request.local_storage)?;
+    let current_version_value = app.package_info().version.to_string();
+    let current_version = validate_update_version(&current_version_value)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let created_at = chrono::Utc::now();
+    let backup_name = format!(
+        "pre-update-v{current_version}-to-v{target_version}-{}-{}",
+        created_at.format("%Y%m%dT%H%M%SZ"),
+        uuid::Uuid::new_v4()
+    );
+    let backup_dir = app_data_dir.join("update-backups").join(backup_name);
+    fs::create_dir_all(&backup_dir).map_err(|error| error.to_string())?;
+
+    let database_backup = backup_dir.join("open_cowork.db");
+    state
+        .create_update_backup(&database_backup)
+        .map_err(|error| format!("database update backup failed: {error}"))?;
+
+    let local_storage_backup = backup_dir.join("local-storage.json");
+    let storage_json =
+        serde_json::to_vec_pretty(&request.local_storage).map_err(|error| error.to_string())?;
+    fs::write(&local_storage_backup, storage_json).map_err(|error| error.to_string())?;
+
+    let manifest_path = backup_dir.join("manifest.json");
+    let manifest = serde_json::json!({
+        "schemaVersion": 1,
+        "createdAt": created_at.to_rfc3339(),
+        "currentVersion": current_version,
+        "targetVersion": target_version,
+        "database": "open_cowork.db",
+        "localStorage": "local-storage.json",
+        "localStorageItems": request.local_storage.len(),
+    });
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(UpdateBackupResponse {
+        path: backup_dir.to_string_lossy().into_owned(),
+        database_backup: database_backup.to_string_lossy().into_owned(),
+        local_storage_backup: local_storage_backup.to_string_lossy().into_owned(),
+        item_count: request.local_storage.len(),
+        created_at: created_at.to_rfc3339(),
+    })
+}
+
+// -- Unified API and Codex profiles ----------------------------------------
+
+#[tauri::command]
+fn api_profile_list(state: tauri::State<'_, Arc<Database>>) -> Result<Vec<ApiProfileRow>, String> {
+    state.list_api_profiles().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_profile_upsert(
+    state: tauri::State<'_, Arc<Database>>,
+    profile: ApiProfileRow,
+) -> Result<(), String> {
+    state
+        .upsert_api_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_profile_delete(state: tauri::State<'_, Arc<Database>>, id: String) -> Result<bool, String> {
+    state
+        .delete_api_profile(&id)
+        .map(|deleted| deleted > 0)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn backend_defaults_read(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<AppBackendDefaultsRow, String> {
+    state
+        .get_app_backend_defaults()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn backend_defaults_write(
+    state: tauri::State<'_, Arc<Database>>,
+    defaults: AppBackendDefaultsRow,
+) -> Result<(), String> {
+    if !matches!(
+        defaults.backend.as_deref(),
+        Some("codex") | Some("openai-compatible")
+    ) {
+        return Err("Backend default must be codex or openai-compatible.".to_string());
+    }
+    if defaults.backend.as_deref() == Some("openai-compatible")
+        && defaults
+            .api_profile_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Err("An OpenAI-compatible default requires an API profile.".to_string());
+    }
+    state
+        .upsert_app_backend_defaults(&defaults)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn api_default_profile_write(
+    state: tauri::State<'_, Arc<Database>>,
+    profile_id: String,
+) -> Result<(), String> {
+    match state
+        .set_default_api_profile(profile_id.trim())
+        .map_err(|error| error.to_string())?
+    {
+        1 => Ok(()),
+        _ => Err("The selected API profile does not exist.".to_string()),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderFallbackResolveRequest {
+    id: String,
+    approved: bool,
+    api_profile_id: Option<String>,
+}
+
+#[tauri::command]
+fn provider_fallback_list(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<Vec<ProviderFallbackApprovalRow>, String> {
+    state
+        .list_provider_fallback_approvals(Some("pending"))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn provider_fallback_resolve(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Database>>,
+    request: ProviderFallbackResolveRequest,
+) -> Result<(), String> {
+    let approval = state
+        .list_provider_fallback_approvals(Some("pending"))
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|approval| approval.id == request.id)
+        .ok_or_else(|| "Fallback approval is no longer pending.".to_string())?;
+    let resolved_at = chrono::Utc::now().to_rfc3339();
+    if !request.approved {
+        if !state
+            .resolve_provider_fallback_approval(&request.id, "denied", None, &resolved_at)
+            .map_err(|error| error.to_string())?
+        {
+            return Err("Fallback approval was already resolved.".to_string());
+        }
+        if let Some(task_id) = state
+            .scheduled_task_id_for_run(&approval.run_id)
+            .map_err(|error| error.to_string())?
+        {
+            state
+                .insert_scheduled_run(
+                    &approval.run_id,
+                    &task_id,
+                    "denied",
+                    &approval.created_at,
+                    Some(&resolved_at),
+                    None,
+                    Some("The one-shot API fallback was denied by the user."),
+                )
+                .map_err(|error| error.to_string())?;
+            let _ = state.update_work_task_status(
+                &task_id,
+                "failed",
+                None,
+                Some("The one-shot API fallback was denied by the user."),
+                Some(&approval.created_at),
+                &resolved_at,
+            );
+        }
+        return Ok(());
+    }
+    let profile_id = request
+        .api_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Select an API profile for the approved fallback.".to_string())?;
+    state
+        .get_api_profile(profile_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The selected API profile does not exist.".to_string())?;
+
+    // Resolve every referenced object before consuming the one-shot grant. A
+    // malformed or stale approval must remain pending instead of being lost.
+    let task_id = state
+        .scheduled_task_id_for_run(&approval.run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The scheduled run for this fallback no longer exists.".to_string())?;
+    let scheduled = state
+        .list_scheduled_tasks()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|task| task.0 == task_id)
+        .ok_or_else(|| "The scheduled task for this fallback no longer exists.".to_string())?;
+    if scheduled.4 != "prompt" {
+        return Err("One-shot API fallback currently applies only to model schedules.".to_string());
+    }
+    let override_config = serde_json::json!({
+        "backendSelection": {
+            "backend": "openai-compatible",
+            "profileId": profile_id
+        },
+        "cwd": scheduled.7.as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+            .and_then(|json| json.get("cwd").cloned())
+            .unwrap_or(Value::Null)
+    })
+    .to_string();
+
+    if !state
+        .resolve_provider_fallback_approval(&request.id, "approved", Some(profile_id), &resolved_at)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Fallback approval was already resolved.".to_string());
+    }
+    // Consume before dispatch. This makes an approved paid fallback a one-shot
+    // capability even if the process or provider fails during execution.
+    if !state
+        .consume_provider_fallback_approval(&request.id, &resolved_at)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Fallback approval could not be consumed.".to_string());
+    }
+    state
+        .insert_scheduled_run(
+            &approval.run_id,
+            &task_id,
+            "fallback_approved",
+            &approval.created_at,
+            Some(&resolved_at),
+            None,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+    let database = state.inner().clone();
+    let approval_id = request.id;
+    thread::spawn(move || {
+        let _ = database.update_work_task_status(
+            &task_id,
+            "running",
+            None,
+            None,
+            Some(&resolved_at),
+            &resolved_at,
+        );
+        let run_result = run_scheduled_task_once(
+            &app,
+            &database,
+            &scheduled.0,
+            &scheduled.2,
+            &scheduled.3,
+            &scheduled.4,
+            scheduled.5.as_deref(),
+            scheduled.6.as_deref(),
+            Some(&override_config),
+        );
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        let status = if run_result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        let error = run_result.as_ref().err().map(String::as_str);
+        let _ = database.update_work_task_status(
+            &task_id,
+            status,
+            None,
+            error,
+            Some(&resolved_at),
+            &finished_at,
+        );
+        let _ = app.emit(
+            "provider-fallback-consumed",
+            serde_json::json!({ "approvalId": approval_id, "taskId": task_id, "status": status }),
+        );
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_runtime_status(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+) -> codex_runtime::RuntimeStatus {
+    runtime.status()
+}
+
+#[tauri::command]
+fn codex_profile_list(
+    state: tauri::State<'_, Arc<Database>>,
+) -> Result<Vec<CodexAuthProfileRow>, String> {
+    state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_profile_upsert(
+    state: tauri::State<'_, Arc<Database>>,
+    profile: CodexAuthProfileRow,
+) -> Result<(), String> {
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_profile_delete(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<bool, String> {
+    // Logout first so the pinned app-server removes the corresponding OS-keyring entry.
+    let _ = runtime.request(&profile_id, "account/logout", None);
+    runtime.remove_profile_data(&profile_id)?;
+    state
+        .delete_codex_auth_profile(&profile_id)
+        .map(|deleted| deleted > 0)
+        .map_err(|error| error.to_string())
+}
+
+fn update_codex_profile_from_account(
+    database: &Database,
+    profile_id: &str,
+    result: &Value,
+) -> Result<(), String> {
+    let mut profile = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    let account = result.get("account").filter(|value| !value.is_null());
+    profile.email = account
+        .and_then(|value| value.get("email"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.account_id = account
+        .and_then(|value| value.get("accountId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.plan_type = account
+        .and_then(|value| value.get("planType"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    profile.status = if account
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        == Some("chatgpt")
+    {
+        "ready".to_string()
+    } else {
+        "signed_out".to_string()
+    };
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    database
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn codex_login_start(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    flow: String,
+) -> Result<Value, String> {
+    let mut profile = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    let params = match flow.as_str() {
+        "browser" => serde_json::json!({
+            "type": "chatgpt",
+            "useHostedLoginSuccessPage": true,
+            "appBrand": "chatgpt"
+        }),
+        "device" => serde_json::json!({ "type": "chatgptDeviceCode" }),
+        _ => return Err("Unsupported Codex login flow".to_string()),
+    };
+    let result = runtime.request(&profile_id, "account/login/start", Some(params))?;
+    profile.status = "login_pending".to_string();
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_account_read(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    refresh_token: Option<bool>,
+) -> Result<Value, String> {
+    let result = runtime.request(
+        &profile_id,
+        "account/read",
+        Some(serde_json::json!({ "refreshToken": refresh_token.unwrap_or(false) })),
+    )?;
+    update_codex_profile_from_account(&state, &profile_id, &result)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_model_list(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<Value, String> {
+    runtime.request(
+        &profile_id,
+        "model/list",
+        Some(serde_json::json!({ "limit": 100, "includeHidden": false })),
+    )
+}
+
+#[tauri::command]
+fn codex_rate_limits_read(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<Value, String> {
+    let result = runtime.request(&profile_id, "account/rateLimits/read", None)?;
+    if let Some(mut profile) = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        let limits = result.get("rateLimits").cloned().unwrap_or(Value::Null);
+        profile.status = if limits
+            .get("rateLimitReachedType")
+            .is_some_and(|value| !value.is_null())
+        {
+            "limited".to_string()
+        } else {
+            "ready".to_string()
+        };
+        profile.quota_reset_at = limits
+            .get("primary")
+            .and_then(|value| value.get("resetsAt"))
+            .and_then(Value::as_i64)
+            .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+            .map(|timestamp| timestamp.to_rfc3339());
+        profile.quota_json = Some(limits.to_string());
+        profile.updated_at = chrono::Utc::now().to_rfc3339();
+        state
+            .upsert_codex_auth_profile(&profile)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn codex_logout(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+) -> Result<(), String> {
+    runtime.request(&profile_id, "account/logout", None)?;
+    if let Some(mut profile) = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+    {
+        profile.email = None;
+        profile.account_id = None;
+        profile.plan_type = None;
+        profile.status = "signed_out".to_string();
+        profile.quota_json = None;
+        profile.quota_reset_at = None;
+        profile.updated_at = chrono::Utc::now().to_rfc3339();
+        state
+            .upsert_codex_auth_profile(&profile)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn codex_profile_mark_limited(
+    state: tauri::State<'_, Arc<Database>>,
+    profile_id: String,
+    reason: String,
+) -> Result<(), String> {
+    let mut profile = state
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| "Codex profile does not exist".to_string())?;
+    profile.status = "limited".to_string();
+    profile.quota_json = Some(serde_json::json!({ "limitedReason": reason }).to_string());
+    profile.updated_at = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_auth_profile(&profile)
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexThreadOpenRequest {
+    owner_kind: String,
+    owner_id: String,
+    member_id: Option<String>,
+    auth_profile_id: Option<String>,
+    cwd: String,
+    model: Option<String>,
+    permission_mode: String,
+    #[serde(default)]
+    dynamic_tools: Vec<Value>,
+}
+
+fn select_codex_profile(
+    database: &Database,
+    pinned_id: Option<&str>,
+) -> Result<CodexAuthProfileRow, String> {
+    let profiles = database
+        .list_codex_auth_profiles()
+        .map_err(|error| error.to_string())?;
+    if let Some(pinned_id) = pinned_id.filter(|value| !value.is_empty()) {
+        let profile = profiles
+            .into_iter()
+            .find(|profile| profile.id == pinned_id)
+            .ok_or_else(|| "The pinned Codex account no longer exists".to_string())?;
+        return if profile.status == "ready" {
+            Ok(profile)
+        } else {
+            Err(format!(
+                "The pinned Codex account '{}' is not usable (status: {}). Pinned accounts never switch automatically.",
+                profile.name, profile.status
+            ))
+        };
+    }
+    profiles
+        .into_iter()
+        .find(|profile| profile.status == "ready")
+        .ok_or_else(|| {
+            "No automatically usable Codex account is available. Sign in again or request an API fallback approval.".to_string()
+        })
+}
+
+fn codex_thread_open_impl(
+    state: &Database,
+    runtime: &codex_runtime::CodexRuntimeManager,
+    request: CodexThreadOpenRequest,
+) -> Result<Value, String> {
+    let profile = select_codex_profile(state, request.auth_profile_id.as_deref())?;
+    let member_id = request.member_id.unwrap_or_default();
+    if let Some(binding) = state
+        .get_codex_thread_binding(
+            &request.owner_kind,
+            &request.owner_id,
+            &member_id,
+            &profile.id,
+        )
+        .map_err(|error| error.to_string())?
+    {
+        match runtime.request(
+            &profile.id,
+            "thread/resume",
+            Some(serde_json::json!({
+                "threadId": binding.codex_thread_id,
+                "cwd": request.cwd,
+                "model": request.model,
+                "dynamicTools": request.dynamic_tools
+            })),
+        ) {
+            Ok(result) => {
+                return Ok(serde_json::json!({
+                    "authProfileId": profile.id,
+                    "rebuilt": false,
+                    "result": result
+                }))
+            }
+            Err(error) => log::warn!(
+                "Codex thread resume failed; rebuilding from OpenCowork history: {error}"
+            ),
+        }
+    }
+
+    let sandbox = if request.permission_mode == "plan" {
+        "read-only"
+    } else {
+        "workspace-write"
+    };
+    let result = runtime.request(
+        &profile.id,
+        "thread/start",
+        Some(serde_json::json!({
+            "cwd": request.cwd,
+            "model": request.model,
+            "approvalPolicy": "untrusted",
+            "sandbox": sandbox,
+            "serviceName": "open_cowork",
+            "dynamicTools": request.dynamic_tools
+        })),
+    )?;
+    let thread_id = result
+        .get("thread")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Codex thread/start returned no thread id".to_string())?;
+    let now = chrono::Utc::now().to_rfc3339();
+    state
+        .upsert_codex_thread_binding(&CodexThreadBindingRow {
+            owner_kind: request.owner_kind,
+            owner_id: request.owner_id,
+            member_id,
+            auth_profile_id: profile.id.clone(),
+            codex_thread_id: thread_id.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "authProfileId": profile.id,
+        "rebuilt": true,
+        "result": result
+    }))
+}
+
+#[tauri::command]
+fn codex_thread_open(
+    state: tauri::State<'_, Arc<Database>>,
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    request: CodexThreadOpenRequest,
+) -> Result<Value, String> {
+    codex_thread_open_impl(state.inner().as_ref(), runtime.inner().as_ref(), request)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexTurnStartRequest {
+    auth_profile_id: String,
+    thread_id: String,
+    prompt: String,
+    cwd: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    permission_mode: String,
+    writable_roots: Vec<String>,
+}
+
+#[tauri::command]
+fn codex_turn_start(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    request: CodexTurnStartRequest,
+) -> Result<Value, String> {
+    let sandbox_policy = if request.permission_mode == "plan" {
+        serde_json::json!({ "type": "readOnly", "networkAccess": false })
+    } else {
+        serde_json::json!({
+            "type": "workspaceWrite",
+            "writableRoots": request.writable_roots,
+            "networkAccess": false
+        })
+    };
+    runtime.request(
+        &request.auth_profile_id,
+        "turn/start",
+        Some(serde_json::json!({
+            "threadId": request.thread_id,
+            "input": [{ "type": "text", "text": request.prompt }],
+            "cwd": request.cwd,
+            "approvalPolicy": "untrusted",
+            "sandboxPolicy": sandbox_policy,
+            "model": request.model,
+            "effort": request.reasoning_effort
+        })),
+    )
+}
+
+#[tauri::command]
+fn codex_turn_interrupt(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    thread_id: String,
+    turn_id: String,
+) -> Result<Value, String> {
+    runtime.request(
+        &profile_id,
+        "turn/interrupt",
+        Some(serde_json::json!({ "threadId": thread_id, "turnId": turn_id })),
+    )
+}
+
+#[tauri::command]
+fn codex_server_request_respond(
+    runtime: tauri::State<'_, Arc<codex_runtime::CodexRuntimeManager>>,
+    profile_id: String,
+    request_id: u64,
+    result: Value,
+) -> Result<(), String> {
+    runtime.respond(&profile_id, request_id, result)
+}
+
 // -- App entry --------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}));
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
                 .build(),
         )
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .expect("failed to resolve app resource dir");
+            match local_daemon_manager::provision_and_start(&resource_dir, &app_data_dir) {
+                Ok(warnings) => {
+                    for warning in warnings {
+                        log::warn!("Local daemon provisioning warning: {warning}");
+                    }
+                }
+                Err(error) => log::error!("Local daemon provisioning failed: {error}"),
+            }
+            let codex_runtime = Arc::new(codex_runtime::CodexRuntimeManager::new(
+                resource_dir,
+                app_data_dir.clone(),
+                app.handle().clone(),
+            ));
             let panic_log_dir = app_data_dir.clone();
             std::panic::set_hook(Box::new(move |panic_info| {
                 let payload = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
@@ -11798,14 +15698,38 @@ pub fn run() {
             app.manage(CrewExecutionRegistry::default());
             app.manage(ChatStreamRegistry::default());
             app.manage(TerminalSessionRegistry::default());
+            app.manage(DeveloperBrowserState::default());
             app.manage(CrewPythonBridge::default());
             app.manage(ClaudeCodeBridge::new());
+            app.manage(codex_runtime);
             configure_pdfium_search_paths(app.handle());
             start_scheduler_worker(app.handle().clone(), shared_database);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            api_profile_list,
+            api_profile_upsert,
+            api_profile_delete,
+            backend_defaults_read,
+            backend_defaults_write,
+            api_default_profile_write,
+            provider_fallback_list,
+            provider_fallback_resolve,
+            codex_runtime_status,
+            codex_profile_list,
+            codex_profile_upsert,
+            codex_profile_delete,
+            codex_login_start,
+            codex_account_read,
+            codex_model_list,
+            codex_rate_limits_read,
+            codex_logout,
+            codex_profile_mark_limited,
+            codex_thread_open,
+            codex_turn_start,
+            codex_turn_interrupt,
+            codex_server_request_respond,
             ollama_health_check,
             generate_plan,
             chat_turn,
@@ -11830,6 +15754,34 @@ pub fn run() {
             desktop_type_text,
             desktop_keypress,
             desktop_scroll,
+            developer_browser_start,
+            developer_browser_stop,
+            developer_browser_status,
+            developer_browser_navigate,
+            developer_browser_reload,
+            developer_browser_history,
+            developer_browser_snapshot,
+            developer_browser_click,
+            developer_browser_scroll,
+            developer_browser_type_text,
+            developer_browser_keypress,
+            developer_browser_inspect,
+            developer_browser_cdp_call,
+            git_repository_status,
+            git_repository_diff,
+            git_repository_stage,
+            git_repository_unstage,
+            git_repository_commit,
+            git_repository_push,
+            git_repository_pull,
+            git_repository_create_branch,
+            github_connection_status,
+            github_list_pull_requests,
+            github_get_pull_request,
+            github_create_pull_request,
+            github_post_pull_request_comment,
+            github_submit_pull_request_review,
+            github_merge_pull_request,
             mcp_runtime_start,
             mcp_runtime_stop,
             mcp_runtime_restart,
@@ -11840,7 +15792,17 @@ pub fn run() {
             web_search,
             shell_command_validate,
             exec_command,
+            sandbox_setup_start,
+            sandbox_setup_status,
+            engine_run_prepare_context,
+            sandbox_run_prepare,
+            sandbox_exec_command,
+            sandbox_exec_cancel,
+            sandbox_run_diff,
+            sandbox_run_apply,
+            sandbox_run_discard,
             project_list,
+            task_project_context_resolve,
             project_upsert,
             project_delete,
             project_resource_upsert,
@@ -11850,8 +15812,10 @@ pub fn run() {
             project_detach_thread,
             db_save_thread,
             db_list_threads,
+            db_update_thread_title,
             db_update_thread_provider_settings,
             db_update_thread_permission_config,
+            db_update_thread_runner,
             db_delete_thread,
             db_save_message,
             db_update_message_content,
@@ -11871,6 +15835,8 @@ pub fn run() {
             audit_event,
             credential_set,
             credential_get,
+            credential_exists,
+            credential_copy,
             credential_delete,
             fs_list_allowed_folders,
             fs_add_allowed_folder,
@@ -11967,15 +15933,9 @@ pub fn run() {
             skill_improve,
             skill_match,
             skill_auto_generate,
-            // Sessions
-            session_create,
-            session_memory_snapshot,
-            session_end,
-            session_list,
-            session_search,
-            session_freeze_snapshot,
-            session_get,
-            session_delete,
+            // Chat memory and search
+            chat_memory_snapshot,
+            chat_search,
             // Learning
             learning_upsert,
             learning_list,
@@ -12023,6 +15983,7 @@ pub fn run() {
             tool_gateway_list,
             tool_gateway_delete,
             secure_config_migrate,
+            update_backup_create,
             connector_test_reachability,
             gateway_status,
             gateway_health,
@@ -12034,6 +15995,7 @@ pub fn run() {
             crew_provider_health_check,
             crew_provider_models_list,
             openai_compatible_chat_completion,
+            local_daemon_bridge::local_daemon_call,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

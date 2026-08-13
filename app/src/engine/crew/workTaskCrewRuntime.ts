@@ -1,6 +1,8 @@
 import type { CrewLiveEntry, CrewLiveEntryCategory, CrewLiveState } from '../../stores/chatStore'
 import type { Crew, CrewProviderKind } from '../../stores/crewStore'
 import type { WorkTask } from '../../stores/workTasksStore'
+import { normalizeProviderModels, resolveProviderModelFromCatalog } from '../../utils/providerModels'
+import i18n from '../../i18n'
 
 export type CrewExecutionLog = {
   id: string
@@ -38,9 +40,11 @@ export type CrewExecutionResponse = {
 }
 
 export type CrewResolvedProviderConfigs = {
-  openAICompatible: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
-  openRouter: { baseUrl: string; model: string; apiKey: string; timeoutMs: number } | undefined
+  openAICompatible: { profileId?: string; baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
+  openRouter: { profileId?: string; baseUrl: string; model: string; models: string[]; apiKey: string; timeoutMs: number; verifyTlsCertificates: boolean } | undefined
 }
+
+type CrewRuntimeModelConfig = { model?: string } | undefined
 
 const CREW_AGENT_COLORS = [
   '#2563eb',
@@ -74,9 +78,11 @@ function getLocalTimezone(): string {
 
 function buildCurrentRunContext(now = new Date()): string {
   return [
+    'Authoritative runtime clock (live system time; not a simulation):',
     `Current run date: ${now.toLocaleDateString('en-CA')}`,
     `Current run time: ${now.toISOString()}`,
     `Local timezone: ${getLocalTimezone()}`,
+    'This timestamp is ground truth. A date later than the model training cutoff is still the real present date, never "the future".',
   ].join('\n')
 }
 
@@ -101,11 +107,56 @@ function buildFreshNewsGuidelines(task: WorkTask): string {
 
   return [
     'Fresh-news requirements:',
-    '- Treat "today", "latest", and "last 24 hours" relative to the current run date/time above.',
-    '- Use web_search to discover current sources before web_fetch; do not rely on model memory for news.',
+    '- Treat "today", "latest", and "last 24 hours" relative to the authoritative runtime clock above.',
+    '- Never call the runtime date future, simulated, impossible, or invalid. The model training cutoff is irrelevant to live web results.',
+    '- Start with a date-neutral web_search such as "latest world news"; use publication timestamps returned by the tool to enforce the time window.',
+    '- If the first result set is empty or irrelevant, retry with a different date-neutral or publisher/topic-specific query. Do not stop after one poor search.',
+    '- Use web_fetch on the strongest discovered sources; do not rely on model memory for current news.',
     '- Include source URLs and publication dates for every factual news item.',
     '- If web_search or web_fetch is unavailable, say the report cannot be verified instead of inventing news.',
+    '- A runtime date newer than model training is never, by itself, a reason to claim that sources do not exist.',
     '- Exclude items older than the requested freshness window unless explicitly labeled as background.',
+  ].join('\n')
+}
+
+export function resolveWorkTaskResponseLanguage(
+  task: Pick<WorkTask, 'title' | 'prompt'>,
+  appLanguage = i18n.resolvedLanguage ?? i18n.language ?? 'en',
+): 'English' | 'German' {
+  const prompt = `${task.title}\n${task.prompt}`.trim()
+  if (/\b(?:answer|respond|write|output)\s+in\s+(?:the\s+)?(?:english|englisch)\b|(?:auf|in)\s+englisch\b/i.test(prompt)) {
+    return 'English'
+  }
+  if (/\b(?:answer|respond|write|output)\s+in\s+(?:the\s+)?(?:german|deutsch)\b|(?:auf|in)\s+deutsch\b/i.test(prompt)) {
+    return 'German'
+  }
+
+  const words = prompt.toLocaleLowerCase().match(/[\p{L}]+/gu) ?? []
+  const germanWords = new Set([
+    'der', 'die', 'das', 'den', 'dem', 'ein', 'eine', 'einen', 'einem', 'und', 'oder',
+    'ist', 'sind', 'mit', 'für', 'von', 'im', 'auf', 'bitte', 'erstelle', 'schreibe',
+    'antworte', 'fasse', 'zusammen', 'nachrichten', 'heute', 'quelle', 'quellen',
+  ])
+  const englishWords = new Set([
+    'the', 'this', 'that', 'an', 'and', 'or', 'is', 'are', 'with', 'for', 'from', 'please',
+    'create', 'write', 'answer', 'respond', 'summarize', 'news', 'today', 'source', 'sources',
+    'report', 'current',
+  ])
+  const germanScore = words.filter((word) => germanWords.has(word)).length
+  const englishScore = words.filter((word) => englishWords.has(word)).length
+  if (germanScore > englishScore) return 'German'
+  if (englishScore > germanScore) return 'English'
+  return appLanguage.toLocaleLowerCase().startsWith('de') ? 'German' : 'English'
+}
+
+function buildResponseLanguageGuidelines(task: WorkTask): string {
+  const language = resolveWorkTaskResponseLanguage(task)
+  return [
+    'Response-language contract:',
+    `- Required final-output language: ${language}.`,
+    '- An explicit language request in the work-task prompt has highest priority; otherwise use the prompt language, then the selected interface language.',
+    '- This contract overrides fixed language defaults in Crew guidelines, agent profiles, and Crew task descriptions.',
+    '- Keep source titles, URLs, code, and proper names unchanged when appropriate.',
   ].join('\n')
 }
 
@@ -151,20 +202,55 @@ export function resolveCrewRuntimeConfig(crew: Crew, fallbackConfig: { baseUrl: 
 }
 
 export function resolveExternalProviderConfig(
-  config: { enabled: boolean; baseUrl: string; model: string; apiKey: string; timeoutMs: number },
-  fallbackConfig: { baseUrl?: string; model?: string; apiKey?: string } | undefined,
+  config: { enabled: boolean; baseUrl: string; model: string; apiKey: string; timeoutMs: number; verifyTlsCertificates?: boolean } | undefined,
+  fallbackConfig: { id?: string; baseUrl?: string; model?: string; apiKey?: string; timeoutMs?: number; verifyTlsCertificates?: boolean } | undefined,
   fallbackBaseUrl: string,
+  availableModels: string[] = [],
 ) {
-  if (!config.enabled) {
+  if (!config?.enabled && !fallbackConfig) {
     return undefined
   }
 
+  // Provider profiles are managed centrally in Settings. Crews created by older
+  // versions can still contain a copied provider profile, so retain it only as a
+  // field-level fallback instead of letting stale endpoint/model values override
+  // the current Settings profile.
+  const legacyCrewConfig = config?.enabled ? config : undefined
+  const models = normalizeProviderModels(availableModels)
+  const configuredModel = fallbackConfig?.model?.trim() || legacyCrewConfig?.model.trim() || ''
   return {
-    baseUrl: config.baseUrl.trim() || fallbackConfig?.baseUrl?.trim() || fallbackBaseUrl,
-    model: config.model.trim() || fallbackConfig?.model?.trim() || '',
-    apiKey: config.apiKey.trim() || fallbackConfig?.apiKey?.trim() || '',
-    timeoutMs: Math.max(1000, config.timeoutMs || 600000),
+    profileId: fallbackConfig?.id,
+    baseUrl: fallbackConfig?.baseUrl?.trim() || legacyCrewConfig?.baseUrl.trim() || fallbackBaseUrl,
+    model: resolveProviderModelFromCatalog(configuredModel, models),
+    models,
+    apiKey: fallbackConfig?.apiKey?.trim() || legacyCrewConfig?.apiKey.trim() || '',
+    timeoutMs: Math.max(1000, fallbackConfig?.timeoutMs || legacyCrewConfig?.timeoutMs || 600000),
+    verifyTlsCertificates: fallbackConfig?.verifyTlsCertificates
+      ?? legacyCrewConfig?.verifyTlsCertificates
+      ?? true,
   }
+}
+
+export function resolveEffectiveCrewProvider(
+  requestedProvider: CrewProviderKind,
+  config: CrewRuntimeModelConfig,
+  providerConfigs: CrewResolvedProviderConfigs | undefined,
+): CrewProviderKind {
+  const hasModel = (provider: CrewProviderKind) => {
+    if (provider === 'ollama') return Boolean(config?.model?.trim())
+    if (provider === 'openai-compatible') return Boolean(providerConfigs?.openAICompatible?.model.trim())
+    return Boolean(providerConfigs?.openRouter?.model.trim())
+  }
+
+  if (hasModel(requestedProvider)) return requestedProvider
+
+  const fallbackOrder: CrewProviderKind[] = requestedProvider === 'openrouter'
+    ? ['openai-compatible', 'ollama']
+    : requestedProvider === 'openai-compatible'
+      ? ['openrouter', 'ollama']
+      : ['openrouter', 'openai-compatible']
+
+  return fallbackOrder.find(hasModel) ?? requestedProvider
 }
 
 export function applyCrewDefaultModel(
@@ -224,6 +310,7 @@ export function buildWorkTaskCrewGuidelines(crew: Crew, task: WorkTask): string 
     task.prompt.trim(),
     task.expectedOutput.trim() ? `Expected overall result:\n${task.expectedOutput.trim()}` : '',
     buildFreshNewsGuidelines(task),
+    buildResponseLanguageGuidelines(task),
   ].filter(Boolean).join('\n\n')
 
   return [

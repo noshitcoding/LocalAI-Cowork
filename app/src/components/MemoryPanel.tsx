@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BookOpen, Camera, Plus, Trash2, Upload } from 'lucide-react'
 import { useMemoryStore, type MemoryEntry } from '../stores/memoryStore'
+import { useChatStore } from '../stores/chatStore'
 import i18n, { tr } from '../i18n'
 
 type MemoryTab = 'knowledge' | 'entries' | 'profile' | 'providers' | 'hints'
@@ -29,6 +30,7 @@ function formatDateTime(value: string): string {
 }
 
 export default function MemoryPanel() {
+  const activeThreadId = useChatStore((state) => state.activeThreadId)
   const {
     entries, searchResults, profileEntries, providers, hints, lastSnapshot,
     loading, error,
@@ -56,8 +58,13 @@ export default function MemoryPanel() {
   const [knowledgeResult, setKnowledgeResult] = useState<string | null>(null)
 
   useEffect(() => {
-    void loadEntries(filterScope || undefined, undefined, 200)
-  }, [filterScope, loadEntries])
+    void loadEntries(
+      filterScope || undefined,
+      undefined,
+      200,
+      filterScope === 'chat' ? activeThreadId : null,
+    )
+  }, [activeThreadId, filterScope, loadEntries])
 
   useEffect(() => {
     if (tab === 'profile') void loadProfile()
@@ -71,16 +78,30 @@ export default function MemoryPanel() {
 
   const handleAdd = async () => {
     if (!newEntry.key.trim() || !newEntry.content.trim()) return
-    await upsertEntry({ id: randomId(), ...newEntry })
+    await upsertEntry({
+      id: randomId(),
+      ...newEntry,
+      scopeRef: newEntry.scope === 'chat' ? activeThreadId : null,
+    })
     setShowAdd(false)
     setNewEntry({ scope: 'agent', category: 'general', key: '', content: '' })
-    void loadEntries(filterScope || undefined)
+    void loadEntries(
+      filterScope || undefined,
+      undefined,
+      200,
+      filterScope === 'chat' ? activeThreadId : null,
+    )
   }
 
   const handleCompact = async () => {
     const result = await compactEntries(compactScope, compactMinConf)
     setCompactResult(`${result.removed} ${tr('removed')}, ${result.remaining} ${tr('remaining')}`)
-    void loadEntries(filterScope || undefined)
+    void loadEntries(
+      filterScope || undefined,
+      undefined,
+      200,
+      filterScope === 'chat' ? activeThreadId : null,
+    )
   }
 
   const handleSnapshot = async () => {
@@ -225,7 +246,7 @@ export default function MemoryPanel() {
               <option value="">{tr("All Scopes")}</option>
               <option value="agent">{tr("Agent")}</option>
               <option value="user">{tr("User")}</option>
-              <option value="session">{tr("Session")}</option>
+              <option value="chat">{tr("Chat")}</option>
               <option value="shared">{tr("Shared")}</option>
             </select>
             <button type="button" className="btn-sm" onClick={() => setShowAdd(!showAdd)}>{tr("New")}</button>
@@ -237,7 +258,7 @@ export default function MemoryPanel() {
                 <label>{tr("Scope")}<select value={newEntry.scope} onChange={(e) => setNewEntry({ ...newEntry, scope: e.target.value })}>
                   <option value="agent">{tr("Agent")}</option>
                   <option value="user">{tr("User")}</option>
-                  <option value="session">{tr("Session")}</option>
+                  <option value="chat">{tr("Chat")}</option>
                   <option value="shared">{tr("Shared")}</option>
                 </select>
                 </label>
@@ -256,7 +277,6 @@ export default function MemoryPanel() {
             <select className="memory-select memory-compact-select" value={compactScope} onChange={(e) => setCompactScope(e.target.value)} aria-label={tr("Scope")}>
               <option value="agent">{tr("Agent")}</option>
               <option value="user">{tr("User")}</option>
-              <option value="session">{tr("Session")}</option>
             </select>
             <input
               type="number"

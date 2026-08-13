@@ -452,9 +452,9 @@ const TEXTUAL_TOOL_NAME_ALIASES: Record<string, string> = {
   memory_write: 'MemoryWrite',
   memory: 'MemoryWrite',
   remember: 'MemoryWrite',
-  sessionsearch: 'SessionSearch',
-  session_search: 'SessionSearch',
-  search_sessions: 'SessionSearch',
+  chatsearch: 'ChatSearch',
+  chat_search: 'ChatSearch',
+  search_chats: 'ChatSearch',
   // Thinking
   think: 'Think',
   reasoning: 'Think',

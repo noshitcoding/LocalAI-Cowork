@@ -14,7 +14,7 @@ use crate::sensitive_data::{
     MAX_LOG_SUMMARY_BYTES, MAX_LOG_TEXT_BYTES,
 };
 
-const LATEST_SCHEMA_VERSION: i64 = 23;
+const LATEST_SCHEMA_VERSION: i64 = 27;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PRE_MIGRATION_BACKUPS: usize = 3;
 const MAX_ENGINE_EVENTS_PER_RUN: i64 = 2_000;
@@ -25,6 +25,75 @@ const MAX_AUDIT_EVENTS: i64 = 10_000;
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProfileRow {
+    pub id: String,
+    pub name: String,
+    pub preset: String,
+    pub auth_mode: String,
+    pub base_url: String,
+    pub model: String,
+    pub timeout_ms: i64,
+    pub verify_tls_certificates: bool,
+    pub context_window: Option<i64>,
+    pub temperature: Option<f64>,
+    pub is_example: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppBackendDefaultsRow {
+    pub backend: Option<String>,
+    pub api_profile_id: Option<String>,
+    pub setup_completed: bool,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAuthProfileRow {
+    pub id: String,
+    pub name: String,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+    pub plan_type: Option<String>,
+    pub priority: i64,
+    pub status: String,
+    pub cooldown_until: Option<String>,
+    pub quota_json: Option<String>,
+    pub quota_reset_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadBindingRow {
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub member_id: String,
+    pub auth_profile_id: String,
+    pub codex_thread_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFallbackApprovalRow {
+    pub id: String,
+    pub run_id: String,
+    pub api_profile_id: Option<String>,
+    pub status: String,
+    pub reason: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub consumed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -217,6 +286,81 @@ fn prune_pre_migration_backups(backup_dir: &Path, keep: usize) {
     }
 }
 
+fn is_snapshot_secret_key(key: &str) -> bool {
+    let compact = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        compact.as_str(),
+        "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "chatgptauthtokens"
+            | "authorization"
+            | "clientsecret"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "headers"
+            | "env"
+    ) || compact.ends_with("accesstoken")
+        || compact.ends_with("refreshtoken")
+        || compact.ends_with("clientsecret")
+}
+
+fn strip_snapshot_secrets(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.retain(|key, _| !is_snapshot_secret_key(key));
+            for value in object.values_mut() {
+                strip_snapshot_secrets(value);
+            }
+        }
+        serde_json::Value::Array(entries) => {
+            for value in entries {
+                strip_snapshot_secrets(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_runtime_snapshot_json(input: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(input) else {
+        return redact_and_bound_json_text(input, MAX_LOG_JSON_BYTES);
+    };
+    strip_snapshot_secrets(&mut value);
+    redact_and_bound_json_text(&value.to_string(), MAX_LOG_JSON_BYTES)
+}
+
+fn sanitize_optional_runtime_snapshot_json(input: Option<&str>) -> Option<String> {
+    input.map(sanitize_runtime_snapshot_json)
+}
+
+fn sanitize_snapshot_column(conn: &Connection, table: &str, column: &str) -> SqlResult<()> {
+    let rows = {
+        let mut statement = conn.prepare(&format!(
+            "SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"
+        ))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+        rows
+    };
+    for (id, snapshot) in rows {
+        let sanitized = sanitize_runtime_snapshot_json(&snapshot);
+        conn.execute(
+            &format!("UPDATE {table} SET {column} = ?2 WHERE id = ?1"),
+            params![id, sanitized],
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRow {
     pub id: String,
@@ -234,6 +378,8 @@ pub struct ProjectResourceRow {
     pub path: String,
     pub label: Option<String>,
     pub enabled: bool,
+    pub access: String,
+    pub is_primary: bool,
     pub added_at: String,
 }
 
@@ -256,6 +402,7 @@ pub struct WorkTaskRow {
     pub last_run_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub backend_selection_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,7 +412,8 @@ pub struct MemoryEntryRow {
     pub category: String,
     pub key: String,
     pub content: String,
-    pub source_session_id: Option<String>,
+    pub scope_ref: Option<String>,
+    pub source_run_id: Option<String>,
     pub confidence: f64,
     pub access_count: i32,
     pub last_accessed_at: Option<String>,
@@ -305,25 +453,10 @@ pub struct SkillRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionRow {
-    pub id: String,
-    pub thread_id: Option<String>,
-    pub title: String,
-    pub summary: Option<String>,
-    pub model_used: Option<String>,
-    pub provider: Option<String>,
-    pub personality: Option<String>,
-    pub total_messages: i32,
-    pub total_tokens_est: i64,
-    pub outcome: Option<String>,
-    pub started_at: String,
-    pub ended_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningOutcomeRow {
     pub id: String,
-    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub thread_id: Option<String>,
     pub task_id: Option<String>,
     pub outcome_type: String,
     pub description: String,
@@ -386,7 +519,8 @@ pub struct InsightsEventRow {
     pub category: String,
     pub value_num: Option<f64>,
     pub value_text: Option<String>,
-    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub thread_id: Option<String>,
     pub metadata_json: Option<String>,
     pub created_at: String,
 }
@@ -426,12 +560,10 @@ pub struct ToolGatewayRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionSearchResultRow {
-    pub session_id: String,
-    pub session_title: String,
-    pub session_summary: Option<String>,
-    pub started_at: String,
-    pub ended_at: Option<String>,
+pub struct ChatSearchResultRow {
+    pub thread_id: String,
+    pub thread_title: String,
+    pub updated_at: String,
     pub matched_message_id: Option<String>,
     pub matched_content: Option<String>,
     pub matched_role: Option<String>,
@@ -443,7 +575,6 @@ pub struct EngineRunRow {
     pub id: String,
     pub parent_run_id: Option<String>,
     pub thread_id: Option<String>,
-    pub session_id: Option<String>,
     pub title: String,
     pub input_summary: Option<String>,
     pub source: String,
@@ -464,6 +595,10 @@ pub struct EngineRunRow {
     pub result_summary: Option<String>,
     pub error: Option<String>,
     pub metadata_json: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens_est: i64,
+    pub cost_usd: f64,
     pub created_at: String,
     pub updated_at: String,
     pub started_at: Option<String>,
@@ -607,32 +742,35 @@ fn map_engine_run_row(row: &rusqlite::Row) -> SqlResult<EngineRunRow> {
         id: row.get(0)?,
         parent_run_id: row.get(1)?,
         thread_id: row.get(2)?,
-        session_id: row.get(3)?,
-        title: row.get(4)?,
-        input_summary: row.get(5)?,
-        status: row.get(6)?,
-        phase: row.get(7)?,
-        cwd: row.get(8)?,
-        model: row.get(9)?,
-        provider: row.get(10)?,
-        retry_count: row.get(11)?,
-        resumed_from_run_id: row.get(12)?,
-        checkpoint_json: row.get(13)?,
-        result_summary: row.get(14)?,
-        error: row.get(15)?,
-        metadata_json: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
-        started_at: row.get(19)?,
-        ended_at: row.get(20)?,
-        canceled_at: row.get(21)?,
-        source: row.get(22)?,
-        workspace_path: row.get(23)?,
-        provider_profile_id: row.get(24)?,
-        runtime_mode: row.get(25)?,
-        toolset_policy_id: row.get(26)?,
-        channel_kind: row.get(27)?,
-        channel_ref: row.get(28)?,
+        title: row.get(3)?,
+        input_summary: row.get(4)?,
+        status: row.get(5)?,
+        phase: row.get(6)?,
+        cwd: row.get(7)?,
+        model: row.get(8)?,
+        provider: row.get(9)?,
+        retry_count: row.get(10)?,
+        resumed_from_run_id: row.get(11)?,
+        checkpoint_json: row.get(12)?,
+        result_summary: row.get(13)?,
+        error: row.get(14)?,
+        metadata_json: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+        started_at: row.get(18)?,
+        ended_at: row.get(19)?,
+        canceled_at: row.get(20)?,
+        source: row.get(21)?,
+        workspace_path: row.get(22)?,
+        provider_profile_id: row.get(23)?,
+        runtime_mode: row.get(24)?,
+        toolset_policy_id: row.get(25)?,
+        channel_kind: row.get(26)?,
+        channel_ref: row.get(27)?,
+        input_tokens: row.get(28)?,
+        output_tokens: row.get(29)?,
+        total_tokens_est: row.get(30)?,
+        cost_usd: row.get(31)?,
     })
 }
 
@@ -668,9 +806,10 @@ fn map_insights_row(row: &rusqlite::Row) -> SqlResult<InsightsEventRow> {
         category: row.get(2)?,
         value_num: row.get(3)?,
         value_text: row.get(4)?,
-        session_id: row.get(5)?,
-        metadata_json: row.get(6)?,
-        created_at: row.get(7)?,
+        run_id: row.get(5)?,
+        thread_id: row.get(6)?,
+        metadata_json: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 fn map_worker_sandbox_row(row: &rusqlite::Row) -> SqlResult<WorkerSandboxRow> {
@@ -744,11 +883,27 @@ impl Database {
         ensure_database_integrity(&conn)
     }
 
+    pub fn create_update_backup(&self, backup_path: &Path) -> SqlResult<()> {
+        let parent = backup_path
+            .parent()
+            .ok_or_else(|| rusqlite::Error::InvalidPath(backup_path.to_path_buf()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|_| rusqlite::Error::InvalidPath(parent.to_path_buf()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.backup(MAIN_DB, backup_path, None)?;
+        let backup = Connection::open(backup_path)?;
+        ensure_database_integrity(&backup)
+    }
+
     fn migrate(&self) -> SqlResult<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")?;
         let transaction =
             rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
         conn.execute_batch(
@@ -1644,7 +1799,757 @@ impl Database {
             )?;
         }
 
-        transaction.commit()
+        if version < 24 {
+            add_column_if_missing(
+                &conn,
+                "chat_threads",
+                "runner",
+                "runner TEXT NOT NULL DEFAULT 'model'",
+            )?;
+            add_column_if_missing(&conn, "chat_threads", "crew_id", "crew_id TEXT")?;
+            conn.execute("UPDATE schema_version SET version = 24", [])?;
+        }
+
+        if version < 25 {
+            add_column_if_missing(
+                &conn,
+                "chat_threads",
+                "memory_snapshot_json",
+                "memory_snapshot_json TEXT",
+            )?;
+            conn.execute_batch(
+                "UPDATE chat_threads
+                    SET memory_snapshot_json = (
+                        SELECT s.memory_snapshot_json
+                        FROM sessions s
+                        WHERE s.thread_id = chat_threads.id
+                          AND s.memory_snapshot_json IS NOT NULL
+                        ORDER BY COALESCE(s.ended_at, s.started_at) DESC
+                        LIMIT 1
+                    )
+                  WHERE memory_snapshot_json IS NULL;
+
+                ALTER TABLE engine_runs RENAME TO engine_runs_legacy;
+                CREATE TABLE engine_runs (
+                    id TEXT PRIMARY KEY,
+                    parent_run_id TEXT,
+                    thread_id TEXT,
+                    title TEXT NOT NULL,
+                    input_summary TEXT,
+                    source TEXT NOT NULL DEFAULT 'desktop',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    phase TEXT NOT NULL DEFAULT 'queued',
+                    cwd TEXT,
+                    workspace_path TEXT,
+                    model TEXT,
+                    provider TEXT,
+                    provider_profile_id TEXT,
+                    runtime_mode TEXT NOT NULL DEFAULT 'host',
+                    toolset_policy_id TEXT,
+                    channel_kind TEXT,
+                    channel_ref TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    resumed_from_run_id TEXT,
+                    checkpoint_json TEXT,
+                    result_summary TEXT,
+                    error TEXT,
+                    metadata_json TEXT,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens_est INTEGER NOT NULL DEFAULT 0,
+                    cost_usd REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    ended_at TEXT,
+                    canceled_at TEXT,
+                    FOREIGN KEY(parent_run_id) REFERENCES engine_runs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL,
+                    FOREIGN KEY(resumed_from_run_id) REFERENCES engine_runs(id) ON DELETE SET NULL
+                );
+
+                INSERT INTO engine_runs (
+                    id, parent_run_id, thread_id, title, input_summary, source, status, phase,
+                    cwd, workspace_path, model, provider, provider_profile_id, runtime_mode,
+                    toolset_policy_id, channel_kind, channel_ref, retry_count, resumed_from_run_id,
+                    checkpoint_json, result_summary, error, metadata_json,
+                    input_tokens, output_tokens, total_tokens_est, cost_usd,
+                    created_at, updated_at, started_at, ended_at, canceled_at
+                )
+                SELECT
+                    id, parent_run_id, thread_id, title, input_summary, source, status, phase,
+                    cwd, workspace_path, model, provider, provider_profile_id, runtime_mode,
+                    toolset_policy_id, channel_kind, channel_ref, retry_count, resumed_from_run_id,
+                    checkpoint_json, result_summary, error, metadata_json,
+                    0, 0, 0, 0,
+                    created_at, updated_at, started_at, ended_at, canceled_at
+                FROM engine_runs_legacy;
+
+                ALTER TABLE learning_outcomes RENAME TO learning_outcomes_legacy;
+                CREATE TABLE learning_outcomes (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    thread_id TEXT,
+                    task_id TEXT,
+                    outcome_type TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    learned_pattern TEXT,
+                    confidence REAL NOT NULL DEFAULT 0.5,
+                    applied_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES engine_runs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+                );
+                INSERT INTO learning_outcomes (
+                    id, run_id, thread_id, task_id, outcome_type, description,
+                    learned_pattern, confidence, applied_count, created_at
+                )
+                SELECT
+                    l.id,
+                    (SELECT r.id FROM engine_runs_legacy r WHERE r.session_id = l.session_id ORDER BY r.created_at DESC LIMIT 1),
+                    (SELECT s.thread_id FROM sessions s WHERE s.id = l.session_id),
+                    l.task_id, l.outcome_type, l.description, l.learned_pattern,
+                    l.confidence, l.applied_count, l.created_at
+                FROM learning_outcomes_legacy l;
+                DROP TABLE learning_outcomes_legacy;
+
+                ALTER TABLE insights_events RENAME TO insights_events_legacy;
+                CREATE TABLE insights_events (
+                    id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    value_num REAL,
+                    value_text TEXT,
+                    run_id TEXT,
+                    thread_id TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES engine_runs(id) ON DELETE SET NULL,
+                    FOREIGN KEY(thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL
+                );
+                INSERT INTO insights_events (
+                    id, event_type, category, value_num, value_text,
+                    run_id, thread_id, metadata_json, created_at
+                )
+                SELECT
+                    i.id, i.event_type, i.category, i.value_num, i.value_text,
+                    (SELECT r.id FROM engine_runs_legacy r WHERE r.session_id = i.session_id ORDER BY r.created_at DESC LIMIT 1),
+                    (SELECT s.thread_id FROM sessions s WHERE s.id = i.session_id),
+                    i.metadata_json, i.created_at
+                FROM insights_events_legacy i;
+                INSERT OR IGNORE INTO insights_events (
+                    id, event_type, category, value_num, value_text, thread_id, metadata_json, created_at
+                )
+                SELECT
+                    'legacy-chat-usage-' || s.id,
+                    'legacy_chat_usage_import',
+                    'chat_usage',
+                    s.total_tokens_est,
+                    s.title,
+                    s.thread_id,
+                    json_object(
+                        'totalMessages', s.total_messages,
+                        'model', s.model_used,
+                        'provider', s.provider,
+                        'outcome', s.outcome
+                    ),
+                    s.started_at
+                FROM sessions s;
+                DROP TABLE insights_events_legacy;
+
+                ALTER TABLE memory_entries RENAME TO memory_entries_legacy;
+                CREATE TABLE memory_entries (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL DEFAULT 'agent',
+                    scope_ref TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'general',
+                    key TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source_run_id TEXT,
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    access_count INTEGER NOT NULL DEFAULT 0,
+                    last_accessed_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(scope, scope_ref, category, key),
+                    FOREIGN KEY(source_run_id) REFERENCES engine_runs(id) ON DELETE SET NULL
+                );
+                INSERT INTO memory_entries (
+                    id, scope, scope_ref, category, key, content, source_run_id,
+                    confidence, access_count, last_accessed_at, created_at, updated_at
+                )
+                SELECT
+                    m.id,
+                    CASE
+                        WHEN m.scope = 'session' AND EXISTS(SELECT 1 FROM sessions s WHERE s.id = m.source_session_id AND s.thread_id IS NOT NULL) THEN 'chat'
+                        WHEN m.scope = 'session' THEN 'legacy'
+                        ELSE m.scope
+                    END,
+                    COALESCE(CASE
+                        WHEN m.scope = 'session' THEN (SELECT s.thread_id FROM sessions s WHERE s.id = m.source_session_id)
+                        ELSE ''
+                    END, ''),
+                    m.category, m.key, m.content,
+                    COALESCE(
+                        (SELECT r.id FROM engine_runs_legacy r WHERE r.id = m.source_session_id),
+                        (SELECT r.id FROM engine_runs_legacy r WHERE r.session_id = m.source_session_id ORDER BY r.created_at DESC LIMIT 1)
+                    ),
+                    m.confidence, m.access_count, m.last_accessed_at, m.created_at, m.updated_at
+                FROM memory_entries_legacy m;
+                DROP TABLE memory_entries_legacy;
+
+                DROP TABLE engine_runs_legacy;
+                DROP TABLE sessions;
+
+                CREATE INDEX idx_engine_runs_status ON engine_runs(status, updated_at DESC);
+                CREATE INDEX idx_engine_runs_parent ON engine_runs(parent_run_id, created_at DESC);
+                CREATE INDEX idx_engine_runs_thread ON engine_runs(thread_id, created_at DESC);
+                CREATE INDEX idx_learning_outcomes_run ON learning_outcomes(run_id);
+                CREATE INDEX idx_learning_outcomes_thread ON learning_outcomes(thread_id);
+                CREATE INDEX idx_insights_events_type ON insights_events(event_type, created_at DESC);
+                CREATE INDEX idx_insights_events_category ON insights_events(category, created_at DESC);
+                CREATE INDEX idx_memory_scope_cat ON memory_entries(scope, scope_ref, category);
+                CREATE INDEX idx_memory_key ON memory_entries(key);
+
+                UPDATE schema_version SET version = 25;",
+            )?;
+        }
+
+        if version < 26 {
+            add_column_if_missing(
+                &conn,
+                "project_resources",
+                "access",
+                "access TEXT NOT NULL DEFAULT 'read_write' CHECK(access IN ('read_only', 'read_write'))",
+            )?;
+            add_column_if_missing(
+                &conn,
+                "project_resources",
+                "is_primary",
+                "is_primary INTEGER NOT NULL DEFAULT 0",
+            )?;
+            conn.execute(
+                "UPDATE project_resources
+                 SET is_primary = 1
+                 WHERE id IN (
+                   SELECT MIN(id) FROM project_resources
+                   WHERE enabled = 1 AND kind = 'folder' AND access = 'read_write'
+                   GROUP BY project_id
+                 )",
+                [],
+            )?;
+            conn.execute("UPDATE schema_version SET version = 26", [])?;
+        }
+
+        if version < 27 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS api_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    preset TEXT NOT NULL CHECK(preset IN ('ollama', 'openrouter', 'openai', 'custom')),
+                    auth_mode TEXT NOT NULL CHECK(auth_mode IN ('none', 'bearer')),
+                    base_url TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    timeout_ms INTEGER NOT NULL DEFAULT 600000,
+                    verify_tls_certificates INTEGER NOT NULL DEFAULT 1,
+                    context_window INTEGER,
+                    temperature REAL,
+                    is_example INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS app_backend_defaults (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    backend TEXT CHECK(backend IN ('codex', 'openai-compatible')),
+                    api_profile_id TEXT REFERENCES api_profiles(id) ON DELETE SET NULL,
+                    setup_completed INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS codex_auth_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    email TEXT,
+                    account_id TEXT,
+                    plan_type TEXT,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'signed_out'
+                      CHECK(status IN ('signed_out', 'login_pending', 'ready', 'limited', 'requires_reauth', 'unavailable')),
+                    cooldown_until TEXT,
+                    quota_json TEXT,
+                    quota_reset_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS codex_thread_bindings (
+                    owner_kind TEXT NOT NULL CHECK(owner_kind IN ('chat', 'task', 'schedule', 'crew')),
+                    owner_id TEXT NOT NULL,
+                    member_id TEXT NOT NULL DEFAULT '',
+                    auth_profile_id TEXT NOT NULL,
+                    codex_thread_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(owner_kind, owner_id, member_id, auth_profile_id),
+                    FOREIGN KEY(auth_profile_id) REFERENCES codex_auth_profiles(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_fallback_approvals (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL UNIQUE,
+                    api_profile_id TEXT REFERENCES api_profiles(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                      CHECK(status IN ('pending', 'approved', 'denied', 'consumed')),
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    consumed_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_codex_profiles_priority
+                  ON codex_auth_profiles(priority ASC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_codex_bindings_owner
+                  ON codex_thread_bindings(owner_kind, owner_id, member_id);
+                CREATE INDEX IF NOT EXISTS idx_provider_fallback_status
+                  ON provider_fallback_approvals(status, created_at DESC);
+
+                INSERT OR IGNORE INTO api_profiles (
+                    id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+                ) VALUES
+                  ('default-ollama', 'Ollama', 'ollama', 'none', 'http://localhost:11434/v1', 'llama3.1:8b', 600000, 1, 128000, 0.1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                  ('default-openrouter', 'OpenRouter', 'openrouter', 'bearer', 'https://openrouter.ai/api/v1', '', 600000, 1, 128000, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                  ('default-openai-compatible', 'OpenAI', 'openai', 'bearer', 'https://api.openai.com/v1', 'gpt-4.1-mini', 600000, 1, 128000, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+                INSERT OR IGNORE INTO app_backend_defaults (
+                    singleton, backend, api_profile_id, setup_completed, updated_at
+                ) VALUES (1, NULL, 'default-ollama', 0, CURRENT_TIMESTAMP);
+
+                UPDATE schema_version SET version = 27;",
+            )?;
+            sanitize_snapshot_column(&conn, "scheduled_tasks", "crew_snapshot_json")?;
+            sanitize_snapshot_column(&conn, "scheduled_tasks", "model_config_json")?;
+            sanitize_snapshot_column(&conn, "crew_runs", "crew_snapshot_json")?;
+        }
+
+        // Kept idempotent for pre-release v27 databases created before task backend pinning.
+        add_column_if_missing(
+            &conn,
+            "work_tasks",
+            "backend_selection_json",
+            "backend_selection_json TEXT",
+        )?;
+
+        transaction.commit()?;
+        conn.execute_batch("PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;")?;
+        Ok(())
+    }
+
+    // -- Backend profiles (schema v27) --
+
+    pub fn list_api_profiles(&self) -> SqlResult<Vec<ApiProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+             FROM api_profiles ORDER BY is_example DESC, name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ApiProfileRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                preset: row.get(2)?,
+                auth_mode: row.get(3)?,
+                base_url: row.get(4)?,
+                model: row.get(5)?,
+                timeout_ms: row.get(6)?,
+                verify_tls_certificates: row.get(7)?,
+                context_window: row.get(8)?,
+                temperature: row.get(9)?,
+                is_example: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_api_profile(&self, id: &str) -> SqlResult<Option<ApiProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT id, name, preset, auth_mode, base_url, model, timeout_ms,
+                    verify_tls_certificates, context_window, temperature, is_example,
+                    created_at, updated_at
+             FROM api_profiles WHERE id = ?1 LIMIT 1",
+            params![id],
+            |row| {
+                Ok(ApiProfileRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    preset: row.get(2)?,
+                    auth_mode: row.get(3)?,
+                    base_url: row.get(4)?,
+                    model: row.get(5)?,
+                    timeout_ms: row.get(6)?,
+                    verify_tls_certificates: row.get(7)?,
+                    context_window: row.get(8)?,
+                    temperature: row.get(9)?,
+                    is_example: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn upsert_api_profile(&self, profile: &ApiProfileRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO api_profiles (
+                id, name, preset, auth_mode, base_url, model, timeout_ms,
+                verify_tls_certificates, context_window, temperature, is_example,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, preset=excluded.preset, auth_mode=excluded.auth_mode,
+               base_url=excluded.base_url, model=excluded.model, timeout_ms=excluded.timeout_ms,
+               verify_tls_certificates=excluded.verify_tls_certificates,
+               context_window=excluded.context_window, temperature=excluded.temperature,
+               updated_at=excluded.updated_at",
+            params![
+                profile.id,
+                profile.name,
+                profile.preset,
+                profile.auth_mode,
+                profile.base_url,
+                profile.model,
+                profile.timeout_ms,
+                profile.verify_tls_certificates,
+                profile.context_window,
+                profile.temperature,
+                profile.is_example,
+                profile.created_at,
+                profile.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_api_profile(&self, id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "DELETE FROM api_profiles
+             WHERE id = ?1
+               AND id != COALESCE((SELECT api_profile_id FROM app_backend_defaults WHERE singleton = 1), '')",
+            params![id],
+        )
+    }
+
+    pub fn get_app_backend_defaults(&self) -> SqlResult<AppBackendDefaultsRow> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT backend, api_profile_id, setup_completed, updated_at
+             FROM app_backend_defaults WHERE singleton = 1",
+            [],
+            |row| {
+                Ok(AppBackendDefaultsRow {
+                    backend: row.get(0)?,
+                    api_profile_id: row.get(1)?,
+                    setup_completed: row.get::<_, i64>(2)? != 0,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+    }
+
+    pub fn upsert_app_backend_defaults(&self, defaults: &AppBackendDefaultsRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO app_backend_defaults (
+               singleton, backend, api_profile_id, setup_completed, updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(singleton) DO UPDATE SET
+               backend=excluded.backend,
+               api_profile_id=excluded.api_profile_id,
+               setup_completed=excluded.setup_completed,
+               updated_at=excluded.updated_at",
+            params![
+                defaults.backend,
+                defaults.api_profile_id,
+                defaults.setup_completed as i32,
+                defaults.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_default_api_profile(&self, profile_id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE app_backend_defaults
+             SET api_profile_id = ?1, updated_at = CURRENT_TIMESTAMP
+             WHERE singleton = 1 AND EXISTS (SELECT 1 FROM api_profiles WHERE id = ?1)",
+            params![profile_id],
+        )
+    }
+
+    pub fn list_codex_auth_profiles(&self) -> SqlResult<Vec<CodexAuthProfileRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, email, account_id, plan_type, priority, status,
+                    cooldown_until, quota_json, quota_reset_at, created_at, updated_at
+             FROM codex_auth_profiles ORDER BY priority ASC, created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CodexAuthProfileRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                email: row.get(2)?,
+                account_id: row.get(3)?,
+                plan_type: row.get(4)?,
+                priority: row.get(5)?,
+                status: row.get(6)?,
+                cooldown_until: row.get(7)?,
+                quota_json: row.get(8)?,
+                quota_reset_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_codex_auth_profile(&self, profile: &CodexAuthProfileRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO codex_auth_profiles (
+                id, name, email, account_id, plan_type, priority, status,
+                cooldown_until, quota_json, quota_reset_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+               name=excluded.name, email=excluded.email, account_id=excluded.account_id,
+               plan_type=excluded.plan_type, priority=excluded.priority, status=excluded.status,
+               cooldown_until=excluded.cooldown_until, quota_json=excluded.quota_json,
+               quota_reset_at=excluded.quota_reset_at, updated_at=excluded.updated_at",
+            params![
+                profile.id,
+                profile.name,
+                profile.email,
+                profile.account_id,
+                profile.plan_type,
+                profile.priority,
+                profile.status,
+                profile.cooldown_until,
+                profile.quota_json,
+                profile.quota_reset_at,
+                profile.created_at,
+                profile.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_codex_auth_profile(&self, id: &str) -> SqlResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute("DELETE FROM codex_auth_profiles WHERE id = ?1", params![id])
+    }
+
+    pub fn get_codex_thread_binding(
+        &self,
+        owner_kind: &str,
+        owner_id: &str,
+        member_id: &str,
+        auth_profile_id: &str,
+    ) -> SqlResult<Option<CodexThreadBindingRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT owner_kind, owner_id, member_id, auth_profile_id, codex_thread_id,
+                    created_at, updated_at
+             FROM codex_thread_bindings
+             WHERE owner_kind=?1 AND owner_id=?2 AND member_id=?3 AND auth_profile_id=?4",
+            params![owner_kind, owner_id, member_id, auth_profile_id],
+            |row| {
+                Ok(CodexThreadBindingRow {
+                    owner_kind: row.get(0)?,
+                    owner_id: row.get(1)?,
+                    member_id: row.get(2)?,
+                    auth_profile_id: row.get(3)?,
+                    codex_thread_id: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn upsert_codex_thread_binding(&self, binding: &CodexThreadBindingRow) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT INTO codex_thread_bindings (
+                owner_kind, owner_id, member_id, auth_profile_id, codex_thread_id,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner_kind, owner_id, member_id, auth_profile_id) DO UPDATE SET
+               codex_thread_id=excluded.codex_thread_id, updated_at=excluded.updated_at",
+            params![
+                binding.owner_kind,
+                binding.owner_id,
+                binding.member_id,
+                binding.auth_profile_id,
+                binding.codex_thread_id,
+                binding.created_at,
+                binding.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_provider_fallback_approval(
+        &self,
+        approval: &ProviderFallbackApprovalRow,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO provider_fallback_approvals (
+               id, run_id, api_profile_id, status, reason, created_at, resolved_at, consumed_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                approval.id,
+                approval.run_id,
+                approval.api_profile_id,
+                approval.status,
+                approval.reason,
+                approval.created_at,
+                approval.resolved_at,
+                approval.consumed_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_provider_fallback_approvals(
+        &self,
+        status: Option<&str>,
+    ) -> SqlResult<Vec<ProviderFallbackApprovalRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, api_profile_id, status, reason, created_at, resolved_at, consumed_at
+             FROM provider_fallback_approvals
+             WHERE (?1 IS NULL OR status = ?1)
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![status], |row| {
+            Ok(ProviderFallbackApprovalRow {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                api_profile_id: row.get(2)?,
+                status: row.get(3)?,
+                reason: row.get(4)?,
+                created_at: row.get(5)?,
+                resolved_at: row.get(6)?,
+                consumed_at: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn resolve_provider_fallback_approval(
+        &self,
+        id: &str,
+        status: &str,
+        api_profile_id: Option<&str>,
+        resolved_at: &str,
+    ) -> SqlResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE provider_fallback_approvals
+             SET status=?2, api_profile_id=?3, resolved_at=?4
+             WHERE id=?1 AND status='pending'",
+            params![id, status, api_profile_id, resolved_at],
+        )
+        .map(|changed| changed == 1)
+    }
+
+    pub fn consume_provider_fallback_approval(
+        &self,
+        id: &str,
+        consumed_at: &str,
+    ) -> SqlResult<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE provider_fallback_approvals
+             SET status='consumed', consumed_at=?2
+             WHERE id=?1 AND status='approved'",
+            params![id, consumed_at],
+        )
+        .map(|changed| changed == 1)
+    }
+
+    pub fn scheduled_task_id_for_run(&self, run_id: &str) -> SqlResult<Option<String>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.query_row(
+            "SELECT task_id FROM scheduled_runs WHERE id=?1 LIMIT 1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()
     }
 
     // -- Projects --
@@ -1732,9 +2637,14 @@ impl Database {
         path: &str,
         label: Option<&str>,
         enabled: bool,
+        access: &str,
+        is_primary: bool,
         added_at: &str,
     ) -> SqlResult<()> {
         if !matches!(kind, "file" | "folder" | "link") {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if !matches!(access, "read_only" | "read_write") {
             return Err(rusqlite::Error::InvalidQuery);
         }
 
@@ -1743,11 +2653,13 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO project_resources (id, project_id, kind, path, label, enabled, added_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO project_resources (id, project_id, kind, path, label, enabled, access, is_primary, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(project_id, kind, path) DO UPDATE SET
                label = excluded.label,
-               enabled = excluded.enabled",
+               enabled = excluded.enabled,
+               access = excluded.access,
+               is_primary = excluded.is_primary",
             params![
                 id,
                 project_id,
@@ -1755,6 +2667,8 @@ impl Database {
                 path,
                 label,
                 if enabled { 1 } else { 0 },
+                access,
+                if is_primary { 1 } else { 0 },
                 added_at
             ],
         )?;
@@ -1771,7 +2685,7 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, project_id, kind, path, label, enabled, added_at
+            "SELECT id, project_id, kind, path, label, enabled, access, is_primary, added_at
              FROM project_resources ORDER BY added_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1782,7 +2696,9 @@ impl Database {
                 path: row.get(3)?,
                 label: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
-                added_at: row.get(6)?,
+                access: row.get(6)?,
+                is_primary: row.get::<_, i64>(7)? != 0,
+                added_at: row.get(8)?,
             })
         })?;
         rows.collect()
@@ -1871,14 +2787,16 @@ impl Database {
         created_at: &str,
         provider_settings_json: Option<&str>,
         permission_config_json: Option<&str>,
+        runner: &str,
+        crew_id: Option<&str>,
     ) -> SqlResult<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO chat_threads (id, title, created_at, updated_at, provider_settings_json, permission_config_json) VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
-            params![id, title, created_at, provider_settings_json, permission_config_json],
+            "INSERT INTO chat_threads (id, title, created_at, updated_at, provider_settings_json, permission_config_json, runner, crew_id) VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
+            params![id, title, created_at, provider_settings_json, permission_config_json, runner, crew_id],
         )?;
         Ok(())
     }
@@ -1893,6 +2811,8 @@ impl Database {
             String,
             Option<String>,
             Option<String>,
+            String,
+            Option<String>,
         )>,
     > {
         let conn = self
@@ -1900,7 +2820,7 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, title, created_at, updated_at, provider_settings_json, permission_config_json FROM chat_threads ORDER BY updated_at DESC"
+            "SELECT id, title, created_at, updated_at, provider_settings_json, permission_config_json, runner, crew_id FROM chat_threads ORDER BY updated_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -1910,6 +2830,8 @@ impl Database {
                 row.get(3)?,
                 row.get(4)?,
                 row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
             ))
         })?;
         rows.collect()
@@ -1931,6 +2853,18 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_thread_title(&self, id: &str, title: &str) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE chat_threads SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, title],
+        )?;
+        Ok(())
+    }
+
     pub fn update_thread_permission_config(
         &self,
         id: &str,
@@ -1943,6 +2877,29 @@ impl Database {
         conn.execute(
             "UPDATE chat_threads SET permission_config_json = ?2, updated_at = datetime('now') WHERE id = ?1",
             params![id, permission_config_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_thread_runner(
+        &self,
+        id: &str,
+        runner: &str,
+        crew_id: Option<&str>,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let normalized_runner = if runner == "crew" { "crew" } else { "model" };
+        let normalized_crew_id = if normalized_runner == "crew" {
+            crew_id
+        } else {
+            None
+        };
+        conn.execute(
+            "UPDATE chat_threads SET runner = ?2, crew_id = ?3, updated_at = datetime('now') WHERE id = ?1",
+            params![id, normalized_runner, normalized_crew_id],
         )?;
         Ok(())
     }
@@ -2013,7 +2970,7 @@ impl Database {
         finished_at: Option<&str>,
     ) -> SqlResult<()> {
         let error = redact_and_bound_optional_text(error, MAX_LOG_TEXT_BYTES);
-        let crew_snapshot_json = redact_and_bound_json_text(crew_snapshot_json, MAX_LOG_JSON_BYTES);
+        let crew_snapshot_json = sanitize_runtime_snapshot_json(crew_snapshot_json);
         let conn = self
             .conn
             .lock()
@@ -2836,8 +3793,9 @@ impl Database {
         conn.execute(
             "INSERT INTO work_tasks (
                 id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                backend_selection_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 prompt = excluded.prompt,
@@ -2853,6 +3811,7 @@ impl Database {
                 output = excluded.output,
                 error = excluded.error,
                 last_run_at = excluded.last_run_at,
+                backend_selection_json = excluded.backend_selection_json,
                 updated_at = excluded.updated_at",
             params![
                 &task.id,
@@ -2872,6 +3831,7 @@ impl Database {
                 &task.last_run_at,
                 &task.created_at,
                 &task.updated_at,
+                &task.backend_selection_json,
             ],
         )?;
         Ok(())
@@ -2884,7 +3844,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.query_row(
             "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                    backend_selection_json
              FROM work_tasks
              WHERE id = ?1
              LIMIT 1",
@@ -2909,6 +3870,7 @@ impl Database {
                     last_run_at: row.get(14)?,
                     created_at: row.get(15)?,
                     updated_at: row.get(16)?,
+                    backend_selection_json: row.get(17)?,
                 })
             },
         )
@@ -2922,7 +3884,8 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
             "SELECT id, title, prompt, expected_output, work_dir, thread_id, runner, crew_id, model,
-                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at
+                    schedule_expr, schedule_enabled, status, output, error, last_run_at, created_at, updated_at,
+                    backend_selection_json
              FROM work_tasks
              ORDER BY created_at DESC",
         )?;
@@ -2946,6 +3909,7 @@ impl Database {
                 last_run_at: row.get(14)?,
                 created_at: row.get(15)?,
                 updated_at: row.get(16)?,
+                backend_selection_json: row.get(17)?,
             })
         })?;
         rows.collect()
@@ -3452,6 +4416,8 @@ impl Database {
         next_run_at: Option<&str>,
         now: &str,
     ) -> SqlResult<()> {
+        let crew_snapshot_json = sanitize_optional_runtime_snapshot_json(crew_snapshot_json);
+        let model_config_json = sanitize_optional_runtime_snapshot_json(model_config_json);
         let conn = self
             .conn
             .lock()
@@ -3481,8 +4447,8 @@ impl Database {
                 schedule_expr,
                 task_kind,
                 crew_id,
-                crew_snapshot_json,
-                model_config_json,
+                crew_snapshot_json.as_deref(),
+                model_config_json.as_deref(),
                 priority,
                 depends_on_task_ids_json,
                 active as i32,
@@ -4069,10 +5035,11 @@ impl Database {
         &self,
         id: &str,
         scope: &str,
+        scope_ref: Option<&str>,
         category: &str,
         key: &str,
         content: &str,
-        source_session_id: Option<&str>,
+        source_run_id: Option<&str>,
         confidence: f64,
     ) -> SqlResult<()> {
         let conn = self
@@ -4080,14 +5047,14 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO memory_entries (id, scope, category, key, content, source_session_id, confidence, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
-             ON CONFLICT(scope, category, key) DO UPDATE SET
+            "INSERT INTO memory_entries (id, scope, scope_ref, category, key, content, source_run_id, confidence, created_at, updated_at)
+             VALUES (?1, ?2, COALESCE(?3, ''), ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+             ON CONFLICT(scope, scope_ref, category, key) DO UPDATE SET
                 content = excluded.content,
                 confidence = excluded.confidence,
-                source_session_id = COALESCE(excluded.source_session_id, memory_entries.source_session_id),
+                source_run_id = COALESCE(excluded.source_run_id, memory_entries.source_run_id),
                 updated_at = datetime('now')",
-            params![id, scope, category, key, content, source_session_id, confidence],
+            params![id, scope, scope_ref, category, key, content, source_run_id, confidence],
         )?;
         Ok(())
     }
@@ -4103,7 +5070,7 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+            "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
              FROM memory_entries WHERE scope = ?1 AND category = ?2 AND key = ?3 LIMIT 1"
         )?;
         let mut rows = stmt.query(params![scope, category, key])?;
@@ -4111,15 +5078,16 @@ impl Database {
             Ok(Some(MemoryEntryRow {
                 id: row.get(0)?,
                 scope: row.get(1)?,
-                category: row.get(2)?,
-                key: row.get(3)?,
-                content: row.get(4)?,
-                source_session_id: row.get(5)?,
-                confidence: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scope_ref: row.get(2)?,
+                category: row.get(3)?,
+                key: row.get(4)?,
+                content: row.get(5)?,
+                source_run_id: row.get(6)?,
+                confidence: row.get(7)?,
+                access_count: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             }))
         } else {
             Ok(None)
@@ -4140,13 +5108,13 @@ impl Database {
             category
         {
             (
-                "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
                  FROM memory_entries WHERE scope = ?1 AND category = ?2 ORDER BY updated_at DESC LIMIT ?3",
                 vec![Box::new(scope.to_string()), Box::new(cat.to_string()), Box::new(limit)],
             )
         } else {
             (
-                "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
                  FROM memory_entries WHERE scope = ?1 ORDER BY updated_at DESC LIMIT ?2",
                 vec![Box::new(scope.to_string()), Box::new(limit)],
             )
@@ -4158,15 +5126,16 @@ impl Database {
             Ok(MemoryEntryRow {
                 id: row.get(0)?,
                 scope: row.get(1)?,
-                category: row.get(2)?,
-                key: row.get(3)?,
-                content: row.get(4)?,
-                source_session_id: row.get(5)?,
-                confidence: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scope_ref: row.get(2)?,
+                category: row.get(3)?,
+                key: row.get(4)?,
+                content: row.get(5)?,
+                source_run_id: row.get(6)?,
+                confidence: row.get(7)?,
+                access_count: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })?;
         rows.collect()
@@ -4186,13 +5155,13 @@ impl Database {
         ) = category
         {
             (
-                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                    "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
                      FROM memory_entries WHERE category = ?1 ORDER BY updated_at DESC LIMIT ?2",
                     vec![Box::new(category.to_string()), Box::new(limit)],
                 )
         } else {
             (
-                    "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+                    "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
                      FROM memory_entries ORDER BY updated_at DESC LIMIT ?1",
                     vec![Box::new(limit)],
                 )
@@ -4204,15 +5173,53 @@ impl Database {
             Ok(MemoryEntryRow {
                 id: row.get(0)?,
                 scope: row.get(1)?,
-                category: row.get(2)?,
-                key: row.get(3)?,
-                content: row.get(4)?,
-                source_session_id: row.get(5)?,
-                confidence: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scope_ref: row.get(2)?,
+                category: row.get(3)?,
+                key: row.get(4)?,
+                content: row.get(5)?,
+                source_run_id: row.get(6)?,
+                confidence: row.get(7)?,
+                access_count: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_memory_entries_for_ref(
+        &self,
+        scope: &str,
+        scope_ref: &str,
+        limit: i64,
+    ) -> SqlResult<Vec<MemoryEntryRow>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence,
+                    access_count, last_accessed_at, created_at, updated_at
+               FROM memory_entries
+              WHERE scope = ?1 AND scope_ref = ?2
+              ORDER BY updated_at DESC
+              LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![scope, scope_ref, limit.clamp(1, 1000)], |row| {
+            Ok(MemoryEntryRow {
+                id: row.get(0)?,
+                scope: row.get(1)?,
+                scope_ref: row.get(2)?,
+                category: row.get(3)?,
+                key: row.get(4)?,
+                content: row.get(5)?,
+                source_run_id: row.get(6)?,
+                confidence: row.get(7)?,
+                access_count: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })?;
         rows.collect()
@@ -4222,6 +5229,7 @@ impl Database {
         &self,
         query: &str,
         scope: Option<&str>,
+        scope_ref: Option<&str>,
         category: Option<&str>,
         limit: i64,
     ) -> SqlResult<Vec<MemoryEntryRow>> {
@@ -4276,28 +5284,30 @@ impl Database {
         // Keep retrieval bounded, then rank in Rust. This supports natural-language
         // queries without requiring every query term to occur as one exact phrase.
         let mut stmt = conn.prepare(
-            "SELECT id, scope, category, key, content, source_session_id, confidence, access_count, last_accessed_at, created_at, updated_at
+            "SELECT id, scope, scope_ref, category, key, content, source_run_id, confidence, access_count, last_accessed_at, created_at, updated_at
              FROM memory_entries ORDER BY updated_at DESC LIMIT 5000"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(MemoryEntryRow {
                 id: row.get(0)?,
                 scope: row.get(1)?,
-                category: row.get(2)?,
-                key: row.get(3)?,
-                content: row.get(4)?,
-                source_session_id: row.get(5)?,
-                confidence: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                scope_ref: row.get(2)?,
+                category: row.get(3)?,
+                key: row.get(4)?,
+                content: row.get(5)?,
+                source_run_id: row.get(6)?,
+                confidence: row.get(7)?,
+                access_count: row.get(8)?,
+                last_accessed_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })?;
         let entries = rows.collect::<SqlResult<Vec<_>>>()?;
         let mut ranked = entries
             .into_iter()
             .filter(|entry| scope.is_none_or(|value| entry.scope == value))
+            .filter(|entry| scope_ref.is_none_or(|value| entry.scope_ref.as_deref() == Some(value)))
             .filter(|entry| category.is_none_or(|value| entry.category == value))
             .filter_map(|entry| {
                 let key = entry.key.to_lowercase();
@@ -4450,7 +5460,7 @@ impl Database {
         prompt_template: &str,
         trigger_pattern: Option<&str>,
         run_mode: &str,
-        _auto_generated: bool,
+        auto_generated: bool,
         parent_skill_id: Option<&str>,
         source_task_ids: Option<&str>,
     ) -> SqlResult<()> {
@@ -4460,7 +5470,7 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO skills (id, name, description, prompt_template, trigger_pattern, run_mode, auto_generated, parent_skill_id, source_task_ids, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, datetime('now'), datetime('now'))
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), datetime('now'))
              ON CONFLICT(name) DO UPDATE SET
                 description = excluded.description,
                 prompt_template = excluded.prompt_template,
@@ -4468,7 +5478,7 @@ impl Database {
                 run_mode = excluded.run_mode,
                 updated_at = datetime('now')",
             params![id, name, description, prompt_template, trigger_pattern, run_mode,
-                    parent_skill_id, source_task_ids],
+                    auto_generated, parent_skill_id, source_task_ids],
         )?;
         Ok(())
     }
@@ -4605,171 +5615,16 @@ impl Database {
         Ok(())
     }
 
-    // -- Sessions --
+    // -- Chat memory snapshots --
 
-    pub fn insert_session(
-        &self,
-        id: &str,
-        thread_id: Option<&str>,
-        title: &str,
-        memory_snapshot_json: Option<&str>,
-        model_used: Option<&str>,
-        provider: Option<&str>,
-        personality: Option<&str>,
-    ) -> SqlResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute(
-            "INSERT INTO sessions (id, thread_id, title, memory_snapshot_json, model_used, provider, personality, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
-             ON CONFLICT(id) DO NOTHING",
-            params![id, thread_id, title, memory_snapshot_json, model_used, provider, personality],
-        )?;
-        Ok(())
-    }
-
-    pub fn end_session(
-        &self,
-        id: &str,
-        summary: Option<&str>,
-        total_messages: i32,
-        total_tokens_est: i64,
-        outcome: Option<&str>,
-        task_ids: Option<&str>,
-        skill_ids_used: Option<&str>,
-    ) -> SqlResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute(
-            "UPDATE sessions SET summary = ?2, total_messages = ?3, total_tokens_est = ?4,
-                    outcome = ?5, task_ids = ?6, skill_ids_used = ?7, ended_at = datetime('now')
-             WHERE id = ?1",
-            params![
-                id,
-                summary,
-                total_messages,
-                total_tokens_est,
-                outcome,
-                task_ids,
-                skill_ids_used
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn list_sessions(&self, limit: i64) -> SqlResult<Vec<SessionRow>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, thread_id, title, summary, model_used, provider, personality,
-                    total_messages, total_tokens_est, outcome, started_at, ended_at
-             FROM sessions ORDER BY started_at DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |row| {
-            Ok(SessionRow {
-                id: row.get(0)?,
-                thread_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                model_used: row.get(4)?,
-                provider: row.get(5)?,
-                personality: row.get(6)?,
-                total_messages: row.get(7)?,
-                total_tokens_est: row.get(8)?,
-                outcome: row.get(9)?,
-                started_at: row.get(10)?,
-                ended_at: row.get(11)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    pub fn delete_session(&self, id: &str) -> SqlResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    pub fn get_session(&self, id: &str) -> SqlResult<Option<SessionRow>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, thread_id, title, summary, model_used, provider, personality,
-                    total_messages, total_tokens_est, outcome, started_at, ended_at
-             FROM sessions WHERE id = ?1 LIMIT 1",
-        )?;
-        let mut rows = stmt.query(params![id])?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(SessionRow {
-                id: row.get(0)?,
-                thread_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                model_used: row.get(4)?,
-                provider: row.get(5)?,
-                personality: row.get(6)?,
-                total_messages: row.get(7)?,
-                total_tokens_est: row.get(8)?,
-                outcome: row.get(9)?,
-                started_at: row.get(10)?,
-                ended_at: row.get(11)?,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn search_sessions(&self, query: &str, limit: i64) -> SqlResult<Vec<SessionRow>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let pattern = format!("%{}%", query);
-        let mut stmt = conn.prepare(
-            "SELECT id, thread_id, title, summary, model_used, provider, personality,
-                    total_messages, total_tokens_est, outcome, started_at, ended_at
-             FROM sessions WHERE title LIKE ?1 OR summary LIKE ?1 ORDER BY started_at DESC LIMIT ?2"
-        )?;
-        let rows = stmt.query_map(params![pattern, limit], |row| {
-            Ok(SessionRow {
-                id: row.get(0)?,
-                thread_id: row.get(1)?,
-                title: row.get(2)?,
-                summary: row.get(3)?,
-                model_used: row.get(4)?,
-                provider: row.get(5)?,
-                personality: row.get(6)?,
-                total_messages: row.get(7)?,
-                total_tokens_est: row.get(8)?,
-                outcome: row.get(9)?,
-                started_at: row.get(10)?,
-                ended_at: row.get(11)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn get_session_memory_snapshot(&self, session_id: &str) -> SqlResult<Option<String>> {
+    pub fn get_chat_memory_snapshot(&self, thread_id: &str) -> SqlResult<Option<String>> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt =
-            conn.prepare("SELECT memory_snapshot_json FROM sessions WHERE id = ?1 LIMIT 1")?;
-        let mut rows = stmt.query(params![session_id])?;
+            conn.prepare("SELECT memory_snapshot_json FROM chat_threads WHERE id = ?1 LIMIT 1")?;
+        let mut rows = stmt.query(params![thread_id])?;
         if let Some(row) = rows.next()? {
             Ok(row.get(0)?)
         } else {
@@ -4777,14 +5632,16 @@ impl Database {
         }
     }
 
-    pub fn save_session_snapshot(&self, session_id: &str, snapshot_json: &str) -> SqlResult<()> {
+    pub fn save_chat_memory_snapshot(&self, thread_id: &str, snapshot_json: &str) -> SqlResult<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "UPDATE sessions SET memory_snapshot_json = ?2 WHERE id = ?1",
-            params![session_id, snapshot_json],
+            "UPDATE chat_threads
+             SET memory_snapshot_json = COALESCE(memory_snapshot_json, ?2)
+             WHERE id = ?1",
+            params![thread_id, snapshot_json],
         )?;
         Ok(())
     }
@@ -4797,7 +5654,6 @@ impl Database {
         id: &str,
         parent_run_id: Option<&str>,
         thread_id: Option<&str>,
-        session_id: Option<&str>,
         title: &str,
         input_summary: Option<&str>,
         status: &str,
@@ -4814,7 +5670,6 @@ impl Database {
             id,
             parent_run_id,
             thread_id,
-            session_id,
             title,
             input_summary,
             status,
@@ -4842,7 +5697,6 @@ impl Database {
         id: &str,
         parent_run_id: Option<&str>,
         thread_id: Option<&str>,
-        session_id: Option<&str>,
         title: &str,
         input_summary: Option<&str>,
         status: &str,
@@ -4872,22 +5726,21 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
             "INSERT INTO engine_runs (
-                id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
+                id, parent_run_id, thread_id, title, input_summary, status, phase,
                 cwd, model, provider, source, workspace_path, provider_profile_id, runtime_mode,
                 toolset_policy_id, channel_kind, channel_ref, retry_count, resumed_from_run_id, checkpoint_json,
                 metadata_json, created_at, updated_at, started_at
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20, ?21,
-                ?22, datetime('now'), datetime('now'),
-                CASE WHEN ?7 = 'running' THEN datetime('now') ELSE NULL END
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                ?15, ?16, ?17, ?18, ?19, ?20,
+                ?21, datetime('now'), datetime('now'),
+                CASE WHEN ?6 = 'running' THEN datetime('now') ELSE NULL END
              )",
             params![
                 id,
                 parent_run_id,
                 thread_id,
-                session_id,
                 title,
                 input_summary,
                 status,
@@ -4917,11 +5770,11 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
+            "SELECT id, parent_run_id, thread_id, title, input_summary, status, phase,
                     cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
                     result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
                     source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
-                    channel_kind, channel_ref
+                    channel_kind, channel_ref, input_tokens, output_tokens, total_tokens_est, cost_usd
              FROM engine_runs WHERE id = ?1 LIMIT 1"
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -4943,11 +5796,11 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let rows = if let Some(status_filter) = status {
             let mut stmt = conn.prepare(
-                "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
+                "SELECT id, parent_run_id, thread_id, title, input_summary, status, phase,
                         cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
                         result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
                         source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
-                        channel_kind, channel_ref
+                        channel_kind, channel_ref, input_tokens, output_tokens, total_tokens_est, cost_usd
                  FROM engine_runs
                  WHERE status = ?1
                  ORDER BY updated_at DESC
@@ -4957,11 +5810,11 @@ impl Database {
             mapped.collect::<SqlResult<Vec<_>>>()?
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, parent_run_id, thread_id, session_id, title, input_summary, status, phase,
+                "SELECT id, parent_run_id, thread_id, title, input_summary, status, phase,
                         cwd, model, provider, retry_count, resumed_from_run_id, checkpoint_json,
                         result_summary, error, metadata_json, created_at, updated_at, started_at, ended_at, canceled_at,
                         source, workspace_path, provider_profile_id, runtime_mode, toolset_policy_id,
-                        channel_kind, channel_ref
+                        channel_kind, channel_ref, input_tokens, output_tokens, total_tokens_est, cost_usd
                  FROM engine_runs
                  ORDER BY updated_at DESC
                  LIMIT ?1"
@@ -5062,6 +5915,30 @@ impl Database {
         payload_json: Option<&str>,
     ) -> SqlResult<()> {
         self.insert_engine_run_event_with_details(id, run_id, event_type, None, payload_json, None)
+    }
+
+    pub fn update_engine_run_usage(
+        &self,
+        id: &str,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        cost_usd: Option<f64>,
+    ) -> SqlResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        conn.execute(
+            "UPDATE engine_runs
+             SET input_tokens = COALESCE(?2, input_tokens),
+                 output_tokens = COALESCE(?3, output_tokens),
+                 total_tokens_est = COALESCE(?2, input_tokens) + COALESCE(?3, output_tokens),
+                 cost_usd = COALESCE(?4, cost_usd),
+                 updated_at = datetime('now')
+             WHERE id = ?1",
+            params![id, input_tokens, output_tokens, cost_usd],
+        )?;
+        Ok(())
     }
 
     pub fn insert_engine_run_event_with_details(
@@ -5566,7 +6443,8 @@ impl Database {
     pub fn insert_learning_outcome(
         &self,
         id: &str,
-        session_id: Option<&str>,
+        run_id: Option<&str>,
+        thread_id: Option<&str>,
         task_id: Option<&str>,
         outcome_type: &str,
         description: &str,
@@ -5578,9 +6456,9 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO learning_outcomes (id, session_id, task_id, outcome_type, description, learned_pattern, confidence, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
-            params![id, session_id, task_id, outcome_type, description, learned_pattern, confidence],
+            "INSERT INTO learning_outcomes (id, run_id, thread_id, task_id, outcome_type, description, learned_pattern, confidence, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+            params![id, run_id, thread_id, task_id, outcome_type, description, learned_pattern, confidence],
         )?;
         Ok(())
     }
@@ -5591,20 +6469,21 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, task_id, outcome_type, description, learned_pattern, confidence, applied_count, created_at
+            "SELECT id, run_id, thread_id, task_id, outcome_type, description, learned_pattern, confidence, applied_count, created_at
              FROM learning_outcomes ORDER BY created_at DESC LIMIT ?1"
         )?;
         let rows = stmt.query_map(params![limit], |row| {
             Ok(LearningOutcomeRow {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                task_id: row.get(2)?,
-                outcome_type: row.get(3)?,
-                description: row.get(4)?,
-                learned_pattern: row.get(5)?,
-                confidence: row.get(6)?,
-                applied_count: row.get(7)?,
-                created_at: row.get(8)?,
+                run_id: row.get(1)?,
+                thread_id: row.get(2)?,
+                task_id: row.get(3)?,
+                outcome_type: row.get(4)?,
+                description: row.get(5)?,
+                learned_pattern: row.get(6)?,
+                confidence: row.get(7)?,
+                applied_count: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?;
         rows.collect()
@@ -5905,7 +6784,8 @@ impl Database {
         category: &str,
         value_num: Option<f64>,
         value_text: Option<&str>,
-        session_id: Option<&str>,
+        run_id: Option<&str>,
+        thread_id: Option<&str>,
         metadata_json: Option<&str>,
     ) -> SqlResult<()> {
         let conn = self
@@ -5913,9 +6793,9 @@ impl Database {
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute(
-            "INSERT INTO insights_events (id, event_type, category, value_num, value_text, session_id, metadata_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
-            params![id, event_type, category, value_num, value_text, session_id, metadata_json],
+            "INSERT INTO insights_events (id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+            params![id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json],
         )?;
         Ok(())
     }
@@ -5932,16 +6812,16 @@ impl Database {
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let sql = match (category, event_type) {
             (Some(_), Some(_)) => {
-                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 AND event_type = ?2 ORDER BY created_at DESC LIMIT ?3"
+                "SELECT id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json, created_at FROM insights_events WHERE category = ?1 AND event_type = ?2 ORDER BY created_at DESC LIMIT ?3"
             }
             (Some(_), None) => {
-                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE category = ?1 ORDER BY created_at DESC LIMIT ?2"
+                "SELECT id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json, created_at FROM insights_events WHERE category = ?1 ORDER BY created_at DESC LIMIT ?2"
             }
             (None, Some(_)) => {
-                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events WHERE event_type = ?1 ORDER BY created_at DESC LIMIT ?2"
+                "SELECT id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json, created_at FROM insights_events WHERE event_type = ?1 ORDER BY created_at DESC LIMIT ?2"
             }
             (None, None) => {
-                "SELECT id, event_type, category, value_num, value_text, session_id, metadata_json, created_at FROM insights_events ORDER BY created_at DESC LIMIT ?1"
+                "SELECT id, event_type, category, value_num, value_text, run_id, thread_id, metadata_json, created_at FROM insights_events ORDER BY created_at DESC LIMIT ?1"
             }
         };
 
@@ -6164,38 +7044,35 @@ impl Database {
         Ok(())
     }
 
-    // -- Session Full-Text Search --
+    // -- Chat Full-Text Search --
 
-    pub fn fulltext_search_sessions(
+    pub fn fulltext_search_chats(
         &self,
         query: &str,
         limit: i64,
-    ) -> SqlResult<Vec<SessionSearchResultRow>> {
+    ) -> SqlResult<Vec<ChatSearchResultRow>> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         let pattern = format!("%{}%", query);
         let mut stmt = conn.prepare(
-            "SELECT s.id, s.title, s.summary, s.started_at, s.ended_at,
+            "SELECT t.id, t.title, t.updated_at,
                     m.id, m.content, m.role, m.timestamp
-             FROM sessions s
-             LEFT JOIN chat_threads t ON t.id = s.thread_id
+             FROM chat_threads t
              LEFT JOIN chat_messages m ON m.thread_id = t.id AND m.content LIKE ?1
-             WHERE s.title LIKE ?1 OR s.summary LIKE ?1 OR m.content LIKE ?1
-             ORDER BY s.started_at DESC LIMIT ?2",
+             WHERE t.title LIKE ?1 OR m.content LIKE ?1
+             ORDER BY t.updated_at DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit], |row| {
-            Ok(SessionSearchResultRow {
-                session_id: row.get(0)?,
-                session_title: row.get(1)?,
-                session_summary: row.get(2)?,
-                started_at: row.get(3)?,
-                ended_at: row.get(4)?,
-                matched_message_id: row.get(5)?,
-                matched_content: row.get(6)?,
-                matched_role: row.get(7)?,
-                matched_timestamp: row.get(8)?,
+            Ok(ChatSearchResultRow {
+                thread_id: row.get(0)?,
+                thread_title: row.get(1)?,
+                updated_at: row.get(2)?,
+                matched_message_id: row.get(3)?,
+                matched_content: row.get(4)?,
+                matched_role: row.get(5)?,
+                matched_timestamp: row.get(6)?,
             })
         })?;
         rows.collect()
@@ -6216,7 +7093,6 @@ mod tests {
     fn insert_test_engine_run(db: &Database, id: &str) {
         db.insert_engine_run(
             id,
-            None,
             None,
             None,
             "Test Run",
@@ -6243,12 +7119,26 @@ mod tests {
             "2025-01-01T00:00:00",
             Some("{\"provider\":\"ollama\"}"),
             None,
+            "model",
+            None,
         )
         .unwrap();
         let threads = db.list_threads().unwrap();
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].0, "t1");
         assert_eq!(threads[0].4.as_deref(), Some("{\"provider\":\"ollama\"}"));
+        assert_eq!(threads[0].6, "model");
+        assert_eq!(threads[0].7, None);
+
+        db.update_thread_title("t1", "Renamed thread").unwrap();
+        let threads = db.list_threads().unwrap();
+        assert_eq!(threads[0].1, "Renamed thread");
+
+        db.update_thread_runner("t1", "crew", Some("crew-research"))
+            .unwrap();
+        let threads = db.list_threads().unwrap();
+        assert_eq!(threads[0].6, "crew");
+        assert_eq!(threads[0].7.as_deref(), Some("crew-research"));
     }
 
     #[test]
@@ -6297,16 +7187,239 @@ mod tests {
     }
 
     #[test]
+    fn update_backup_is_consistent_and_contains_current_workspace_data() {
+        let root = database_test_dir("update-backup");
+        let backup_path = root.join("update-backups").join("workspace.db");
+        let db = Database::open(root.clone()).unwrap();
+        db.insert_thread(
+            "thread-before-update",
+            "Keep this chat",
+            "2026-07-29T10:00:00Z",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
+
+        db.create_update_backup(&backup_path).unwrap();
+
+        let backup = Connection::open(&backup_path).unwrap();
+        ensure_database_integrity(&backup).unwrap();
+        let title: String = backup
+            .query_row(
+                "SELECT title FROM chat_threads WHERE id = ?1",
+                ["thread-before-update"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Keep this chat");
+
+        drop(backup);
+        drop(db);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn version_25_migrates_legacy_conversation_data_and_removes_sessions() {
+        let root = database_test_dir("version-25");
+        {
+            let db = Database::open(root.clone()).unwrap();
+            db.insert_thread(
+                "thread-legacy",
+                "Legacy chat",
+                "2026-07-10T10:00:00Z",
+                None,
+                None,
+                "model",
+                None,
+            )
+            .unwrap();
+            insert_test_engine_run(&db, "run-legacy");
+
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    memory_snapshot_json TEXT,
+                    model_used TEXT,
+                    provider TEXT,
+                    personality TEXT,
+                    total_messages INTEGER NOT NULL DEFAULT 0,
+                    total_tokens_est INTEGER NOT NULL DEFAULT 0,
+                    task_ids TEXT,
+                    skill_ids_used TEXT,
+                    outcome TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT
+                 );
+                 ALTER TABLE engine_runs ADD COLUMN session_id TEXT;
+                 ALTER TABLE learning_outcomes ADD COLUMN session_id TEXT;
+                 ALTER TABLE insights_events ADD COLUMN session_id TEXT;
+                 ALTER TABLE memory_entries ADD COLUMN source_session_id TEXT;
+                 INSERT INTO sessions (
+                    id, thread_id, title, memory_snapshot_json, model_used, provider,
+                    total_messages, total_tokens_est, outcome, started_at, ended_at
+                 ) VALUES (
+                    'legacy-session', 'thread-legacy', 'Legacy chat',
+                    '{\"threadId\":\"thread-legacy\",\"createdAt\":\"2026-07-10T11:00:00Z\"}',
+                    'legacy-model', 'legacy-provider', 4, 321, 'completed',
+                    '2026-07-10T10:00:00Z', '2026-07-10T11:00:00Z'
+                 );
+                 UPDATE engine_runs
+                    SET session_id = 'legacy-session',
+                        thread_id = 'thread-legacy',
+                        model = 'legacy-model',
+                        provider = 'legacy-provider',
+                        result_summary = 'kept result'
+                  WHERE id = 'run-legacy';
+                 INSERT INTO learning_outcomes (
+                    id, session_id, outcome_type, description, confidence, applied_count, created_at
+                 ) VALUES (
+                    'learning-legacy', 'legacy-session', 'success', 'Kept learning', 0.8, 2,
+                    '2026-07-10T11:00:00Z'
+                 );
+                 INSERT INTO insights_events (
+                    id, event_type, category, value_num, session_id, created_at
+                 ) VALUES (
+                    'insight-legacy', 'legacy_event', 'usage', 7, 'legacy-session',
+                    '2026-07-10T11:00:00Z'
+                 );
+                 INSERT INTO memory_entries (
+                    id, scope, scope_ref, category, key, content, source_session_id,
+                    confidence, access_count, created_at, updated_at
+                 ) VALUES (
+                    'memory-legacy', 'session', '', 'context', 'decision', 'Use SQLite',
+                    'legacy-session', 1.0, 0,
+                    '2026-07-10T10:30:00Z', '2026-07-10T10:30:00Z'
+                 );
+                 UPDATE schema_version SET version = 24;",
+            )
+            .unwrap();
+        }
+
+        let migrated = Database::open(root.clone()).unwrap();
+        let conn = migrated.conn.lock().unwrap();
+        let sessions_exist: i64 = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sessions_exist, 0);
+
+        let run: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT thread_id, model, provider, result_summary
+                   FROM engine_runs WHERE id = 'run-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(run.0.as_deref(), Some("thread-legacy"));
+        assert_eq!(run.1.as_deref(), Some("legacy-model"));
+        assert_eq!(run.2.as_deref(), Some("legacy-provider"));
+        assert_eq!(run.3.as_deref(), Some("kept result"));
+
+        let snapshot: Option<String> = conn
+            .query_row(
+                "SELECT memory_snapshot_json FROM chat_threads WHERE id = 'thread-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(snapshot
+            .as_deref()
+            .is_some_and(|value| value.contains("thread-legacy")));
+
+        let learning: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT run_id, thread_id FROM learning_outcomes WHERE id = 'learning-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(learning.0.as_deref(), Some("run-legacy"));
+        assert_eq!(learning.1.as_deref(), Some("thread-legacy"));
+
+        let insight_thread: Option<String> = conn
+            .query_row(
+                "SELECT thread_id FROM insights_events WHERE id = 'insight-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(insight_thread.as_deref(), Some("thread-legacy"));
+        let imported_usage: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM insights_events
+                  WHERE event_type = 'legacy_chat_usage_import'
+                    AND thread_id = 'thread-legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(imported_usage, 1);
+
+        let memory: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT scope, scope_ref, source_run_id
+                   FROM memory_entries WHERE id = 'memory-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(memory.0, "chat");
+        assert_eq!(memory.1, "thread-legacy");
+        assert_eq!(memory.2.as_deref(), Some("run-legacy"));
+
+        let foreign_key_violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_violations, 0);
+        drop(conn);
+        drop(migrated);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn upgrade_creates_a_verified_pre_migration_backup() {
         let root = database_test_dir("backup");
-        let db_path = root.join("open_cowork.db");
         {
-            let conn = Connection::open(&db_path).unwrap();
+            let db = Database::open(root.clone()).unwrap();
+            let conn = db.conn.lock().unwrap();
             conn.execute_batch(
-                "PRAGMA foreign_keys=ON;
-                 CREATE TABLE schema_version (version INTEGER NOT NULL);
-                 INSERT INTO schema_version (version) VALUES (22);
-                 CREATE TABLE chat_threads (id TEXT PRIMARY KEY);",
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT,
+                    title TEXT NOT NULL,
+                    memory_snapshot_json TEXT,
+                    model_used TEXT,
+                    provider TEXT,
+                    total_messages INTEGER NOT NULL DEFAULT 0,
+                    total_tokens_est INTEGER NOT NULL DEFAULT 0,
+                    outcome TEXT,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT
+                 );
+                 ALTER TABLE engine_runs ADD COLUMN session_id TEXT;
+                 ALTER TABLE learning_outcomes ADD COLUMN session_id TEXT;
+                 ALTER TABLE insights_events ADD COLUMN session_id TEXT;
+                 ALTER TABLE memory_entries ADD COLUMN source_session_id TEXT;
+                 UPDATE schema_version SET version = 24;",
             )
             .unwrap();
         }
@@ -6344,8 +7457,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(backup_version, 22);
-        assert_eq!(backup_has_work_tasks, 0);
+        assert_eq!(backup_version, 24);
+        assert_eq!(backup_has_work_tasks, 1);
         drop(backup);
 
         Database::open(root.clone()).unwrap();
@@ -6391,9 +7504,12 @@ mod tests {
     fn newer_schema_versions_are_rejected_without_modification() {
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn, false).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE schema_version (version INTEGER NOT NULL);
-             INSERT INTO schema_version (version) VALUES (24);",
+        let newer_version = LATEST_SCHEMA_VERSION + 1;
+        conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            params![newer_version],
         )
         .unwrap();
         let db = Database {
@@ -6408,7 +7524,7 @@ mod tests {
             .unwrap()
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, newer_version);
     }
 
     #[test]
@@ -6469,8 +7585,16 @@ mod tests {
     #[test]
     fn messages_round_trip() {
         let db = Database::open_in_memory().unwrap();
-        db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
-            .unwrap();
+        db.insert_thread(
+            "t1",
+            "Thread",
+            "2025-01-01T00:00:00",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
         db.insert_message("m1", "t1", "user", "Hello", 1000)
             .unwrap();
         db.insert_message("m2", "t1", "assistant", "Hi", 1001)
@@ -6482,13 +7606,15 @@ mod tests {
     }
 
     #[test]
-    fn session_search_finds_linked_persisted_chat_messages() {
+    fn chat_search_finds_persisted_chat_messages() {
         let db = Database::open_in_memory().unwrap();
         db.insert_thread(
             "thread-memory",
             "Memory thread",
             "2026-07-16T10:00:00Z",
             None,
+            None,
+            "model",
             None,
         )
         .unwrap();
@@ -6500,21 +7626,10 @@ mod tests {
             1_752_660_000,
         )
         .unwrap();
-        db.insert_session(
-            "session-memory",
-            Some("thread-memory"),
-            "Memory decision",
-            Some("{\"sessionId\":\"session-memory\"}"),
-            Some("test-model"),
-            Some("ollama"),
-            None,
-        )
-        .unwrap();
-
-        let matches = db.fulltext_search_sessions("SQLite", 10).unwrap();
+        let matches = db.fulltext_search_chats("SQLite", 10).unwrap();
 
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].session_id, "session-memory");
+        assert_eq!(matches[0].thread_id, "thread-memory");
         assert_eq!(
             matches[0].matched_content.as_deref(),
             Some("The project selected SQLite for durable local memory.")
@@ -6522,31 +7637,25 @@ mod tests {
     }
 
     #[test]
-    fn creating_an_existing_session_does_not_replace_its_frozen_snapshot() {
+    fn saving_chat_memory_does_not_replace_its_frozen_snapshot() {
         let db = Database::open_in_memory().unwrap();
-        db.insert_session(
-            "session-frozen",
-            None,
+        db.insert_thread(
+            "thread-frozen",
             "Original",
-            Some("{\"version\":1}"),
+            "2026-07-16T10:00:00Z",
             None,
             None,
-            None,
-        )
-        .unwrap();
-        db.insert_session(
-            "session-frozen",
-            None,
-            "Later title",
-            Some("{\"version\":2}"),
-            None,
-            None,
+            "model",
             None,
         )
         .unwrap();
+        db.save_chat_memory_snapshot("thread-frozen", "{\"version\":1}")
+            .unwrap();
+        db.save_chat_memory_snapshot("thread-frozen", "{\"version\":2}")
+            .unwrap();
 
         assert_eq!(
-            db.get_session_memory_snapshot("session-frozen")
+            db.get_chat_memory_snapshot("thread-frozen")
                 .unwrap()
                 .as_deref(),
             Some("{\"version\":1}")
@@ -6613,6 +7722,9 @@ mod tests {
             last_run_at: None,
             created_at: "2026-07-02T08:00:00Z".to_string(),
             updated_at: "2026-07-02T08:00:00Z".to_string(),
+            backend_selection_json: Some(
+                r#"{"backend":"openai-compatible","profileId":"default-ollama"}"#.to_string(),
+            ),
         };
 
         db.upsert_work_task(&row).unwrap();
@@ -6620,6 +7732,10 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "work-1");
         assert!(listed[0].schedule_enabled);
+        assert!(listed[0]
+            .backend_selection_json
+            .as_deref()
+            .is_some_and(|value| value.contains("default-ollama")));
 
         db.update_work_task_status(
             "work-1",
@@ -6670,6 +7786,7 @@ mod tests {
             last_run_at: None,
             created_at: "2026-07-02T08:00:00Z".to_string(),
             updated_at: "2026-07-02T08:00:00Z".to_string(),
+            backend_selection_json: None,
         })
         .unwrap();
         db.upsert_scheduled_task(
@@ -6699,8 +7816,16 @@ mod tests {
     #[test]
     fn delete_thread_cascades() {
         let db = Database::open_in_memory().unwrap();
-        db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
-            .unwrap();
+        db.insert_thread(
+            "t1",
+            "Thread",
+            "2025-01-01T00:00:00",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
         db.insert_message("m1", "t1", "user", "Hello", 1000)
             .unwrap();
         db.delete_thread("t1").unwrap();
@@ -6711,8 +7836,16 @@ mod tests {
     #[test]
     fn projects_resources_and_threads_round_trip() {
         let db = Database::open_in_memory().unwrap();
-        db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
-            .unwrap();
+        db.insert_thread(
+            "t1",
+            "Thread",
+            "2025-01-01T00:00:00",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
         db.upsert_project(
             "p1",
             "Kundenanalyse",
@@ -6728,6 +7861,8 @@ mod tests {
             "C:/docs/spec.md",
             None,
             true,
+            "read_write",
+            true,
             "2026-05-11T09:01:00Z",
         )
         .unwrap();
@@ -6737,6 +7872,8 @@ mod tests {
             "link",
             "https://example.com",
             Some("Example"),
+            false,
+            "read_only",
             false,
             "2026-05-11T09:02:00Z",
         )
@@ -6760,8 +7897,16 @@ mod tests {
     #[test]
     fn project_thread_assignment_is_exclusive_and_delete_can_remove_threads() {
         let db = Database::open_in_memory().unwrap();
-        db.insert_thread("t1", "Thread", "2025-01-01T00:00:00", None, None)
-            .unwrap();
+        db.insert_thread(
+            "t1",
+            "Thread",
+            "2025-01-01T00:00:00",
+            None,
+            None,
+            "model",
+            None,
+        )
+        .unwrap();
         db.upsert_project(
             "p1",
             "Alpha",
@@ -6909,6 +8054,8 @@ mod tests {
             "2025-01-01T00:00:00",
             None,
             None,
+            "model",
+            None,
         )
         .unwrap();
 
@@ -6916,7 +8063,6 @@ mod tests {
             "run-gateway",
             None,
             Some("thread-1"),
-            None,
             "Gateway Run",
             None,
             "running",
@@ -7107,7 +8253,6 @@ mod tests {
                 "engine-active",
                 None,
                 None,
-                None,
                 "Active run",
                 None,
                 "running",
@@ -7148,8 +8293,6 @@ mod tests {
                        'backend-active', 'Backend', 'local', '{}', 'connected',
                        '2026-07-10T10:00:00Z', '2026-07-10T10:00:00Z'
                      );
-                     INSERT INTO sessions (id, title, started_at)
-                     VALUES ('session-open', 'Open session', '2026-07-10T10:00:00Z');
                      INSERT INTO crew_approvals (
                        id, approval_type, status, requested_at, created_at, updated_at
                      ) VALUES (
@@ -7269,14 +8412,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(waiting_status, "waiting_approval");
-        let session_ended: Option<String> = conn
-            .query_row(
-                "SELECT ended_at FROM sessions WHERE id = 'session-open'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(session_ended.is_none());
         let approval_status: String = conn
             .query_row(
                 "SELECT status FROM crew_approvals WHERE id = 'approval-pending'",
@@ -7375,6 +8510,7 @@ mod tests {
         db.upsert_memory_entry(
             "memory-api-contract",
             "shared",
+            None,
             "knowledge",
             "API contract policy",
             "The scheduler API requires idempotent retries and explicit rollback behavior.",
@@ -7385,6 +8521,7 @@ mod tests {
         db.upsert_memory_entry(
             "memory-scheduler",
             "shared",
+            None,
             "knowledge",
             "Scheduler operations",
             "Nightly runs use bounded retries and preserve the previous successful result.",
@@ -7395,6 +8532,7 @@ mod tests {
         db.upsert_memory_entry(
             "memory-unrelated",
             "shared",
+            None,
             "knowledge",
             "Brand colors",
             "The interface uses neutral surfaces and green success indicators.",
@@ -7406,6 +8544,7 @@ mod tests {
         let results = db
             .search_memory_entries(
                 "latest API contracts and scheduler retry behavior for this crew task",
+                None,
                 None,
                 None,
                 5,
@@ -7425,6 +8564,7 @@ mod tests {
             db.upsert_memory_entry(
                 &format!("agent-{index}"),
                 "agent",
+                None,
                 "notes",
                 &format!("agent-key-{index}"),
                 "shared search term",
@@ -7436,6 +8576,7 @@ mod tests {
         db.upsert_memory_entry(
             "shared-match",
             "shared",
+            None,
             "knowledge",
             "shared-key",
             "shared search term",
@@ -7445,10 +8586,154 @@ mod tests {
         .unwrap();
 
         let results = db
-            .search_memory_entries("shared search term", Some("shared"), Some("knowledge"), 1)
+            .search_memory_entries(
+                "shared search term",
+                Some("shared"),
+                None,
+                Some("knowledge"),
+                1,
+            )
             .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "shared-match");
+    }
+
+    #[test]
+    fn schema_v27_seeds_generic_api_profiles_without_secret_columns() {
+        let db = Database::open_in_memory().unwrap();
+        db.migrate().unwrap();
+        let profiles = db.list_api_profiles().unwrap();
+        assert_eq!(profiles.len(), 3);
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "ollama"
+                && profile.auth_mode == "none"
+                && profile.base_url == "http://localhost:11434/v1"
+                && profile.model == "llama3.1:8b"
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "openrouter" && profile.base_url == "https://openrouter.ai/api/v1"
+        }));
+        assert!(profiles.iter().any(|profile| {
+            profile.preset == "openai"
+                && profile.base_url == "https://api.openai.com/v1"
+                && profile.model == "gpt-4.1-mini"
+        }));
+
+        let conn = db.conn.lock().unwrap();
+        let columns = conn
+            .prepare("PRAGMA table_info(api_profiles)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<SqlResult<Vec<_>>>()
+            .unwrap();
+        assert!(!columns.iter().any(|column| {
+            column.contains("key") || column.contains("token") || column.contains("secret")
+        }));
+        let version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 27);
+    }
+
+    #[test]
+    fn schema_v27_strips_secrets_from_existing_snapshots_idempotently() {
+        let root = database_test_dir("version-27-snapshot-redaction");
+        let sentinel = "snapshot-provider-secret";
+        {
+            let db = Database::open(root.clone()).unwrap();
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(&format!(
+                "INSERT INTO scheduled_tasks (
+                   id, name, prompt, schedule_expr, task_kind, crew_snapshot_json,
+                   model_config_json, active, created_at, updated_at
+                 ) VALUES (
+                   'legacy-schedule', 'Legacy', 'prompt', 'hourly', 'crew',
+                   '{{\"providerConfigs\":{{\"openRouter\":{{\"apiKey\":\"{sentinel}\",\"model\":\"openai/test\"}}}},\"env\":{{\"TOKEN\":\"{sentinel}\"}}}}',
+                   '{{\"backendSelection\":{{\"backend\":\"openai-compatible\",\"profileId\":\"default-openrouter\"}},\"accessToken\":\"{sentinel}\"}}',
+                   1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );
+                 INSERT INTO crew_runs (
+                   id, crew_id, crew_name, process, status, crew_snapshot_json,
+                   started_at, created_at
+                 ) VALUES (
+                   'legacy-run', 'legacy-crew', 'Legacy crew', 'sequential', 'completed',
+                   '{{\"api_key\":\"{sentinel}\",\"agents\":[]}}',
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );
+                 UPDATE schema_version SET version = 26;"
+            ))
+            .unwrap();
+        }
+
+        for _ in 0..2 {
+            let migrated = Database::open(root.clone()).unwrap();
+            let snapshots = {
+                let conn = migrated.conn.lock().unwrap();
+                let mut statement = conn
+                    .prepare(
+                    "SELECT crew_snapshot_json FROM scheduled_tasks WHERE id='legacy-schedule'
+                     UNION ALL SELECT model_config_json FROM scheduled_tasks WHERE id='legacy-schedule'
+                     UNION ALL SELECT crew_snapshot_json FROM crew_runs WHERE id='legacy-run'",
+                )
+                    .unwrap();
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<SqlResult<Vec<_>>>()
+                    .unwrap();
+                rows
+            };
+            assert!(snapshots
+                .iter()
+                .all(|snapshot| !snapshot.contains(sentinel)));
+            assert!(snapshots.iter().all(|snapshot| {
+                let lower = snapshot.to_ascii_lowercase();
+                !lower.contains("apikey")
+                    && !lower.contains("api_key")
+                    && !lower.contains("accesstoken")
+                    && !lower.contains("\"env\"")
+            }));
+            assert_eq!(migrated.list_api_profiles().unwrap().len(), 3);
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_snapshot_writes_strip_provider_secrets() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_scheduled_task(
+            "schedule-safe",
+            "Safe schedule",
+            "prompt",
+            "hourly",
+            "prompt",
+            None,
+            None,
+            Some(r#"{"backendSelection":{"backend":"openai-compatible","profileId":"default-openai-compatible"},"apiKey":"never-store-me"}"#),
+            100,
+            "[]",
+            true,
+            None,
+            None,
+            "2026-08-08T12:00:00Z",
+        )
+        .unwrap();
+
+        let snapshot: String = db
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT model_config_json FROM scheduled_tasks WHERE id='schedule-safe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!snapshot.contains("never-store-me"));
+        assert!(!snapshot.to_ascii_lowercase().contains("apikey"));
+        assert!(snapshot.contains("default-openai-compatible"));
     }
 }

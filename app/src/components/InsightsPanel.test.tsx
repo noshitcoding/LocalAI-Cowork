@@ -29,7 +29,8 @@ describe('InsightsPanel', () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === 'insights_summary') {
         return Promise.resolve({
-          totalSessions: 2,
+          totalChats: 2,
+          totalRuns: 1,
           totalEvents: 1,
         })
       }
@@ -42,7 +43,7 @@ describe('InsightsPanel', () => {
     render(<InsightsPanel />)
 
     await waitFor(() => {
-      expect(screen.getByText('Sessions')).toBeInTheDocument()
+      expect(screen.getByText('Chats')).toBeInTheDocument()
     })
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.getByText((_content, element) => element?.textContent === '0.0min')).toBeInTheDocument()

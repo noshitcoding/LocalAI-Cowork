@@ -78,13 +78,19 @@ function isAllowedGermanMatch(file, line) {
     return /\b(eine|einer|eines)\b|\boptionen\b|\bauswahl\b/.test(line)
   }
   if (normalized === 'src/engine/crew/workTaskCrewRuntime.ts') {
-    return /(?:RESEARCH|PRESENTATION)_TASK_PATTERN/.test(line)
+    return /(?:RESEARCH|PRESENTATION)_TASK_PATTERN|germanWords|'ist', 'sind'/.test(line)
+  }
+  if (normalized === 'src-tauri/python/crew_runtime/main.py') {
+    return /german_words|"oder", "ist"/.test(line)
   }
   if (normalized === 'src/engine/memory/memorySystem.ts') {
     return /(?:explicitMatch|isPreference|isReusableFact)/.test(line)
   }
   if (normalized === 'src-tauri/src/scheduler.rs') {
     return /\.replace\('\u00e4'|\.replace\('\u00f6'|\.replace\('\u00fc'/.test(line)
+  }
+  if (normalized === 'src-tauri/src/local_daemon_manager.rs') {
+    return /autostart|X-GNOME-Autostart/.test(line)
   }
   if (normalized === 'src/utils/attachmentPromptContext.ts') {
     return /'wenn'|'bitte'|'durch'|alle\\s\+datei|dateiliste|allen\\s\+dateien/.test(line)

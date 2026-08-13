@@ -3,13 +3,16 @@ import { lazy, Suspense, useRef, useEffect, useMemo, useState } from 'react'
 import type { ClipboardEvent, DragEvent, FormEvent } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
+import { useChatStore, getActiveThread, type ChatMessage, type PermissionConfig } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
-import { ArrowRight, CheckCircle2, ChevronDown, Clock3, ListTodo, Loader2, PanelRightOpen, Settings2, ShieldAlert, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, Loader2, Plus, Settings2, ShieldAlert, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkTasksStore } from '../stores/workTasksStore'
-import { formatWorkTaskStatus } from '../engine/tasks/workTaskExecutionService'
+import {
+  resolveTaskProjectRunContext,
+  type TaskProjectRunContext,
+} from '../utils/taskProjectContext'
 import { useLogStore } from '../stores/logStore'
 import { useCoworkStore, type ClaudePermissionMode } from '../stores/coworkStore'
 import { useMemoryStore } from '../stores/memoryStore'
@@ -19,6 +22,7 @@ import { useTerminalStore } from '../stores/terminalStore'
 import { useSkillStore } from '../stores/skillStore'
 import { useCrewStore } from '../stores/crewStore'
 import { useEngineStore } from '../stores/engineStore'
+import { useCodexStore } from '../stores/codexStore'
 import { useUiStore } from '../stores/uiStore'
 import {
   getEnabledProjectAttachments,
@@ -51,20 +55,19 @@ import { appendWebSearchSources, mergeWebSearchSources, parseWebSearchSourcesFro
 // Ollama streaming is now handled by the engine
 import { MessageThinking, MessageVerbose } from './MessageThinking'
 import { HighlightedChatText } from './HighlightedChatText'
-import GuidedOnboarding from './GuidedOnboarding'
-import CoworkQuickPrompts from './CoworkQuickPrompts'
+import { MarkdownChatText } from './MarkdownChatText'
 import CoworkContextRail from './CoworkContextRail'
+import ChatDropdown from './ChatDropdown'
 import { writeAuditEvent } from '../utils/audit'
-import { persistInvoke } from '../stores/chatStore'
 import {
   buildClaudeSystemAddendum,
-  compactHistoryForPrompt,
   isToolDeniedByRules,
   parseSlashCommand,
 } from '../utils/claudeBridge'
 import {
   buildClarificationContinuationPrompt,
   inferClarificationContext,
+  resolveUserFacingPromptContent,
 } from '../utils/followUpPrompt'
 import { useCommandRegistry } from '../stores/commandRegistryStore'
 import { hasTauriRuntime, safeInvoke, safeInvokeVoid } from '../utils/safeInvoke'
@@ -78,7 +81,15 @@ import {
   getChatProviderState,
   normalizeChatProvider,
 } from '../utils/chatProvider'
+import { getModelGuidance } from '../utils/modelGuidance'
 import { tr } from '../i18n'
+import { createDurableCodexRun, createDurableLocalRun } from '../runtime/localDaemonExecution'
+import {
+  attachDurableLocalRun,
+  cancelLatestDurableRun,
+  respondToLatestDurableInput,
+  resolveLatestDurableApproval,
+} from '../runtime/localDaemonChat'
 
 const TerminalDock = lazy(() => import('./TerminalDock'))
 const CrewLiveMonitor = lazy(() => import('./CrewLiveMonitor'))
@@ -340,6 +351,108 @@ async function buildEngineUserInput(promptWithAttachments: string, attachments: 
     { type: 'text', text: promptWithAttachments },
     ...imageBlocks,
   ]
+}
+
+export function updateAttachmentAccess(
+  attachments: ChatAttachment[],
+  target: ChatAttachment,
+  access: 'read_only' | 'read_write',
+): ChatAttachment[] {
+  return attachments.map((entry) => (
+    entry.path === target.path && entry.kind === target.kind
+      ? { ...entry, access }
+      : entry
+  ))
+}
+
+function normalizeWorkspacePathKey(path: string): string {
+  const trimmed = path.trim()
+  if (/^[a-zA-Z]:[\\/]$/.test(trimmed)) return trimmed.toLowerCase()
+  return trimmed.replace(/[\\/]+$/, '').toLowerCase()
+}
+
+export function getChatWorkspaceAttachments(
+  permissionConfig: PermissionConfig | undefined,
+): ChatAttachment[] {
+  const seen = new Set<string>()
+  const storedAttachments = permissionConfig?.workspaceAttachments
+    ?? permissionConfig?.workspaceDirectories?.map((entry) => ({ ...entry, kind: 'folder' as const }))
+    ?? []
+  return storedAttachments
+    .map((entry) => ({
+      path: entry.path.trim(),
+      kind: entry.kind,
+      access: entry.access,
+    }))
+    .filter((entry) => {
+      if (!entry.path) return false
+      const key = `${entry.kind}:${normalizeWorkspacePathKey(entry.path)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((entry, index, entries) => ({
+      ...entry,
+      isPrimary: entry.kind === 'folder' && entries.findIndex((candidate) => candidate.kind === 'folder') === index,
+    }))
+}
+
+export function buildChatWorkspacePermissionConfig(
+  existing: PermissionConfig | undefined,
+  attachments: ChatAttachment[],
+  fallbackMode: PermissionConfig['mode'],
+): PermissionConfig {
+  const workspaceAttachments = getChatWorkspaceAttachments({
+    mode: existing?.mode ?? fallbackMode,
+    allowedDirectories: [],
+    workspaceAttachments: attachments
+      .filter(hasLocalAttachmentPath)
+      .map((entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+        access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+      })),
+  }).map((entry) => ({
+    path: entry.path,
+    kind: entry.kind,
+    access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+  }))
+
+  const previousWorkspaceKeys = new Set(
+    getChatWorkspaceAttachments(existing)
+      .filter((entry) => entry.kind === 'folder')
+      .map((entry) => normalizeWorkspacePathKey(entry.path)),
+  )
+  const allowedDirectories = [
+    ...(existing?.allowedDirectories ?? []).filter(
+      (path) => !previousWorkspaceKeys.has(normalizeWorkspacePathKey(path)),
+    ),
+    ...workspaceAttachments
+      .filter((entry) => entry.kind === 'folder')
+      .map((entry) => entry.path),
+  ].filter((path, index, paths) => (
+    paths.findIndex((candidate) => (
+      normalizeWorkspacePathKey(candidate) === normalizeWorkspacePathKey(path)
+    )) === index
+  ))
+
+  return {
+    mode: existing?.mode ?? fallbackMode,
+    allowedDirectories,
+    ...(workspaceAttachments.length > 0 ? { workspaceAttachments } : {}),
+  }
+}
+
+export function reconcileChatComposerAttachments(
+  permissionConfig: PermissionConfig | undefined,
+  current: ChatAttachment[],
+  preserveTransientAttachments: boolean,
+): ChatAttachment[] {
+  const workspaceAttachments = getChatWorkspaceAttachments(permissionConfig)
+  const transientAttachments = preserveTransientAttachments
+    ? current.filter((entry) => !hasLocalAttachmentPath(entry))
+    : []
+  return mergeAttachments(workspaceAttachments, transientAttachments).next
 }
 
 function buildChatExportPayload(
@@ -799,6 +912,7 @@ export default function CoworkView() {
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedSlashDraft = searchParams.get('slash')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [attachmentAccess, setAttachmentAccess] = useState<'read_only' | 'read_write'>('read_only')
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null)
   const [includeProjectLinks, setIncludeProjectLinks] = useState(false)
   const [dragOverInput, setDragOverInput] = useState(false)
@@ -811,7 +925,8 @@ export default function CoworkView() {
   const [askUserFreeText, setAskUserFreeText] = useState('')
   const [slashSuggestionsOpen, setSlashSuggestionsOpen] = useState(false)
   const [activeSlashSuggestionIndex, setActiveSlashSuggestionIndex] = useState(0)
-  const [contextRailOpen, setContextRailOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 1500)
+  const [composerSettingsOpen, setComposerSettingsOpen] = useState(false)
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false)
   const [contextEvidenceRun, setContextEvidenceRun] = useState<{ runId: string; threadId: string | null } | null>(null)
   const ollama = useConfigStore((s) => s.ollama)
   const availableModels = useConfigStore((s) => s.availableModels)
@@ -819,7 +934,12 @@ export default function CoworkView() {
   const llmProfiles = useConfigStore((s) => s.llmProfiles)
   const defaultLlmProfileIds = useConfigStore((s) => s.defaultLlmProfileIds)
   const llmProfileModels = useConfigStore((s) => s.llmProfileModels)
+  const codexProfiles = useCodexStore((s) => s.profiles)
+  const codexModelsByProfile = useCodexStore((s) => s.modelsByProfile)
+  const loadCodex = useCodexStore((s) => s.load)
+  const loadCodexModels = useCodexStore((s) => s.loadModels)
   const mcpServer = useConfigStore((s) => s.mcpServer)
+  const mcpServers = useConfigStore((s) => s.mcpServers)
   const activeProvider = useEngineStore((s) => s.activeProvider)
   const engineSendMessage = useEngineStore((s) => s.sendMessage)
   const engineAbort = useEngineStore((s) => s.abort)
@@ -828,16 +948,17 @@ export default function CoworkView() {
   const resolveEngineApproval = useEngineStore((s) => s.resolveApproval)
   const currentToolUI = useEngineStore((s) => s.currentToolUI)
   const clearCurrentToolUI = useEngineStore((s) => s.clearCurrentToolUI)
-  const forceCompact = useEngineStore((s) => s.forceCompact)
-  const currentSessionId = useEngineStore((s) => s.currentSessionId)
   const currentRunId = useEngineStore((s) => s.currentRunId)
+  const sandboxContext = useEngineStore((s) => s.sandboxContext)
   const engineStatus = useEngineStore((s) => s.status)
   const contextWarning = useEngineStore((s) => s.contextWarning)
-  const compactionCount = useEngineStore((s) => s.compactionCount)
+  const contextCoverage = useEngineStore((s) => s.contextCoverage)
   const liveThinkingText = useEngineStore((s) => s.thinkingText)
   const liveThinkingThreadId = useEngineStore((s) => s.conversationThreadId)
   const workingFolder = useUiStore((s) => s.workingFolder)
   const workingPathKind = useUiStore((s) => s.workingPathKind)
+  const contextDrawerOpen = useUiStore((s) => s.contextDrawerOpen)
+  const setContextDrawerOpen = useUiStore((s) => s.setContextDrawerOpen)
   const showTimestamps = useConfigStore((s) => s.preferences.showTimestamps)
   const compactMode = useConfigStore((s) => s.preferences.compactMode)
   const verboseMode = useConfigStore((s) => s.preferences.verboseMode)
@@ -852,8 +973,12 @@ export default function CoworkView() {
     busy,
     error,
     addThread,
+    reloadThreadMessages,
     setActiveThread,
+    renameThread,
     setThreadProviderSettings,
+    setThreadPermissionConfig,
+    setThreadRunner,
     addMessage,
     updateMessage,
     setPendingApproval,
@@ -875,14 +1000,70 @@ export default function CoworkView() {
   const policyFlags = useCoworkStore((s) => s.policyFlags)
   const plugins = useCoworkStore((s) => s.plugins)
   const projects = useProjectStore((s) => s.projects)
+  const crews = useCrewStore((s) => s.crews)
   const setProjectResourceEnabled = useProjectStore((s) => s.setResourceEnabled)
   const activeThread = useChatStore(getActiveThread)
+  const selectedChatCrew = useMemo(
+    () => activeThread?.runner === 'crew'
+      ? crews.find((crew) => crew.id === activeThread.crewId) ?? null
+      : null,
+    [activeThread?.crewId, activeThread?.runner, crews],
+  )
+  const chatUsesCrew = activeThread?.runner === 'crew'
+  const chatRunnerSelection = chatUsesCrew && activeThread?.crewId ? `crew:${activeThread.crewId}` : 'model'
   const terminalThreadId = activeThreadId ?? activeThread?.id ?? 'default'
   const terminalDockOpen = useTerminalStore((s) => Boolean(s.dockOpenByThread[terminalThreadId]))
   const terminalHiddenActivity = useTerminalStore((s) => Boolean(s.hiddenActivityByThread[terminalThreadId]))
   const setTerminalDockOpen = useTerminalStore((s) => s.setDockOpen)
   const setActiveAiThread = useTerminalStore((s) => s.setActiveAiThread)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const composerControlsRef = useRef<HTMLDivElement>(null)
+  const [sandboxSetupReady, setSandboxSetupReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const status = await safeInvoke<{ ready: boolean }>('sandbox_setup_status')
+        if (!cancelled) setSandboxSetupReady(status.ready)
+      } catch {
+        if (!cancelled) setSandboxSetupReady(false)
+      }
+    }
+    const onStatusChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ ready?: boolean }>).detail
+      setSandboxSetupReady(detail?.ready === true)
+    }
+    void refresh()
+    window.addEventListener('lacowork-sandbox-status-changed', onStatusChanged)
+    return () => {
+      cancelled = true
+      window.removeEventListener('lacowork-sandbox-status-changed', onStatusChanged)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!composerSettingsOpen && !attachmentMenuOpen) return
+
+    const closeComposerMenus = (event: PointerEvent) => {
+      if (!composerControlsRef.current?.contains(event.target as Node)) {
+        setComposerSettingsOpen(false)
+        setAttachmentMenuOpen(false)
+      }
+    }
+    const closeComposerMenusWithEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setComposerSettingsOpen(false)
+      setAttachmentMenuOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeComposerMenus)
+    document.addEventListener('keydown', closeComposerMenusWithEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeComposerMenus)
+      document.removeEventListener('keydown', closeComposerMenusWithEscape)
+    }
+  }, [attachmentMenuOpen, composerSettingsOpen])
 
   useEffect(() => {
     if (!requestedSlashDraft?.startsWith('/')) return
@@ -893,13 +1074,6 @@ export default function CoworkView() {
     window.requestAnimationFrame(() => inputRef.current?.focus())
   }, [requestedSlashDraft, searchParams, setSearchParams])
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-    const mediaQuery = window.matchMedia('(min-width: 1500px)')
-    const handleChange = (event: MediaQueryListEvent) => setContextRailOpen(event.matches)
-    mediaQuery.addEventListener('change', handleChange)
-    return () => mediaQuery.removeEventListener('change', handleChange)
-  }, [])
-  useEffect(() => {
     setContextEvidenceRun((current) => {
       if (currentRunId) return { runId: currentRunId, threadId: activeThreadId }
       return current?.threadId === activeThreadId ? current : null
@@ -908,6 +1082,20 @@ export default function CoworkView() {
   const logRef = useRef<HTMLDivElement>(null)
   const notifiedAskUserQuestionRef = useRef<string | null>(null)
   const emptyThreadBootstrapRef = useRef<string | null>(null)
+  const composerAttachmentThreadRef = useRef<string | null>(null)
+  const workspaceAttachmentSignature = JSON.stringify([
+    activeThread?.permissionConfig?.workspaceAttachments ?? [],
+    activeThread?.permissionConfig?.workspaceDirectories ?? [],
+  ])
+  useEffect(() => {
+    const preserveTransientFiles = composerAttachmentThreadRef.current === activeThreadId
+    composerAttachmentThreadRef.current = activeThreadId
+    setAttachments((current) => reconcileChatComposerAttachments(
+      activeThread?.permissionConfig,
+      current,
+      preserveTransientFiles,
+    ))
+  }, [activeThreadId, activeThread?.permissionConfig, workspaceAttachmentSignature])
   const activeMessages = useMemo(
     () => (Array.isArray(activeThread?.messages) ? activeThread.messages : []),
     [activeThread?.messages],
@@ -978,12 +1166,25 @@ export default function CoworkView() {
     () => getChatProviderState(providerContext, activeProvider, activeThread?.providerSettings),
     [activeProvider, activeThread?.providerSettings, providerContext],
   )
-  const providerConfigured = Boolean(
-    providerState.endpoint.trim()
-    && providerState.model.trim()
-    && (providerState.provider === 'ollama' || providerState.apiKey.trim()),
-  )
-  const selectableModels = providerState.selectableModels
+  const selectedCodexProfile = providerState.provider === 'codex'
+    ? codexProfiles.find((profile) => profile.id === providerState.authProfileId)
+      ?? codexProfiles.find((profile) => profile.status === 'ready')
+    : undefined
+  const codexModels = selectedCodexProfile ? (codexModelsByProfile[selectedCodexProfile.id] ?? []) : []
+  const selectableModels = providerState.provider === 'codex'
+    ? codexModels.map((model) => model.model)
+    : providerState.selectableModels
+
+  useEffect(() => {
+    if (providerState.provider !== 'codex') return
+    void loadCodex().then(() => {
+      const profile = useCodexStore.getState().profiles.find((item) => item.id === providerState.authProfileId)
+        ?? useCodexStore.getState().profiles.find((item) => item.status === 'ready')
+      if (profile && !(useCodexStore.getState().modelsByProfile[profile.id]?.length)) {
+        void loadCodexModels(profile.id)
+      }
+    })
+  }, [loadCodex, loadCodexModels, providerState.authProfileId, providerState.provider])
 
   useEffect(() => {
     // If an active valid thread already exists, do nothing
@@ -1083,19 +1284,8 @@ export default function CoworkView() {
     if (!content.trim()) return
 
     const newTitle = content.length > 50 ? content.slice(0, 50) + '...' : content
-    // Update title through store and DB
-    const updatedThreads = useChatStore.getState().threads.map(t =>
-      t.id === activeThreadId ? { ...t, title: newTitle, updatedAt: Date.now() } : t
-    )
-    useChatStore.setState({ threads: updatedThreads })
-
-    // Update title in the database
-    void persistInvoke('db_save_thread', {
-      id: activeThreadId,
-      title: newTitle,
-      createdAt: new Date(activeThread.createdAt).toISOString()
-    }, 'db_save_thread update title')
-  }, [activeThreadId, activeThread]) // Execute when thread or message count changes
+    renameThread(activeThreadId, newTitle)
+  }, [activeThreadId, activeThread, renameThread]) // Execute when thread or message count changes
 
   const enabledPluginSkills = useMemo<EnabledPluginSkill[]>(() => {
     return plugins
@@ -1247,16 +1437,28 @@ export default function CoworkView() {
   }, [activeThreadId])
 
   const addNewAttachments = (newItems: ChatAttachment[]) => {
-    if (newItems.length === 0) return
-    setAttachments((prev) => {
-      const merged = mergeAttachments(prev, newItems)
-      if (merged.rejectedCount > 0) {
-        setAttachmentNotice(tr("Maximal 25 verbundene Elemente pro Message erreicht."))
-      } else {
-        setAttachmentNotice(null)
-      }
-      return merged.next
-    })
+    if (newItems.length === 0) return attachments
+    const merged = mergeAttachments(attachments, newItems.map((item) => ({
+      ...item,
+      access: item.access ?? attachmentAccess,
+    })))
+    setAttachments(merged.next)
+    if (merged.rejectedCount > 0) {
+      setAttachmentNotice(tr("Maximal 25 verbundene Elemente pro Message erreicht."))
+    } else {
+      setAttachmentNotice(null)
+    }
+    return merged.next
+  }
+
+  const persistChatWorkspaceAttachments = (nextAttachments: ChatAttachment[]) => {
+    if (!activeThreadId) return
+    const currentThread = useChatStore.getState().threads.find((thread) => thread.id === activeThreadId)
+    setThreadPermissionConfig(activeThreadId, buildChatWorkspacePermissionConfig(
+      currentThread?.permissionConfig,
+      nextAttachments,
+      enginePermissionMode,
+    ))
   }
 
   const handleAttachFiles = async () => {
@@ -1270,7 +1472,9 @@ export default function CoworkView() {
       ],
     })
     const selectedPaths = normalizeDialogSelection(selected)
-    addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'file' })))
+    if (selectedPaths.length === 0) return
+    const nextAttachments = addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'file' })))
+    persistChatWorkspaceAttachments(nextAttachments)
   }
 
   const handleAttachFolders = async () => {
@@ -1279,12 +1483,31 @@ export default function CoworkView() {
       multiple: true,
     })
     const selectedPaths = normalizeDialogSelection(selected)
-    addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'folder' })))
+    if (selectedPaths.length === 0) return
+    const nextAttachments = addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'folder' })))
+    persistChatWorkspaceAttachments(nextAttachments)
   }
 
   const handleRemoveAttachment = (target: ChatAttachment) => {
-    setAttachments((prev) => prev.filter((item) => !(item.path === target.path && item.kind === target.kind)))
+    const nextAttachments = attachments.filter(
+      (item) => !(item.path === target.path && item.kind === target.kind),
+    )
+    setAttachments(nextAttachments)
+    if (hasLocalAttachmentPath(target)) {
+      persistChatWorkspaceAttachments(nextAttachments)
+    }
     setAttachmentNotice(null)
+  }
+
+  const handleAttachmentAccessChange = (
+    target: ChatAttachment,
+    access: 'read_only' | 'read_write',
+  ) => {
+    const nextAttachments = updateAttachmentAccess(attachments, target, access)
+    setAttachments(nextAttachments)
+    if (hasLocalAttachmentPath(target)) {
+      persistChatWorkspaceAttachments(nextAttachments)
+    }
   }
 
   const handleInputDragOver = (event: DragEvent<HTMLTextAreaElement>) => {
@@ -1307,7 +1530,8 @@ export default function CoworkView() {
     const droppedItems = [...fromFiles, ...fromUriList]
 
     if (droppedItems.length > 0) {
-      addNewAttachments(droppedItems)
+      const nextAttachments = addNewAttachments(droppedItems)
+      persistChatWorkspaceAttachments(nextAttachments)
       setAttachmentNotice(null)
       return
     }
@@ -1343,7 +1567,8 @@ export default function CoworkView() {
     }
 
     event.preventDefault()
-    addNewAttachments(pastedItems)
+    const nextAttachments = addNewAttachments(pastedItems)
+    persistChatWorkspaceAttachments(nextAttachments)
     setAttachmentNotice(null)
   }
 
@@ -1353,9 +1578,9 @@ export default function CoworkView() {
   ) => {
     const text = rawInput.trim()
     const hasDraftAttachments = Array.isArray(draftAttachments) && draftAttachments.length > 0
-    const projectContextAttachments = activeProjectAttachments
+    const projectContextAttachments = activeWorkTask ? [] : activeProjectAttachments
     const hasProjectAttachments = projectContextAttachments.length > 0
-    const projectLinksToFetch = includeProjectLinks ? activeProjectLinks : []
+    const projectLinksToFetch = !activeWorkTask && includeProjectLinks ? activeProjectLinks : []
     const hasProjectLinksToFetch = projectLinksToFetch.length > 0
     if ((!text && !hasDraftAttachments && !hasProjectAttachments && !hasProjectLinksToFetch) || busy) return
     const fallbackAttachmentPrompt = 'Please analyze the attached files/folders and complete the task.'
@@ -1483,7 +1708,7 @@ export default function CoworkView() {
             `Plan mode: ${claudePlanMode ? 'active' : 'inactive'}`,
             `Active Tools: ${enabledClaudeToolIds.join(', ') || '(none)'}`,
             `Deny-Rules: ${toolDenyRules.length}`,
-            `Flags: dispatcher=${policyFlags.allowToolDispatcher}, mcp=${policyFlags.allowMcpToolCalls}, webFetch=${policyFlags.allowWebFetch}, webSearch=${policyFlags.allowWebSearch}, read=${policyFlags.allowFileReadExtraction}, compact=${policyFlags.autoCompactLongContext}`,
+            `Flags: dispatcher=${policyFlags.allowToolDispatcher}, mcp=${policyFlags.allowMcpToolCalls}, webFetch=${policyFlags.allowWebFetch}, webSearch=${policyFlags.allowWebSearch}, read=${policyFlags.allowFileReadExtraction}`,
           ].join('\n')
         )
         return
@@ -1967,12 +2192,6 @@ export default function CoworkView() {
         return
       }
 
-      if (slash.command === 'compact') {
-        useCoworkStore.getState().setPolicyFlag('autoCompactLongContext', true)
-        appendAssistantMessage(tr("Context compression enabled. Older messages will be summarized automatically."))
-        return
-      }
-
       if (slash.command === 'debug') {
         const newVerbose = !verboseMode
         useConfigStore.getState().setPreference('verboseMode', newVerbose)
@@ -1982,9 +2201,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'sandbox') {
-        useCoworkStore.getState().setPolicyFlag('strictPolicyEnforcement', true)
-        useConfigStore.getState().setPreference('readOnlyFsMode', true)
-        appendAssistantMessage(tr("Sandbox mode enabled:\n- Read-only filesystem access\n- Strict policy enforcement\n- All destructive operations blocked"))
+        navigate('/settings?section=sandbox')
         return
       }
 
@@ -2016,7 +2233,7 @@ export default function CoworkView() {
         return
       }
 
-      // Data and session commands.
+      // Chat data commands.
       if (slash.command === 'context') {
         const msgCount = activeMessages.length
         const charCount = activeMessages.reduce((a, m) => a + m.content.length, 0)
@@ -2032,7 +2249,7 @@ export default function CoworkView() {
           return
         }
         if (activeThread) {
-          void safeInvokeVoid('db_save_thread', { id: activeThread.id, title: slash.args.trim(), createdAt: new Date(activeThread.createdAt).toISOString() })
+          renameThread(activeThread.id, slash.args.trim())
           appendAssistantMessage(`Thread umbenannt: ${slash.args.trim()}`)
         }
         return
@@ -2063,7 +2280,7 @@ export default function CoworkView() {
           cs.setActiveThread(latest.id)
           appendAssistantMessage(`Fortgesetzt: "${latest.title}" (${latest.messages.length} Messages)`)
         } else {
-          appendAssistantMessage(tr("No previous session found."))
+          appendAssistantMessage(tr("No previous chat found."))
         }
         return
       }
@@ -2091,7 +2308,7 @@ export default function CoworkView() {
       if (slash.command === 'recap') {
         const userMsgs = activeMessages.filter(m => m.role === 'user')
         const topics = userMsgs.slice(-5).map(m => m.content.slice(0, 60)).join('\n- ')
-        appendAssistantMessage(`Session-Recap:\n- ${userMsgs.length} user messages\n- Thread: "${activeThread?.title ?? '?'}"\n- Started: ${activeThread ? new Date(activeThread.createdAt).toLocaleString('en-US') : '?'}\n\nLatest topics:\n- ${topics || '(none)'}`)
+        appendAssistantMessage(`Chat recap:\n- ${userMsgs.length} user messages\n- Chat: "${activeThread?.title ?? '?'}"\n- Started: ${activeThread ? new Date(activeThread.createdAt).toLocaleString('en-US') : '?'}\n\nLatest topics:\n- ${topics || '(none)'}`)
         return
       }
 
@@ -2114,7 +2331,7 @@ export default function CoworkView() {
           await useInsightsStore.getState().loadSummary()
           const summary = useInsightsStore.getState().summary
           appendAssistantMessage(summary
-            ? `Statistics:\n- Events: ${summary.totalEvents}\n- Sessions: ${summary.totalSessions}\n- Messages: ${summary.totalMessagesSent}\n- Token (est.): ${summary.totalTokensEst}\n- Skills: ${summary.skillUsageCount}\n- Memory: ${summary.memoryEntryCount}`
+            ? `Statistics:\n- Events: ${summary.totalEvents}\n- Chats: ${summary.totalChats}\n- Runs: ${summary.totalRuns}\n- Messages: ${summary.totalMessagesSent}\n- Token (est.): ${summary.totalTokensEst}\n- Skills: ${summary.skillUsageCount}\n- Memory: ${summary.memoryEntryCount}`
             : 'No Statistics available.')
         } catch {
           appendAssistantMessage(tr("Statistics could not be loaded."))
@@ -2252,7 +2469,12 @@ export default function CoworkView() {
           return
         }
         useMemoryStore.getState().upsertEntry({
-          id: `btw-${Date.now()}`, scope: 'session', category: 'context', key: 'btw', content: slash.args.trim(),
+          id: `btw-${Date.now()}`,
+          scope: 'chat',
+          scopeRef: activeThread?.id ?? null,
+          category: 'context',
+          key: 'btw',
+          content: slash.args.trim(),
         })
         appendAssistantMessage(`Notiert: ${slash.args.trim()}`)
         return
@@ -2429,7 +2651,7 @@ export default function CoworkView() {
         await useInsightsStore.getState().loadEvents()
         const summary = useInsightsStore.getState().summary
         appendAssistantMessage(summary
-          ? `Insights:\n- Events: ${summary.totalEvents}\n- Sessions: ${summary.totalSessions}\n- Messages: ${summary.totalMessagesSent}\n- Token: ${summary.totalTokensEst}\n- Open Features > Insights for Details.`
+          ? `Insights:\n- Events: ${summary.totalEvents}\n- Chats: ${summary.totalChats}\n- Runs: ${summary.totalRuns}\n- Messages: ${summary.totalMessagesSent}\n- Token: ${summary.totalTokensEst}\n- Open Runs & Insights for details.`
           : 'No Insights available.')
         return
       }
@@ -2558,7 +2780,7 @@ export default function CoworkView() {
       }
 
       if (slash.command === 'release-notes') {
-        appendAssistantMessage(tr("LocalAI Cowork v1.0:\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Hermes-style memory and session search\n- Plugin-System with Skills\n- MCP integration\n- Sandbox & Security Controls"))
+        appendAssistantMessage(tr("LocalAI Cowork v1.0:\n- Centrally registered slash commands\n- 5 default personalities\n- CrewAI Multi-Agent System\n- Hermes-style memory and chat search\n- Plugin-System with Skills\n- MCP integration\n- Sandbox & Security Controls"))
         return
       }
 
@@ -2641,15 +2863,59 @@ export default function CoworkView() {
             baseUserPrompt,
           )
         : baseUserPrompt
+    const taskProjectRunContext: TaskProjectRunContext | null = activeWorkTask
+      ? await resolveTaskProjectRunContext({
+          taskId: activeWorkTask.id,
+          threadId,
+          prompt: rawPrompt,
+          workDir: activeWorkTask.workDir,
+        })
+      : null
     const hasApprovalBypassMarker = /\[approval-beduerftig\]/i.test(rawPrompt)
     const mergedForSend = mergeAttachments([], [...projectContextAttachments, ...draftAttachments])
+    const runAuthorizedPaths = [
+      ...(taskProjectRunContext?.authorizedPaths ?? []),
+      ...mergedForSend.next
+        .filter(hasLocalAttachmentPath)
+        .map((item, index) => ({
+          id: `attachment-${index}`,
+          path: item.path,
+          kind: item.kind,
+          access: item.access ?? 'read_only' as const,
+          label: item.label,
+          isPrimary: item.isPrimary === true,
+        })),
+      ...(!taskProjectRunContext && workingFolder?.trim()
+        ? [{
+            id: 'working-folder',
+            path: workingFolder.trim(),
+            kind: (workingPathKind === 'file' ? 'file' : 'folder') as 'file' | 'folder',
+            access: 'read_only' as const,
+            label: getPathName(workingFolder.trim()),
+            isPrimary: false,
+          }]
+        : []),
+    ].filter((entry, index, entries) => (
+      entries.findIndex((candidate) => (
+        candidate.kind === entry.kind && candidate.path.toLowerCase() === entry.path.toLowerCase()
+      )) === index
+    ))
+    const runtimePermissionConfig = {
+      mode: enginePermissionMode,
+      allowedDirectories: runAuthorizedPaths
+        .filter((entry) => entry.kind === 'folder')
+        .map((entry) => entry.path),
+      authorizedPaths: runAuthorizedPaths,
+    }
     const attachmentLimitNotice = mergedForSend.rejectedCount > 0
       ? 'Maximum of 25 project and message attachments per request reached.'
       : null
     const attachmentBuild = await buildAttachmentPromptContext(mergedForSend.next, rawPrompt)
     const projectLinkBuild = await buildProjectLinkPromptContext(projectLinksToFetch)
     const attachmentContext = attachmentBuild.context
-    const projectInstructionsContext = buildProjectInstructionsPromptContext(activeProject)
+    const projectInstructionsContext = activeWorkTask
+      ? ''
+      : buildProjectInstructionsPromptContext(activeProject)
     const shouldRunInPlanMode = slash?.command === 'plan' || skillPlanMode || claudePlanMode
     const planWrappedPrompt = shouldRunInPlanMode
       ? `Create only a clear numbered plan in English. Do not execute anything.\n\nTask:\n${rawPrompt}`
@@ -2663,6 +2929,10 @@ export default function CoworkView() {
     const basePrompt = [
       planWrappedPrompt,
       projectInstructionsContext,
+      taskProjectRunContext?.promptContext ?? '',
+      taskProjectRunContext?.warnings.length
+        ? `Project context warnings:\n${taskProjectRunContext.warnings.map((warning) => `- ${warning}`).join('\n')}`
+        : '',
       projectLinkBuild.context,
       attachmentContext,
     ].filter((part) => part.trim().length > 0).join('\n\n')
@@ -2670,20 +2940,27 @@ export default function CoworkView() {
     const engineUserInput = await buildEngineUserInput(promptWithAttachments, mergedForSend.next)
     const userMessage = {
       role: 'user' as const,
-      content: rawPrompt,
+      // Keep internal continuation/context wrappers out of the visible chat.
+      content: baseUserPrompt,
       timestamp: Date.now(),
       attachments: mergedForSend.next,
       debugContent: promptWithAttachments,
     }
     let userMessageId: string | null = null
-    const history = activeMessages
+    await reloadThreadMessages(threadId)
+    const chatHistoryMessages = useChatStore.getState().threads
+      .find((thread) => thread.id === threadId)
+      ?.messages ?? []
+    const history = chatHistoryMessages
       .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '' }))
+      .map((m) => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content : '',
+        debugContent: m.debugContent,
+      }))
       .filter((m) => m.content.trim().length > 0 || m.role === 'user')
 
-    const compactedHistory = policyFlags.autoCompactLongContext
-      ? compactHistoryForPrompt(history, 12)
-      : { compacted: history.slice(-12), droppedCount: 0 }
+    const requestHistory = history
 
     if (superVerboseAuditLogging) {
       void writeAuditEvent('super_verbose', 'cowork_user_prompt', {
@@ -2694,8 +2971,7 @@ export default function CoworkView() {
         attachments: mergedForSend.next,
         projectId: activeProject?.id ?? null,
         history,
-        compactedHistory: compactedHistory.compacted,
-        compactedDroppedItems: compactedHistory.droppedCount,
+        requestHistory,
         slashCommand: slash?.command ?? null,
       })
     }
@@ -2704,13 +2980,56 @@ export default function CoworkView() {
       userMessageId = addMessage(threadId, userMessage)
     }
     setInputValue('')
-    setAttachments([])
+    const currentThread = useChatStore.getState().threads.find((thread) => thread.id === threadId)
+    setAttachments(reconcileChatComposerAttachments(currentThread?.permissionConfig, [], false))
     setIncludeProjectLinks(false)
     setAttachmentNotice(
-      [attachmentLimitNotice, projectLinkBuild.notice].filter(Boolean).join(' ') || null,
+      [
+        attachmentLimitNotice,
+        projectLinkBuild.notice,
+        taskProjectRunContext?.warnings.join(' '),
+      ].filter(Boolean).join(' ') || null,
     )
     setBusy(true)
     setError(null)
+
+    if (currentThread?.runner === 'crew') {
+      try {
+        const cwd = taskProjectRunContext?.preferredCwd || getEffectiveWorkspaceCwd(
+          mergedForSend.next,
+          workingFolder,
+          workingPathKind,
+          workspaceDefaultPath,
+        )
+        setActiveAiThread(threadId)
+        await engineSendMessage(
+          engineUserInput,
+          cwd,
+          undefined,
+          {
+            threadId,
+            messages: chatHistoryMessages.map((message) => ({
+              role: message.role,
+              content: typeof message.content === 'string' ? message.content : '',
+              debugContent: message.debugContent,
+            })),
+          },
+          createChatProviderSelection(providerState),
+          runtimePermissionConfig,
+        )
+      } catch (crewError) {
+        const message = crewError instanceof Error ? crewError.message : String(crewError)
+        setError(message)
+        addMessage(threadId, {
+          role: 'assistant',
+          content: `Crew run failed: ${message}`,
+          timestamp: Date.now(),
+        })
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
 
     let assistantMessageId: string | null = null
 
@@ -2726,8 +3045,7 @@ export default function CoworkView() {
           model: providerState.model,
           timeoutMs: providerState.timeoutMs,
           historyItems: history.length,
-          compactedHistoryItems: compactedHistory.compacted.length,
-          compactedDroppedItems: compactedHistory.droppedCount,
+          requestHistoryItems: requestHistory.length,
           promptChars: promptWithAttachments.length,
           parsedAttachments: attachmentBuild.parsedFiles,
           failedAttachments: attachmentBuild.failedFiles.length,
@@ -2742,8 +3060,7 @@ export default function CoworkView() {
           prompt: rawPrompt,
           promptWithAttachments,
           history,
-          compactedHistory: compactedHistory.compacted,
-          compactedDroppedItems: compactedHistory.droppedCount,
+          requestHistory,
           ollama,
           shouldRunInPlanMode,
           skillInvocationActive,
@@ -2782,6 +3099,89 @@ export default function CoworkView() {
       })
       assistantMessageId = createdAssistantMessageId
 
+      if (hasTauriRuntime() && (providerState.provider === 'openai-compatible' || providerState.provider === 'codex')) {
+        const cwd = taskProjectRunContext?.preferredCwd || getEffectiveWorkspaceCwd(
+          mergedForSend.next,
+          workingFolder,
+          workingPathKind,
+          workspaceDefaultPath,
+        )
+        const toolPolicy = enginePermissionMode === 'strict' || enginePermissionMode === 'plan'
+          ? 'read_only' as const
+          : 'autonomous' as const
+        try {
+          const durable = providerState.provider === 'codex'
+            ? await createDurableCodexRun({
+                clientThreadId: threadId,
+                clientProjectId: activeProject?.id ?? `standalone:${cwd || 'no-workspace'}`,
+                clientTaskId: activeWorkTask?.id ?? null,
+                assistantMessageId: createdAssistantMessageId,
+                userMessageId,
+                prompt: promptWithAttachments,
+                systemPrompt: globalInstruction || undefined,
+                history: chatHistoryMessages
+                  .filter((message) => message.id !== userMessageId && message.role !== 'system')
+                  .map((message) => ({
+                    role: message.role as 'user' | 'assistant',
+                    content: typeof message.content === 'string' ? message.content : '',
+                  })),
+                workspacePath: cwd,
+                projectRevision: activeProject?.updatedAt ?? 1,
+                taskRevision: activeWorkTask?.updatedAt ?? 1,
+                toolPolicy,
+                profileId: selectedCodexProfile?.id ?? '',
+                model: providerState.model || undefined,
+                reasoningEffort: providerState.reasoningEffort,
+                timeoutMs: providerState.timeoutMs,
+                source: 'chat',
+              })
+            : await createDurableLocalRun({
+            clientThreadId: threadId,
+            clientProjectId: activeProject?.id ?? `standalone:${cwd || 'no-workspace'}`,
+            clientTaskId: activeWorkTask?.id ?? null,
+            assistantMessageId: createdAssistantMessageId,
+            userMessageId,
+            prompt: promptWithAttachments,
+            systemPrompt: globalInstruction || undefined,
+            history: chatHistoryMessages
+              .filter((message) => message.id !== userMessageId && message.role !== 'system')
+              .map((message) => ({
+                role: message.role as 'user' | 'assistant',
+                content: typeof message.content === 'string' ? message.content : '',
+              })),
+            workspacePath: cwd || null,
+            projectRevision: activeProject?.updatedAt ?? 1,
+            taskRevision: activeWorkTask?.updatedAt ?? 1,
+            toolPolicy,
+            provider: providerState,
+            mcpServers: policyFlags.allowMcpToolCalls
+              ? (mcpServers.length > 0 ? mcpServers : [mcpServer])
+              : [],
+            source: 'chat',
+          })
+          const { client, run } = durable
+          setContextEvidenceRun({ runId: run.spec.id, threadId })
+          addLog({
+            level: 'info',
+            area: 'runtime',
+            message: 'Durable local run created',
+            details: { runId: run.spec.id, threadId, deviceId: run.assigned_executor_id },
+          })
+          await attachDurableLocalRun(client, run)
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause)
+          setError(message)
+          updateMessage(threadId, createdAssistantMessageId, {
+            content: `Persistent local run failed: ${message}`,
+            streaming: false,
+          }, { persist: true })
+        } finally {
+          setActiveAiThread(null)
+          setBusy(false)
+        }
+        return
+      }
+
       const updateLiveToolCall = (patch: LiveToolCallPatch) => {
         liveToolCalls = upsertLiveToolCall(liveToolCalls, patch)
         updateMessage(threadId, createdAssistantMessageId, {
@@ -2809,7 +3209,7 @@ export default function CoworkView() {
 
       {
         // Engine provider (Ollama backend).
-        const cwd = getEffectiveWorkspaceCwd(
+        const cwd = taskProjectRunContext?.preferredCwd || getEffectiveWorkspaceCwd(
           mergedForSend.next,
           workingFolder,
           workingPathKind,
@@ -2994,7 +3394,7 @@ export default function CoworkView() {
             case 'tool_use_complete':
               usedToolNames.add(event.toolName)
               {
-                const toolFailed = event.result.trim().toLowerCase().startsWith('fehler:')
+                const toolFailed = event.isError === true || event.result.trim().toLowerCase().startsWith('fehler:')
                 const completedToolInput = liveToolCalls.find((call) => call.id === event.toolUseId)?.input ?? {}
                 if (event.toolName === 'AskUser' && typeof completedToolInput.question === 'string') {
                   awaitingUserQuestion = completedToolInput.question
@@ -3031,16 +3431,16 @@ export default function CoworkView() {
                 details: { toolName: event.toolName, result: event.result?.slice(0, 500) },
               })
               break
-            case 'compaction':
-              appendVerboseEntry(tr('Context compacted'), [
-                `${tr('Removed messages')}: ${event.removedCount}`,
-                event.summary,
-              ].filter(Boolean).join('\n'))
+            case 'context_coverage':
+              appendVerboseEntry(
+                'Chat context prepared',
+                `${event.sentPrevious}/${event.totalPrevious} previous messages sent; ${event.omittedPrevious} omitted`,
+              )
               addLog({
                 level: 'info',
                 area: 'llm',
-                message: 'Context compacted',
-                details: { removedCount: event.removedCount, summary: event.summary },
+                message: 'Chat context prepared',
+                details: event,
               })
               break
             case 'context_warning':
@@ -3072,15 +3472,15 @@ export default function CoworkView() {
           }
         }, {
           threadId,
-          messages: activeMessages.map((message) => ({
+          messages: chatHistoryMessages.map((message) => ({
             role: message.role,
             content: typeof message.content === 'string' ? message.content : '',
             debugContent: message.debugContent,
           })),
-        }, createChatProviderSelection(providerState))
+        }, createChatProviderSelection(providerState), runtimePermissionConfig)
 
         const fallbackText = engineErrorMessage
-          ? `LLM request failed: ${engineErrorMessage}\n\n${getChatProviderFailureHint(providerState.provider)}`
+          ? `LLM request failed: ${engineErrorMessage}\n\n${tr(getChatProviderFailureHint(providerState.provider))}`
           : awaitingUserQuestion
             ? `question: ${awaitingUserQuestion}`
           : approvalSummary
@@ -3146,7 +3546,7 @@ export default function CoworkView() {
           model: providerState.model,
         })
       }
-      const failureContent = `LLM request failed: ${message}\n\n${getChatProviderFailureHint(providerState.provider)}`
+      const failureContent = `LLM request failed: ${message}\n\n${tr(getChatProviderFailureHint(providerState.provider))}`
       if (assistantMessageId) {
         updateMessage(threadId, assistantMessageId, { content: failureContent, streaming: false }, { persist: true })
       } else {
@@ -3167,7 +3567,12 @@ export default function CoworkView() {
     await submitPrompt(inputValue, attachments)
   }
 
-  const handleStop = () => {
+  const handleStop = async () => {
+    if (activeThreadId && await cancelLatestDurableRun(activeThreadId)) {
+      setBusy(false)
+      setError(null)
+      return
+    }
     engineAbort()
     if (activeThreadId) {
       const streamingMessage = [...activeMessages].reverse().find(
@@ -3226,6 +3631,19 @@ export default function CoworkView() {
   const handleAskUserSubmit = async () => {
     const answer = buildStructuredAskUserAnswer()
     if (!answer.trim() && attachments.length === 0 && activeProjectAttachments.length === 0 && !(includeProjectLinks && activeProjectLinks.length > 0)) return
+    if (activeThreadId && await respondToLatestDurableInput(activeThreadId, { answer })) {
+      addMessage(activeThreadId, {
+        role: 'user',
+        content: answer,
+        timestamp: Date.now(),
+      })
+      setInputValue('')
+      setAskUserFreeText('')
+      setSelectedAskUserOptionIds([])
+      setDismissedAskUserQuestion(askUserQuestion)
+      setBusy(true)
+      return
+    }
     setInputValue(answer)
     setDismissedAskUserQuestion(askUserQuestion)
     await submitPrompt(answer, attachments)
@@ -3239,7 +3657,7 @@ export default function CoworkView() {
     })
   }
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
     if (approvalSteps.length === 0 || !activeThreadId) return
     setBusy(true)
     addMessage(activeThreadId, {
@@ -3247,25 +3665,29 @@ export default function CoworkView() {
       content: `Plan freigegeben: ${approvalSteps.join(' | ')}`,
       timestamp: Date.now(),
     })
-    resolveEngineApproval({ allowed: true })
+    if (!await resolveLatestDurableApproval(activeThreadId, true)) {
+      resolveEngineApproval({ allowed: true })
+    }
     clearApproval()
   }
 
-  const handleReject = () => {
+  const handleReject = async () => {
     if (!activeThreadId) return
     addMessage(activeThreadId, {
       role: 'system',
       content: 'Plan rejected. Adjust the request or check the approval.',
       timestamp: Date.now(),
     })
-    resolveEngineApproval({ allowed: false, reason: 'Declined by user in CoworkView.' })
+    if (!await resolveLatestDurableApproval(activeThreadId, false)) {
+      resolveEngineApproval({ allowed: false, reason: 'Declined by user in CoworkView.' })
+    }
     clearApproval()
   }
 
   const handleProviderChange = (provider: string) => {
     if (!activeThreadId) return
     const nextProvider = normalizeChatProvider(provider)
-    const nextProviderState = getChatProviderState(providerContext, activeProvider, { provider: nextProvider })
+    const nextProviderState = getChatProviderState(providerContext, activeProvider, { backend: nextProvider })
     setThreadProviderSettings(activeThreadId, createChatProviderSelection(nextProviderState))
     addLog({
       level: 'info',
@@ -3299,42 +3721,66 @@ export default function CoworkView() {
     })
   }
 
+  const handleBackendProfileChange = (id: string) => {
+    if (!activeThreadId) return
+    if (providerState.provider === 'codex') {
+      const profile = codexProfiles.find((item) => item.id === id)
+      setThreadProviderSettings(activeThreadId, {
+        backend: 'codex',
+        ...(profile ? { authProfileId: profile.id } : {}),
+        ...(providerState.model ? { model: providerState.model } : {}),
+        ...(providerState.reasoningEffort ? { reasoningEffort: providerState.reasoningEffort } : {}),
+      })
+      if (profile) void loadCodexModels(profile.id)
+      return
+    }
+    const profile = llmProfiles.find((item) => item.id === id)
+    if (!profile) return
+    setThreadProviderSettings(activeThreadId, {
+      backend: 'openai-compatible',
+      profileId: profile.id,
+      ...(profile.model.trim() ? { model: profile.model.trim() } : {}),
+    })
+  }
+
+  const handleReasoningEffortChange = (reasoningEffort: string) => {
+    if (!activeThreadId || providerState.provider !== 'codex') return
+    setThreadProviderSettings(activeThreadId, {
+      backend: 'codex',
+      ...(providerState.authProfileId ? { authProfileId: providerState.authProfileId } : {}),
+      ...(providerState.model ? { model: providerState.model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    })
+  }
+
+  const handleRunnerChange = (value: string) => {
+    if (!activeThreadId) return
+    if (value === 'model') {
+      setThreadRunner(activeThreadId, 'model', null)
+      return
+    }
+
+    const crewId = value.startsWith('crew:') ? value.slice('crew:'.length) : ''
+    if (crews.some((crew) => crew.id === crewId)) {
+      setThreadRunner(activeThreadId, 'crew', crewId)
+    }
+  }
+
   if (!activeThread) {
     return null
   }
 
-  const quickPrompts = [
-    tr('Create a clear 5-step plan for the current task.'),
-    tr('Analyze the latest changes and list risks.'),
-    tr('Write the next concrete to-dos with priority.'),
-  ]
-  const onboardingWorkingFolder = workingFolder ?? attachments.find((item) => item.kind === 'folder')?.path ?? null
-  const onboardingPermissionLabel = enginePermissionMode === 'plan'
-    ? tr('Plan-Mode')
-    : enginePermissionMode === 'bypass'
-      ? tr('Bypass')
-      : enginePermissionMode === 'strict'
-        ? tr('Strikt')
-        : tr('Standard')
-  const runStatusLabel = engineStatus === 'streaming'
-    ? tr('Responding')
-    : engineStatus === 'tool_running'
-      ? tr('Using tools')
-      : engineStatus === 'waiting_approval'
-        ? tr('Needs approval')
-        : engineStatus === 'error'
-          ? tr('Action needed')
-          : providerConfigured
-            ? tr('Ready')
-            : tr('Needs setup')
-  const runbarState = !providerConfigured && engineStatus === 'idle' ? 'waiting_approval' : engineStatus
+  const onboardingWorkingFolder = attachments.find((item) => item.kind === 'folder')?.path ?? workingFolder ?? null
 
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   const applyPromptToInput = (content: string, nextAttachments: ChatAttachment[] = []) => {
     setInputValue(content)
-    const restored = mergeAttachments([], nextAttachments)
+    const restored = mergeAttachments(
+      getChatWorkspaceAttachments(activeThread.permissionConfig),
+      nextAttachments,
+    )
     setAttachments(restored.next)
     setAttachmentNotice(
       restored.rejectedCount > 0
@@ -3363,73 +3809,15 @@ export default function CoworkView() {
 
   return (
     <div className={`cowork-view ${compactMode ? 'compact-mode' : ''}`}>
-      <div className={`cowork-workspace${contextRailOpen ? ' context-open' : ''}`}>
+      <div className={`cowork-workspace${contextDrawerOpen ? ' context-open' : ''}`}>
         {/* Chat Pane */}
         <div className="cowork-pane">
-          <div className="cowork-runbar">
-            <div className={`cowork-runbar-state state-${runbarState}`}>
-              <span aria-hidden="true" />
-              <div><strong>{runStatusLabel}</strong><small>{providerState.label} · {providerState.model || tr('no model set')}</small></div>
-            </div>
-            {activeWorkTask ? (
-              <button
-                type="button"
-                className="cowork-runbar-task"
-                aria-label={`${tr('Open current task')}: ${activeWorkTask.title}`}
-                onClick={() => navigate(`/tasks?task=${encodeURIComponent(activeWorkTask.id)}`)}
-              >
-                <ListTodo size={15} aria-hidden="true" />
-                <span className="cowork-runbar-task-copy">
-                  <small>{tr('Back to task')}</small>
-                  <strong>{activeWorkTask.title}</strong>
-                </span>
-                <span className={`cowork-runbar-task-status status-${activeWorkTask.status}`}>
-                  {formatWorkTaskStatus(activeWorkTask.status)}
-                </span>
-                <ArrowRight className="cowork-runbar-task-arrow" size={14} aria-hidden="true" />
-              </button>
-            ) : null}
-            <div className="cowork-runbar-meta">
-              <span>{currentSessionId ? tr('Saved session') : tr('Unsaved session')}</span>
-              <span>{contextWarning.level === 'none' ? tr('Context stable') : `${tr('Context')} · ${tr(contextWarning.level)}`}</span>
-            </div>
-            <div className="cowork-runbar-actions">
-            <button
-              type="button"
-              className="btn-sm"
-              onClick={() => setTerminalDockOpen(terminalThreadId, !terminalDockOpen)}
-            >
-              {terminalDockOpen
-                ? tr('Terminal ausblenden')
-                : terminalHiddenActivity
-                  ? tr('Terminal Live einblenden')
-                  : tr('Terminal Live')}
-            </button>
-            <button
-              type="button"
-              className={`btn-sm cowork-context-toggle${contextRailOpen ? ' active' : ''}`}
-              aria-expanded={contextRailOpen}
-              aria-controls="cowork-context-rail"
-              onClick={() => setContextRailOpen((open) => !open)}
-            >
-              <PanelRightOpen size={14} aria-hidden="true" />{tr('Run context')}
-            </button>
-            <button type="button" className="btn-sm" onClick={() => void forceCompact()} disabled={uiLocked}>{tr("Compact context")}</button>
-          </div>
-          </div>
-
         <div className="cowork-messages" ref={logRef}>
           {renderedMessages.length === 0 && !busy && (
-            <GuidedOnboarding
-              providerLabel={providerState.label}
-              model={providerState.model}
-              providerConfigured={providerConfigured}
-              workingFolder={onboardingWorkingFolder}
-              permissionLabel={onboardingPermissionLabel}
-              onChooseFolder={() => void handleAttachFolders()}
-              onOpenSettings={() => navigate(`/settings?provider=${providerState.provider}`)}
-              onUseStarterTask={applyPromptToInput}
-            />
+            <div className="cowork-empty-hint">
+              <Sparkles size={15} aria-hidden="true" />
+              <span>{tr('Describe what you want to accomplish. Getting started is available in the main menu.')}</span>
+            </div>
           )}
           {hiddenRenderedMessageCount > 0 && (
             <div className="message-window-notice">
@@ -3437,7 +3825,10 @@ export default function CoworkView() {
             </div>
           )}
           {renderedMessages.map((msg, index) => {
-              const content = typeof msg.content === 'string' ? msg.content : ''
+              const storedContent = typeof msg.content === 'string' ? msg.content : ''
+              const content = msg.role === 'user'
+                ? resolveUserFacingPromptContent(storedContent)
+                : storedContent
               const { promptDebug, ollamaRequestPreview } = splitPromptDebugContent(msg.debugContent)
               const attachmentsForMessage = Array.isArray(msg.attachments) ? msg.attachments : []
               const imageAttachments = attachmentsForMessage.filter((item) => item.kind === 'file' && isImageAttachment(item))
@@ -3474,9 +3865,6 @@ export default function CoworkView() {
 
               return (
                 <div key={msg.id} className={`cowork-msg ${msg.role}${msg.crewLive ? ' crew-live-message' : ''}`}>
-                <div className="msg-avatar">
-                  {msg.role === 'user' ? tr("You") : 'AI'}
-                </div>
                 <div className="msg-body">
                   <div className="msg-role">
                     {msg.role === 'user' ? tr("You") : 'LocalAI Cowork'}
@@ -3537,7 +3925,11 @@ export default function CoworkView() {
                           </span>
                         </div>
                       ) : null}
-                      {displayedContent ? <HighlightedChatText content={displayedContent} /> : null}
+                      {displayedContent ? (
+                        msg.role === 'assistant' && !assistantFailure
+                          ? <MarkdownChatText content={displayedContent} />
+                          : <HighlightedChatText content={displayedContent} />
+                      ) : null}
                     </div>
                   )}
                   {!isCollapsed && (
@@ -3625,7 +4017,6 @@ export default function CoworkView() {
             })}
           {busy && !activeMessages.some((msg) => msg.streaming) && (
             <div className="cowork-msg assistant">
-              <div className="msg-avatar">AI</div>
               <div className="msg-body">
                 <div className="msg-role">{tr("LocalAI Cowork")}</div>
                 <div className="msg-content typing">
@@ -3733,10 +4124,6 @@ export default function CoworkView() {
 
         {error && <p className="error cowork-error">{error}</p>}
 
-        {renderedMessages.length === 0 && !busy && !inputValue.trim() ? (
-          <CoworkQuickPrompts prompts={quickPrompts} onSelect={applyPromptToInput} />
-        ) : null}
-
           <form className="cowork-input" onSubmit={handleSend}>
           <div className="chat-input-main">
             {activeProject && (
@@ -3769,7 +4156,12 @@ export default function CoworkView() {
                     ))}
                   </div>
                 )}
-                {activeProjectLinks.length > 0 && (
+                {activeProjectLinks.length > 0 && activeWorkTask && (
+                  <div className="project-context-instructions">
+                    {tr('Active project links are loaded automatically for task chats.')}
+                  </div>
+                )}
+                {activeProjectLinks.length > 0 && !activeWorkTask && (
                   <label className="project-link-fetch-toggle">
                     <input
                       type="checkbox"
@@ -3789,6 +4181,20 @@ export default function CoworkView() {
                     <span className="attachment-chip-label">
                       {item.kind === 'folder' ? tr('Folder') : isImageAttachment(item) ? tr('Image') : tr('File')}: {getAttachmentDisplayName(item)}
                     </span>
+                    {hasLocalAttachmentPath(item) && (
+                      <select
+                        aria-label={`${tr('Access')}: ${getAttachmentDisplayName(item)}`}
+                        value={item.access ?? 'read_only'}
+                        disabled={uiLocked}
+                         onChange={(event) => {
+                           const access = event.currentTarget.value as 'read_only' | 'read_write'
+                           handleAttachmentAccessChange(item, access)
+                         }}
+                      >
+                        <option value="read_only">{tr('Read only')}</option>
+                        <option value="read_write">{tr('Read and edit')}</option>
+                      </select>
+                    )}
                     <button
                       type="button"
                       className="attachment-remove"
@@ -3897,96 +4303,284 @@ export default function CoworkView() {
               </div>
             )}
           </div>
-          <div className="chat-input-bottom-bar">
-            <div className="chat-input-toolbar-compact">
-              <select
+          <div ref={composerControlsRef} className="chat-input-controls">
+            {composerSettingsOpen && (
+              <div id="chat-composer-settings" className="chat-input-settings-panel" role="region" aria-label={tr('Chat settings')}>
+            <button
+              type="button"
+              className={`btn-compact-action${sandboxSetupReady === false ? ' sandbox-setup-action' : ''}`}
+              onClick={() => navigate('/settings?section=sandbox')}
+              title={sandboxSetupReady === false ? tr('Set up sandbox') : sandboxContext.warning ?? tr('Open AI Sandbox settings')}
+              aria-label={sandboxSetupReady === false ? tr('Set up sandbox') : tr('Open AI Sandbox settings')}
+            >
+              {sandboxSetupReady === false
+                ? tr('Set up sandbox')
+                : currentRunId && sandboxContext.mode !== 'checking'
+                ? sandboxContext.mode === 'windows_native_elevated'
+                  ? tr('Sandbox active')
+                  : sandboxContext.warning
+                    ? tr('Read-only – sandbox error')
+                    : tr('Read-only – sandbox not configured')
+                : sandboxSetupReady === null
+                  ? tr('Checking sandbox')
+                  : sandboxSetupReady
+                    ? tr('Sandbox active')
+                    : tr('Read-only – sandbox not configured')}
+            </button>
+                <div className="chat-input-toolbar-compact">
+              <div className={`chat-runner-control${chatUsesCrew ? ' crew-active' : ''}`}>
+                <span className="chat-runner-label">{tr('Runner')}</span>
+                <div className="chat-runner-mode" role="group" aria-label={tr('Runner')}>
+                  <button
+                    type="button"
+                    className={`chat-runner-mode-button${!chatUsesCrew ? ' active' : ''}`}
+                    onClick={() => handleRunnerChange('model')}
+                    disabled={uiLocked}
+                    aria-pressed={!chatUsesCrew}
+                  >
+                    {tr('Model')}
+                  </button>
+                  <button
+                    type="button"
+                    className={`chat-runner-mode-button${chatUsesCrew ? ' active' : ''}`}
+                    onClick={() => {
+                      const crewId = selectedChatCrew?.id ?? crews[0]?.id
+                      if (crewId) {
+                        handleRunnerChange(`crew:${crewId}`)
+                      } else {
+                        navigate('/crew')
+                      }
+                    }}
+                    disabled={uiLocked}
+                    aria-pressed={chatUsesCrew}
+                    title={crews.length === 0 ? tr('No Crews available') : tr('Crew choose')}
+                  >
+                    {tr('Crew')}
+                  </button>
+                </div>
+                {chatUsesCrew && (
+                  <ChatDropdown
+                    className="chat-crew-select"
+                    value={chatRunnerSelection}
+                    onChange={handleRunnerChange}
+                    disabled={uiLocked}
+                    ariaLabel={tr('Crew choose')}
+                    title={tr('Crew choose')}
+                    options={[
+                      ...(activeThread?.crewId && !selectedChatCrew ? [{
+                        value: `crew:${activeThread.crewId}`,
+                        label: `${tr('Crew')} (${tr('not available')})`,
+                      }] : []),
+                      ...crews.map((crew) => ({ value: `crew:${crew.id}`, label: crew.name })),
+                    ]}
+                  />
+                )}
+              </div>
+              {!chatUsesCrew && (
+                <>
+              <ChatDropdown
                 className="chat-compact-select"
                 value={providerState.provider}
-                onChange={(e) => handleProviderChange(e.target.value)}
+                onChange={handleProviderChange}
                 disabled={uiLocked}
-                aria-label={tr("Provider")}
+                ariaLabel={tr("Provider")}
                 title={tr("Provider")}
-              >
-                {CHAT_PROVIDER_OPTIONS.map((provider) => (
-                  <option key={provider} value={provider}>
-                    {CHAT_PROVIDER_LABELS[provider]}
-                  </option>
-                ))}
-              </select>
-              <select
+                options={CHAT_PROVIDER_OPTIONS.map((provider) => ({
+                  value: provider,
+                  label: CHAT_PROVIDER_LABELS[provider],
+                }))}
+              />
+              <ChatDropdown
                 className="chat-compact-select"
-                value={providerState.model}
-                onChange={(e) => handleModelChange(e.target.value)}
+                value={providerState.provider === 'codex' ? (providerState.authProfileId ?? '') : (providerState.profileId ?? '')}
+                onChange={handleBackendProfileChange}
                 disabled={uiLocked}
-                aria-label={tr("Model")}
-                title={tr("Model")}
-              >
-                {selectableModels.length > 0 ? (
-                  selectableModels.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))
-                ) : (
-                  <option value={providerState.model}>{providerState.model || tr('no model set')}</option>
-                )}
-                {selectableModels.length > 0 && providerState.model && !selectableModels.includes(providerState.model) && (
-                  <option value={providerState.model}>{providerState.model}</option>
-                )}
-              </select>
-              <select
+                ariaLabel={providerState.provider === 'codex' ? tr('Codex account') : tr('API profile')}
+                title={providerState.provider === 'codex' ? tr('Codex account') : tr('API profile')}
+                options={providerState.provider === 'codex'
+                  ? [
+                      { value: '', label: tr('Automatic') },
+                      ...codexProfiles.map((profile) => ({ value: profile.id, label: `${profile.name} · ${profile.status}` })),
+                    ]
+                  : llmProfiles.map((profile) => ({
+                      value: profile.id,
+                      label: `${profile.name} · ${profile.preset ?? 'custom'}`,
+                    }))}
+              />
+              <ChatDropdown
+                className="chat-compact-select chat-model-select"
+                value={providerState.model}
+                onChange={handleModelChange}
+                disabled={uiLocked}
+                ariaLabel={tr("Model")}
+                title={`${tr(getModelGuidance(providerState.model).title)}: ${tr(getModelGuidance(providerState.model).recommendedFor)}`}
+                options={selectableModels.length > 0
+                  ? [
+                      ...(providerState.provider === 'codex' ? [{ value: '', label: tr('Automatic model') }] : []),
+                      ...selectableModels.map((model) => ({
+                        value: model,
+                        label: `${model} — ${tr(getModelGuidance(model).title)}`,
+                      })),
+                      ...(providerState.model && !selectableModels.includes(providerState.model) ? [{
+                        value: providerState.model,
+                        label: `${providerState.model} — ${tr(getModelGuidance(providerState.model).title)}`,
+                      }] : []),
+                    ]
+                  : [{
+                      value: providerState.model,
+                      label: providerState.model
+                        ? `${providerState.model} — ${tr(getModelGuidance(providerState.model).title)}`
+                        : tr('no model set'),
+                    }]}
+              />
+              {providerState.provider === 'codex' ? (
+                <ChatDropdown
+                  className="chat-compact-select"
+                  value={providerState.reasoningEffort ?? ''}
+                  onChange={handleReasoningEffortChange}
+                  disabled={uiLocked}
+                  ariaLabel={tr('Reasoning effort')}
+                  title={tr('Reasoning effort')}
+                  options={[
+                    { value: '', label: tr('Automatic effort') },
+                    { value: 'low', label: tr('Low') },
+                    { value: 'medium', label: tr('Medium') },
+                    { value: 'high', label: tr('High') },
+                    { value: 'xhigh', label: tr('Very high') },
+                  ]}
+                />
+              ) : null}
+                </>
+              )}
+              <ChatDropdown
                 className="chat-compact-select"
                 value={enginePermissionMode}
-                onChange={(e) => {
-                  const mode = e.target.value as 'default' | 'plan' | 'bypass' | 'strict'
+                onChange={(value) => {
+                  const mode = value as 'default' | 'plan' | 'bypass' | 'strict'
                   setEngineConfig({ permissionMode: mode })
                   setClaudePermissionMode(ENGINE_TO_CLAUDE_PERMISSION_MODE[mode])
                 }}
                 disabled={uiLocked}
-                aria-label={tr("Permission mode")}
+                ariaLabel={tr("Permission mode")}
                 title={tr("Permission mode")}
+                options={[
+                  { value: 'default', label: tr("Standard") },
+                  { value: 'plan', label: tr("Plan-Mode") },
+                  { value: 'bypass', label: tr("Bypass") },
+                  { value: 'strict', label: tr("Strikt") },
+                ]}
+              />
+              <select
+                className="chat-compact-select"
+                value={attachmentAccess}
+                onChange={(event) => setAttachmentAccess(event.currentTarget.value as 'read_only' | 'read_write')}
+                disabled={uiLocked}
+                aria-label={tr('Access for new files and folders')}
+                title={tr('Access for new files and folders')}
               >
-                <option value="default">{tr("Standard")}</option>
-                <option value="plan">{tr("Plan-Mode")}</option>
-                <option value="bypass">{tr("Bypass")}</option>
-                <option value="strict">{tr("Strikt")}</option>
+                <option value="read_only">{tr('New: read only')}</option>
+                <option value="read_write">{tr('New: read and edit')}</option>
               </select>
-              <div className="chat-compact-actions">
-                <button type="button" className="btn-compact-action" onClick={handleAttachFiles} disabled={uiLocked}>{tr("Files")}</button>
-                <button type="button" className="btn-compact-action" onClick={handleAttachFolders} disabled={uiLocked}>{tr("Folder")}</button>
+                </div>
               </div>
-            </div>
-            {busy ? (
-              <button type="button" onClick={handleStop} className="btn-stop compact-send-btn">{tr("Stop")}</button>
-            ) : (
-              <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
-                {askUserQuestion ? tr("Send answer") : tr("Send")}
-              </button>
             )}
+            <div className="chat-input-bottom-bar">
+              <div className="chat-input-primary-actions">
+                <div className="chat-attachment-menu-root">
+                  <button
+                    type="button"
+                    className="chat-input-icon-button"
+                    aria-label={tr('Add files or folders')}
+                    aria-haspopup="menu"
+                    aria-expanded={attachmentMenuOpen}
+                    onClick={() => {
+                      setAttachmentMenuOpen((open) => !open)
+                      setComposerSettingsOpen(false)
+                    }}
+                    disabled={uiLocked}
+                  >
+                    <Plus size={17} aria-hidden="true" />
+                  </button>
+                  {attachmentMenuOpen && (
+                    <div className="chat-attachment-menu" role="menu" aria-label={tr('Add files or folders')}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAttachmentMenuOpen(false)
+                          void handleAttachFiles()
+                        }}
+                      >
+                        {tr('Files')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setAttachmentMenuOpen(false)
+                          void handleAttachFolders()
+                        }}
+                      >
+                        {tr('Folder')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className={`chat-input-settings-toggle${composerSettingsOpen ? ' active' : ''}${sandboxSetupReady === false ? ' needs-attention' : ''}`}
+                  aria-label={tr('Chat settings')}
+                  aria-controls="chat-composer-settings"
+                  aria-expanded={composerSettingsOpen}
+                  onClick={() => {
+                    setComposerSettingsOpen((open) => !open)
+                    setAttachmentMenuOpen(false)
+                  }}
+                >
+                  <Settings2 size={15} aria-hidden="true" />
+                  <span>{tr('Settings')}</span>
+                  <ChevronDown size={14} aria-hidden="true" />
+                </button>
+              </div>
+              {busy ? (
+                <button type="button" onClick={handleStop} className="btn-stop compact-send-btn">{tr("Stop")}</button>
+              ) : (
+                <button type="submit" disabled={uiLocked} className="btn-send compact-send-btn">
+                  {askUserQuestion ? tr("Send answer") : tr("Send")}
+                </button>
+              )}
+            </div>
           </div>
           </form>
         </div>
 
-        {contextRailOpen && <button type="button" className="context-rail-scrim" onClick={() => setContextRailOpen(false)} aria-hidden="true" tabIndex={-1} />}
-        <CoworkContextRail
-          open={contextRailOpen}
-          engineStatus={engineStatus}
-          error={error}
-          sessionId={currentSessionId}
-          runId={contextEvidenceRun?.runId ?? null}
-          providerLabel={providerState.label}
-          model={providerState.model}
-          workingContext={onboardingWorkingFolder}
-          contextWarning={contextWarning}
-          compactionCount={compactionCount}
-          approvalSteps={approvalSteps}
-          toolCalls={contextToolCalls}
-          task={contextTask}
-          onClose={() => setContextRailOpen(false)}
-          onStop={handleStop}
-          onOpenRuns={() => navigate('/settings?section=sessions')}
-          onOpenTasks={() => navigate('/tasks')}
-        />
+        {contextDrawerOpen && (
+          <>
+            <button type="button" className="context-rail-scrim" onClick={() => setContextDrawerOpen(false)} aria-hidden="true" tabIndex={-1} />
+            <CoworkContextRail
+              open
+              engineStatus={engineStatus}
+              error={error}
+              threadId={activeThreadId}
+              runId={contextEvidenceRun?.runId ?? null}
+              providerLabel={chatUsesCrew ? tr('Crew') : providerState.label}
+              model={selectedChatCrew?.name ?? providerState.model}
+              workingContext={onboardingWorkingFolder}
+              contextWarning={contextWarning}
+              contextCoverage={contextCoverage}
+              approvalSteps={approvalSteps}
+              toolCalls={contextToolCalls}
+              task={contextTask}
+              terminalOpen={terminalDockOpen}
+              terminalHiddenActivity={terminalHiddenActivity}
+              onToggleTerminal={() => setTerminalDockOpen(terminalThreadId, !terminalDockOpen)}
+              onClose={() => setContextDrawerOpen(false)}
+              onStop={handleStop}
+              onOpenRuns={() => navigate('/settings?section=runs')}
+              onOpenTasks={() => navigate('/tasks')}
+            />
+          </>
+        )}
       </div>
     </div>
   )

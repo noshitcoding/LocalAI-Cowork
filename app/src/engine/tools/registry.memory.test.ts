@@ -11,12 +11,12 @@ describe('memory tools', () => {
     invokeMock.mockReset()
   })
 
-  it('registers curated mutation and past-session search tools', async () => {
+  it('registers curated mutation and past-chat search tools', async () => {
     const { getAllTools, registerAllBuiltinTools } = await import('./registry')
     registerAllBuiltinTools()
 
     expect(getAllTools().some((tool) => tool.name === 'MemoryWrite')).toBe(true)
-    expect(getAllTools().some((tool) => tool.name === 'SessionSearch')).toBe(true)
+    expect(getAllTools().some((tool) => tool.name === 'ChatSearch')).toBe(true)
   })
 
   it('maps add, replace, and remove inputs to the bounded backend mutation contract', async () => {
@@ -36,7 +36,7 @@ describe('memory tools', () => {
 
     const result = await tool.call(
       { action: 'replace', target: 'memory', old_text: 'Postgres', content: 'Project uses SQLite.' },
-      { cwd: 'C:/workspace', runId: 'run-1', sessionId: 'session-1' } as never,
+      { cwd: 'C:/workspace', runId: 'run-1', threadId: 'thread-1' } as never,
     )
 
     expect(invokeMock).toHaveBeenCalledWith('memory_mutate', {
@@ -44,7 +44,7 @@ describe('memory tools', () => {
       target: 'memory',
       oldText: 'Postgres',
       content: 'Project uses SQLite.',
-      sourceSessionId: 'session-1',
+      sourceRunId: 'run-1',
     })
     expect(String(result.data)).toContain('Usage: 42/2200 chars')
   })
@@ -63,15 +63,15 @@ describe('memory tools', () => {
     expect(String(result.data)).toContain('[user/style]: Concise answers')
   })
 
-  it('returns persisted session matches through SessionSearch', async () => {
+  it('returns persisted chat matches through ChatSearch', async () => {
     const { getAllTools, registerAllBuiltinTools } = await import('./registry')
     registerAllBuiltinTools()
-    const tool = getAllTools().find((entry) => entry.name === 'SessionSearch')!
+    const tool = getAllTools().find((entry) => entry.name === 'ChatSearch')!
     invokeMock.mockResolvedValue([
       {
-        session_id: 'session-old',
-        session_title: 'Database decision',
-        started_at: '2026-07-10T10:00:00Z',
+        thread_id: 'thread-old',
+        thread_title: 'Database decision',
+        updated_at: '2026-07-10T10:00:00Z',
         matched_content: 'We selected SQLite.',
         matched_role: 'assistant',
       },
@@ -79,7 +79,7 @@ describe('memory tools', () => {
 
     const result = await tool.call({ query: 'SQLite', limit: 5 }, { cwd: 'C:/workspace', runId: 'run-1' } as never)
 
-    expect(invokeMock).toHaveBeenCalledWith('session_search', { query: 'SQLite', limit: 5 })
+    expect(invokeMock).toHaveBeenCalledWith('chat_search', { query: 'SQLite', limit: 5 })
     expect(String(result.data)).toContain('We selected SQLite.')
   })
 })

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, Check, Circle, Clock3, ExternalLink, FileOutput, PanelRightClose, ShieldAlert, Square, Wrench, XCircle } from 'lucide-react'
-import type { EngineStatus, ContextWarning } from '../stores/engineStore'
+import type { EngineStatus, ContextCoverage, ContextWarning } from '../stores/engineStore'
 import type { LiveToolCall } from '../stores/chatStore'
 import type { Task } from '../stores/taskStore'
 import { safeInvoke } from '../utils/safeInvoke'
@@ -16,16 +16,19 @@ type CoworkContextRailProps = {
   open: boolean
   engineStatus: EngineStatus
   error: string | null
-  sessionId: string | null
+  threadId: string | null
   runId: string | null
   providerLabel: string
   model: string
   workingContext: string | null
   contextWarning: ContextWarning
-  compactionCount: number
+  contextCoverage: ContextCoverage | null
   approvalSteps: string[]
   toolCalls: LiveToolCall[]
   task: Task | null
+  terminalOpen?: boolean
+  terminalHiddenActivity?: boolean
+  onToggleTerminal?: () => void
   onClose: () => void
   onStop: () => void
   onOpenRuns: () => void
@@ -57,16 +60,19 @@ export default function CoworkContextRail({
   open,
   engineStatus,
   error,
-  sessionId,
+  threadId,
   runId,
   providerLabel,
   model,
   workingContext,
   contextWarning,
-  compactionCount,
+  contextCoverage,
   approvalSteps,
   toolCalls,
   task,
+  terminalOpen = false,
+  terminalHiddenActivity = false,
+  onToggleTerminal,
   onClose,
   onStop,
   onOpenRuns,
@@ -170,13 +176,29 @@ export default function CoworkContextRail({
             <div><dt>{tr('Provider')}</dt><dd>{providerLabel}</dd></div>
             <div><dt>{tr('Model')}</dt><dd title={model}>{model || tr('not set')}</dd></div>
             <div><dt>{tr('Working context')}</dt><dd title={workingContext ?? undefined}>{workingContext || tr('No folder connected')}</dd></div>
-            <div><dt>{tr('Session')}</dt><dd>{sessionId ? sessionId.slice(0, 10) : tr('Not saved')}</dd></div>
+            <div><dt>{tr('Chat')}</dt><dd>{threadId ? threadId.slice(0, 10) : tr('Not saved')}</dd></div>
           </dl>
           <div className={`context-rail-context-meter level-${contextWarning.level}`}>
             <span>{tr('Context health')}</span>
             <strong>{contextWarning.level === 'none' ? tr('Stable') : tr(contextWarning.level)}</strong>
-            <small>{contextWarning.estimatedTokens > 0 ? `${contextWarning.estimatedTokens} ${tr('tokens')}` : `${compactionCount} ${tr('compactions')}`}</small>
+            <small>
+              {contextCoverage
+                ? `${contextCoverage.sentPrevious}/${contextCoverage.totalPrevious} ${tr('previous messages sent')}`
+                : contextWarning.estimatedTokens > 0
+                  ? `${contextWarning.estimatedTokens} ${tr('tokens')}`
+                  : tr('No context sent yet')}
+            </small>
           </div>
+          {onToggleTerminal ? (
+            <button type="button" className="context-rail-link" onClick={onToggleTerminal}>
+              {terminalOpen
+                ? tr('Hide terminal')
+                : terminalHiddenActivity
+                  ? tr('Show live terminal')
+                  : tr('Open terminal')}
+              <ExternalLink size={12} aria-hidden="true" />
+            </button>
+          ) : null}
         </section>
 
         <section className="context-rail-section" aria-labelledby="context-rail-plan">

@@ -4,6 +4,16 @@ permissions:
   contents: read
 
 on:
+  workflow_dispatch:
+    inputs:
+      soak_profile:
+        description: Acceptance duration for browser sessions, Linux GUI streams, and competing workers
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - extended
   push:
     branches: [main]
   pull_request:
@@ -15,7 +25,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -23,6 +35,14 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
+
+      - name: Setup Python for the bundled CrewAI runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: app/src-tauri/python/crew_runtime/requirements.lock
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
@@ -33,7 +53,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: app/src-tauri
+          workspaces: |
+            .
+            app/src-tauri
 
       - name: Install frontend dependencies
         run: |
@@ -44,21 +66,734 @@ jobs:
         working-directory: app
         run: npm exec -- playwright install --with-deps chromium
 
+      - name: Prepare and verify bundled CrewAI runtime
+        working-directory: app
+        run: npm run prepare:crew-runtime -- -Force
+
+      - name: Prepare and verify bundled Codex runtime
+        working-directory: app
+        run: npm run prepare:codex-runtime
+
+      - name: Linux MCP sandbox protocol tests
+        run: python -m unittest deploy/sandboxes/core/test_mcp_tool.py
+
       - name: Quality gates
         working-directory: app
         run: npm run verify
 
+      - name: Distributed Rust workspace gates
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Distributed contract drift and N-1 compatibility
+        working-directory: app
+        run: npm run contracts:check
+
       - name: Tauri production build
         run: |
           cd app
-          npm run tauri build
+          npm run tauri build -- --no-bundle
+
+  local-daemon-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Install interactive Linux desktop acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends xvfb xauth xdotool imagemagick xclip x11-utils
+
+      - name: Linux local daemon gates
+        run: |
+          cargo check --locked --package cowork-local-daemon
+          cargo test --locked --package cowork-local-daemon --all-targets
+          cargo clippy --locked --package cowork-local-daemon --all-targets -- -D warnings
+
+      - name: Personal Linux executor and GUI-stream acceptance
+        if: always()
+        run: |
+          cargo check --locked --package cowork-device-agent
+          xvfb-run --auto-servernum env COWORK_REQUIRE_LINUX_DESKTOP_TEST=1 COWORK_LINUX_DESKTOP_SOAK_FRAMES=${{ inputs.soak_profile == 'extended' && '250' || '25' }} cargo test --locked --package cowork-device-agent --all-targets
+          cargo clippy --locked --package cowork-device-agent --all-targets -- -D warnings
+
+  android-unsigned-apk:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_NDK_VERSION: 27.2.12479018
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            clients/android/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Setup Rust Android target
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-linux-android
+
+      - name: Install pinned Android SDK components
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager_path="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "${sdkmanager_path}" ]]; then
+            echo "Android sdkmanager is unavailable at ${sdkmanager_path}." >&2
+            exit 1
+          fi
+          set +o pipefail
+          yes | "${sdkmanager_path}" --licenses >/dev/null
+          set -o pipefail
+          "${sdkmanager_path}" \
+            'platform-tools' \
+            'platforms;android-35' \
+            'build-tools;35.0.0' \
+            "ndk;${ANDROID_NDK_VERSION}"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Install locked Android and shared UI dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app
+          npm ci --prefix clients/android
+
+      - name: Validate Android offline shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix app run test -- --run src/mobile/mobileOfflineStore.test.ts src/mobile/mobileSecure.test.ts
+          npm --prefix app run build -- --mode android
+
+      - name: Build unsigned ARM64 APK
+        working-directory: clients/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run android:init -- --ci
+          npm run android:build -- --apk --target aarch64
+
+      - name: Verify unsigned APK payload
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          unsigned_apk="$(find clients/android/src-tauri/gen/android/app/build/outputs/apk -type f -name '*release-unsigned.apk' -print -quit)"
+          if [[ -z "${unsigned_apk}" ]]; then
+            echo 'Tauri did not produce an unsigned release APK.' >&2
+            find clients/android/src-tauri/gen/android/app/build/outputs -type f -maxdepth 8 -print || true
+            exit 1
+          fi
+          mkdir -p android-ci
+          cp "${unsigned_apk}" android-ci/Open-Cowork-Android-arm64-unsigned.apk
+          "${ANDROID_HOME}/build-tools/35.0.0/aapt" dump badging "${unsigned_apk}" > android-ci/APK-BADGING.txt
+          grep -F "package: name='dev.opencowork.android'" android-ci/APK-BADGING.txt
+          sha256sum android-ci/Open-Cowork-Android-arm64-unsigned.apk > android-ci/SHA256SUMS
+
+      - name: Upload unsigned APK acceptance artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: open-cowork-android-unsigned-${{ github.sha }}
+          path: android-ci/*
+          if-no-files-found: error
+          retention-days: 7
+
+  single-port-gateway:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Validate production Compose model
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet
+
+      - name: Nginx-compatible TLS to Caddy acceptance
+        run: node scripts/test-gateway-e2e.mjs
+
+  crew-sandbox:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build isolated CrewAI image
+        run: docker build --file deploy/sandboxes/crew/Dockerfile --tag open-cowork-sandbox-crew:ci .
+
+      - name: Verify pinned runtime without network or privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            open-cowork-sandbox-crew:ci \
+            sh -c 'test -r /opt/cowork/mcp-tool.py && python3 /opt/cowork/crew-runtime/main.py status' \
+            > crew-runtime-status.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          status = json.loads(Path('crew-runtime-status.json').read_text(encoding='utf-8'))
+          assert status['runtimeCompatible'] is True, status
+          assert status['crewaiVersion'] == status['expectedCrewaiVersion'] == '1.15.8', status
+          assert status['runtimeSchemaVersion'] == 2, status
+          PY
+
+  linux-gui-office:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the Linux GUI and Office sandbox
+        run: docker build --file deploy/sandboxes/gui/Dockerfile --tag open-cowork-sandbox-gui:ci .
+
+      - name: Render DOCX, XLSX, and PPTX visual baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+            --tmpfs /workspace:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 256 \
+            --memory 2g \
+            --cpus 2 \
+            --mount type=bind,source="${PWD}/deploy/sandboxes/gui/test-office-visual.py",target=/opt/cowork/test-office-visual.py,readonly \
+            open-cowork-sandbox-gui:ci \
+            /opt/cowork/office-venv/bin/python /opt/cowork/test-office-visual.py
+
+      - name: Exercise headless and visible Chromium artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --network none \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777 \
+            --tmpfs /workspace:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 256 \
+            --memory 2g \
+            --cpus 2 \
+            --mount type=bind,source="${PWD}/deploy/sandboxes/gui/test-browser-visual.mjs",target=/opt/cowork/test-browser-visual.mjs,readonly \
+            open-cowork-sandbox-gui:ci \
+            node /opt/cowork/test-browser-visual.mjs
+
+  web-cross-browser:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Install locked frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Install browser matrix
+        working-directory: app
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Build isolated web client
+        working-directory: app
+        run: npm run build -- --mode web
+
+      - name: Desktop, Android, iPhone, and WCAG browser matrix
+        working-directory: app
+        run: npx playwright test -c playwright.web.config.ts e2e/web-runtime.spec.ts
+
+  browser-session-soak:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_browser_session_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: browser-session-ci-postgres
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_browser_session_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Install browser acceptance dependencies
+        working-directory: app
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build server and isolated web client
+        run: |
+          cargo build --locked --package cowork-server
+          npm --prefix app run build -- --mode web
+
+      - name: Rotate and revoke a sustained browser session
+        shell: bash
+        env:
+          COWORK_MODE: api
+          COWORK_LISTEN_ADDR: 127.0.0.1:18097
+          COWORK_BOOTSTRAP_TOKEN: browser-session-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000051
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_TEST_POSTGRES_PASSWORD: browser-session-ci-postgres
+          COWORK_TEST_API_URL: http://127.0.0.1:18097
+          COWORK_TEST_WEB_ORIGIN: https://127.0.0.1:18447
+          COWORK_TEST_WEB_DIST: ${{ github.workspace }}/app/dist
+          COWORK_TEST_EMAIL: browser-session-ci@opencowork.invalid
+          COWORK_TEST_PASSWORD: Browser-Session-CI-Password-42!
+          COWORK_TEST_REFRESH_ROTATIONS: ${{ inputs.soak_profile == 'extended' && '250' || '25' }}
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_POSTGRES_PASSWORD}@127.0.0.1:15432/cowork_browser_session_ci"
+          test_root="$(mktemp -d)"
+          export COWORK_TEST_TLS_CERT="${test_root}/localhost.crt"
+          export COWORK_TEST_TLS_KEY="${test_root}/localhost.key"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "${COWORK_TEST_TLS_KEY}" -out "${COWORK_TEST_TLS_CERT}" \
+            -subj '/CN=127.0.0.1' -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' \
+            -config /dev/null 2>/dev/null
+          ./target/debug/cowork-server >"${test_root}/server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 150); do
+            if curl --fail --silent http://127.0.0.1:18097/readyz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "${ready}" -ne 1 ]]; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            -X POST http://127.0.0.1:18097/api/v1/auth/bootstrap \
+            -H "Authorization: Bearer ${COWORK_BOOTSTRAP_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data '{"email":"browser-session-ci@opencowork.invalid","display_name":"Browser Session CI","password":"Browser-Session-CI-Password-42!","device_id":"00000000-0000-4000-8000-000000000052"}' \
+            >/dev/null
+          if ! node app/scripts/test-browser-session.mjs; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+
+  server-mcp-bindings:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_server_mcp_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: server-mcp-ci-postgres
+        ports:
+          - 15435:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_server_mcp_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Build control plane
+        run: cargo build --locked --package cowork-server
+
+      - name: Validate encrypted executor-bound MCP bindings
+        shell: bash
+        env:
+          COWORK_TEST_DATABASE_PASSWORD: server-mcp-ci-postgres
+          COWORK_MODE: api
+          COWORK_LISTEN_ADDR: 127.0.0.1:18101
+          COWORK_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000081
+          COWORK_SERVER_CAPABILITIES: model.external,tool.mcp.invoke,crew.python
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_S3_ENDPOINT: http://127.0.0.1:19999
+          COWORK_S3_BUCKET: cowork-server-mcp-ci
+          COWORK_S3_ACCESS_KEY: server-mcp-ci-access-key
+          COWORK_S3_SECRET_KEY: server-mcp-ci-secret-key
+          COWORK_STORAGE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          COWORK_TEST_API_URL: http://127.0.0.1:18101/api/v1
+          COWORK_TEST_BOOTSTRAP_TOKEN: server-mcp-ci-bootstrap-token-00000000
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_DATABASE_PASSWORD}@127.0.0.1:15435/cowork_server_mcp_ci"
+          test_root="$(mktemp -d)"
+          ./target/debug/cowork-server >"${test_root}/server.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 150); do
+            if curl --fail --silent http://127.0.0.1:18101/readyz >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "${ready}" -ne 1 ]]; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+          if ! node scripts/test-server-mcp-bindings.mjs; then
+            cat "${test_root}/server.log"
+            exit 1
+          fi
+
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "${postgres_container}"
+          persisted="$(docker exec "${postgres_container}" psql -U cowork -d cowork_server_mcp_ci -tAc \
+            "SELECT count(*) || '|' || min(octet_length(encrypted_data_key)) || '|' || min(octet_length(binding_nonce)) || '|' || min(octet_length(binding_wrap_nonce)) || '|' || min(position(convert_to('mcp-binding-rotated-secret-ci-value', 'UTF8') in encrypted_binding)) FROM server_mcp_bindings;")"
+          if [[ "${persisted}" != '1|48|12|12|0' ]]; then
+            echo "encrypted MCP binding persistence is invalid: ${persisted}" >&2
+            exit 1
+          fi
+          echo 'mcp_binding_envelope_encryption=ok'
+
+  multi-worker-soak:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: cowork_worker_soak_ci
+          POSTGRES_USER: cowork
+          POSTGRES_PASSWORD: worker-soak-ci-postgres
+        ports:
+          - 15434:5432
+        options: >-
+          --health-cmd "pg_isready -U cowork -d cowork_worker_soak_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Build control plane and personal sync bridge
+        run: cargo build --locked --package cowork-server --package cowork-local-daemon --package cowork-device-agent
+
+      - name: Compete across four worker processes
+        shell: bash
+        env:
+          COWORK_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000061
+          COWORK_LISTEN_ADDR: 127.0.0.1:18099
+          COWORK_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_RUNNER_SIGNING_KEY: worker-soak-runner-signing-key-00000000
+          COWORK_SERVER_CAPABILITIES: shell,files
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_WORKER_POLL_MS: '10'
+          COWORK_MAINTENANCE_EVERY_POLLS: '1'
+          COWORK_LEASE_SECONDS: '30'
+          COWORK_TEST_POSTGRES_PASSWORD: worker-soak-ci-postgres
+          COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
+          COWORK_TEST_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_TEST_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_TEST_SOAK_WAVES: ${{ inputs.soak_profile == 'extended' && '20' || '5' }}
+          COWORK_TEST_RUNS_PER_WAVE: ${{ inputs.soak_profile == 'extended' && '25' || '16' }}
+          COWORK_TEST_WORKER_COUNT: '4'
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="postgres://cowork:${COWORK_TEST_POSTGRES_PASSWORD}@127.0.0.1:15434/cowork_worker_soak_ci"
+          test_root="$(mktemp -d)"
+          pids=()
+          cleanup() {
+            for pid in "${pids[@]}"; do kill "${pid}" 2>/dev/null || true; done
+            for pid in "${pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
+          }
+          trap cleanup EXIT
+
+          node scripts/fake-soak-runner.mjs >"${test_root}/runner.log" 2>&1 &
+          pids+=("$!")
+          COWORK_MODE=api ./target/debug/cowork-server >"${test_root}/api.log" 2>&1 &
+          pids+=("$!")
+          for _ in $(seq 1 150); do
+            curl --fail --silent http://127.0.0.1:18098/healthz >/dev/null \
+              && curl --fail --silent http://127.0.0.1:18099/readyz >/dev/null \
+              && break
+            sleep 0.2
+          done
+          curl --fail --silent http://127.0.0.1:18098/healthz >/dev/null
+          curl --fail --silent http://127.0.0.1:18099/readyz >/dev/null
+
+          worker_ids=(
+            00000000-0000-4000-8000-000000000071
+            00000000-0000-4000-8000-000000000072
+            00000000-0000-4000-8000-000000000073
+            00000000-0000-4000-8000-000000000074
+          )
+          for index in "${!worker_ids[@]}"; do
+            COWORK_MODE=worker COWORK_WORKER_ID="${worker_ids[$index]}" \
+              ./target/debug/cowork-server >"${test_root}/worker-${index}.log" 2>&1 &
+            pids+=("$!")
+          done
+          sleep 1
+          for pid in "${pids[@]}"; do kill -0 "${pid}"; done
+          if ! node scripts/test-worker-soak.mjs; then
+            for log in "${test_root}"/*.log; do echo "==> ${log}"; cat "${log}"; done
+            exit 1
+          fi
+
+          postgres_container="$(docker ps --filter 'ancestor=postgres:17-alpine' --format '{{.ID}}' | head -n 1)"
+          test -n "${postgres_container}"
+          docker exec -i "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
+          INSERT INTO auth_refresh_token_history (token_hash, session_id, refresh_family_id)
+          SELECT decode(repeat('ab', 32), 'hex'), id, refresh_family_id
+          FROM auth_sessions
+          LIMIT 1;
+          INSERT INTO push_subscriptions (
+            id, user_id, device_id, provider, endpoint_hash, ciphertext,
+            encrypted_data_key, nonce, wrap_nonce
+          )
+          SELECT gen_random_uuid(), user_id, device_id, 'fcm', decode('01', 'hex'),
+            decode('02', 'hex'), decode('03', 'hex'), decode('04', 'hex'), decode('05', 'hex')
+          FROM auth_sessions
+          LIMIT 1;
+          SQL
+          seeded="$(docker exec "${postgres_container}" psql -U cowork -d cowork_worker_soak_ci -tAc \
+            "SELECT (SELECT count(*) FROM auth_sessions) || '|' || (SELECT count(*) FROM access_tokens) || '|' || (SELECT count(*) FROM auth_refresh_token_history) || '|' || (SELECT count(*) FROM push_subscriptions);")"
+          IFS='|' read -r seeded_sessions seeded_access seeded_history seeded_push <<< "${seeded}"
+          if (( seeded_sessions < 1 || seeded_access != seeded_sessions || seeded_history != 1 || seeded_push != 1 )); then
+            echo "authentication retention fixture was not seeded correctly: ${seeded}" >&2
+            exit 1
+          fi
+          echo 'auth_session_retention_fixture=ok'
+          docker exec -i "${postgres_container}" psql -v ON_ERROR_STOP=1 -U cowork -d cowork_worker_soak_ci <<'SQL'
+          UPDATE auth_sessions
+          SET expires_at = now() - interval '91 days';
+          SQL
+          retained=''
+          for _ in $(seq 1 100); do
+            retained="$(docker exec "${postgres_container}" psql -U cowork -d cowork_worker_soak_ci -tAc \
+              "SELECT (SELECT count(*) FROM auth_sessions) || '|' || (SELECT count(*) FROM access_tokens) || '|' || (SELECT count(*) FROM auth_refresh_token_history) || '|' || (SELECT count(*) FROM push_subscriptions);")"
+            [[ "${retained}" == '0|0|0|0' ]] && break
+            sleep 0.1
+          done
+          if [[ "${retained}" != '0|0|0|0' ]]; then
+            echo "authentication retention left rows: ${retained}" >&2
+            for log in "${test_root}"/worker-*.log; do echo "==> ${log}"; cat "${log}"; done
+            exit 1
+          fi
+          echo 'auth_session_retention=ok'
+
+  multi-worker-soak-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-11
+        with:
+          toolchain: 1.95.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+
+      - name: Start the bundled PostgreSQL service
+        shell: pwsh
+        run: |
+          $service = Get-Service | Where-Object Name -Like 'postgresql*' | Select-Object -First 1
+          if (-not $service) { throw 'The Windows runner has no bundled PostgreSQL service.' }
+          if ($service.StartType -eq 'Disabled') { Set-Service -Name $service.Name -StartupType Manual }
+          if ($service.Status -ne 'Running') { Start-Service -Name $service.Name }
+          $psql = Get-Command psql -ErrorAction SilentlyContinue
+          if (-not $psql) {
+            $psqlPath = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $psqlPath) { throw 'psql is unavailable on the Windows runner.' }
+            $env:PATH = "$($psqlPath.DirectoryName);$env:PATH"
+          }
+          $env:PGPASSWORD = 'root'
+          psql -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE cowork LOGIN PASSWORD 'worker-soak-ci-postgres';"
+          createdb -U postgres -O cowork cowork_worker_soak_ci
+
+      - name: Build the Windows control plane and personal sync bridge
+        run: cargo build --locked --package cowork-server --package cowork-local-daemon --package cowork-device-agent
+
+      - name: Compete across four native Windows worker processes
+        shell: pwsh
+        env:
+          COWORK_TEST_POSTGRES_PASSWORD: worker-soak-ci-postgres
+          COWORK_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_BOOTSTRAP_USER_ID: 00000000-0000-4000-8000-000000000061
+          COWORK_LISTEN_ADDR: 127.0.0.1:18099
+          COWORK_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_RUNNER_SIGNING_KEY: worker-soak-runner-signing-key-00000000
+          COWORK_SERVER_CAPABILITIES: shell,files
+          COWORK_WEB_PUSH_ENABLED: 'false'
+          COWORK_WORKER_POLL_MS: '10'
+          COWORK_MAINTENANCE_EVERY_POLLS: '1'
+          COWORK_LEASE_SECONDS: '30'
+          COWORK_TEST_API_URL: http://127.0.0.1:18099/api/v1
+          COWORK_TEST_RUNNER_URL: http://127.0.0.1:18098
+          COWORK_TEST_BOOTSTRAP_TOKEN: worker-soak-ci-bootstrap-token-00000000
+          COWORK_TEST_SOAK_WAVES: ${{ inputs.soak_profile == 'extended' && '20' || '5' }}
+          COWORK_TEST_RUNS_PER_WAVE: ${{ inputs.soak_profile == 'extended' && '25' || '16' }}
+        run: .\scripts\run-worker-soak.ps1 -WorkerCount 4
 
   security:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -72,6 +807,14 @@ jobs:
         with:
           toolchain: 1.95.0
 
+      - name: Setup Python for dependency audit
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.10'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: app/src-tauri/python/crew_runtime/requirements.lock
+
       - name: Install locked frontend dependencies
         working-directory: app
         run: npm ci
@@ -79,13 +822,23 @@ jobs:
       - name: cargo-audit
         run: |
           cargo install cargo-audit --locked --version 0.22.2
-          cd app/src-tauri
           cargo audit
 
       - name: npm audit
         run: |
           cd app
           npm audit --audit-level=high
+
+      - name: Python dependency audit
+        working-directory: app
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          python -m pip_audit \
+            -r src-tauri/python/crew_runtime/requirements.lock \
+            --disable-pip \
+            --no-deps \
+            --ignore-vuln PYSEC-2026-311 \
+            --strict
 
       - name: Semgrep scan
         uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1

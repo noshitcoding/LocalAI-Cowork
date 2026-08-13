@@ -156,19 +156,71 @@ describe('credential persistence boundary', () => {
 
     const config = useConfigStore.getState()
     expect(config.llmProfiles.find((profile) => profile.id === 'default-openai-compatible')?.apiKey)
-      .toBe(SENTINELS.llm)
+      .toBe('')
+    expect(config.llmProfiles.find((profile) => profile.id === 'default-openai-compatible')?.hasApiKey)
+      .toBe(true)
     expect(config.mcpServer.env.SERVICE_TOKEN).toBe(SENTINELS.mcp)
     const connector = useCoworkStore.getState().connectors.find((entry) => entry.key === 'slack')
     expect(connector?.apiKey).toBe(SENTINELS.connector)
     expect(connector?.webhookUrl).toBe(SENTINELS.webhook)
     const crew = useCrewStore.getState().crews.find((entry) => entry.id === 'crew-secret-test')
-    expect(crew?.providerProfiles.openAICompatible.apiKey).toBe(SENTINELS.crewOpenAi)
-    expect(crew?.providerProfiles.openRouter.apiKey).toBe(SENTINELS.crewOpenRouter)
-    expect(useEngineStore.getState().config.apiKey).toBe(SENTINELS.engine)
+    expect(crew?.providerProfiles.openAICompatible.apiKey).toBe('')
+    expect(crew?.providerProfiles.openAICompatible.hasApiKey).toBe(true)
+    expect(crew?.providerProfiles.openRouter.apiKey).toBe('')
+    expect(crew?.providerProfiles.openRouter.hasApiKey).toBe(true)
+    expect(useEngineStore.getState().config.apiKey).toBe('')
 
     const persistedAfterRestart = localStorageContents()
     Object.values(SENTINELS).forEach((secret) => {
       expect(persistedAfterRestart).not.toContain(secret)
     })
+  })
+
+  it('imports a divergent legacy crew provider once and pins its vault-backed profile', async () => {
+    useConfigStore.setState((state) => ({
+      llmProfiles: state.llmProfiles.filter((profile) => !profile.id.startsWith('imported-crew-')),
+    }))
+    useCrewStore.setState({ crews: [] })
+    useCrewStore.getState().createCrew('crew-import-test', 'Imported Crew', [])
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => crew.id === 'crew-import-test'
+        ? {
+            ...crew,
+            defaultProvider: 'openrouter' as const,
+            defaultBackendSelection: undefined,
+            providerProfiles: {
+              ...crew.providerProfiles,
+              openRouter: {
+                ...crew.providerProfiles.openRouter,
+                enabled: true,
+                baseUrl: 'https://openrouter.ai/api/v1',
+                model: 'openai/gpt-4o-mini',
+                apiKey: SENTINELS.crewOpenRouter,
+              },
+            },
+          }
+        : crew),
+    }))
+
+    await initializeCredentialVault()
+
+    const importedId = 'imported-crew-crew-import-test-openrouter'
+    const imported = useConfigStore.getState().llmProfiles.filter((profile) => profile.id === importedId)
+    expect(imported).toHaveLength(1)
+    expect(imported[0]).toMatchObject({
+      provider: 'openai-compatible',
+      preset: 'openrouter',
+      apiKey: '',
+      hasApiKey: true,
+    })
+    expect(useCrewStore.getState().crews[0].defaultBackendSelection).toEqual({
+      backend: 'openai-compatible',
+      profileId: importedId,
+    })
+
+    clearRuntimeSecrets()
+    resetCredentialInitializationForTests()
+    await initializeCredentialVault()
+    expect(useConfigStore.getState().llmProfiles.filter((profile) => profile.id === importedId)).toHaveLength(1)
   })
 })

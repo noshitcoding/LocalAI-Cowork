@@ -101,7 +101,6 @@ export type CoworkPolicyFlags = {
   allowWebFetch: boolean
   allowWebSearch: boolean
   allowFileReadExtraction: boolean
-  autoCompactLongContext: boolean
 }
 
 type PolicySyncRequest = {
@@ -190,13 +189,16 @@ const CLAUDE_TOOL_CAPABILITIES: ClaudeToolCapability[] = [
   { id: 'web_fetch', label: 'Web Fetch', description: 'load the contents of a URL' },
   { id: 'web_search', label: 'Web Search', description: 'Web search over search queries' },
   { id: 'office_workflow', label: 'Office / PowerPoint', description: 'Create PPTX and DOCX artifacts' },
+  { id: 'microsoft_office', label: 'Microsoft Office (Windows pool)', description: 'Automate installed Word, Excel, and PowerPoint on a managed Windows executor' },
   { id: 'todo', label: 'Task/Todo', description: 'Maintain todo list and work plan' },
   { id: 'delegate_task', label: 'Delegate task', description: 'Delegate tasks to other crew members' },
   { id: 'ask_user', label: 'Ask questions', description: 'Gezielte Ask questions for Klarheit' },
   { id: 'mcp', label: 'MCP Tools', description: 'Use MCP servers and tools' },
 ]
 
-const DEFAULT_ENABLED_CLAUDE_TOOLS = CLAUDE_TOOL_CAPABILITIES.map((tool) => tool.id)
+const DEFAULT_ENABLED_CLAUDE_TOOLS = CLAUDE_TOOL_CAPABILITIES
+  .filter((tool) => tool.id !== 'microsoft_office')
+  .map((tool) => tool.id)
 
 const TOOL_PRESET_MAP: Record<ClaudeToolPreset, string[]> = {
   default: DEFAULT_ENABLED_CLAUDE_TOOLS,
@@ -208,9 +210,9 @@ const CUSTOM_TOOLSET_POLICY_ID = 'custom'
 
 const DEFAULT_TOOLSET_POLICIES: ToolsetPolicy[] = [
   {
-    id: 'host_full',
-    label: 'Host full',
-    description: 'Full local agent profile for trusted workspace automation.',
+    id: 'sandbox_full',
+    label: 'Sandbox full',
+    description: 'Full local agent profile inside the native Windows sandbox.',
     riskLevel: 'high',
     toolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
   },
@@ -252,7 +254,6 @@ const DEFAULT_POLICY_FLAGS: CoworkPolicyFlags = {
   allowWebFetch: true,
   allowWebSearch: true,
   allowFileReadExtraction: true,
-  autoCompactLongContext: true,
 }
 
 let policySyncReady = false
@@ -378,7 +379,9 @@ function inferToolsetPolicyId(
   toolsetPolicies: ToolsetPolicy[]
 ): string {
   const normalizedEnabledToolIds = normalizeEnabledClaudeToolIds(enabledToolIds)
-  const requestedPolicyId = activeToolsetPolicyId?.trim()
+  const requestedPolicyId = activeToolsetPolicyId?.trim() === 'host_full'
+    ? 'sandbox_full'
+    : activeToolsetPolicyId?.trim()
 
   if (requestedPolicyId === CUSTOM_TOOLSET_POLICY_ID) {
     return CUSTOM_TOOLSET_POLICY_ID
@@ -559,7 +562,7 @@ export const useCoworkStore = create<CoworkState>()(
       enabledClaudeToolIds: DEFAULT_ENABLED_CLAUDE_TOOLS,
       toolDenyRules: [],
       policyFlags: DEFAULT_POLICY_FLAGS,
-      activeToolsetPolicyId: 'host_full',
+      activeToolsetPolicyId: 'sandbox_full',
       toolsetPolicies: DEFAULT_TOOLSET_POLICIES,
       setGlobalInstruction: (instruction) => set({ globalInstruction: instruction }),
       upsertFolderInstruction: (item) =>

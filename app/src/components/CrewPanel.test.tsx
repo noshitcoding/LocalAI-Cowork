@@ -21,9 +21,9 @@ function LocationProbe() {
   return <output data-testid="location">{`${location.pathname}${location.search}`}</output>
 }
 
-function renderCrewPanel() {
+function renderCrewPanel(initialEntry = '/crew') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <CrewPanel />
       <LocationProbe />
     </MemoryRouter>,
@@ -75,12 +75,30 @@ describe('CrewPanel', () => {
       },
       llmProfiles: [
         {
+          id: 'ollama-default',
+          name: 'Ollama',
+          provider: 'openai-compatible',
+          preset: 'ollama',
+          authMode: 'none',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'llama3.2:latest',
+          apiKey: '',
+          hasApiKey: false,
+          timeoutMs: 600000,
+          verifyTlsCertificates: true,
+          contextWindow: 128000,
+          temperature: 0.1,
+        },
+        {
           id: 'openai-default',
           name: 'OpenAI kompatibel',
           provider: 'openai-compatible',
+          preset: 'openai',
+          authMode: 'bearer',
           baseUrl: 'https://api.openai.com/v1',
           model: 'gpt-4.1-mini',
-          apiKey: 'sk-test',
+          apiKey: '',
+          hasApiKey: true,
           timeoutMs: 600000,
           verifyTlsCertificates: true,
           contextWindow: null,
@@ -89,10 +107,13 @@ describe('CrewPanel', () => {
         {
           id: 'openrouter-default',
           name: 'OpenRouter',
-          provider: 'openrouter',
+          provider: 'openai-compatible',
+          preset: 'openrouter',
+          authMode: 'bearer',
           baseUrl: 'https://openrouter.ai/api/v1',
           model: '',
-          apiKey: 'or-test',
+          apiKey: '',
+          hasApiKey: true,
           timeoutMs: 600000,
           verifyTlsCertificates: true,
           contextWindow: null,
@@ -100,9 +121,15 @@ describe('CrewPanel', () => {
         },
       ],
       defaultLlmProfileIds: {
-        ollama: '',
+        api: 'ollama-default',
+        ollama: 'ollama-default',
         'openai-compatible': 'openai-default',
         openrouter: 'openrouter-default',
+      },
+      llmProfileModels: {
+        'ollama-default': ['llama3.2:latest', 'llama3.1:70b', 'qwen3:14b'],
+        'openai-default': ['gpt-4.1-mini'],
+        'openrouter-default': [],
       },
       mcpServer: { name: '', command: '', args: '', env: {} },
       mcpServers: [],
@@ -127,6 +154,7 @@ describe('CrewPanel', () => {
           sharedOutputCharLimit: 0,
           defaultProvider: 'ollama',
           defaultModel: 'llama3.2:latest',
+          defaultBackendSelection: { backend: 'openai-compatible', profileId: 'ollama-default' },
           providerProfiles: {
             openAICompatible: {
               enabled: true,
@@ -191,9 +219,13 @@ describe('CrewPanel', () => {
       renderCrewPanel()
     })
 
-    expect(screen.getByText('Crew-Arbeitsbereich')).toBeInTheDocument()
-    expect(screen.getByText('Provider & Modell')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Crew-Mitglieder/ }))
+    expect(screen.queryByText('Crew-Arbeitsbereich')).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Neue Crew...')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Crew starten' })).toBeInTheDocument()
+
+    await act(async () => {
+      renderCrewPanel('/crew?section=members')
+    })
     expect(screen.getByText('Rollen, Modelle und Zugriff pro Agent')).toBeInTheDocument()
     expect(screen.getByText('Freigaben für alle Mitglieder')).toBeInTheDocument()
     expect(screen.getAllByText('Alles erlauben').length).toBeGreaterThan(0)
@@ -237,13 +269,10 @@ describe('CrewPanel', () => {
   })
 
   it('hands the active crew to the task mission composer', async () => {
-    renderCrewPanel()
+    renderCrewPanel('/crew?section=mission')
 
-    const launchChecklist = screen.getByLabelText('Crew launch checklist')
-    expect(within(launchChecklist).getByText('Action needed')).toBeInTheDocument()
-    expect(within(launchChecklist).getByText('Create a mission in Tasks before running this crew.')).toBeInTheDocument()
-
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Prepare mission in Tasks' }))
+    expect(screen.getByText('Turn this crew into one complete mission')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare mission in Tasks' }))
 
     expect(screen.getByTestId('location')).toHaveTextContent('/tasks?crew=crew-1')
   })
@@ -264,7 +293,7 @@ describe('CrewPanel', () => {
 
   it('explains provider blockers next to the disabled run action and links to their fixes', async () => {
     useConfigStore.setState((state) => ({
-      llmProfiles: state.llmProfiles.map((profile) => profile.provider === 'openrouter'
+      llmProfiles: state.llmProfiles.map((profile) => profile.preset === 'openrouter'
         ? { ...profile, apiKey: '', model: 'nvidia/nemotron-3-super-120b-a12b:free' }
         : profile),
     }))
@@ -296,23 +325,16 @@ describe('CrewPanel', () => {
       })),
     }))
 
-    renderCrewPanel()
+    renderCrewPanel('/crew?section=diagnostics')
 
-    const launchChecklist = screen.getByLabelText('Crew launch checklist')
-    expect(within(launchChecklist).getByText('OpenRouter crew profile has no API key.')).toBeInTheDocument()
+    expect(screen.getByText('OpenRouter crew profile has no API key.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run crew' })).toBeDisabled()
-
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Review blockers' }))
-    expect(screen.getByRole('button', { name: /Diagnostics/i })).toHaveFocus()
 
     fireEvent.click(screen.getByRole('button', { name: 'Fix provider settings' }))
     expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
-
-    fireEvent.click(within(launchChecklist).getByRole('button', { name: 'Open settings' }))
-    expect(screen.getByTestId('location')).toHaveTextContent('/settings?provider=openrouter')
   })
 
-  it('syncs member providers to the crew provider when changing the crew provider', async () => {
+  it('offers only the two public backends and keeps unpinned members on the crew default', async () => {
     await act(async () => {
       renderCrewPanel()
     })
@@ -321,19 +343,163 @@ describe('CrewPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
     })
 
-    await act(async () => {
-      fireEvent.change(screen.getByRole('combobox', { name: 'Crew-Provider' }), { target: { value: 'openai-compatible' } })
-    })
+    const backendSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    expect(within(backendSelect).getAllByRole('option')).toHaveLength(2)
+    expect(within(backendSelect).getByRole('option', { name: 'OpenAI-kompatible API' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'API profile' }), { target: { value: 'openai-default' } })
 
     const crew = useCrewStore.getState().crews[0]
     const defaultAgent = crew.agents.find((agent) => agent.id === 'agent-default')
     const customAgent = crew.agents.find((agent) => agent.id === 'agent-custom')
 
     expect(crew.defaultProvider).toBe('openai-compatible')
-    expect(crew.defaultModel).toBe('')
-    expect(defaultAgent?.providerKind).toBe('openai-compatible')
-    expect(customAgent?.providerKind).toBe('openai-compatible')
-    expect(screen.getByText('The crew provider applies to all members. Only the model can still be overridden per member.')).toBeInTheDocument()
+    expect(crew.defaultBackendSelection).toEqual({ backend: 'openai-compatible', profileId: 'openai-default' })
+    expect(defaultAgent?.backendSelection).toBeUndefined()
+    expect(customAgent?.backendSelection).toBeUndefined()
+    expect(screen.getByText('Crew members inherit this backend unless they are pinned individually.')).toBeInTheDocument()
+  })
+
+  it('syncs the crew model catalog and effective model from Settings', async () => {
+    useConfigStore.setState((state) => ({
+      llmProfiles: state.llmProfiles.map((profile) => profile.id === 'openai-default'
+        ? { ...profile, model: 'settings/current-model' }
+        : profile),
+      llmProfileModels: {
+        ...state.llmProfileModels,
+        'openai-default': ['settings/current-model', 'settings/alternate-model'],
+      },
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        defaultProvider: 'openai-compatible',
+        defaultModel: 'legacy/removed-model',
+        defaultBackendSelection: { backend: 'openai-compatible', profileId: 'openai-default' },
+        agents: crew.agents.map((agent) => ({
+          ...agent,
+          providerKind: 'openai-compatible',
+          modelOverride: null,
+          inheritCrewModel: true,
+        })),
+      })),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+
+    const modelSelect = screen.getByRole('combobox', { name: 'Crew-Model' })
+    expect(within(modelSelect).getByRole('option', { name: 'settings/current-model' })).toBeInTheDocument()
+    expect(within(modelSelect).getByRole('option', { name: 'settings/alternate-model' })).toBeInTheDocument()
+    expect(within(modelSelect).queryByRole('option', { name: 'legacy/removed-model' })).not.toBeInTheDocument()
+    expect(useCrewStore.getState().crews[0].defaultModel).toBe('')
+    expect(within(modelSelect).getByRole('option', {
+      name: 'Use global settings (settings/current-model)',
+    })).toBeInTheDocument()
+  })
+
+  it('allows selecting the OpenRouter API profile before a model has been chosen', async () => {
+    await act(async () => {
+      renderCrewPanel()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+    const providerSelect = screen.getByRole('combobox', { name: 'API profile' })
+    const openRouterOption = within(providerSelect).getByRole('option', { name: 'OpenRouter' })
+    expect(openRouterOption).not.toBeDisabled()
+
+    fireEvent.change(providerSelect, { target: { value: 'openrouter-default' } })
+
+    expect(useCrewStore.getState().crews[0].defaultProvider).toBe('openrouter')
+    expect(useCrewStore.getState().crews[0].defaultBackendSelection).toEqual({
+      backend: 'openai-compatible',
+      profileId: 'openrouter-default',
+    })
+  })
+
+  it('uses the global API profile when switching a Codex crew back to API', async () => {
+    useConfigStore.setState((state) => ({
+      defaultLlmProfileIds: { ...state.defaultLlmProfileIds, api: 'openrouter-default' },
+      llmProfiles: state.llmProfiles.map((profile) => profile.preset === 'openrouter'
+        ? { ...profile, model: 'openai/gpt-4o-mini' }
+        : profile),
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        defaultProvider: 'codex',
+        defaultBackendSelection: { backend: 'codex' },
+      })),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+
+    const providerSelect = screen.getByRole('combobox', { name: 'Crew-Provider' })
+    fireEvent.change(providerSelect, { target: { value: 'openai-compatible' } })
+
+    const crew = useCrewStore.getState().crews[0]
+    expect(crew.defaultProvider).toBe('openrouter')
+    expect(crew.defaultBackendSelection).toEqual({ backend: 'openai-compatible', profileId: 'openrouter-default' })
+    expect(crew.agents.every((agent) => agent.backendSelection === undefined)).toBe(true)
+  })
+
+  it('applies the selected crew model to every member with one click', async () => {
+    usePersonalityStore.setState((state) => ({
+      ...state,
+      personalities: [{
+        id: 'profile-agent',
+        name: 'Profile Agent',
+        description: 'Profile agent',
+        role: 'researcher',
+        goal: 'Research',
+        system_prompt: 'Research carefully.',
+        skills_markdown: '',
+        temperature: null,
+        model_override: 'llama3.1:70b',
+        icon: null,
+        is_default: false,
+        created_at: '2026-07-22T00:00:00.000Z',
+        updated_at: '2026-07-22T00:00:00.000Z',
+      }],
+    }))
+    useCrewStore.setState((state) => ({
+      crews: state.crews.map((crew) => ({
+        ...crew,
+        agents: [
+          ...crew.agents,
+          { ...baseAgent, id: 'agent-profile', personalityId: 'profile-agent', modelOverride: 'llama3.1:70b' },
+        ],
+      })),
+    }))
+
+    await act(async () => {
+      renderCrewPanel()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Provider & Model/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply crew model to all' }))
+
+    const crew = useCrewStore.getState().crews[0]
+    expect(crew.agents.every((agent) => agent.modelOverride === null)).toBe(true)
+    expect(crew.agents.every((agent) => agent.inheritCrewModel)).toBe(true)
+    expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
+    expect(screen.getByText(`Crew model applied to ${crew.agents.length} members.`)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Crew-members/ }))
+    const profileAgentHeader = screen.getByRole('button', { name: /Profile Agent/ })
+    fireEvent.click(profileAgentHeader)
+    const profileAgentCard = profileAgentHeader.closest('.crew-agent-card')
+    expect(profileAgentCard).not.toBeNull()
+    fireEvent.change(within(profileAgentCard as HTMLElement).getByRole('combobox', { name: 'Model' }), {
+      target: { value: 'qwen3:14b' },
+    })
+
+    const overriddenAgent = useCrewStore.getState().crews[0].agents.find((agent) => agent.id === 'agent-profile')
+    expect(overriddenAgent).toMatchObject({ modelOverride: 'qwen3:14b', inheritCrewModel: false })
+    expect(usePersonalityStore.getState().upsertPersonality).not.toHaveBeenCalled()
   })
 
   it('can grant a tool to all crew members from the crew-level access panel', async () => {

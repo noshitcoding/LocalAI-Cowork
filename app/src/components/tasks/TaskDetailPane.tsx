@@ -1,24 +1,30 @@
 import { FolderOpen, PanelTopOpen } from 'lucide-react'
 import type { Crew } from '../../stores/crewStore'
 import type { ScheduledTask } from '../../stores/coworkStore'
+import type { Project } from '../../stores/projectStore'
 import type { WorkTask, WorkTaskRunner } from '../../stores/workTasksStore'
 import { tr } from '../../i18n'
 import { deriveTaskName, formatWorkTaskStatus, isAbsolutePath } from '../../engine/tasks/workTaskExecutionService'
 import type { CrewScheduleSnapshotMetadata } from '../../engine/tasks/workTaskScheduleService'
 import TaskRunToolbar from './TaskRunToolbar'
 import TaskSchedulerPanel from './TaskSchedulerPanel'
+import TaskBackendFields from './TaskBackendFields'
 
 type TaskProjectContext = {
+  id?: string
   title: string
 } | null
 
 type TaskDetailPaneProps = {
   task: WorkTask | null
   crews: Crew[]
+  projects?: Project[]
   defaultModel: string
   scheduled: ScheduledTask | null
   crewScheduleMetadata: CrewScheduleSnapshotMetadata | null
   projectContext: TaskProjectContext
+  onProjectContextEnabledChange?: (task: WorkTask, enabled: boolean) => void
+  onProjectContextProjectChange?: (task: WorkTask, projectId: string) => void
   onUpdateTask: (id: string, patch: Partial<Omit<WorkTask, 'id' | 'createdAt'>>) => void
   onPickWorkDir: (task: WorkTask) => void
   onOpenChat: (task: WorkTask) => void
@@ -33,10 +39,13 @@ type TaskDetailPaneProps = {
 export default function TaskDetailPane({
   task,
   crews,
+  projects = [],
   defaultModel,
   scheduled,
   crewScheduleMetadata,
   projectContext,
+  onProjectContextEnabledChange = () => {},
+  onProjectContextProjectChange = () => {},
   onUpdateTask,
   onPickWorkDir,
   onOpenChat,
@@ -91,9 +100,36 @@ export default function TaskDetailPane({
       </div>
 
       <div className="task-context-strip">
-        <span>
-          {tr('Project context')}: {projectContext ? projectContext.title : tr('No linked project')}
-        </span>
+        <label className="task-project-context-control">
+          <span className="task-checkbox-row">
+            <input
+              type="checkbox"
+              checked={Boolean(projectContext)}
+              disabled={!projectContext && projects.length === 0}
+              onChange={(event) => onProjectContextEnabledChange(task, event.target.checked)}
+              data-doc-id="button:/tasks/task-detail-pane/project-context"
+            />
+            <span>
+              {tr('Use project context')}
+              {projectContext ? `: ${projectContext.title}` : ''}
+            </span>
+          </span>
+          {projectContext && projects.length > 0 ? (
+            <select
+              className="ui-field"
+              aria-label={tr('Project')}
+              value={projectContext.id ?? projects.find((project) => project.title === projectContext.title)?.id ?? ''}
+              onChange={(event) => onProjectContextProjectChange(task, event.target.value)}
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>{project.title}</option>
+              ))}
+            </select>
+          ) : null}
+          {!projectContext && projects.length === 0 ? (
+            <span className="hint-text">{tr('Create a project first to use project context.')}</span>
+          ) : null}
+        </label>
         {task.threadId ? (
           <span>{tr('Chat')}: {task.threadId}</span>
         ) : (
@@ -127,15 +163,16 @@ export default function TaskDetailPane({
             ) : null}
           </label>
         ) : (
-          <label>
-            {tr('Model (optional)')}
-            <input
-              className="ui-field"
-              value={task.model}
-              onChange={(e) => onUpdateTask(task.id, { model: e.target.value })}
-              placeholder={`${tr('Default')}: ${defaultModel || '-'}`}
-            />
-          </label>
+          <TaskBackendFields
+            selection={task.backendSelection}
+            model={task.model}
+            defaultModel={defaultModel}
+            disabled={isBusy}
+            onChange={(backendSelection) => onUpdateTask(task.id, {
+              backendSelection,
+              model: backendSelection.model ?? '',
+            })}
+          />
         )}
         <label>
           {tr('Expected output')}

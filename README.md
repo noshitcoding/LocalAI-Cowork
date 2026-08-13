@@ -4,7 +4,7 @@
 
 # LocalAI Cowork
 
-**The open-source, local-first AI coworker for Windows.** LocalAI Cowork combines tasks, files, local or hosted models, MCP tools, approvals, and reusable workflows in one inspectable desktop application.
+**The open-source, local-first AI coworker for Windows and Linux.** LocalAI Cowork combines tasks, files, local or hosted models, MCP tools, approvals, and reusable workflows in one inspectable desktop application.
 
 It is an independent open-source alternative for people who like the outcome-driven approach of Claude Cowork and Microsoft Copilot Cowork, but want Ollama support, model choice, and source they can inspect and modify. It is early-stage software—not a claim of feature parity with either commercial product.
 
@@ -20,43 +20,88 @@ Most AI work happens in separate browser tabs, terminals, file explorers, and lo
 
 No LocalAI Cowork account is required. Use Ollama for local model execution or connect a compatible provider when a hosted model fits the task better.
 
-The project is early, but already usable as a Windows-first Tauri app. Start with non-sensitive copies of files and review AI-generated work before relying on it.
+The project is early. Windows is the most mature target, while Linux x86_64 is released as a beta-quality AppImage, DEB, and RPM. Start with non-sensitive copies of files and review AI-generated work before relying on it.
 
 ## Highlights
 
 - Local desktop app built with Tauri, React, TypeScript, and Rust
 - Chat workspace with persistent sessions, message history, and streaming output
 - Local Ollama support with health checks, model selection, and configurable timeouts
+- Local Codex app-server accounts plus reusable OpenAI-compatible provider profiles
 - OpenAI-compatible and OpenRouter profile support
 - MCP server management with probing and tool execution
 - File and folder context for chat tasks
 - Task lifecycle with approval states, progress, and audit events
 - Skills, prompt templates, runtime instructions, and reusable workflows
 - Terminal, process, memory, insight, and pipeline panels
-- Windows installer workflow for tagged releases
+- CDP developer browser with localhost preview, interaction, annotations, DOM,
+  console, and network inspection
+- GitHub workbench for local changes, branches, commits, pull requests, reviews,
+  comments, and merges
+- Gated Windows and Linux packages for tagged releases
+- Optional local-first distributed mode with durable server runs, Web and
+  Android control surfaces, encrypted project snapshots, and background local
+  daemons
+- Linux headless/visible Chromium, virtual desktop and LibreOffice sandboxes,
+  plus outbound-only managed Windows executors for Microsoft Office and
+  Windows desktop automation
 
 ## Current Scope
 
-LocalAI Cowork is aimed at local and network-internal AI workflows. It is not a hosted SaaS and does not require a separate web server in normal desktop use.
+LocalAI Cowork remains fully usable as a serverless desktop application. An
+optional self-hosted control plane adds durable runs that continue when every
+client is closed; it does not turn the project into an externally operated
+SaaS and is never required for local work.
 
-The current implementation is strongest on Windows. The Tauri stack can support more platforms later, but the installer and smoke tests are Windows-focused.
+The desktop implementation is strongest on Windows. Linux x86_64 packages are
+built and smoke-tested on Ubuntu 22.04 for a conservative glibc baseline.
+Server-side Linux runs use hardened Docker sandboxes, Chromium and LibreOffice;
+actual Word, Excel, PowerPoint and arbitrary Windows desktop automation require
+a separately licensed managed Windows executor.
+
+The opt-in distributed runtime contains a durable Rust control plane, personal
+background daemon, Linux Docker workers, managed Windows executors, isolated
+web entry and thin Android shell while preserving the serverless desktop path.
+Deploy it through the single-port Compose stack and review the remaining
+physical release gates before exposing it to untrusted users. Start with the
+[architecture](docs/DISTRIBUTED_ARCHITECTURE.md),
+[deployment guide](docs/SERVER_DEPLOYMENT.md), and explicit
+[implementation-status matrix](docs/DISTRIBUTED_IMPLEMENTATION_STATUS.md).
+The distributed stack is currently suitable for trusted development and pilot
+networks, not public multi-tenant production.
+
+## Choose Your Deployment
+
+| What you need | Install | Start here |
+| --- | --- | --- |
+| Offline/local work with Ollama, vLLM or hosted APIs | Desktop app only | [Setup guide](docs/SETUP.md#standalone-desktop) |
+| Runs that continue after the laptop is closed | Desktop plus Linux Compose server | [Server deployment](docs/SERVER_DEPLOYMENT.md) |
+| Web and Android control | Compose server plus the relevant client | [Android setup](clients/android/README.md) |
+| Real Microsoft Office and Windows UI automation | Managed Windows executor pool | [Executor setup](agents/cowork-device-agent/README.md#managed-windows-executor) |
+
+The server is optional. Connecting a desktop later does not upload private
+project files automatically, and a Run never changes executor after it starts.
+For the complete decision tree, component prerequisites and verification steps,
+read [Setup and deployment selection](docs/SETUP.md).
 
 ## Quick Start
 
 ### Prerequisites
 
-- Windows 10 or Windows 11
+- Windows 10 or Windows 11, or a modern x86_64 Linux desktop with WebKitGTK 4.1
 - Node.js 22+
 - npm 10+
 - Rust via rustup
-- Microsoft WebView2 Runtime
+- Python 3.12.10 x64 when building the Windows offline runtime
+- Python 3.10–3.13 on Linux when using Crew workflows
+- Microsoft WebView2 Runtime on Windows
 - Ollama, if you want local model execution
 
 ### Run The App In Development
 
 ```powershell
 cd app
-npm install
+npm ci
 npm run tauri dev
 ```
 
@@ -66,6 +111,11 @@ npm run tauri dev
 cd app
 npm run installer
 ```
+
+Source builds create an offline CrewAI runtime from the reviewed, SHA-256-pinned
+`requirements.lock`. Update that lock only intentionally with
+`npm run prepare:crew-runtime -- -UpdateLock`, review the dependency diff, and
+then rebuild the installer.
 
 The packaged installer is written to:
 
@@ -78,6 +128,18 @@ The original Tauri NSIS output remains under:
 ```text
 app/src-tauri/target/release/bundle/nsis/
 ```
+
+### Build Linux Packages
+
+On a Linux host with the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/) installed:
+
+```bash
+cd app
+npm ci
+npm run tauri build -- --bundles appimage,deb,rpm
+```
+
+The AppImage is the broadest cross-distribution option. Native DEB and RPM packages are also produced under `app/src-tauri/target/release/bundle/`. See [Linux installation](docs/LINUX_INSTALLATION.md) for supported formats, runtime requirements, and current limitations.
 
 ### Regenerate Brand Assets
 
@@ -126,9 +188,15 @@ Common environment options:
 ## Project Layout
 
 ```text
-app/          Tauri desktop app, React frontend, Rust backend
-docs/         Public user and integration documentation
-scripts/      Repository-level validation helpers
+app/          Shared React UI plus Tauri desktop and web image
+agents/       Personal/managed executor agents and local background daemon
+clients/      Android Tauri shell
+crates/       Shared Rust contracts and headless runtime
+server/       Axum control plane, worker and signed Docker runner
+deploy/       Single-port Compose, sandboxes, gateway and security policies
+contracts/    Versioned generated OpenAPI and JSON Schema artifacts
+docs/         Public user, architecture and operations documentation
+scripts/      Repository-level validation and acceptance helpers
 .github/      CI, release automation, and community templates
 site/         Public product website and search metadata
 ```
@@ -142,6 +210,13 @@ npm run lint
 npm run typecheck
 npm run test:ci
 npm run build
+npm run build:web
+npm run test:web
+npm run test:gateway
+npm run test:storage-chaos
+npm run test:storage-pressure
+npm run prepare:local-daemon
+npm run test:local-daemon
 ```
 
 Rust checks:
@@ -162,19 +237,32 @@ npm run smoke:desktop
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
+- [Setup and deployment selection](docs/SETUP.md)
+- [Development setup and test matrix](docs/DEVELOPMENT.md)
 - [Ollama configuration](docs/OLLAMA_CONFIGURATION.md)
+- [Linux installation](docs/LINUX_INSTALLATION.md)
 - [Desktop control and computer use](docs/DESKTOP_CONTROL_AND_COMPUTER_USE.md)
+- [Developer browser and GitHub workbench](docs/DEVELOPER_BROWSER_AND_GITHUB.md)
+- [Distributed architecture](docs/DISTRIBUTED_ARCHITECTURE.md)
+- [Server deployment and operations](docs/SERVER_DEPLOYMENT.md)
+- [Distributed implementation status](docs/DISTRIBUTED_IMPLEMENTATION_STATUS.md)
+- [Local daemon](agents/cowork-local-daemon/README.md)
+- [Personal and managed executors](agents/cowork-device-agent/README.md)
+- [Android client](clients/android/README.md)
 
 ## Release Workflow
 
-The GitHub Actions workflow in `.github/workflows/windows-installer.yml` builds the Windows installer and attaches it to a GitHub Release when a version tag is pushed.
+The GitHub Actions workflow in `.github/workflows/release.yml` builds Windows x64 and Linux x64 packages, then publishes one GitHub Release only after every required job succeeds.
 
 ```powershell
-git tag v0.1.8
-git push origin v0.1.8
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-The tag must match the shared npm, Cargo, and Tauri version. The release gate reruns all tests and vulnerability scans, signs and verifies the installer with the pinned Authenticode certificate, then publishes it with CycloneDX SBOM, third-party notices, offline provenance, SHA-256 sums, and GitHub build/SBOM attestations. The signing step requires the repository secrets `LOCALAI_COWORK_CODESIGN_PFX_BASE64`, `LOCALAI_COWORK_CODESIGN_PASSWORD`, and `LOCALAI_COWORK_CODESIGN_THUMBPRINT`; missing or invalid signing evidence blocks publication. During the rename transition, the workflow also accepts the legacy `OPEN_COWORK_*` secret names so existing protected values do not have to be exposed or copied. Manual release builds are available through the workflow dispatch input.
+Release conditions are fail-closed: the tag must be valid `v`-prefixed SemVer, already exist, match the shared npm/Cargo/Tauri version, and point to a commit contained in `main`. Windows verification, Linux compilation and package smoke tests, vulnerability audits, updater signatures, and the `release` environment (including any configured protection rules) must all pass before publication. Stable tags cannot be manually marked as prereleases; prerelease tags use a SemVer suffix such as `vX.Y.Z-beta.1`.
+
+The release includes a Windows NSIS installer plus Linux AppImage, DEB, and RPM packages. It also contains a cross-platform signed `latest.json`, CycloneDX SBOM, third-party notices, combined provenance, SHA-256 sums, and GitHub attestations. Update signing is mandatory and uses `LOCALAI_COWORK_UPDATER_PRIVATE_KEY` plus the optional `LOCALAI_COWORK_UPDATER_PRIVATE_KEY_PASSWORD`; keep the private key recoverable because installed apps trust it for future releases. Authenticode signing uses the `LOCALAI_COWORK_CODESIGN_*` secrets (with the legacy `OPEN_COWORK_*` names accepted during migration). Repositories that explicitly set `LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE=true` may publish an unsigned Windows installer only with a prominent warning asset and release notice; incomplete signing configuration still blocks publication.
 
 ## Contributing
 

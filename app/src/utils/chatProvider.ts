@@ -1,17 +1,18 @@
 import type {
+  ApiProfilePreset,
+  BackendKind,
   DefaultLlmProfileIds,
   LlmProfile,
   OllamaConfig,
 } from '../stores/configStore'
 
-export type ChatProviderKind = 'ollama' | 'openai-compatible' | 'openrouter'
+export type ChatProviderKind = BackendKind
 
-export const CHAT_PROVIDER_OPTIONS: ChatProviderKind[] = ['ollama', 'openai-compatible', 'openrouter']
+export const CHAT_PROVIDER_OPTIONS: ChatProviderKind[] = ['codex', 'openai-compatible']
 
 export const CHAT_PROVIDER_LABELS: Record<ChatProviderKind, string> = {
-  ollama: 'Ollama',
-  'openai-compatible': 'OpenAI-compatible',
-  openrouter: 'OpenRouter',
+  codex: 'Codex verwenden',
+  'openai-compatible': 'OpenAI-kompatible API',
 }
 
 export type ChatProviderContext = {
@@ -24,29 +25,42 @@ export type ChatProviderContext = {
 
 export type ChatProviderState = {
   provider: ChatProviderKind
+  backend: ChatProviderKind
   label: string
   endpoint: string
   model: string
   apiKey: string
   timeoutMs: number
   verifyTlsCertificates: boolean
+  contextWindow: number
   selectableModels: string[]
   profileId?: string
+  authProfileId?: string
+  reasoningEffort?: string
+  preset?: ApiProfilePreset
+  compatibilityProvider?: 'openai-compatible' | 'openrouter'
 }
 
-export type ChatProviderSelection = {
-  provider: ChatProviderKind
-  model?: string
-  profileId?: string
-}
+export type ChatProviderSelection =
+  | {
+      backend: 'codex'
+      authProfileId?: string
+      model?: string
+      reasoningEffort?: string
+    }
+  | {
+      backend: 'openai-compatible'
+      profileId: string
+      model?: string
+    }
 
 function resolveDefaultProfile(
   profiles: LlmProfile[],
   defaultIds: DefaultLlmProfileIds,
-  provider: Exclude<ChatProviderKind, 'ollama'>,
 ): LlmProfile | undefined {
-  return profiles.find((profile) => profile.id === defaultIds[provider] && profile.provider === provider)
-    ?? profiles.find((profile) => profile.provider === provider)
+  return profiles.find((profile) => profile.id === defaultIds.api)
+    ?? profiles.find((profile) => profile.id === defaultIds.ollama)
+    ?? profiles[0]
 }
 
 function modelSuffix(model: string): string {
@@ -84,9 +98,7 @@ function resolveExternalModel(
 
   if (profileModel && profileModel.toLowerCase() !== selectedModel.toLowerCase()) {
     const lowerSelected = selectedModel.toLowerCase()
-    if (modelSuffix(profileModel).toLowerCase() === lowerSelected) {
-      return profileModel
-    }
+    if (modelSuffix(profileModel).toLowerCase() === lowerSelected) return profileModel
   }
 
   return selectedModel || profileModel
@@ -94,136 +106,126 @@ function resolveExternalModel(
 
 function uniqueModels(models: string[]): string[] {
   const seen = new Set<string>()
-
   return models
     .map((model) => model.trim())
-    .filter((model) => {
-      if (!model || seen.has(model)) {
-        return false
-      }
-
-      seen.add(model)
-      return true
-    })
-}
-
-function collectProviderModels(
-  context: ChatProviderContext,
-  provider: ChatProviderKind,
-  primaryModels: string[] = [],
-): string[] {
-  const profiles = Array.isArray(context.llmProfiles) ? context.llmProfiles : []
-  const profileModels = context.llmProfileModels ?? {}
-  const providerProfiles = profiles.filter((profile) => profile.provider === provider)
-  return uniqueModels([
-    ...primaryModels,
-    ...providerProfiles.flatMap((profile) => profileModels[profile.id] ?? []),
-    ...providerProfiles.map((profile) => profile.model),
-  ])
+    .filter((model) => Boolean(model) && !seen.has(model) && Boolean(seen.add(model)))
 }
 
 export function normalizeChatProvider(value: unknown): ChatProviderKind {
-  return value === 'openai-compatible' || value === 'openrouter' || value === 'ollama'
-    ? value
-    : 'ollama'
+  return value === 'codex' ? 'codex' : 'openai-compatible'
 }
 
 export function normalizeChatProviderSelection(value: unknown): ChatProviderSelection | undefined {
-  if (!value || typeof value !== 'object') {
-    return undefined
-  }
+  if (!value || typeof value !== 'object') return undefined
 
   const raw = value as Record<string, unknown>
-  const provider = normalizeChatProvider(raw.provider)
+  const legacyProvider = typeof raw.provider === 'string' ? raw.provider : ''
+  const backend = raw.backend === 'codex' || legacyProvider === 'codex'
+    ? 'codex'
+    : 'openai-compatible'
   const model = typeof raw.model === 'string' ? raw.model.trim() : ''
-  const profileId = typeof raw.profileId === 'string' ? raw.profileId.trim() : ''
 
+  if (backend === 'codex') {
+    const authProfileId = typeof raw.authProfileId === 'string' ? raw.authProfileId.trim() : ''
+    const reasoningEffort = typeof raw.reasoningEffort === 'string' ? raw.reasoningEffort.trim() : ''
+    return {
+      backend,
+      ...(authProfileId ? { authProfileId } : {}),
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    }
+  }
+
+  const profileId = typeof raw.profileId === 'string' ? raw.profileId.trim() : ''
   return {
-    provider,
+    backend,
+    profileId,
     ...(model ? { model } : {}),
-    ...(profileId ? { profileId } : {}),
   }
 }
 
-export function createChatProviderSelection(state: Pick<ChatProviderState, 'provider' | 'model' | 'profileId'>): ChatProviderSelection {
+export function createChatProviderSelection(
+  state: Pick<ChatProviderState, 'backend' | 'model' | 'profileId' | 'authProfileId' | 'reasoningEffort'>,
+): ChatProviderSelection {
+  if (state.backend === 'codex') {
+    return {
+      backend: 'codex',
+      ...(state.authProfileId?.trim() ? { authProfileId: state.authProfileId.trim() } : {}),
+      ...(state.model.trim() ? { model: state.model.trim() } : {}),
+      ...(state.reasoningEffort?.trim() ? { reasoningEffort: state.reasoningEffort.trim() } : {}),
+    }
+  }
+
   return {
-    provider: state.provider,
+    backend: 'openai-compatible',
+    profileId: state.profileId?.trim() ?? '',
     ...(state.model.trim() ? { model: state.model.trim() } : {}),
-    ...(state.profileId?.trim() ? { profileId: state.profileId.trim() } : {}),
   }
 }
 
 export function getChatProviderState(
   context: ChatProviderContext,
   rawProvider: unknown,
-  selection?: ChatProviderSelection,
+  rawSelection?: ChatProviderSelection | Record<string, unknown>,
 ): ChatProviderState {
-  const provider = normalizeChatProvider(selection?.provider ?? rawProvider)
+  const selection = normalizeChatProviderSelection(rawSelection)
+  const provider = normalizeChatProvider(selection?.backend ?? rawProvider)
   const selectedModel = selection?.model?.trim() ?? ''
 
-  if (provider === 'ollama') {
+  if (provider === 'codex') {
+    const codexSelection = selection?.backend === 'codex' ? selection : undefined
     return {
       provider,
+      backend: provider,
       label: CHAT_PROVIDER_LABELS[provider],
-      endpoint: context.ollama.baseUrl,
-      model: selectedModel || context.ollama.model,
+      endpoint: '',
+      model: selectedModel,
       apiKey: '',
-      timeoutMs: context.ollama.timeoutMs,
+      timeoutMs: 600000,
       verifyTlsCertificates: true,
-      selectableModels: collectProviderModels(
-        context,
-        provider,
-        Array.isArray(context.availableModels) ? context.availableModels : [],
-      ),
+      contextWindow: 128000,
+      selectableModels: [],
+      authProfileId: codexSelection?.authProfileId,
+      reasoningEffort: codexSelection?.reasoningEffort,
     }
   }
 
   const profiles = Array.isArray(context.llmProfiles) ? context.llmProfiles : []
-  const defaultProfileIds = context.defaultLlmProfileIds ?? {}
   const profileModelMap = context.llmProfileModels ?? {}
-  const selectedProfile = selection?.profileId
-    ? profiles.find((item) => item.id === selection.profileId && item.provider === provider)
-    : undefined
-  const profile = selectedProfile ?? resolveDefaultProfile(profiles, defaultProfileIds, provider)
-  const profileModels = profile ? (profileModelMap[profile.id] ?? []) : []
-  const providerLoadedModels = uniqueModels(
-    profiles
-      .filter((item) => item.provider === provider)
-      .flatMap((item) => profileModelMap[item.id] ?? []),
-  )
-  const selectableModels = collectProviderModels(
-    context,
-    provider,
-    profileModels,
-  )
-  const profileModel = profile?.model?.trim() || ''
+  const requestedProfileId = selection?.backend === 'openai-compatible' ? selection.profileId : ''
+  const profile = (requestedProfileId ? profiles.find((item) => item.id === requestedProfileId) : undefined)
+    ?? resolveDefaultProfile(profiles, context.defaultLlmProfileIds)
+  const loadedModels = profile ? (profileModelMap[profile.id] ?? []) : []
+  const selectableModels = uniqueModels([
+    ...(profile?.preset === 'ollama' && Array.isArray(context.availableModels) ? context.availableModels : []),
+    ...loadedModels,
+    ...(profile?.model ? [profile.model] : []),
+  ])
   const model = resolveExternalModel(
     selectedModel,
-    profileModel,
-    providerLoadedModels.length > 0 ? selectableModels : [],
+    profile?.model?.trim() ?? '',
+    loadedModels.length > 0 ? selectableModels : [],
   )
 
   return {
     provider,
+    backend: provider,
     label: CHAT_PROVIDER_LABELS[provider],
     endpoint: profile?.baseUrl?.trim() ?? '',
     model,
-    apiKey: profile?.apiKey?.trim() ?? '',
+    apiKey: profile?.authMode === 'none' ? '' : (profile?.apiKey?.trim() ?? ''),
     timeoutMs: Math.max(1000, Number(profile?.timeoutMs ?? 600000)),
     verifyTlsCertificates: profile?.verifyTlsCertificates ?? true,
+    contextWindow: Math.max(512, profile?.contextWindow ?? 128000),
     selectableModels,
     profileId: profile?.id,
+    preset: profile?.preset,
+    compatibilityProvider: profile?.preset === 'openrouter' ? 'openrouter' : 'openai-compatible',
   }
 }
 
 export function getChatProviderFailureHint(provider: ChatProviderKind): string {
-  if (provider === 'openai-compatible') {
-    return 'Check the OpenAI-compatible profile, endpoint, API key, and model in Settings.'
-  }
-
-  if (provider === 'openrouter') {
-    return 'Check the OpenRouter profile, endpoint, API key, and model in Settings.'
-  }
-
-  return 'Check the Ollama endpoint, model, and timeout in Settings.'
+  return provider === 'codex'
+    ? 'Check the selected Codex account in Settings and sign in again if needed.'
+    : 'Check the API profile, endpoint, access key, and model in Settings.'
 }

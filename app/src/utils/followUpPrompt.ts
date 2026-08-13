@@ -8,6 +8,12 @@ type ClarificationContext = {
   assistantQuestion: string
 }
 
+const CLARIFICATION_CONTINUATION_INTRO = 'Continue the running task with the following question.'
+const CLARIFICATION_USER_ANSWER_MARKER = '\n\nUser answer:\n'
+const CLARIFICATION_CONTINUATION_INSTRUCTION = 'Continue the original task now. Use suitable tools directly and do not only answer with a list of available tools.'
+const ASK_USER_ANSWER_PREFIX = 'Answer to question:\nQuestion: '
+const ASK_USER_ANSWER_MARKER = '\nAnswer: '
+
 const CLARIFYING_QUESTION_PATTERNS = [
   /please specify/i,
   /which criterion/i,
@@ -78,7 +84,7 @@ export function buildClarificationContinuationPrompt(
   answer: string,
 ): string {
   return [
-    'Continue the running task with the following question.',
+    CLARIFICATION_CONTINUATION_INTRO,
     '',
     'Original task:',
     originalTask.trim(),
@@ -89,6 +95,37 @@ export function buildClarificationContinuationPrompt(
     'User answer:',
     answer.trim(),
     '',
-    'Continue the original task now. Use suitable tools directly and do not only answer with a list of available tools.',
+    CLARIFICATION_CONTINUATION_INSTRUCTION,
   ].join('\n')
+}
+
+/**
+ * Recovers the actual user entry from prompts that older app versions persisted
+ * with their internal continuation context in the visible message content.
+ */
+export function resolveUserFacingPromptContent(content: string): string {
+  const trimmed = content.trim()
+  const continuationSuffix = `\n\n${CLARIFICATION_CONTINUATION_INSTRUCTION}`
+
+  if (
+    trimmed.startsWith(CLARIFICATION_CONTINUATION_INTRO)
+    && trimmed.endsWith(continuationSuffix)
+  ) {
+    const answerMarkerIndex = trimmed.indexOf(CLARIFICATION_USER_ANSWER_MARKER)
+    if (answerMarkerIndex >= 0) {
+      const answerStart = answerMarkerIndex + CLARIFICATION_USER_ANSWER_MARKER.length
+      const answer = trimmed.slice(answerStart, -continuationSuffix.length).trim()
+      if (answer) return answer
+    }
+  }
+
+  if (trimmed.startsWith(ASK_USER_ANSWER_PREFIX)) {
+    const answerMarkerIndex = trimmed.lastIndexOf(ASK_USER_ANSWER_MARKER)
+    if (answerMarkerIndex >= 0) {
+      const answer = trimmed.slice(answerMarkerIndex + ASK_USER_ANSWER_MARKER.length).trim()
+      if (answer) return answer
+    }
+  }
+
+  return content
 }

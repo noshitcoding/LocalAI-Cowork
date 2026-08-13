@@ -1,7 +1,7 @@
 ﻿import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
-import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/sessionThreads'
-import type { ChatAttachment } from '../utils/chatAttachments'
+import { hydrateStoredMessage, serializeChatMessageForStorage } from '../utils/chatMessages'
+import { getAttachmentDisplayName, type ChatAttachment } from '../utils/chatAttachments'
 import { normalizeChatProviderSelection, type ChatProviderSelection } from '../utils/chatProvider'
 import type { PermissionMode } from '../engine/types/tool'
 import { useProjectStore } from './projectStore'
@@ -19,6 +19,10 @@ export type ChatMessage = {
   liveToolCalls?: LiveToolCall[]
   crewLive?: CrewLiveState
   streaming?: boolean
+  durableRunId?: string
+  durableRunState?: string
+  durableRequestId?: string
+  durableRequestKind?: 'approval' | 'input'
 }
 
 export type LiveToolCallStatus = 'requested' | 'running' | 'completed' | 'failed' | 'approval' | 'waiting_input'
@@ -98,6 +102,16 @@ export type LiveToolCall = {
 export type PermissionConfig = {
   mode: PermissionMode
   allowedDirectories: string[]
+  workspaceAttachments?: Array<{
+    path: string
+    kind: 'file' | 'folder'
+    access: 'read_only' | 'read_write'
+  }>
+  // Backward-compatible reader for local builds that used the folder-only format.
+  workspaceDirectories?: Array<{
+    path: string
+    access: 'read_only' | 'read_write'
+  }>
 }
 
 export type ChatThread = {
@@ -122,14 +136,19 @@ type ChatState = {
   addThread: (title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => string
   ensureThread: (id: string, title: string, providerSettings?: ChatProviderSelection, permissionConfig?: PermissionConfig, runner?: 'crew' | 'model', crewId?: string | null) => { id: string; created: boolean }
   hydrateThread: (thread: ChatThread) => void
-  setActiveThread: (id: string | null) => void
+  ensureThreadLoaded: (id: string) => Promise<void>
+  reloadThreadMessages: (id: string) => Promise<void>
+  setActiveThread: (id: string | null) => Promise<void>
+  renameThread: (threadId: string, title: string) => void
   setThreadProviderSettings: (threadId: string, providerSettings?: ChatProviderSelection) => void
   setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => void
+  setThreadRunner: (threadId: string, runner: 'crew' | 'model', crewId?: string | null) => void
   addMessage: (threadId: string, message: Omit<ChatMessage, 'id'>) => string
+  addMessageWithId: (threadId: string, message: ChatMessage) => string
   updateMessage: (
     threadId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, 'content' | 'debugContent' | 'thinkingContent' | 'verboseContent' | 'liveToolCalls' | 'crewLive' | 'streaming'>>,
+    patch: Partial<Pick<ChatMessage, 'content' | 'debugContent' | 'thinkingContent' | 'verboseContent' | 'liveToolCalls' | 'crewLive' | 'streaming' | 'durableRunId' | 'durableRunState' | 'durableRequestId' | 'durableRequestKind'>>,
     options?: { persist?: boolean },
   ) => void
   setPendingApproval: (steps: string[]) => void
@@ -142,7 +161,28 @@ type ChatState = {
 
 type DbMessage = { id: string; role: string; content: string; timestamp: number }
 
+type DbThread = {
+  id: string
+  title: string
+  created_at?: string
+  createdAt?: string
+  updated_at?: string
+  updatedAt?: string
+  provider_settings_json?: string | null
+  providerSettingsJson?: string | null
+  permission_config_json?: string | null
+  permissionConfigJson?: string | null
+  runner?: string | null
+  crew_id?: string | null
+  crewId?: string | null
+}
+
 const loadedThreadMessages = new Set<string>()
+const databaseBackedThreadIds = new Set<string>()
+const loadingThreadMessages = new Map<string, Promise<void>>()
+const pendingMessagePersists = new Map<string, { threadId: string; message: ChatMessage }>()
+const messagePersistTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const STREAM_PERSIST_INTERVAL_MS = 750
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
@@ -197,9 +237,46 @@ function parsePermissionConfig(raw: string | null | undefined): PermissionConfig
 
   try {
     const parsed = JSON.parse(raw)
+    const workspaceAttachments = Array.isArray(parsed.workspaceAttachments)
+      ? parsed.workspaceAttachments
+          .filter((entry: unknown): entry is { path: string; access?: string } => (
+            typeof entry === 'object'
+            && entry !== null
+            && typeof (entry as { path?: unknown }).path === 'string'
+            && (entry as { path: string }).path.trim().length > 0
+            && ['file', 'folder'].includes(String((entry as { kind?: unknown }).kind))
+          ))
+          .map((entry: { path: string; kind?: string; access?: string }) => ({
+            path: entry.path.trim(),
+            kind: entry.kind === 'file' ? 'file' as const : 'folder' as const,
+            access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+          }))
+      : []
+    const legacyWorkspaceDirectories = Array.isArray(parsed.workspaceDirectories)
+      ? parsed.workspaceDirectories
+          .filter((entry: unknown): entry is { path: string; access?: string } => (
+            typeof entry === 'object'
+            && entry !== null
+            && typeof (entry as { path?: unknown }).path === 'string'
+            && (entry as { path: string }).path.trim().length > 0
+          ))
+          .map((entry: { path: string; access?: string }) => ({
+            path: entry.path.trim(),
+            kind: 'folder' as const,
+            access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+          }))
+      : []
+    const persistedWorkspaceAttachments = workspaceAttachments.length > 0
+      ? workspaceAttachments
+      : legacyWorkspaceDirectories
     return {
       mode: parsed.mode || 'default',
-      allowedDirectories: parsed.allowedDirectories || [],
+      allowedDirectories: Array.isArray(parsed.allowedDirectories)
+        ? parsed.allowedDirectories.filter((entry: unknown): entry is string => typeof entry === 'string')
+        : [],
+      ...(persistedWorkspaceAttachments.length > 0
+        ? { workspaceAttachments: persistedWorkspaceAttachments }
+        : {}),
     }
   } catch {
     return undefined
@@ -211,6 +288,103 @@ async function loadThreadMessagesFromDb(threadId: string): Promise<ChatMessage[]
   return (Array.isArray(dbMsgs) ? dbMsgs : []).map((message) => hydrateStoredMessage(message))
 }
 
+export function threadMetadataForDaemon(thread: ChatThread): Record<string, unknown> {
+  return {
+    title: thread.title,
+    provider_settings: normalizeChatProviderSelection(thread.providerSettings),
+    runner: thread.runner === 'crew' ? 'crew' : 'model',
+    crew_id: thread.runner === 'crew' ? thread.crewId ?? null : null,
+    created_at: new Date(thread.createdAt).toISOString(),
+    updated_at: new Date(thread.updatedAt).toISOString(),
+    source: 'desktop',
+  }
+}
+
+export function messageMetadataForDaemon(
+  threadId: string,
+  message: ChatMessage,
+): Record<string, unknown> {
+  return {
+    thread_id: threadId,
+    role: message.role,
+    content: typeof message.content === 'string' ? message.content : '',
+    timestamp: message.timestamp,
+    attachment_descriptors: (message.attachments ?? []).map((attachment) => ({
+      kind: attachment.kind,
+      label: getAttachmentDisplayName(attachment),
+      media_type: attachment.mediaType ?? null,
+      availability: 'personal_device',
+    })),
+    visible_in_chat: message.visibleInChat,
+    durable_run_id: message.durableRunId,
+    durable_run_state: message.durableRunState,
+    durable_request_id: message.durableRequestId,
+    durable_request_kind: message.durableRequestKind,
+    source: 'desktop',
+  }
+}
+
+function mirrorThreadToDaemon(thread: ChatThread): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('thread', thread.id, threadMetadataForDaemon(thread))
+    ))
+    .catch((error) => console.warn('[chatStore] Daemon thread mirror failed', error))
+}
+
+function mirrorMessageToDaemon(threadId: string, message: ChatMessage): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ mirrorDurableLocalEntity }) => (
+      mirrorDurableLocalEntity('message', message.id, messageMetadataForDaemon(threadId, message))
+    ))
+    .catch((error) => console.warn('[chatStore] Daemon message mirror failed', error))
+}
+
+function tombstoneChatEntity(entityType: 'thread' | 'message', id: string): void {
+  if (!isTauriRuntime()) return
+  void import('../runtime/localDaemonEntities')
+    .then(({ tombstoneDurableLocalEntity }) => tombstoneDurableLocalEntity(entityType, id))
+    .catch((error) => console.warn(`[chatStore] Daemon ${entityType} tombstone failed`, error))
+}
+
+function tombstoneThreadSnapshot(thread: ChatThread): void {
+  thread.messages.forEach((message) => tombstoneChatEntity('message', message.id))
+  tombstoneChatEntity('thread', thread.id)
+}
+
+function persistMessageUpdate(threadId: string, message: ChatMessage): void {
+  void persistInvoke('db_update_message_content', {
+    id: message.id,
+    content: serializeChatMessageForStorage(message),
+  }, `db_update_message_content ${threadId}`)
+}
+
+function scheduleMessagePersist(threadId: string, message: ChatMessage): void {
+  if (!isTauriRuntime()) return
+  pendingMessagePersists.set(message.id, { threadId, message })
+  if (messagePersistTimers.has(message.id)) return
+
+  const timer = setTimeout(() => {
+    messagePersistTimers.delete(message.id)
+    const pending = pendingMessagePersists.get(message.id)
+    pendingMessagePersists.delete(message.id)
+    if (pending) {
+      persistMessageUpdate(pending.threadId, pending.message)
+    }
+  }, STREAM_PERSIST_INTERVAL_MS)
+  messagePersistTimers.set(message.id, timer)
+}
+
+function flushMessagePersist(threadId: string, message: ChatMessage): void {
+  const timer = messagePersistTimers.get(message.id)
+  if (timer) clearTimeout(timer)
+  messagePersistTimers.delete(message.id)
+  pendingMessagePersists.delete(message.id)
+  persistMessageUpdate(threadId, message)
+}
+
 export const useChatStore = create<ChatState>()((set, get) => ({
   threads: [],
   activeThreadId: null,
@@ -220,19 +394,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   loadFromDb: async () => {
     try {
-      type DbThread = {
-        id: string
-        title: string
-        created_at?: string
-        createdAt?: string
-        updated_at?: string
-        updatedAt?: string
-        provider_settings_json?: string | null
-        providerSettingsJson?: string | null
-        permission_config_json?: string | null
-        permissionConfigJson?: string | null
-      }
       const dbThreads = await invoke<DbThread[]>('db_list_threads')
+      dbThreads.forEach((thread) => databaseBackedThreadIds.add(thread.id))
       const currentActiveThreadId = get().activeThreadId
       const sortedDbThreads = [...dbThreads].sort((a, b) => {
         const aTime = parseTimestamp(a.updated_at ?? a.updatedAt)
@@ -258,6 +421,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           updatedAt: parseTimestamp(dt.updated_at ?? dt.updatedAt),
           providerSettings: parseThreadProviderSettings(dt.provider_settings_json ?? dt.providerSettingsJson),
           permissionConfig: parsePermissionConfig(dt.permission_config_json || dt.permissionConfigJson || '{}'),
+          runner: dt.runner === 'crew' ? 'crew' : 'model',
+          crewId: dt.runner === 'crew' ? (dt.crew_id ?? dt.crewId ?? null) : null,
         })
       }
       const hydratedThreads = threads.map((thread) => ({
@@ -297,10 +462,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           .sort((a, b) => b.updatedAt - a.updatedAt)
         // Keep the newest one, delete the rest
         const keepId = sortedEmptyThreads[0]?.id
-        const deleteIds = sortedEmptyThreads.slice(1).map(t => t.id)
+        const deletedThreads = sortedEmptyThreads.slice(1)
+        const deleteIds = deletedThreads.map(t => t.id)
         // Delete from the database
-        for (const id of deleteIds) {
-          void persistInvoke('db_delete_thread', { id }, 'db_delete_thread cleanup')
+        for (const thread of deletedThreads) {
+          void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
+          tombstoneThreadSnapshot(thread)
         }
         
         return {
@@ -348,7 +515,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       createdAt: isoNow,
       providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
       permissionConfigJson: serializePermissionConfig(permissionConfig),
-    }, 'db_save_thread')
+      runner: runner ?? 'model',
+      crewId: runner === 'crew' ? crewId ?? null : null,
+    }, 'db_save_thread').then(() => databaseBackedThreadIds.add(id))
     void persistInvoke('db_save_message', {
       id: systemMsg.id,
       threadId: id,
@@ -356,6 +525,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(systemMsg),
       timestamp: systemMsg.timestamp,
     }, 'db_save_message system')
+    mirrorThreadToDaemon(thread)
+    mirrorMessageToDaemon(id, systemMsg)
     
     // Bereinige leere Threads nach dem Createn eines neuen
     set((state) => {
@@ -375,10 +546,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         .sort((a, b) => b.updatedAt - a.updatedAt)
         // Keep the newest one, delete the rest
       const keepId = sortedEmptyThreads[0]?.id
-      const deleteIds = sortedEmptyThreads.slice(1).map(t => t.id)
+      const deletedThreads = sortedEmptyThreads.slice(1)
+      const deleteIds = deletedThreads.map(t => t.id)
         // Delete from the database
-      for (const deleteId of deleteIds) {
-        void persistInvoke('db_delete_thread', { id: deleteId }, 'db_delete_thread cleanup')
+      for (const thread of deletedThreads) {
+        void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
+        tombstoneThreadSnapshot(thread)
       }
       
       return {
@@ -432,7 +605,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       createdAt: isoNow,
       providerSettingsJson: serializeThreadProviderSettings(normalizedProviderSettings),
       permissionConfigJson: serializePermissionConfig(permissionConfig),
+      runner: runner ?? 'model',
+      crewId: runner === 'crew' ? crewId ?? null : null,
     }, 'db_save_thread restored task chat')
+      .then(() => databaseBackedThreadIds.add(normalizedId))
     void persistInvoke('db_save_message', {
       id: systemMsg.id,
       threadId: normalizedId,
@@ -440,6 +616,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(systemMsg),
       timestamp: systemMsg.timestamp,
     }, 'db_save_message restored task chat system')
+    mirrorThreadToDaemon(thread)
+    mirrorMessageToDaemon(normalizedId, systemMsg)
 
     return { id: normalizedId, created: true }
   },
@@ -463,11 +641,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     })
   },
 
-  setActiveThread: (id) => {
-    set({ activeThreadId: id })
-    if (!id || loadedThreadMessages.has(id) || !isTauriRuntime()) return
+  ensureThreadLoaded: async (id) => {
+    if (!id || loadedThreadMessages.has(id)) return
+    if (!isTauriRuntime()) {
+      loadedThreadMessages.add(id)
+      return
+    }
 
-    void loadThreadMessagesFromDb(id)
+    const existingLoad = loadingThreadMessages.get(id)
+    if (existingLoad) {
+      await existingLoad
+      return
+    }
+
+    const load = loadThreadMessagesFromDb(id)
       .then((messages) => {
         loadedThreadMessages.add(id)
         set((state) => ({
@@ -478,7 +665,92 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           )),
         }))
       })
-      .catch((error) => console.warn('[chatStore] db_list_messages failed', error))
+      .catch((error) => {
+        console.warn('[chatStore] db_list_messages failed', error)
+        throw error
+      })
+      .finally(() => {
+        loadingThreadMessages.delete(id)
+      })
+
+    loadingThreadMessages.set(id, load)
+    await load
+  },
+
+  reloadThreadMessages: async (id) => {
+    if (!id || !isTauriRuntime() || !databaseBackedThreadIds.has(id)) {
+      await get().ensureThreadLoaded(id)
+      return
+    }
+
+    const existingLoad = loadingThreadMessages.get(id)
+    if (existingLoad) await existingLoad
+
+    const messages = await loadThreadMessagesFromDb(id)
+    loadedThreadMessages.add(id)
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === id
+          ? { ...thread, messages }
+          : thread
+      )),
+    }))
+  },
+
+  setActiveThread: async (id) => {
+    set({ activeThreadId: id })
+    if (!id) return
+    if (isTauriRuntime()) {
+      try {
+        const persisted = (await invoke<DbThread[]>('db_list_threads'))
+          .find((thread) => thread.id === id)
+        if (persisted) {
+          set((state) => ({
+            threads: state.threads.map((thread) => (
+              thread.id === id
+                ? {
+                    ...thread,
+                    title: persisted.title,
+                    createdAt: parseTimestamp(persisted.created_at ?? persisted.createdAt),
+                    updatedAt: parseTimestamp(persisted.updated_at ?? persisted.updatedAt),
+                    providerSettings: parseThreadProviderSettings(
+                      persisted.provider_settings_json ?? persisted.providerSettingsJson,
+                    ),
+                    permissionConfig: parsePermissionConfig(
+                      persisted.permission_config_json ?? persisted.permissionConfigJson ?? '{}',
+                    ),
+                    runner: persisted.runner === 'crew' ? 'crew' : 'model',
+                    crewId: persisted.runner === 'crew'
+                      ? (persisted.crew_id ?? persisted.crewId ?? null)
+                      : null,
+                  }
+                : thread
+            )),
+          }))
+        }
+      } catch (error) {
+        console.warn('[chatStore] persisted thread metadata refresh failed', error)
+      }
+    }
+    await get().ensureThreadLoaded(id)
+  },
+
+  renameThread: (threadId, title) => {
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle) return
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === threadId
+          ? { ...thread, title: normalizedTitle, updatedAt: Date.now() }
+          : thread
+      )),
+    }))
+    void persistInvoke('db_update_thread_title', {
+      id: threadId,
+      title: normalizedTitle,
+    }, 'db_update_thread_title')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
   },
 
   setThreadProviderSettings: (threadId, providerSettings) => {
@@ -494,6 +766,8 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       id: threadId,
       providerSettingsJson: serializeThreadProviderSettings(normalized),
     }, 'db_update_thread_provider_settings')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
   },
 
   setThreadPermissionConfig: (threadId: string, permissionConfig?: PermissionConfig) => {
@@ -509,6 +783,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       id: threadId,
       permissionConfigJson: serialized,
     }, 'db_update_thread_permission_config')
+  },
+
+  setThreadRunner: (threadId, runner, crewId) => {
+    const normalizedCrewId = runner === 'crew' && crewId?.trim() ? crewId.trim() : null
+    set((state) => ({
+      threads: state.threads.map((thread) => (
+        thread.id === threadId
+          ? { ...thread, runner, crewId: normalizedCrewId, updatedAt: Date.now() }
+          : thread
+      )),
+    }))
+    void persistInvoke('db_update_thread_runner', {
+      id: threadId,
+      runner,
+      crewId: normalizedCrewId,
+    }, 'db_update_thread_runner')
+    const thread = get().threads.find((entry) => entry.id === threadId)
+    if (thread) mirrorThreadToDaemon(thread)
   },
 
   addMessage: (threadId, message) => {
@@ -533,7 +825,38 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       content: serializeChatMessageForStorage(full),
       timestamp: message.timestamp,
     }, 'db_save_message addMessage')
+    mirrorMessageToDaemon(threadId, full)
+    const updatedThread = get().threads.find((thread) => thread.id === threadId)
+    if (updatedThread) mirrorThreadToDaemon(updatedThread)
     return msgId
+  },
+
+  addMessageWithId: (threadId, message) => {
+    const existing = get().threads
+      .find((thread) => thread.id === threadId)
+      ?.messages.some((candidate) => candidate.id === message.id)
+    if (existing) return message.id
+    const full: ChatMessage = {
+      ...message,
+      content: typeof message.content === 'string' ? message.content : '',
+      attachments: Array.isArray(message.attachments) ? message.attachments : undefined,
+    }
+    set((state) => ({
+      threads: state.threads.map((thread) => thread.id === threadId
+        ? { ...thread, messages: [...thread.messages, full], updatedAt: Date.now() }
+        : thread),
+    }))
+    void persistInvoke('db_save_message', {
+      id: full.id,
+      threadId,
+      role: full.role,
+      content: serializeChatMessageForStorage(full),
+      timestamp: full.timestamp,
+    }, 'db_save_message addMessageWithId')
+    mirrorMessageToDaemon(threadId, full)
+    const updatedThread = get().threads.find((thread) => thread.id === threadId)
+    if (updatedThread) mirrorThreadToDaemon(updatedThread)
+    return full.id
   },
 
   updateMessage: (threadId, messageId, patch, options) => {
@@ -558,11 +881,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ),
     }))
 
-    if (options?.persist && messageToPersist) {
-      void persistInvoke('db_update_message_content', {
-        id: messageId,
-        content: serializeChatMessageForStorage(messageToPersist),
-      }, 'db_update_message_content')
+    if (messageToPersist) {
+      flushMessagePersist(threadId, messageToPersist)
+      mirrorMessageToDaemon(threadId, messageToPersist)
+      const thread = get().threads.find((entry) => entry.id === threadId)
+      if (thread) mirrorThreadToDaemon(thread)
+    } else {
+      const currentMessage = get().threads
+        .find((thread) => thread.id === threadId)
+        ?.messages.find((message) => message.id === messageId)
+      if (currentMessage) {
+        scheduleMessagePersist(threadId, currentMessage)
+      }
     }
   },
 
@@ -572,13 +902,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setError: (error) => set({ error }),
 
   deleteThread: (id) => {
+    const deletedThread = get().threads.find((thread) => thread.id === id)
     loadedThreadMessages.delete(id)
+    databaseBackedThreadIds.delete(id)
+    loadingThreadMessages.delete(id)
     set((state) => ({
       threads: state.threads.filter((t) => t.id !== id),
       activeThreadId: state.activeThreadId === id ? null : state.activeThreadId,
     }))
     useProjectStore.getState().detachThreadFromAll(id)
     void persistInvoke('db_delete_thread', { id }, 'db_delete_thread')
+    if (deletedThread) tombstoneThreadSnapshot(deletedThread)
+    else tombstoneChatEntity('thread', id)
   },
 
   removeLastMessagePairs: (threadId, pairCount) => {
@@ -639,6 +974,9 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
     if (removedIds.length > 0) {
       void persistInvoke('db_delete_messages', { ids: removedIds }, 'db_delete_messages rewind')
+      removedIds.forEach((messageId) => tombstoneChatEntity('message', messageId))
+      const thread = get().threads.find((entry) => entry.id === threadId)
+      if (thread) mirrorThreadToDaemon(thread)
     }
 
     return { pairsRemoved, messagesRemoved }
