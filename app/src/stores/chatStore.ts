@@ -102,6 +102,16 @@ export type LiveToolCall = {
 export type PermissionConfig = {
   mode: PermissionMode
   allowedDirectories: string[]
+  workspaceAttachments?: Array<{
+    path: string
+    kind: 'file' | 'folder'
+    access: 'read_only' | 'read_write'
+  }>
+  // Backward-compatible reader for local builds that used the folder-only format.
+  workspaceDirectories?: Array<{
+    path: string
+    access: 'read_only' | 'read_write'
+  }>
 }
 
 export type ChatThread = {
@@ -227,9 +237,46 @@ function parsePermissionConfig(raw: string | null | undefined): PermissionConfig
 
   try {
     const parsed = JSON.parse(raw)
+    const workspaceAttachments = Array.isArray(parsed.workspaceAttachments)
+      ? parsed.workspaceAttachments
+          .filter((entry: unknown): entry is { path: string; access?: string } => (
+            typeof entry === 'object'
+            && entry !== null
+            && typeof (entry as { path?: unknown }).path === 'string'
+            && (entry as { path: string }).path.trim().length > 0
+            && ['file', 'folder'].includes(String((entry as { kind?: unknown }).kind))
+          ))
+          .map((entry: { path: string; kind?: string; access?: string }) => ({
+            path: entry.path.trim(),
+            kind: entry.kind === 'file' ? 'file' as const : 'folder' as const,
+            access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+          }))
+      : []
+    const legacyWorkspaceDirectories = Array.isArray(parsed.workspaceDirectories)
+      ? parsed.workspaceDirectories
+          .filter((entry: unknown): entry is { path: string; access?: string } => (
+            typeof entry === 'object'
+            && entry !== null
+            && typeof (entry as { path?: unknown }).path === 'string'
+            && (entry as { path: string }).path.trim().length > 0
+          ))
+          .map((entry: { path: string; access?: string }) => ({
+            path: entry.path.trim(),
+            kind: 'folder' as const,
+            access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+          }))
+      : []
+    const persistedWorkspaceAttachments = workspaceAttachments.length > 0
+      ? workspaceAttachments
+      : legacyWorkspaceDirectories
     return {
       mode: parsed.mode || 'default',
-      allowedDirectories: parsed.allowedDirectories || [],
+      allowedDirectories: Array.isArray(parsed.allowedDirectories)
+        ? parsed.allowedDirectories.filter((entry: unknown): entry is string => typeof entry === 'string')
+        : [],
+      ...(persistedWorkspaceAttachments.length > 0
+        ? { workspaceAttachments: persistedWorkspaceAttachments }
+        : {}),
     }
   } catch {
     return undefined
@@ -383,7 +430,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         messages: Array.isArray(thread.messages) ? thread.messages : [],
       }))
       const hydratedThreadIds = new Set(hydratedThreads.map((thread) => thread.id))
-      
+
       // Find the newest thread (sorted by updatedAt)
       set((state) => ({
         threads: [
@@ -395,21 +442,21 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           ? state.activeThreadId
           : initialActiveThreadId ?? state.activeThreadId,
       }))
-      
+
       // Remove empty threads after loading
         // cleanupEmptyThreads is called through set()
       set((state) => {
         // Find all empty "New chat" threads (system message only)
         const emptyThreadIds = state.threads
-          .filter(t => 
-            t.title === 'New chat' && 
-            t.messages.length <= 1 && 
+          .filter(t =>
+            t.title === 'New chat' &&
+            t.messages.length <= 1 &&
             t.messages.every(m => m.role === 'system')
           )
           .map(t => t.id)
         // Keep only the newest empty thread, delete the rest
         if (emptyThreadIds.length <= 1) return state
-        
+
         const sortedEmptyThreads = state.threads
           .filter(t => emptyThreadIds.includes(t.id))
           .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -422,11 +469,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
           tombstoneThreadSnapshot(thread)
         }
-        
+
         return {
           threads: state.threads.filter(t => !deleteIds.includes(t.id)),
-          activeThreadId: deleteIds.includes(state.activeThreadId as string) 
-            ? (keepId ?? null) 
+          activeThreadId: deleteIds.includes(state.activeThreadId as string)
+            ? (keepId ?? null)
             : state.activeThreadId
         }
       })
@@ -480,20 +527,20 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }, 'db_save_message system')
     mirrorThreadToDaemon(thread)
     mirrorMessageToDaemon(id, systemMsg)
-    
+
     // Bereinige leere Threads nach dem Createn eines neuen
     set((state) => {
       // Find all empty "New chat" threads (system message only)
       const emptyThreadIds = state.threads
-        .filter(t => 
-          t.title === 'New chat' && 
-          t.messages.length <= 1 && 
+        .filter(t =>
+          t.title === 'New chat' &&
+          t.messages.length <= 1 &&
           t.messages.every(m => m.role === 'system')
         )
         .map(t => t.id)
         // Keep only the newest empty thread, delete the rest
       if (emptyThreadIds.length <= 1) return state
-      
+
       const sortedEmptyThreads = state.threads
         .filter(t => emptyThreadIds.includes(t.id))
         .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -506,15 +553,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         void persistInvoke('db_delete_thread', { id: thread.id }, 'db_delete_thread cleanup')
         tombstoneThreadSnapshot(thread)
       }
-      
+
       return {
         threads: state.threads.filter(t => !deleteIds.includes(t.id)),
-        activeThreadId: deleteIds.includes(state.activeThreadId as string) 
-          ? (keepId ?? null) 
+        activeThreadId: deleteIds.includes(state.activeThreadId as string)
+          ? (keepId ?? null)
           : state.activeThreadId
       }
     })
-    
+
     return id
   },
 

@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   appendStoppedAssistantContent,
+  buildChatWorkspacePermissionConfig,
   buildProjectInstructionsPromptContext,
   buildProjectLinkPromptContext,
   findPreviousUserMessage,
   formatAssistantFailureContent,
   getAssistantFailureSettingsPath,
+  getChatWorkspaceAttachments,
   isAssistantFailureContent,
+  reconcileChatComposerAttachments,
+  updateAttachmentAccess,
 } from './CoworkView'
 import type { ProjectResource } from '../stores/projectStore'
 import i18n from '../i18n'
@@ -123,5 +127,82 @@ describe('CoworkView project context helpers', () => {
     expect(result.context).toContain('Link content')
     expect(result.notice).toContain('Not all project links could be fetched')
     expect(result.notice).toContain('Broken: Network error')
+  })
+
+  it('updates attachment access without retaining the change event', () => {
+    const attachments = [
+      { path: 'C:\\workspace', kind: 'folder' as const, access: 'read_only' as const },
+      { path: 'C:\\notes.txt', kind: 'file' as const, access: 'read_only' as const },
+    ]
+
+    expect(updateAttachmentAccess(attachments, attachments[0], 'read_write')).toEqual([
+      { path: 'C:\\workspace', kind: 'folder', access: 'read_write' },
+      attachments[1],
+    ])
+  })
+
+  it('stores selected folders as chat-scoped workspace directories', () => {
+    const nextConfig = buildChatWorkspacePermissionConfig({
+      mode: 'strict',
+      allowedDirectories: ['C:\\shared', 'C:\\old-workspace'],
+      workspaceAttachments: [{ path: 'C:\\old-workspace', kind: 'folder', access: 'read_only' }],
+    }, [
+      { path: 'C:\\new-workspace', kind: 'folder', access: 'read_write' },
+      { path: 'C:\\one-shot.txt', kind: 'file', access: 'read_only' },
+    ], 'default')
+
+    expect(nextConfig).toEqual({
+      mode: 'strict',
+      allowedDirectories: ['C:\\shared', 'C:\\new-workspace'],
+      workspaceAttachments: [
+        { path: 'C:\\new-workspace', kind: 'folder', access: 'read_write' },
+        { path: 'C:\\one-shot.txt', kind: 'file', access: 'read_only' },
+      ],
+    })
+    expect(getChatWorkspaceAttachments(nextConfig)).toEqual([
+      {
+        path: 'C:\\new-workspace',
+        kind: 'folder',
+        access: 'read_write',
+        isPrimary: true,
+      },
+      {
+        path: 'C:\\one-shot.txt',
+        kind: 'file',
+        access: 'read_only',
+        isPrimary: false,
+      },
+    ])
+  })
+
+  it('keeps local folders and files after submit while clearing inline-only attachments', () => {
+    const permissionConfig = {
+      mode: 'default' as const,
+      allowedDirectories: ['C:\\workspace'],
+      workspaceAttachments: [
+        { path: 'C:\\workspace', kind: 'folder' as const, access: 'read_only' as const },
+        { path: 'C:\\notes.txt', kind: 'file' as const, access: 'read_only' as const },
+      ],
+    }
+    const current = [
+      { path: 'C:\\workspace', kind: 'folder' as const, access: 'read_only' as const },
+      { path: 'C:\\notes.txt', kind: 'file' as const, access: 'read_only' as const },
+      { path: 'clipboard.png', kind: 'file' as const, source: 'inline' as const, dataUrl: 'data:image/png;base64,abc' },
+    ]
+
+    expect(reconcileChatComposerAttachments(permissionConfig, current, false)).toEqual([
+      {
+        path: 'C:\\workspace',
+        kind: 'folder',
+        access: 'read_only',
+        isPrimary: true,
+      },
+      {
+        path: 'C:\\notes.txt',
+        kind: 'file',
+        access: 'read_only',
+        isPrimary: false,
+      },
+    ])
   })
 })

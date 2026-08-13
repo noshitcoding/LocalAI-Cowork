@@ -277,6 +277,40 @@ describe('chatStore', () => {
     expect(invokeMock).not.toHaveBeenCalledWith('db_update_message_content', expect.anything())
   })
 
+  it('hydrates chat-scoped workspace directories from local thread metadata', async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === 'db_list_threads') {
+        return [{
+          id: 'thread-workspace',
+          title: 'Workspace chat',
+          created_at: '2026-08-13T10:00:00.000Z',
+          updated_at: '2026-08-13T10:00:00.000Z',
+          permission_config_json: JSON.stringify({
+            mode: 'default',
+            allowedDirectories: ['C:\\workspace'],
+            workspaceAttachments: [
+              { path: 'C:\\workspace', kind: 'folder', access: 'read_write' },
+              { path: 'C:\\reference.pdf', kind: 'file', access: 'read_only' },
+            ],
+          }),
+        }]
+      }
+      if (command === 'db_list_messages') return []
+      return undefined
+    })
+
+    await useChatStore.getState().loadFromDb()
+
+    expect(useChatStore.getState().threads[0]?.permissionConfig).toEqual({
+      mode: 'default',
+      allowedDirectories: ['C:\\workspace'],
+      workspaceAttachments: [
+        { path: 'C:\\workspace', kind: 'folder', access: 'read_write' },
+        { path: 'C:\\reference.pdf', kind: 'file', access: 'read_only' },
+      ],
+    })
+  })
+
   it('throttles partial streaming persistence and flushes final content immediately', async () => {
     vi.useFakeTimers()
     Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true })

@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -11,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout},
+    sync::Mutex,
 };
 use uuid::Uuid;
 
@@ -19,12 +22,13 @@ use cowork_runtime::{RuntimeHost, ToolInvocation};
 
 use super::{
     append_event_async, await_local_approval, local_run_is_canceled, set_local_run_state_locked,
-    truncate_chars, Daemon, LocalRuntimeHost, ManagedProcessTree,
+    Daemon, LocalRuntimeHost, ManagedProcessTree,
 };
 
 const CODEX_VERSION: &str = "0.147.0";
 const PROTOCOL_SCHEMA: &str = "app-server-0.147.0";
 const MAX_PROTOCOL_LINE: usize = 16 * 1024 * 1024;
+const MAX_STDERR_CAPTURE: usize = 16_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +47,23 @@ struct CodexProtocol {
     process_tree: ManagedProcessTree,
     next_id: u64,
     stderr_task: tokio::task::JoinHandle<String>,
+}
+
+type CodexSession = Arc<Mutex<Option<CodexProtocol>>>;
+
+#[derive(Default)]
+pub(super) struct CodexSessionPool {
+    sessions: Mutex<HashMap<String, CodexSession>>,
+}
+
+impl CodexSessionPool {
+    async fn session(&self, profile_id: &str) -> CodexSession {
+        let mut sessions = self.sessions.lock().await;
+        sessions
+            .entry(profile_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone()
+    }
 }
 
 impl CodexProtocol {
@@ -90,36 +111,17 @@ pub(super) async fn execute_codex_adapter(
     workspace: Option<PathBuf>,
     timeout: Duration,
 ) -> Result<Value> {
-    match tokio::time::timeout(
-        timeout,
-        execute_codex_inner(daemon, host, run_id, request, workspace),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => bail!(
-            "Codex runtime exceeded its configured timeout of {} seconds",
-            timeout.as_secs()
-        ),
-    }
-}
-
-async fn execute_codex_inner(
-    daemon: &Daemon,
-    host: &LocalRuntimeHost<'_>,
-    run_id: Uuid,
-    request: Value,
-    workspace: Option<PathBuf>,
-) -> Result<Value> {
     let request = request
         .as_object()
         .context("Codex runtime request must be an object")?;
-    let profile_id = required_string(request.get("profile_id"), "profile_id")?;
-    validate_profile_id(profile_id)?;
-    let prompt = required_string(request.get("prompt"), "prompt")?;
-    let model = optional_string(request.get("model"));
-    let effort = optional_string(request.get("reasoning_effort"));
-    let tool_policy = optional_string(request.get("tool_policy")).unwrap_or("autonomous");
+    let profile_id = required_string(request.get("profile_id"), "profile_id")?.to_owned();
+    validate_profile_id(&profile_id)?;
+    let prompt = required_string(request.get("prompt"), "prompt")?.to_owned();
+    let model = optional_string(request.get("model")).map(str::to_owned);
+    let effort = optional_string(request.get("reasoning_effort")).map(str::to_owned);
+    let tool_policy = optional_string(request.get("tool_policy"))
+        .unwrap_or("autonomous")
+        .to_owned();
     let cwd = workspace
         .as_deref()
         .or_else(|| optional_string(request.get("cwd")).map(Path::new))
@@ -127,7 +129,7 @@ async fn execute_codex_inner(
         .canonicalize()
         .context("Codex workspace is unavailable")?;
     let binary = verified_runtime(&daemon.config.runtime_paths.codex_root)?;
-    let profile_home = daemon.config.runtime_paths.codex_profiles.join(profile_id);
+    let profile_home = daemon.config.runtime_paths.codex_profiles.join(&profile_id);
     if !profile_home.is_dir() {
         bail!("Codex profile {profile_id} is not initialized on this device");
     }
@@ -135,10 +137,98 @@ async fn execute_codex_inner(
         bail!("Codex profile {profile_id} contains forbidden plaintext auth.json");
     }
 
+    let deadline = tokio::time::Instant::now() + timeout;
+    let session = daemon.codex_sessions.session(&profile_id).await;
+    let mut protocol = match tokio::time::timeout_at(deadline, session.lock()).await {
+        Ok(protocol) => protocol,
+        Err(_) => return Err(codex_timeout_error(timeout)),
+    };
+    let result = tokio::time::timeout_at(deadline, async {
+        let process_exited = match protocol.as_mut() {
+            Some(protocol) => protocol
+                .child
+                .try_wait()
+                .context("failed to inspect the Codex App Server")?
+                .is_some(),
+            None => false,
+        };
+        if process_exited {
+            let _ = stop_protocol(&mut protocol).await;
+        }
+        if protocol.is_none() {
+            *protocol = Some(spawn_protocol(&binary, &profile_home)?);
+            initialize_protocol(
+                daemon,
+                run_id,
+                protocol.as_mut().context("Codex session was not created")?,
+            )
+            .await?;
+        }
+
+        append_event_async(
+            daemon,
+            run_id,
+            RunEventKind::ModelStarted,
+            json!({"adapter":"codex","profile_id":profile_id,"model":model}),
+        )
+        .await?;
+        execute_codex_turn(
+            daemon,
+            host,
+            run_id,
+            protocol.as_mut().context("Codex session is unavailable")?,
+            &profile_id,
+            &prompt,
+            model.as_deref(),
+            effort.as_deref(),
+            &tool_policy,
+            &cwd,
+        )
+        .await
+    })
+    .await;
+
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => {
+            let stderr = stop_protocol(&mut protocol).await;
+            Err(attach_protocol_stderr(error, &stderr))
+        }
+        Err(_) => {
+            let _ = stop_protocol(&mut protocol).await;
+            Err(codex_timeout_error(timeout))
+        }
+    }
+}
+
+async fn stop_protocol(protocol: &mut Option<CodexProtocol>) -> String {
+    match protocol.take() {
+        Some(protocol) => protocol.stop().await,
+        None => String::new(),
+    }
+}
+
+fn attach_protocol_stderr(error: anyhow::Error, stderr: &str) -> anyhow::Error {
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        error
+    } else {
+        error.context(format!("Codex App Server stderr: {stderr}"))
+    }
+}
+
+fn codex_timeout_error(timeout: Duration) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Codex runtime exceeded its configured timeout of {} seconds",
+        timeout.as_secs()
+    )
+}
+
+fn spawn_protocol(binary: &Path, profile_home: &Path) -> Result<CodexProtocol> {
     let mut command = tokio::process::Command::new(binary);
     command
         .args(["app-server", "--listen", "stdio://"])
-        .env("CODEX_HOME", &profile_home)
+        .env("CODEX_HOME", profile_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -163,26 +253,47 @@ async fn execute_codex_inner(
     let stdout = child.stdout.take().context("Codex stdout is missing")?;
     let mut stderr = child.stderr.take().context("Codex stderr is missing")?;
     let stderr_task = tokio::spawn(async move {
-        let mut value = String::new();
-        let _ = stderr.read_to_string(&mut value).await;
-        truncate_chars(&value, 16_000)
+        let mut captured = Vec::with_capacity(MAX_STDERR_CAPTURE);
+        let mut chunk = [0_u8; 4096];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => append_bounded(&mut captured, &chunk[..read], MAX_STDERR_CAPTURE),
+            }
+        }
+        String::from_utf8_lossy(&captured).into_owned()
     });
-    let mut protocol = CodexProtocol {
+    Ok(CodexProtocol {
         child,
         stdin,
         lines: BufReader::new(stdout).lines(),
         process_tree,
         next_id: 1,
         stderr_task,
-    };
+    })
+}
 
-    append_event_async(
-        daemon,
-        run_id,
-        RunEventKind::ModelStarted,
-        json!({"adapter":"codex","profile_id":profile_id,"model":model}),
-    )
-    .await?;
+fn append_bounded(captured: &mut Vec<u8>, chunk: &[u8], limit: usize) {
+    if chunk.len() >= limit {
+        captured.clear();
+        captured.extend_from_slice(&chunk[chunk.len() - limit..]);
+        return;
+    }
+    let overflow = captured
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(limit);
+    if overflow > 0 {
+        captured.drain(..overflow);
+    }
+    captured.extend_from_slice(chunk);
+}
+
+async fn initialize_protocol(
+    daemon: &Daemon,
+    run_id: Uuid,
+    protocol: &mut CodexProtocol,
+) -> Result<()> {
     let initialize_id = protocol
         .request_id(
             "initialize",
@@ -192,17 +303,31 @@ async fn execute_codex_inner(
             }),
         )
         .await?;
-    let initialized = wait_for_response(daemon, run_id, &mut protocol, initialize_id).await?;
+    let initialized = wait_for_response(daemon, run_id, protocol, initialize_id).await?;
     if initialized
         .get("userAgent")
         .and_then(Value::as_str)
         .is_none()
     {
-        let stderr = protocol.stop().await;
-        bail!("Codex handshake did not match the pinned schema: {stderr}");
+        bail!("Codex handshake did not match the pinned schema");
     }
     protocol.notify("initialized", json!({})).await?;
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn execute_codex_turn(
+    daemon: &Daemon,
+    host: &LocalRuntimeHost<'_>,
+    run_id: Uuid,
+    protocol: &mut CodexProtocol,
+    profile_id: &str,
+    prompt: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    tool_policy: &str,
+    cwd: &Path,
+) -> Result<Value> {
     let read_only = tool_policy == "read_only";
     let thread_id_request = protocol
         .request_id(
@@ -222,7 +347,7 @@ async fn execute_codex_inner(
             }),
         )
         .await?;
-    let thread = wait_for_response(daemon, run_id, &mut protocol, thread_id_request).await?;
+    let thread = wait_for_response(daemon, run_id, protocol, thread_id_request).await?;
     let thread_id = thread
         .get("thread")
         .and_then(|value| value.get("id"))
@@ -247,7 +372,7 @@ async fn execute_codex_inner(
             }),
         )
         .await?;
-    let turn = wait_for_response(daemon, run_id, &mut protocol, turn_request).await?;
+    let turn = wait_for_response(daemon, run_id, protocol, turn_request).await?;
     let turn_id = turn
         .get("turn")
         .and_then(|value| value.get("id"))
@@ -257,7 +382,7 @@ async fn execute_codex_inner(
 
     let mut content = String::new();
     loop {
-        let payload = next_payload(daemon, run_id, &mut protocol).await?;
+        let payload = next_payload(daemon, run_id, protocol).await?;
         if let Some(id) = payload.get("id").and_then(Value::as_u64) {
             if let Some(method) = payload.get("method").and_then(Value::as_str) {
                 let params = payload.get("params").cloned().unwrap_or(Value::Null);
@@ -396,14 +521,13 @@ async fn execute_codex_inner(
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("failed");
-                let stderr = protocol.stop().await;
                 if status != "completed" {
                     let message = turn
                         .get("error")
                         .and_then(|value| value.get("message"))
                         .and_then(Value::as_str)
                         .unwrap_or("Codex turn failed");
-                    bail!("{message}: {stderr}");
+                    bail!("{message}");
                 }
                 append_event_async(
                     daemon,
@@ -423,8 +547,7 @@ async fn execute_codex_inner(
                     .and_then(|value| value.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("Codex runtime error");
-                let stderr = protocol.stop().await;
-                bail!("{message}: {stderr}");
+                bail!("{message}");
             }
             _ => {}
         }
@@ -581,6 +704,33 @@ fn verified_runtime(root: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn session_pool_reuses_and_serializes_each_profile_independently() {
+        let pool = CodexSessionPool::default();
+        let first = pool.session("profile-a").await;
+        let reused = pool.session("profile-a").await;
+        let other = pool.session("profile-b").await;
+
+        assert!(Arc::ptr_eq(&first, &reused));
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        let first_guard = first.lock().await;
+        assert!(reused.try_lock().is_err());
+        assert!(other.try_lock().is_ok());
+        drop(first_guard);
+        assert!(reused.try_lock().is_ok());
+    }
+
+    #[test]
+    fn stderr_capture_retains_only_the_latest_bounded_output() {
+        let mut captured = b"1234".to_vec();
+        append_bounded(&mut captured, b"5678", 6);
+        assert_eq!(captured, b"345678");
+
+        append_bounded(&mut captured, b"abcdefgh", 6);
+        assert_eq!(captured, b"cdefgh");
+    }
 
     #[test]
     fn profile_ids_cannot_escape_the_profile_root() {

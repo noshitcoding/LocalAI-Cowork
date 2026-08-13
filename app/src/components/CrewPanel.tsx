@@ -782,6 +782,7 @@ export default function CrewPanel() {
     updateAllActiveCrewAgents((agent) => ({
       ...agent,
       providerKind,
+      backendSelection: undefined,
       modelOverride: null,
       inheritCrewModel: true,
     }))
@@ -1022,6 +1023,45 @@ export default function CrewPanel() {
     : activeCrew?.outputMode === 'json'
       ? 'JSON'
       : 'Standard'
+  const renderCrewModelControls = () => {
+    if (!activeCrew) return null
+    const providerKind = activeCrew.defaultProvider || 'ollama'
+    const modelOptions = getCrewDefaultModelOptions()
+    const effectiveModel = getCrewDefaultModelLabel(providerKind)
+
+    return (
+      <>
+        <span className="crew-label">{tr("Crew-Model")}</span>
+        <select aria-label={tr("Crew-Model")} className="crew-select" value={activeCrew.defaultModel || ''} onChange={(event) => {
+          updateActiveCrew({ defaultModel: event.target.value })
+          setCrewModelApplyNotice(null)
+        }}>
+          <option value="">{tr("Globale Settings verwenden")} ({effectiveModel})</option>
+          {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+        </select>
+        {providerKind !== 'ollama' && modelOptions.length === 0 && (
+          <span className="crew-hint">{tr("No models have been loaded for this provider yet.")}</span>
+        )}
+        <span className="crew-hint">{tr("Aktuell wirksam:")} {effectiveModel}</span>
+        <span className="crew-hint">{tr("Gilt automatisch for alle members ohne eigenes Model-Override.")}</span>
+        <button
+          type="button"
+          className="ui-button ui-button--secondary crew-apply-model-button"
+          onClick={applyCrewModelToAllAgents}
+          disabled={activeCrew.agents.length === 0 || effectiveModel === 'not set'}
+        >
+          <UsersRound size={16} aria-hidden="true" />
+          {tr("Apply crew model to all")}
+        </button>
+        <span className="crew-hint">{tr("Removes individual backend and model overrides in this crew. Linked personality profiles remain unchanged.")}</span>
+        {crewModelApplyNotice?.crewId === activeCrew.id && (
+          <div className="crew-inline-feedback" role="status">
+            {tr("Crew model applied to {{count}} members.", { count: crewModelApplyNotice.memberCount })}
+          </div>
+        )}
+      </>
+    )
+  }
   return (
     <div className="panel crew-shell">
       <input ref={importCrewInputRef} type="file" accept="application/json" style={{ display: 'none' }} onChange={(event) => void handleImportCrew(event)} />
@@ -1298,34 +1338,7 @@ export default function CrewPanel() {
                           <span className="crew-hint">{tr("Crew members inherit this backend unless they are pinned individually.")}</span>
                         </div>
                         <div className="crew-form-group">
-                          <span className="crew-label">{tr("Crew-Model")}</span>
-                          <select aria-label={tr("Crew-Model")} className="crew-select" value={activeCrew.defaultModel || ''} onChange={(e) => {
-                            updateActiveCrew({ defaultModel: e.target.value })
-                            setCrewModelApplyNotice(null)
-                          }}>
-                            <option value="">{tr("Globale Settings verwenden")} ({getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama')})</option>
-                            {getCrewDefaultModelOptions().map((m) => <option key={m} value={m}>{m}</option>)}
-                          </select>
-                          {activeCrew.defaultProvider !== 'ollama' && getCrewDefaultModelOptions().length === 0 && (
-                            <span className="crew-hint">{tr("No models have been loaded for this provider yet.")}</span>
-                          )}
-                          <span className="crew-hint">{tr("Aktuell wirksam:")} {getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama')}</span>
-                          <span className="crew-hint">{tr("Gilt automatisch for alle members ohne eigenes Model-Override.")}</span>
-                          <button
-                            type="button"
-                            className="ui-button ui-button--secondary crew-apply-model-button"
-                            onClick={applyCrewModelToAllAgents}
-                            disabled={activeCrew.agents.length === 0 || getCrewDefaultModelLabel(activeCrew.defaultProvider || 'ollama') === 'not set'}
-                          >
-                            <UsersRound size={16} aria-hidden="true" />
-                            {tr("Apply crew model to all")}
-                          </button>
-                          <span className="crew-hint">{tr("Removes individual model overrides in this crew. Linked personality profiles remain unchanged.")}</span>
-                          {crewModelApplyNotice?.crewId === activeCrew.id && (
-                            <div className="crew-inline-feedback" role="status">
-                              {tr("Crew model applied to {{count}} members.", { count: crewModelApplyNotice.memberCount })}
-                            </div>
-                          )}
+                          {renderCrewModelControls()}
                         </div>
                       </div>
                     </div>
@@ -1393,6 +1406,15 @@ export default function CrewPanel() {
                           <strong>{configuredMcpCount}</strong>
                           <span>{tr("MCP-Zugriffe")}</span>
                         </div>
+                      </div>
+                    </div>
+                    <div className="crew-agent-panel crew-agent-panel-wide crew-bulk-model-panel">
+                      <div className="crew-agent-panel-header">
+                        <div className="crew-agent-panel-title">{tr("Crew-Model")}</div>
+                        <div className="crew-agent-panel-subtitle">{tr("Set one default model for the crew or overwrite all individual selections.")}</div>
+                      </div>
+                      <div className="crew-form-group">
+                        {renderCrewModelControls()}
                       </div>
                     </div>
                     <div className="crew-agent-panel crew-agent-panel-wide crew-bulk-access-panel">
@@ -1495,9 +1517,10 @@ export default function CrewPanel() {
                         }
                         return (
                           <div key={agent.id} className={`crew-agent-card${!agent.enabled ? ' disabled' : ''}${isOpen ? ' open' : ''}`}>
+                            <div className="crew-agent-header">
                             <button
                               type="button"
-                              className="crew-agent-header"
+                              className="crew-agent-header-main"
                               aria-expanded={isOpen}
                               onClick={() => toggleAgent(agent.id)}
                             >
@@ -1512,10 +1535,19 @@ export default function CrewPanel() {
                                 </div>
                               </div>
                               <div className="crew-agent-header-actions">
-                                <span className={`crew-badge ${agent.enabled ? 'active' : 'inactive'}`}>{agent.enabled ? tr("Active") : tr("Inactive")}</span>
                                 <ChevronDown className="crew-agent-chevron" size={16} aria-hidden="true" />
                               </div>
                             </button>
+                            <label className="crew-agent-enabled-toggle">
+                              <input
+                                type="checkbox"
+                                checked={agent.enabled}
+                                aria-label={`${profileAgent.name}: ${tr("Enabled")}`}
+                                onChange={(event) => updateActiveCrewAgent(agent.id, { enabled: event.target.checked })}
+                              />
+                              <span className={`crew-badge ${agent.enabled ? 'active' : 'inactive'}`}>{agent.enabled ? tr("Active") : tr("Inactive")}</span>
+                            </label>
+                            </div>
                             {isOpen && (
                               <div className="crew-agent-body">
                                 <div className="crew-agent-panel">
@@ -1556,7 +1588,6 @@ export default function CrewPanel() {
                                   </div>
                                   <div className="crew-agent-col">
                                     <div className="crew-checkbox-stack">
-                                      <label className="crew-checkbox-label"><input type="checkbox" checked={agent.enabled} onChange={(e) => updateActiveCrewAgent(agent.id, { enabled: e.target.checked })} />{tr("Enabled")}</label>
                                       <label className="crew-checkbox-label"><input type="checkbox" checked={agent.allowDelegation} onChange={(e) => updateActiveCrewAgent(agent.id, { allowDelegation: e.target.checked })} />{tr("Delegation allowed")}</label>
                                       <label className="crew-checkbox-label"><input type="checkbox" checked={agent.verbose} onChange={(e) => updateActiveCrewAgent(agent.id, { verbose: e.target.checked })} />{tr("Verbose Logs")}</label>
                                     </div>

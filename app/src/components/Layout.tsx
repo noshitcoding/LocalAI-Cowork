@@ -113,12 +113,20 @@ export default function Layout() {
 
   const handleToggleLeftSidebar = useCallback(() => {
     if (compactSidebar) {
-      closeShellOverlays()
+      if (!useUiStore.getState().appMenuOpen) closeShellOverlays()
       setCompactSidebarOpen((open) => !open)
       return
     }
     toggleLeftSidebar()
   }, [closeShellOverlays, compactSidebar, toggleLeftSidebar])
+
+  const handleOpenWorkspaceSidebarFromMenu = useCallback(() => {
+    if (compactSidebar) {
+      setCompactSidebarOpen(true)
+      return
+    }
+    if (!leftSidebarOpen) toggleLeftSidebar()
+  }, [compactSidebar, leftSidebarOpen, toggleLeftSidebar])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return undefined
@@ -132,7 +140,7 @@ export default function Layout() {
   }, [])
 
   useEffect(() => {
-    closeShellOverlays()
+    if (!useUiStore.getState().appMenuOpen) closeShellOverlays()
     setCompactSidebarOpen(false)
   }, [closeShellOverlays, location.pathname, location.search])
 
@@ -146,7 +154,11 @@ export default function Layout() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (appMenuOpen || contextDrawerOpen) closeShellOverlays()
+        if (appMenuOpen) {
+          event.preventDefault()
+          return
+        }
+        if (contextDrawerOpen) closeShellOverlays()
         if (compactSidebarOpen) setCompactSidebarOpen(false)
         return
       }
@@ -260,8 +272,9 @@ export default function Layout() {
           className="top-menu-button"
           data-doc-id="button:/app/shell/open-menu"
           onClick={() => {
+            if (appMenuOpen) return
             setCompactSidebarOpen(false)
-            setAppMenuOpen(!appMenuOpen)
+            setAppMenuOpen(true)
           }}
           aria-label={tr('Open main menu')}
           aria-controls="app-menu-drawer"
@@ -312,7 +325,7 @@ export default function Layout() {
       <AppMenu
         open={appMenuOpen}
         compactSidebar={compactSidebar || focusMode}
-        onOpenWorkspaceSidebar={handleToggleLeftSidebar}
+        onOpenWorkspaceSidebar={handleOpenWorkspaceSidebarFromMenu}
       />
       <AppContextDrawer open={contextDrawerOpen} onClose={() => setContextDrawerOpen(false)} />
     </div>

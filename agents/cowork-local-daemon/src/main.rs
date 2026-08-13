@@ -93,6 +93,7 @@ struct Daemon {
     database: Arc<Mutex<Connection>>,
     shutdown: watch::Sender<bool>,
     browser: Arc<developer_browser::DeveloperBrowserState>,
+    codex_sessions: Arc<codex::CodexSessionPool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +319,7 @@ async fn main() -> Result<()> {
         database: Arc::new(Mutex::new(connection)),
         shutdown,
         browser: Arc::new(developer_browser::DeveloperBrowserState::default()),
+        codex_sessions: Arc::new(codex::CodexSessionPool::default()),
     };
 
     let worker = daemon.clone();
@@ -4160,6 +4162,21 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
         config.base_url = binding.base_url;
         config.api_key = binding.api_key;
     }
+    if request
+        .input
+        .get("resolve_current_crew_provider_bindings")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let config = model_config
+            .as_mut()
+            .context("Crew run requires a model configuration")?;
+        resolve_immediate_crew_provider_bindings(
+            &database,
+            config,
+            &daemon.config.model_secret_key,
+        )?;
+    }
     if let Some(config) = &model_config {
         config.validate()?;
     }
@@ -4239,6 +4256,48 @@ async fn create_run(daemon: &Daemon, params: Value) -> Result<Value> {
     )?;
     transaction.commit()?;
     Ok(serde_json::to_value(record)?)
+}
+
+fn resolve_immediate_crew_provider_bindings(
+    connection: &Connection,
+    model_config: &mut PersistedModelConfig,
+    secret_key: &[u8; 32],
+) -> Result<()> {
+    let providers = model_config
+        .crew_request
+        .as_mut()
+        .and_then(|request| request.get_mut("providerConfigs"))
+        .and_then(Value::as_object_mut)
+        .context("Crew run requires provider configurations")?;
+
+    for property in ["openAICompatible", "openRouter"] {
+        let Some(config) = providers.get_mut(property) else {
+            continue;
+        };
+        let config = config
+            .as_object_mut()
+            .context("Crew provider configuration must be an object")?;
+        let profile_id = config
+            .get("profileId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let Some(profile_id) = profile_id else {
+            continue;
+        };
+        validate_provider_profile_id(&profile_id)?;
+        let binding =
+            load_provider_binding(connection, &profile_id, secret_key)?.with_context(|| {
+                format!("run is waiting for the per-device Crew provider binding ({profile_id})")
+            })?;
+        config.insert("baseUrl".to_owned(), json!(binding.base_url));
+        config.insert(
+            "apiKey".to_owned(),
+            json!(binding.api_key.unwrap_or_default()),
+        );
+    }
+    Ok(())
 }
 
 async fn import_server_run(daemon: &Daemon, params: Value) -> Result<Value> {
@@ -5312,62 +5371,19 @@ async fn serve_ipc(daemon: Daemon) -> Result<()> {
 }
 
 #[cfg(windows)]
-const PENDING_WINDOWS_PIPE_INSTANCES: usize = 16;
-
-#[cfg(windows)]
-fn create_windows_pipe_server(
-    endpoint: &str,
-    first: bool,
-) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+async fn serve_ipc(daemon: Daemon) -> Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    ServerOptions::new()
-        .first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .create(endpoint)
-}
-
-#[cfg(windows)]
-fn queue_windows_pipe_accept(
-    listeners: &mut tokio::task::JoinSet<
-        std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer>,
-    >,
-    server: tokio::net::windows::named_pipe::NamedPipeServer,
-) {
-    listeners.spawn(async move {
-        server.connect().await?;
-        Ok(server)
-    });
-}
-
-#[cfg(windows)]
-async fn serve_ipc(daemon: Daemon) -> Result<()> {
-    use tokio::task::JoinSet;
-
-    let endpoint = daemon.config.ipc_endpoint.clone();
-    let mut listeners = JoinSet::new();
-    for index in 0..PENDING_WINDOWS_PIPE_INSTANCES {
-        queue_windows_pipe_accept(
-            &mut listeners,
-            create_windows_pipe_server(&endpoint, index == 0)?,
-        );
-    }
+    let mut first = true;
     tracing::info!(endpoint = %daemon.config.ipc_endpoint, "local daemon IPC ready");
     loop {
-        let server = listeners
-            .join_next()
-            .await
-            .context("Windows IPC listener pool stopped")?
-            .context("Windows IPC listener task panicked")??;
-
-        // Replenish the pending pool before dispatching the accepted connection.
-        // Startup reconciliation sends a burst of parallel requests, and a single
-        // pending instance makes every other client observe ERROR_PIPE_BUSY (231).
-        queue_windows_pipe_accept(
-            &mut listeners,
-            create_windows_pipe_server(&endpoint, false)?,
-        );
-
+        let mut options = ServerOptions::new();
+        options
+            .first_pipe_instance(first)
+            .reject_remote_clients(true);
+        let server = options.create(&daemon.config.ipc_endpoint)?;
+        first = false;
+        server.connect().await?;
         let daemon = daemon.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(daemon, server).await {
@@ -5730,26 +5746,6 @@ mod tests {
     use super::*;
     use chrono::{Datelike, TimeZone, Timelike};
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_ipc_keeps_a_parallel_listener_pool_ready() {
-        use tokio::net::windows::named_pipe::ClientOptions;
-
-        let endpoint = format!(r"\\.\pipe\open-cowork-test-{}", Uuid::new_v4());
-        let servers = (0..PENDING_WINDOWS_PIPE_INSTANCES)
-            .map(|index| create_windows_pipe_server(&endpoint, index == 0).unwrap())
-            .collect::<Vec<_>>();
-
-        let clients = (0..PENDING_WINDOWS_PIPE_INSTANCES)
-            .map(|_| ClientOptions::new().open(&endpoint).unwrap())
-            .collect::<Vec<_>>();
-
-        for server in &servers {
-            server.connect().await.unwrap();
-        }
-        assert_eq!(clients.len(), PENDING_WINDOWS_PIPE_INSTANCES);
-    }
-
     fn schedule_test_request(input: Value) -> CreateRunRequest {
         serde_json::from_value(json!({
             "thread_id": Uuid::new_v4(),
@@ -5811,6 +5807,7 @@ mod tests {
             database: Arc::new(Mutex::new(connection)),
             shutdown,
             browser: Arc::new(developer_browser::DeveloperBrowserState::default()),
+            codex_sessions: Arc::new(codex::CodexSessionPool::default()),
         }
     }
 
@@ -5872,6 +5869,63 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.base_url, "https://current.example.test/v1");
         assert_eq!(resolved.api_key.as_deref(), Some("current-native-secret"));
+    }
+
+    #[tokio::test]
+    async fn immediate_crew_runs_resolve_profile_secrets_inside_the_daemon() {
+        let connection = Connection::open_in_memory().unwrap();
+        initialize_database(&connection).unwrap();
+        let binding = ProviderDeviceBinding {
+            base_url: "https://current-crew.example.test/v1".to_owned(),
+            api_key: Some("current-crew-native-secret".to_owned()),
+        };
+        let encrypted =
+            encrypt_secret_payload(&serde_json::to_vec(&binding).unwrap(), &[31; 32]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO daemon_provider_bindings (profile_id, encrypted_binding, updated_at) VALUES (?1, ?2, ?3)",
+                params!["profile-current", encrypted, Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        let device_id = Uuid::new_v4();
+        let daemon = daemon_for_test(connection, device_id);
+        let run: RunRecord = serde_json::from_value(
+            create_run(
+                &daemon,
+                json!({
+                    "thread_id": Uuid::new_v4(),
+                    "project_id": Uuid::new_v4(),
+                    "project_revision": 1,
+                    "project_privacy": "private_local",
+                    "task": null,
+                    "executor_target": {"kind":"personal_device","device_id":device_id},
+                    "required_capabilities": ["crew.python"],
+                    "input": {
+                        "prompt": "test Crew",
+                        "resolve_current_crew_provider_bindings": true,
+                        "client_crew_provider_profile_ids": ["profile-current"]
+                    },
+                    "model_profile_id": null,
+                    "snapshot_id": null,
+                    "idempotency_key": format!("immediate-crew-binding-{}", Uuid::new_v4()),
+                    "model_config": schedule_test_model_config()
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(!serde_json::to_string(&run.spec.input)
+            .unwrap()
+            .contains("current-crew-native-secret"));
+        let resolved = load_run_model_config(&daemon, run.spec.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let provider = &resolved.crew_request.unwrap()["providerConfigs"]["openAICompatible"];
+        assert_eq!(provider["baseUrl"], "https://current-crew.example.test/v1");
+        assert_eq!(provider["apiKey"], "current-crew-native-secret");
     }
 
     #[test]

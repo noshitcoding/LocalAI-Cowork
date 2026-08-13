@@ -35,7 +35,7 @@ type UiState = {
   toggleTheme: () => void
   setAppMenuOpen: (open: boolean, focusSearch?: boolean) => void
   setAppMenuSearchFocused: (focused: boolean) => void
-  setContextDrawerOpen: (open: boolean) => void
+  setContextDrawerOpen: (open: boolean, preserveAppMenu?: boolean) => void
   closeShellOverlays: () => void
   setCommandPaletteOpen: (open: boolean) => void
   setShortcutsOverlayOpen: (open: boolean) => void
@@ -75,12 +75,12 @@ export const useUiStore = create<UiState>()(
           commandPaletteOpen: open && focusSearch,
         })),
       setAppMenuSearchFocused: (focused) => set({ appMenuSearchFocused: focused }),
-      setContextDrawerOpen: (open) =>
+      setContextDrawerOpen: (open, preserveAppMenu = false) =>
         set((state) => ({
           contextDrawerOpen: open,
-          appMenuOpen: open ? false : state.appMenuOpen,
-          appMenuSearchFocused: false,
-          commandPaletteOpen: false,
+          appMenuOpen: open && !preserveAppMenu ? false : state.appMenuOpen,
+          appMenuSearchFocused: preserveAppMenu ? state.appMenuSearchFocused : false,
+          commandPaletteOpen: preserveAppMenu ? state.commandPaletteOpen : false,
           shortcutsOverlayOpen: false,
         })),
       closeShellOverlays: () => set({

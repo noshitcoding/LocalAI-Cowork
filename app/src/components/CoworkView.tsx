@@ -3,7 +3,7 @@ import { lazy, Suspense, useRef, useEffect, useMemo, useState } from 'react'
 import type { ClipboardEvent, DragEvent, FormEvent } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useChatStore, getActiveThread, type ChatMessage } from '../stores/chatStore'
+import { useChatStore, getActiveThread, type ChatMessage, type PermissionConfig } from '../stores/chatStore'
 import type { LiveToolCall, LiveToolCallStatus } from '../stores/chatStore'
 import { CheckCircle2, ChevronDown, Clock3, Loader2, Plus, Settings2, ShieldAlert, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { useConfigStore } from '../stores/configStore'
@@ -351,6 +351,108 @@ async function buildEngineUserInput(promptWithAttachments: string, attachments: 
     { type: 'text', text: promptWithAttachments },
     ...imageBlocks,
   ]
+}
+
+export function updateAttachmentAccess(
+  attachments: ChatAttachment[],
+  target: ChatAttachment,
+  access: 'read_only' | 'read_write',
+): ChatAttachment[] {
+  return attachments.map((entry) => (
+    entry.path === target.path && entry.kind === target.kind
+      ? { ...entry, access }
+      : entry
+  ))
+}
+
+function normalizeWorkspacePathKey(path: string): string {
+  const trimmed = path.trim()
+  if (/^[a-zA-Z]:[\\/]$/.test(trimmed)) return trimmed.toLowerCase()
+  return trimmed.replace(/[\\/]+$/, '').toLowerCase()
+}
+
+export function getChatWorkspaceAttachments(
+  permissionConfig: PermissionConfig | undefined,
+): ChatAttachment[] {
+  const seen = new Set<string>()
+  const storedAttachments = permissionConfig?.workspaceAttachments
+    ?? permissionConfig?.workspaceDirectories?.map((entry) => ({ ...entry, kind: 'folder' as const }))
+    ?? []
+  return storedAttachments
+    .map((entry) => ({
+      path: entry.path.trim(),
+      kind: entry.kind,
+      access: entry.access,
+    }))
+    .filter((entry) => {
+      if (!entry.path) return false
+      const key = `${entry.kind}:${normalizeWorkspacePathKey(entry.path)}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((entry, index, entries) => ({
+      ...entry,
+      isPrimary: entry.kind === 'folder' && entries.findIndex((candidate) => candidate.kind === 'folder') === index,
+    }))
+}
+
+export function buildChatWorkspacePermissionConfig(
+  existing: PermissionConfig | undefined,
+  attachments: ChatAttachment[],
+  fallbackMode: PermissionConfig['mode'],
+): PermissionConfig {
+  const workspaceAttachments = getChatWorkspaceAttachments({
+    mode: existing?.mode ?? fallbackMode,
+    allowedDirectories: [],
+    workspaceAttachments: attachments
+      .filter(hasLocalAttachmentPath)
+      .map((entry) => ({
+        path: entry.path,
+        kind: entry.kind,
+        access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+      })),
+  }).map((entry) => ({
+    path: entry.path,
+    kind: entry.kind,
+    access: entry.access === 'read_write' ? 'read_write' as const : 'read_only' as const,
+  }))
+
+  const previousWorkspaceKeys = new Set(
+    getChatWorkspaceAttachments(existing)
+      .filter((entry) => entry.kind === 'folder')
+      .map((entry) => normalizeWorkspacePathKey(entry.path)),
+  )
+  const allowedDirectories = [
+    ...(existing?.allowedDirectories ?? []).filter(
+      (path) => !previousWorkspaceKeys.has(normalizeWorkspacePathKey(path)),
+    ),
+    ...workspaceAttachments
+      .filter((entry) => entry.kind === 'folder')
+      .map((entry) => entry.path),
+  ].filter((path, index, paths) => (
+    paths.findIndex((candidate) => (
+      normalizeWorkspacePathKey(candidate) === normalizeWorkspacePathKey(path)
+    )) === index
+  ))
+
+  return {
+    mode: existing?.mode ?? fallbackMode,
+    allowedDirectories,
+    ...(workspaceAttachments.length > 0 ? { workspaceAttachments } : {}),
+  }
+}
+
+export function reconcileChatComposerAttachments(
+  permissionConfig: PermissionConfig | undefined,
+  current: ChatAttachment[],
+  preserveTransientAttachments: boolean,
+): ChatAttachment[] {
+  const workspaceAttachments = getChatWorkspaceAttachments(permissionConfig)
+  const transientAttachments = preserveTransientAttachments
+    ? current.filter((entry) => !hasLocalAttachmentPath(entry))
+    : []
+  return mergeAttachments(workspaceAttachments, transientAttachments).next
 }
 
 function buildChatExportPayload(
@@ -875,6 +977,7 @@ export default function CoworkView() {
     setActiveThread,
     renameThread,
     setThreadProviderSettings,
+    setThreadPermissionConfig,
     setThreadRunner,
     addMessage,
     updateMessage,
@@ -979,6 +1082,20 @@ export default function CoworkView() {
   const logRef = useRef<HTMLDivElement>(null)
   const notifiedAskUserQuestionRef = useRef<string | null>(null)
   const emptyThreadBootstrapRef = useRef<string | null>(null)
+  const composerAttachmentThreadRef = useRef<string | null>(null)
+  const workspaceAttachmentSignature = JSON.stringify([
+    activeThread?.permissionConfig?.workspaceAttachments ?? [],
+    activeThread?.permissionConfig?.workspaceDirectories ?? [],
+  ])
+  useEffect(() => {
+    const preserveTransientFiles = composerAttachmentThreadRef.current === activeThreadId
+    composerAttachmentThreadRef.current = activeThreadId
+    setAttachments((current) => reconcileChatComposerAttachments(
+      activeThread?.permissionConfig,
+      current,
+      preserveTransientFiles,
+    ))
+  }, [activeThreadId, activeThread?.permissionConfig, workspaceAttachmentSignature])
   const activeMessages = useMemo(
     () => (Array.isArray(activeThread?.messages) ? activeThread.messages : []),
     [activeThread?.messages],
@@ -1320,19 +1437,28 @@ export default function CoworkView() {
   }, [activeThreadId])
 
   const addNewAttachments = (newItems: ChatAttachment[]) => {
-    if (newItems.length === 0) return
-    setAttachments((prev) => {
-      const merged = mergeAttachments(prev, newItems.map((item) => ({
-        ...item,
-        access: item.access ?? attachmentAccess,
-      })))
-      if (merged.rejectedCount > 0) {
-        setAttachmentNotice(tr("Maximal 25 verbundene Elemente pro Message erreicht."))
-      } else {
-        setAttachmentNotice(null)
-      }
-      return merged.next
-    })
+    if (newItems.length === 0) return attachments
+    const merged = mergeAttachments(attachments, newItems.map((item) => ({
+      ...item,
+      access: item.access ?? attachmentAccess,
+    })))
+    setAttachments(merged.next)
+    if (merged.rejectedCount > 0) {
+      setAttachmentNotice(tr("Maximal 25 verbundene Elemente pro Message erreicht."))
+    } else {
+      setAttachmentNotice(null)
+    }
+    return merged.next
+  }
+
+  const persistChatWorkspaceAttachments = (nextAttachments: ChatAttachment[]) => {
+    if (!activeThreadId) return
+    const currentThread = useChatStore.getState().threads.find((thread) => thread.id === activeThreadId)
+    setThreadPermissionConfig(activeThreadId, buildChatWorkspacePermissionConfig(
+      currentThread?.permissionConfig,
+      nextAttachments,
+      enginePermissionMode,
+    ))
   }
 
   const handleAttachFiles = async () => {
@@ -1346,7 +1472,9 @@ export default function CoworkView() {
       ],
     })
     const selectedPaths = normalizeDialogSelection(selected)
-    addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'file' })))
+    if (selectedPaths.length === 0) return
+    const nextAttachments = addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'file' })))
+    persistChatWorkspaceAttachments(nextAttachments)
   }
 
   const handleAttachFolders = async () => {
@@ -1355,12 +1483,31 @@ export default function CoworkView() {
       multiple: true,
     })
     const selectedPaths = normalizeDialogSelection(selected)
-    addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'folder' })))
+    if (selectedPaths.length === 0) return
+    const nextAttachments = addNewAttachments(selectedPaths.map((path) => ({ path, kind: 'folder' })))
+    persistChatWorkspaceAttachments(nextAttachments)
   }
 
   const handleRemoveAttachment = (target: ChatAttachment) => {
-    setAttachments((prev) => prev.filter((item) => !(item.path === target.path && item.kind === target.kind)))
+    const nextAttachments = attachments.filter(
+      (item) => !(item.path === target.path && item.kind === target.kind),
+    )
+    setAttachments(nextAttachments)
+    if (hasLocalAttachmentPath(target)) {
+      persistChatWorkspaceAttachments(nextAttachments)
+    }
     setAttachmentNotice(null)
+  }
+
+  const handleAttachmentAccessChange = (
+    target: ChatAttachment,
+    access: 'read_only' | 'read_write',
+  ) => {
+    const nextAttachments = updateAttachmentAccess(attachments, target, access)
+    setAttachments(nextAttachments)
+    if (hasLocalAttachmentPath(target)) {
+      persistChatWorkspaceAttachments(nextAttachments)
+    }
   }
 
   const handleInputDragOver = (event: DragEvent<HTMLTextAreaElement>) => {
@@ -1383,7 +1530,8 @@ export default function CoworkView() {
     const droppedItems = [...fromFiles, ...fromUriList]
 
     if (droppedItems.length > 0) {
-      addNewAttachments(droppedItems)
+      const nextAttachments = addNewAttachments(droppedItems)
+      persistChatWorkspaceAttachments(nextAttachments)
       setAttachmentNotice(null)
       return
     }
@@ -1419,7 +1567,8 @@ export default function CoworkView() {
     }
 
     event.preventDefault()
-    addNewAttachments(pastedItems)
+    const nextAttachments = addNewAttachments(pastedItems)
+    persistChatWorkspaceAttachments(nextAttachments)
     setAttachmentNotice(null)
   }
 
@@ -2831,7 +2980,8 @@ export default function CoworkView() {
       userMessageId = addMessage(threadId, userMessage)
     }
     setInputValue('')
-    setAttachments([])
+    const currentThread = useChatStore.getState().threads.find((thread) => thread.id === threadId)
+    setAttachments(reconcileChatComposerAttachments(currentThread?.permissionConfig, [], false))
     setIncludeProjectLinks(false)
     setAttachmentNotice(
       [
@@ -2843,7 +2993,6 @@ export default function CoworkView() {
     setBusy(true)
     setError(null)
 
-    const currentThread = useChatStore.getState().threads.find((thread) => thread.id === threadId)
     if (currentThread?.runner === 'crew') {
       try {
         const cwd = taskProjectRunContext?.preferredCwd || getEffectiveWorkspaceCwd(
@@ -3621,14 +3770,17 @@ export default function CoworkView() {
     return null
   }
 
-  const onboardingWorkingFolder = workingFolder ?? attachments.find((item) => item.kind === 'folder')?.path ?? null
+  const onboardingWorkingFolder = attachments.find((item) => item.kind === 'folder')?.path ?? workingFolder ?? null
 
   const formatTime = (timestamp: number) =>
     new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 
   const applyPromptToInput = (content: string, nextAttachments: ChatAttachment[] = []) => {
     setInputValue(content)
-    const restored = mergeAttachments([], nextAttachments)
+    const restored = mergeAttachments(
+      getChatWorkspaceAttachments(activeThread.permissionConfig),
+      nextAttachments,
+    )
     setAttachments(restored.next)
     setAttachmentNotice(
       restored.rejectedCount > 0
@@ -4034,11 +4186,10 @@ export default function CoworkView() {
                         aria-label={`${tr('Access')}: ${getAttachmentDisplayName(item)}`}
                         value={item.access ?? 'read_only'}
                         disabled={uiLocked}
-                        onChange={(event) => setAttachments((current) => current.map((entry) => (
-                          entry.path === item.path && entry.kind === item.kind
-                            ? { ...entry, access: event.currentTarget.value as 'read_only' | 'read_write' }
-                            : entry
-                        )))}
+                         onChange={(event) => {
+                           const access = event.currentTarget.value as 'read_only' | 'read_write'
+                           handleAttachmentAccessChange(item, access)
+                         }}
                       >
                         <option value="read_only">{tr('Read only')}</option>
                         <option value="read_write">{tr('Read and edit')}</option>

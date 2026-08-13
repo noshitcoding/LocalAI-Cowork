@@ -15,9 +15,6 @@ const getCredential = vi.fn(async (_locator: unknown) => 'vault-secret')
 
 vi.mock('../security/credentialVault', () => ({
   getCredential: (locator: unknown) => getCredential(locator),
-  llmApiKeyLocator: (profileId: string) => ({
-    scope: 'llm_profile', ownerId: profileId, field: 'api_key',
-  }),
   crewProviderLocator: (crewId: string, provider: string) => ({
     scope: 'crew', ownerId: crewId, field: `${provider}_api_key`,
   }),
@@ -254,7 +251,10 @@ describe('durable local execution', () => {
     }))
   })
 
-  it('keeps the complete Crew request and hydrated provider secret outside public run input', async () => {
+  it('resolves immediate Crew profile credentials natively without exposing them to the renderer', async () => {
+    const upsertProviderBindingFromCredentials = vi.fn(async () => ({
+      profile_id: 'profile-openai', bound: true,
+    }))
     const createConfiguredRun = vi.fn(async (request: unknown, _modelConfig: unknown) => ({
       spec: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
       state: 'queued',
@@ -267,6 +267,7 @@ describe('durable local execution', () => {
         daemon_version: '0.3.0',
       })),
       bindProjectWorkspace: vi.fn(async () => undefined),
+      upsertProviderBindingFromCredentials,
       createConfiguredRun,
     } as unknown as LocalDaemonRuntimeClient
 
@@ -302,18 +303,25 @@ describe('durable local execution', () => {
     const [request, modelConfig] = createConfiguredRun.mock.calls[0]
     expect(JSON.stringify((request as { input: unknown }).input)).not.toContain('secret mission details')
     expect(JSON.stringify((request as { input: unknown }).input)).not.toContain('vault-secret')
+    expect(getCredential).not.toHaveBeenCalled()
+    expect(upsertProviderBindingFromCredentials).toHaveBeenCalledWith(
+      'profile-openai',
+      'https://api.openai.com/v1',
+    )
     expect(request).toMatchObject({
       required_capabilities: ['crew.python', 'files', 'shell'],
       input: {
         client_crew_live_message_id: 'monitor-crew',
         crew_stream_id: 'stream-1',
+        resolve_current_crew_provider_bindings: true,
+        client_crew_provider_profile_ids: ['profile-openai'],
         source: 'crew_task',
       },
     })
     expect(modelConfig).toMatchObject({
       crew_request: {
         providerConfigs: {
-          openAICompatible: { apiKey: 'vault-secret' },
+          openAICompatible: { apiKey: '' },
         },
         tasks: [{ description: 'secret mission details' }],
       },
@@ -321,7 +329,9 @@ describe('durable local execution', () => {
   })
 
   it('binds Crew schedule provider profiles for trigger-time credential resolution', async () => {
-    const upsertProviderBinding = vi.fn(async () => ({ profile_id: 'profile-openai', bound: true }))
+    const upsertProviderBindingFromCredentials = vi.fn(async () => ({
+      profile_id: 'profile-openai', bound: true,
+    }))
     const upsertSchedule = vi.fn(async () => ({
       id: 'crew-schedule',
       expression: 'daily 09:00',
@@ -340,7 +350,7 @@ describe('durable local execution', () => {
         daemon_version: '0.3.0',
       })),
       bindProjectWorkspace: vi.fn(async () => undefined),
-      upsertProviderBinding,
+      upsertProviderBindingFromCredentials,
       upsertSchedule,
     } as unknown as LocalDaemonRuntimeClient
 
@@ -373,10 +383,10 @@ describe('durable local execution', () => {
       },
     }, client)
 
-    expect(upsertProviderBinding).toHaveBeenCalledWith(
+    expect(getCredential).not.toHaveBeenCalled()
+    expect(upsertProviderBindingFromCredentials).toHaveBeenCalledWith(
       'profile-openai',
       'https://api.openai.com/v1',
-      'vault-secret',
     )
     expect(upsertSchedule).toHaveBeenCalledWith(expect.objectContaining({
       run_request: expect.objectContaining({
@@ -388,11 +398,71 @@ describe('durable local execution', () => {
       model_config: expect.objectContaining({
         crew_request: expect.objectContaining({
           providerConfigs: expect.objectContaining({
-            openAICompatible: expect.objectContaining({ apiKey: 'vault-secret' }),
+            openAICompatible: expect.objectContaining({ apiKey: '' }),
           }),
         }),
       }),
     }))
+  })
+
+  it('keeps legacy Crew-owned provider credentials working without a profile reference', async () => {
+    const createConfiguredRun = vi.fn(async (request: unknown, modelConfig: unknown) => ({
+      spec: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      state: 'queued',
+      request,
+      modelConfig,
+    }) as unknown as RunRecord)
+    const client = {
+      health: vi.fn(async () => ({
+        status: 'ok', schema_version: 2,
+        device_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        daemon_version: '0.3.0',
+      })),
+      bindProjectWorkspace: vi.fn(async () => undefined),
+      upsertProviderBindingFromCredentials: vi.fn(async () => ({ bound: true })),
+      createConfiguredRun,
+    } as unknown as LocalDaemonRuntimeClient
+
+    await createDurableCrewRun({
+      clientThreadId: 'thread-legacy-crew',
+      clientProjectId: 'project-legacy-crew',
+      assistantMessageId: 'assistant-legacy-crew',
+      crewLiveMessageId: 'monitor-legacy-crew',
+      crewLiveTitle: 'Legacy crew',
+      prompt: 'Run the legacy crew',
+      crewId: 'crew-legacy',
+      source: 'chat',
+      crewRequest: {
+        id: 'crew-legacy',
+        config: { baseUrl: 'http://127.0.0.1:11434', model: 'qwen3' },
+        providerConfigs: {
+          openRouter: {
+            baseUrl: 'https://openrouter.ai/api/v1',
+            model: 'test-model',
+            apiKey: '',
+          },
+        },
+        agents: [],
+        tasks: [],
+      },
+    }, client)
+
+    expect(getCredential).toHaveBeenCalledWith({
+      scope: 'crew', ownerId: 'crew-legacy', field: 'openrouter_api_key',
+    })
+    expect(client.upsertProviderBindingFromCredentials).not.toHaveBeenCalled()
+    const [request, modelConfig] = createConfiguredRun.mock.calls[0]
+    expect(request).toMatchObject({
+      input: {
+        resolve_current_crew_provider_bindings: false,
+        client_crew_provider_profile_ids: [],
+      },
+    })
+    expect(modelConfig).toMatchObject({
+      crew_request: {
+        providerConfigs: { openRouter: { apiKey: 'vault-secret' } },
+      },
+    })
   })
 
   it('routes Codex through the personal daemon without putting conversation history in public run input', async () => {

@@ -36,6 +36,14 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(target_os = "windows")]
+fn suppress_background_command_window(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn suppress_background_command_window(_command: &mut Command) {}
+
 #[derive(Clone)]
 struct BrowserTarget {
     port: u16,
@@ -294,7 +302,10 @@ fn resolve_path_command(command: &str) -> Option<PathBuf> {
     } else {
         ("which", vec![command])
     };
-    let output = Command::new(lookup.0).args(lookup.1).output().ok()?;
+    let mut path_lookup = Command::new(lookup.0);
+    path_lookup.args(lookup.1);
+    suppress_background_command_window(&mut path_lookup);
+    let output = path_lookup.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -344,8 +355,7 @@ fn spawn_browser(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    #[cfg(target_os = "windows")]
-    command.creation_flags(CREATE_NO_WINDOW);
+    suppress_background_command_window(&mut command);
 
     command
         .spawn()

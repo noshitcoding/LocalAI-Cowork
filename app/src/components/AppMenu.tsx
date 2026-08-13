@@ -79,6 +79,7 @@ export default function AppMenu({
   const location = useLocation()
   const drawerRef = useRef<HTMLElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [query, setQuery] = useState('')
   const registeredCommands = useCommandRegistry((state) => state.commands)
   const executeCommand = useCommandRegistry((state) => state.executeCommand)
@@ -173,8 +174,9 @@ export default function AppMenu({
 
   const navigateTo = (route: ProductRoute, path: string = route.path) => {
     if (route.activeMode) setActiveMode(route.activeMode)
+    setQuery('')
     navigate(path)
-    closeMenu()
+    window.requestAnimationFrame(() => scrollRef.current?.scrollTo?.({ top: 0 }))
   }
 
   const handleDrawerKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -219,7 +221,7 @@ export default function AppMenu({
 
   return (
     <div className="app-menu-layer">
-      <button type="button" className="app-drawer-backdrop" onClick={closeMenu} aria-label={tr('Close menu')} />
+      <div className="app-drawer-backdrop" data-testid="app-menu-backdrop" aria-hidden="true" />
       <aside
         ref={drawerRef}
         id="app-menu-drawer"
@@ -249,7 +251,7 @@ export default function AppMenu({
           <kbd>Ctrl K</kbd>
         </label>
 
-        <div className="app-menu-scroll">
+        <div ref={scrollRef} className="app-menu-scroll">
           {normalizedQuery ? (
             <section className="app-menu-search-results" aria-label={tr('Search results')}>
               {matchingRoutes.map((result) => (
@@ -264,7 +266,7 @@ export default function AppMenu({
                   type="button"
                   onClick={() => {
                     void executeCommand(command.id)
-                    closeMenu()
+                    setQuery('')
                   }}
                 >
                   <Command size={14} aria-hidden="true" />
@@ -368,7 +370,7 @@ export default function AppMenu({
                 <button
                   type="button"
                   className="app-menu-utility"
-                  onClick={() => setContextDrawerOpen(true)}
+                  onClick={() => setContextDrawerOpen(true, true)}
                 >
                   <PanelRight size={16} aria-hidden="true" />
                   <span><strong>{tr('Context & status')}</strong><small>{tr('Metrics, runs, tools and outputs')}</small></span>
@@ -378,7 +380,6 @@ export default function AppMenu({
                     type="button"
                     className="app-menu-utility"
                     onClick={() => {
-                      closeMenu()
                       onOpenWorkspaceSidebar()
                     }}
                   >

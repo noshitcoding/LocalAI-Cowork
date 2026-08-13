@@ -1,4 +1,4 @@
-import { crewProviderLocator, getCredential, llmApiKeyLocator } from '../security/credentialVault'
+import { crewProviderLocator, getCredential } from '../security/credentialVault'
 import type { ChatProviderState } from '../utils/chatProvider'
 import { LocalDaemonRuntimeClient } from './localDaemonClient'
 import type { RunEvent, RunRecord, RunState } from './contracts'
@@ -158,12 +158,14 @@ function objectValue(value: unknown): Record<string, unknown> {
     : {}
 }
 
-async function hydrateCrewRequestCredentials(
+async function prepareCrewRequestCredentials(
   crewId: string,
   source: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+  client: LocalDaemonRuntimeClient,
+): Promise<{ request: Record<string, unknown>; profileIds: string[] }> {
   const request = JSON.parse(JSON.stringify(source)) as Record<string, unknown>
   const providerConfigs = objectValue(request.providerConfigs)
+  const profileIds = new Set<string>()
   for (const [property, legacyProvider] of [
     ['openAICompatible', 'openai_compatible'],
     ['openRouter', 'openrouter'],
@@ -171,33 +173,24 @@ async function hydrateCrewRequestCredentials(
     const config = objectValue(providerConfigs[property])
     if (Object.keys(config).length === 0) continue
     const profileId = typeof config.profileId === 'string' ? config.profileId.trim() : ''
-    const stored = profileId
-      ? await getCredential(llmApiKeyLocator(profileId))
-      : await getCredential(crewProviderLocator(crewId, legacyProvider))
-    config.apiKey = stored ?? (typeof config.apiKey === 'string' ? config.apiKey : '')
+    if (profileId) {
+      const baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
+      if (!baseUrl) {
+        throw new Error(`Crew provider profile ${profileId} requires a base URL`)
+      }
+      await client.upsertProviderBindingFromCredentials(profileId, baseUrl)
+      profileIds.add(profileId)
+      // Profile credentials may only cross the native bridge directly into the
+      // encrypted daemon binding. They must never be read back into the renderer.
+      config.apiKey = ''
+    } else {
+      const stored = await getCredential(crewProviderLocator(crewId, legacyProvider))
+      config.apiKey = stored ?? (typeof config.apiKey === 'string' ? config.apiKey : '')
+    }
     providerConfigs[property] = config
   }
   request.providerConfigs = providerConfigs
-  return request
-}
-
-async function mirrorCrewProviderDeviceBindings(
-  request: Record<string, unknown>,
-  client: LocalDaemonRuntimeClient,
-): Promise<string[]> {
-  const providerConfigs = objectValue(request.providerConfigs)
-  const profileIds = new Set<string>()
-  for (const property of ['openAICompatible', 'openRouter'] as const) {
-    const config = objectValue(providerConfigs[property])
-    const profileId = typeof config.profileId === 'string' ? config.profileId.trim() : ''
-    if (!profileId) continue
-    profileIds.add(profileId)
-    const baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl.trim() : ''
-    if (!baseUrl) continue
-    const apiKey = typeof config.apiKey === 'string' && config.apiKey ? config.apiKey : null
-    await client.upsertProviderBinding(profileId, baseUrl, apiKey)
-  }
-  return Array.from(profileIds)
+  return { request, profileIds: Array.from(profileIds) }
 }
 
 function crewAdapterModelConfig(request: Record<string, unknown>) {
@@ -359,7 +352,8 @@ export async function createDurableCrewRun(
   const workspacePath = input.workspacePath?.trim() || null
   if (workspacePath) await client.bindProjectWorkspace(projectId, workspacePath)
 
-  const crewRequest = await hydrateCrewRequestCredentials(input.crewId, input.crewRequest)
+  const preparedCrew = await prepareCrewRequestCredentials(input.crewId, input.crewRequest, client)
+  const crewRequest = preparedCrew.request
   const adapter = crewAdapterModelConfig(crewRequest)
   const streamId = typeof crewRequest.streamId === 'string' && crewRequest.streamId.trim()
     ? crewRequest.streamId.trim()
@@ -387,6 +381,8 @@ export async function createDurableCrewRun(
       crew_live_title: input.crewLiveTitle,
       crew_stream_id: streamId,
       crew_id: input.crewId,
+      resolve_current_crew_provider_bindings: preparedCrew.profileIds.length > 0,
+      client_crew_provider_profile_ids: preparedCrew.profileIds,
       source: `crew_${input.source}`,
     },
     model_profile_id: null,
@@ -550,8 +546,9 @@ export async function upsertDurableCrewSchedule(
   const scheduleId = localRuntimeEntityUuid('task', `schedule:${input.scheduleClientId}`)
   const workspacePath = input.workspacePath?.trim() || null
   if (workspacePath) await client.bindProjectWorkspace(projectId, workspacePath)
-  const crewRequest = await hydrateCrewRequestCredentials(input.crewId, input.crewRequest)
-  const crewProviderProfileIds = await mirrorCrewProviderDeviceBindings(crewRequest, client)
+  const preparedCrew = await prepareCrewRequestCredentials(input.crewId, input.crewRequest, client)
+  const crewRequest = preparedCrew.request
+  const crewProviderProfileIds = preparedCrew.profileIds
   const adapter = crewAdapterModelConfig(crewRequest)
   const requiredCapabilities = ['crew.python']
   if (workspacePath) requiredCapabilities.push('files', 'shell')

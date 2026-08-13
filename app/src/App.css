@@ -10716,7 +10716,7 @@ button.compact-send-btn {
 
 .crew-agent-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 14px;
   width: 100%;
   padding: 18px 20px;
@@ -10725,13 +10725,42 @@ button.compact-send-btn {
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
-  user-select: none;
   transition: background var(--transition);
 }
 
 .crew-agent-header:hover {
   background: color-mix(in srgb, var(--accent-soft) 48%, var(--bg-white));
+}
+
+.crew-agent-header-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+}
+
+.crew-agent-enabled-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.crew-agent-enabled-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent-text);
 }
 
 .crew-agent-avatar {
@@ -10963,6 +10992,10 @@ button.compact-send-btn {
   margin-bottom: 6px;
 }
 
+.crew-bulk-model-panel {
+  margin-bottom: 6px;
+}
+
 /* --- Scrollable tool/mcp lists --- */
 .crew-tool-list {
   display: grid;
@@ -11163,6 +11196,16 @@ button.compact-send-btn {
 
   .crew-agent-header {
     padding: 16px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .crew-agent-header-main {
+    flex-basis: 100%;
+  }
+
+  .crew-agent-enabled-toggle {
+    margin-left: 62px;
   }
 
   .crew-agent-body {
@@ -12191,6 +12234,10 @@ button.compact-send-btn {
   position: fixed;
   z-index: 100;
   inset: 44px 0 0;
+}
+
+.app-menu-layer {
+  z-index: 110;
 }
 
 .app-drawer-backdrop {
