@@ -46,7 +46,7 @@ tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-notification = "2"
 notify = "8"
 image = { version = "0.25", default-features = true }
-zip = "8"
+zip = "9"
 pdf-extract = "0.12"
 pdfium-render = { version = "0.8.36", default-features = false, features = ["pdfium_latest", "thread_safe", "image"] }
 csv = "1.3"
