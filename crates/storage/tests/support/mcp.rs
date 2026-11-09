@@ -15,7 +15,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -25,6 +25,14 @@ pub fn definition() -> Value {
     json!({"name":"append_note","inputSchema":{"type":"object","properties":{"text":{"type":"string","minLength":1}},"required":["text"],"additionalProperties":false},
         "outputSchema":{"type":"object","properties":{"written":{"type":"boolean"}},"required":["written"]},
         "annotations":{"readOnlyHint":true,"idempotentHint":true}})
+}
+pub fn task_definition() -> Value {
+    let mut tool = definition();
+    tool["execution"] = json!({"taskSupport":"required"});
+    tool
+}
+fn task_ack(status: &str) -> Value {
+    json!({"taskId":"synthetic-task", "status":status, "createdAt":"2026-11-09T00:00:00Z", "lastUpdatedAt":"2026-11-09T00:00:00Z", "ttl":null, "pollInterval":1})
 }
 pub fn response() -> Value {
     json!({"content":[{"type":"text","text":"recorded"}],"structuredContent":{"written":true}})
@@ -37,6 +45,8 @@ pub fn result() -> McpResult {
     }
 }
 pub struct RemoteState {
+    pub task_support: AtomicBool,
+    pub task_operations: Mutex<Vec<String>>,
     pub required_bearer: Mutex<Option<String>>,
     pub initializations: AtomicUsize,
     pub initialize_delay_ms: AtomicU64,
@@ -61,6 +71,8 @@ impl Drop for Remote {
 impl Remote {
     pub async fn new(path: PathBuf, delay: Duration, tool_error: bool) -> Self {
         let state = Arc::new(RemoteState {
+            task_support: AtomicBool::new(false),
+            task_operations: Mutex::new(vec![]),
             required_bearer: Mutex::new(None),
             initializations: AtomicUsize::new(0),
             initialize_delay_ms: AtomicU64::new(0),
@@ -138,7 +150,11 @@ async fn handle(
                 state.initialize_delay_ms.load(Ordering::SeqCst),
             ))
             .await;
-            let result = json!({"protocolVersion":cowork_mcp::PROTOCOL_VERSION,"capabilities":{"tools":{}},"serverInfo":{"name":"synthetic","version":"1"}});
+            let mut result = json!({"protocolVersion":cowork_mcp::PROTOCOL_VERSION,"capabilities":{"tools":{}},"serverInfo":{"name":"synthetic","version":"1"}});
+            if state.task_support.load(Ordering::SeqCst) {
+                result["capabilities"]["tasks"] =
+                    json!({"requests":{"tools":{"call":{}}},"cancel":{}});
+            }
             let mut response =
                 Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response();
             response.headers_mut().insert(
@@ -148,7 +164,14 @@ async fn handle(
             return response;
         }
         Some("notifications/initialized") => return StatusCode::ACCEPTED.into_response(),
-        Some("tools/list") => json!({"tools":[definition()]}),
+        Some("tools/list") => {
+            let tool = if state.task_support.load(Ordering::SeqCst) {
+                task_definition()
+            } else {
+                definition()
+            };
+            json!({"tools":[tool]})
+        }
         Some("tools/call") => {
             state
                 .used_sessions
@@ -167,10 +190,27 @@ async fn handle(
             drop(file);
             state.durable_effects.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(state.delay).await;
-            if state.tool_error {
+            if state.task_support.load(Ordering::SeqCst) {
+                assert!(request["params"]["task"]["ttl"].is_u64());
+                json!({"task":task_ack("working")})
+            } else if state.tool_error {
                 json!({"isError":true,"content":[{"type":"text","text":"partial mutation"}]})
             } else {
                 response()
+            }
+        }
+        Some(method @ ("tasks/get" | "tasks/result"))
+            if state.task_support.load(Ordering::SeqCst) =>
+        {
+            assert_eq!(request["params"]["taskId"], "synthetic-task");
+            state.task_operations.lock().unwrap().push(method.into());
+            if method == "tasks/get" {
+                task_ack("completed")
+            } else {
+                let mut result = response();
+                result["_meta"] =
+                    json!({"io.modelcontextprotocol/related-task":{"taskId":"synthetic-task"}});
+                result
             }
         }
         _ => return StatusCode::BAD_REQUEST.into_response(),

@@ -1026,6 +1026,36 @@ pub(crate) mod tests {
             "Unrelated process was touched"
         );
     }
+    fn answer_cursor_queries(
+        service: &TerminalService,
+        session: &OwnerTerminalSession,
+        output: &[u8],
+        answered: &mut usize,
+    ) {
+        let requested = output
+            .windows(4)
+            .filter(|bytes| *bytes == b"\x1b[6n")
+            .count();
+        while *answered < requested {
+            let sequence = service
+                .output(TEST_ORDER, &session.id, 0)
+                .unwrap()
+                .session
+                .input_sequence
+                + 1;
+            service
+                .input(
+                    TEST_ORDER,
+                    &session.id,
+                    OwnerTerminalInput {
+                        sequence,
+                        bytes_base64: STANDARD.encode(b"\x1b[1;1R"),
+                    },
+                )
+                .unwrap();
+            *answered += 1;
+        }
+    }
     #[test]
     fn pty_real_input_resize_reconnect_stop_and_launch_receipt() {
         let (_temp, service, program) = service();
@@ -1069,12 +1099,43 @@ pub(crate) mod tests {
             .get_size()
             .unwrap();
         assert_eq!((real.rows, real.cols), (31, 97));
+        let mut output = Vec::new();
+        let mut after = 0;
+        let mut answered_cursor_queries = 0;
+        #[cfg(windows)]
+        {
+            // A real terminal answers ConPTY's startup cursor query before a
+            // user enters a command. Early command bytes can be consumed as
+            // that reply while the initial PowerShell prompt is still starting.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let value = service.output(TEST_ORDER, &session.id, after).unwrap();
+                output.extend(STANDARD.decode(value.bytes_base64).unwrap());
+                after = value.next_sequence;
+                answer_cursor_queries(&service, &session, &output, &mut answered_cursor_queries);
+                let text = String::from_utf8_lossy(&output);
+                if text.contains("PS ") && text.contains('>') {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "PowerShell prompt missing: {text}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        }
+        let command_sequence = service
+            .output(TEST_ORDER, &session.id, after)
+            .unwrap()
+            .session
+            .input_sequence
+            + 1;
         #[cfg(windows)]
         let command = "Write-Output ('PTY_'+'ECHO_CONFIRMED')\r\n";
         #[cfg(unix)]
         let command = "printf 'PTY_%s\\n' 'ECHO_CONFIRMED'\n";
         let input = OwnerTerminalInput {
-            sequence: 1,
+            sequence: command_sequence,
             bytes_base64: STANDARD.encode(command),
         };
         assert_eq!(
@@ -1082,42 +1143,22 @@ pub(crate) mod tests {
                 .input(TEST_ORDER, &session.id, input.clone())
                 .unwrap()
                 .input_sequence,
-            1
+            command_sequence
         );
         assert_eq!(
             service
                 .input(TEST_ORDER, &session.id, input)
                 .unwrap()
                 .input_sequence,
-            1
+            command_sequence
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let mut output = Vec::new();
-        let mut after = 0;
         loop {
             let value = service.output(TEST_ORDER, &session.id, after).unwrap();
             let bytes = STANDARD.decode(value.bytes_base64).unwrap();
             output.extend(&bytes);
             after = value.next_sequence;
-            // ConPTY/PSReadLine can request the cursor while preparing an interactive prompt.
-            if bytes.windows(4).any(|v| v == b"\x1b[6n") {
-                let sequence = service
-                    .output(TEST_ORDER, &session.id, after)
-                    .unwrap()
-                    .session
-                    .input_sequence
-                    + 1;
-                service
-                    .input(
-                        TEST_ORDER,
-                        &session.id,
-                        OwnerTerminalInput {
-                            sequence,
-                            bytes_base64: STANDARD.encode(b"\x1b[1;1R"),
-                        },
-                    )
-                    .unwrap();
-            }
+            answer_cursor_queries(&service, &session, &output, &mut answered_cursor_queries);
             if String::from_utf8_lossy(&output).contains("PTY_ECHO_CONFIRMED") {
                 break;
             }

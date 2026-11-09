@@ -1,6 +1,8 @@
 """Offline checks for the private tool setup: lock split, Tectonic pins, archive and cache helpers."""
 import importlib.util
 import io
+import hashlib
+import ssl
 import json
 import os
 import pathlib
@@ -105,6 +107,127 @@ class LockSplitTest(unittest.TestCase):
         self.assertEqual(setup.PROFILES['documents'], ('documents', 'ocr'))
         for profile in ('browser', 'full'):
             self.assertEqual(setup.PROFILES[profile], ('documents', 'ocr', 'browser'))
+
+
+class DownloadRetryTest(unittest.TestCase):
+    payload = b'pinned official archive fixture'
+    url = 'https://example.invalid/official.archive'
+
+    def expected(self):
+        return hashlib.sha256(self.payload).hexdigest()
+
+    def test_only_transient_http_codes_retry_then_verify_the_original_pin(self):
+        for code in (408, 429, 500, 502, 503, 504):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                error = setup.urllib.error.HTTPError(self.url, code, 'temporary failure', {}, None)
+                with mock.patch.object(setup, 'STAGE', root, create=True), \
+                     mock.patch.object(setup.urllib.request, 'urlopen', side_effect=[error, io.BytesIO(self.payload)]) as opening, \
+                     mock.patch.object(setup.time, 'sleep') as sleeping:
+                    result = setup.download('official.archive', (self.url, self.expected()))
+                self.assertEqual(result.read_bytes(), self.payload)
+                self.assertEqual(opening.call_count, 2)
+                sleeping.assert_called_once_with(2)
+
+    def test_url_error_before_open_can_recover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with mock.patch.object(setup, 'STAGE', root, create=True), \
+                 mock.patch.object(setup.urllib.request, 'urlopen', side_effect=[setup.urllib.error.URLError(TimeoutError('timed out')), io.BytesIO(self.payload)]) as opening, \
+                 mock.patch.object(setup.time, 'sleep'):
+                result = setup.download('official.archive', (self.url, self.expected()))
+            self.assertEqual(result.read_bytes(), self.payload)
+            self.assertEqual(opening.call_count, 2)
+
+    def test_mid_read_network_error_discards_only_its_partial_payload(self):
+        class Interrupted(io.BytesIO):
+            def read1(self, bound):
+                if self.tell():
+                    raise setup.urllib.error.URLError(ConnectionResetError('connection reset'))
+                return super().read1(3)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            interrupted = Interrupted(b'partial')
+            responses = [interrupted, io.BytesIO(self.payload)]
+            def open_next(*args, **kwargs):
+                self.assertFalse((root / 'official.archive').exists())
+                return responses.pop(0)
+            with mock.patch.object(setup, 'STAGE', root, create=True), \
+                 mock.patch.object(setup.urllib.request, 'urlopen', side_effect=open_next) as opening, \
+                 mock.patch.object(setup.time, 'sleep'):
+                result = setup.download('official.archive', (self.url, self.expected()))
+            self.assertTrue(interrupted.closed)
+            self.assertEqual(opening.call_count, 2)
+            self.assertEqual(result.read_bytes(), self.payload)
+
+    def test_three_attempt_limit_preserves_the_last_network_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            error = setup.urllib.error.HTTPError(self.url, 504, 'temporary failure', {}, None)
+            with mock.patch.object(setup, 'STAGE', root, create=True), \
+                 mock.patch.object(setup.urllib.request, 'urlopen', side_effect=error) as opening, \
+                 mock.patch.object(setup.time, 'sleep') as sleeping:
+                with self.assertRaises(setup.urllib.error.HTTPError) as caught:
+                    setup.download('official.archive', (self.url, self.expected()))
+            self.assertIs(caught.exception, error)
+            self.assertEqual(opening.call_count, 3)
+            self.assertEqual(sleeping.call_args_list, [mock.call(2), mock.call(4)])
+            self.assertFalse((root / 'official.archive').exists())
+
+    def test_nontransient_http_tls_and_permission_errors_never_retry(self):
+        errors = [setup.urllib.error.HTTPError(self.url, code, 'permanent failure', {}, None) for code in (400, 401, 403, 404)]
+        errors += [setup.urllib.error.URLError(ssl.SSLCertVerificationError(1, 'untrusted certificate')),
+                   setup.urllib.error.URLError(PermissionError('not permitted'))]
+        for error in errors:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                with mock.patch.object(setup, 'STAGE', root, create=True), \
+                     mock.patch.object(setup.urllib.request, 'urlopen', side_effect=error) as opening, \
+                     mock.patch.object(setup.time, 'sleep') as sleeping:
+                    with self.assertRaises(type(error)):
+                        setup.download('official.archive', (self.url, self.expected()))
+                self.assertEqual(opening.call_count, 1)
+                sleeping.assert_not_called()
+                self.assertFalse((root / 'official.archive').exists())
+
+    def test_hash_and_payload_bounds_fail_closed_without_retry(self):
+        for expected, bound in [('0' * 64, 1024), (self.expected(), 2)]:
+            with self.subTest(expected=expected, bound=bound), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                with mock.patch.object(setup, 'STAGE', root, create=True), \
+                     mock.patch.object(setup.urllib.request, 'urlopen', return_value=io.BytesIO(self.payload)) as opening, \
+                     mock.patch.object(setup.time, 'sleep') as sleeping:
+                    with self.assertRaises(RuntimeError):
+                        setup.download('official.archive', (self.url, expected), bound)
+                self.assertEqual(opening.call_count, 1)
+                sleeping.assert_not_called()
+                self.assertFalse((root / 'official.archive').exists())
+
+    def test_preexisting_destination_is_neither_removed_nor_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / 'official.archive').write_bytes(b'preserve existing bytes')
+            with mock.patch.object(setup, 'STAGE', root, create=True), \
+                 mock.patch.object(setup.urllib.request, 'urlopen', return_value=io.BytesIO(self.payload)) as opening, \
+                 mock.patch.object(setup.time, 'sleep') as sleeping:
+                with self.assertRaises(FileExistsError):
+                    setup.download('official.archive', (self.url, self.expected()))
+            self.assertEqual(opening.call_count, 1)
+            sleeping.assert_not_called()
+            self.assertEqual((root / 'official.archive').read_bytes(), b'preserve existing bytes')
+
+    def test_backoff_is_included_in_the_original_total_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            error = setup.urllib.error.URLError(TimeoutError('timed out'))
+            with mock.patch.object(setup, 'STAGE', root, create=True), \
+                 mock.patch.object(setup.urllib.request, 'urlopen', side_effect=error) as opening, \
+                 mock.patch.object(setup.time, 'monotonic', side_effect=[0, 599]), \
+                 mock.patch.object(setup.time, 'sleep') as sleeping:
+                with self.assertRaisesRegex(RuntimeError, 'time bound'):
+                    setup.download('official.archive', (self.url, self.expected()))
+            self.assertEqual(opening.call_count, 1)
+            sleeping.assert_not_called()
 
 
 class TectonicPinTest(unittest.TestCase):

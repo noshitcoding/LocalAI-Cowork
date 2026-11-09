@@ -292,6 +292,10 @@ mod tests {
         result
     }
     fn acl(file: &File, sddl: &str) {
+        // Elevated tokens can default new objects to the Administrators owner.
+        // These synthetic ACL fixtures require the effective user.
+        let user = current_user().unwrap();
+        let owner = unsafe { (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid };
         let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut descriptor = ptr::null_mut();
         assert_ne!(
@@ -320,8 +324,10 @@ mod tests {
                 SetSecurityInfo(
                     file.as_raw_handle(),
                     SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                    ptr::null_mut(),
+                    OWNER_SECURITY_INFORMATION
+                        | DACL_SECURITY_INFORMATION
+                        | PROTECTED_DACL_SECURITY_INFORMATION,
+                    owner,
                     ptr::null_mut(),
                     dacl,
                     ptr::null_mut(),
@@ -335,7 +341,7 @@ mod tests {
             .read(true)
             .write(true)
             .create_new(true)
-            .access_mode(0x0002_0000 | 0x0004_0000 | 3)
+            .access_mode(0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 3)
             .open(directory.path().join("owned-synthetic-secret.txt"))
             .unwrap()
     }
@@ -361,6 +367,9 @@ mod tests {
     fn null_dacl_never_establishes_private_secret_authority() {
         let directory = tempfile::tempdir().unwrap();
         let file = file(&directory);
+        let user = user_sddl();
+        acl(&file, &format!("D:P(A;;FA;;;{user})"));
+        validate(&file).unwrap();
         assert_eq!(
             unsafe {
                 SetSecurityInfo(

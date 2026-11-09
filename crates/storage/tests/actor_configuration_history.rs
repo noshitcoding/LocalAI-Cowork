@@ -85,15 +85,25 @@ async fn codex_model_copies_are_private_immutable_and_explicit_deletion_revokes(
                 .unwrap()
         )
     );
+    assert!(matches!(&profile.kind, ProviderKind::Codex));
+    assert!(profile.capabilities.image_input);
     let raw = s
         .android_personal_provider(&a, Uuid::parse_str(&profile.id).unwrap())
         .await
         .unwrap();
-    assert_eq!(
-        canonical_hash(&profile),
-        canonical_hash(&cowork_storage::actor_model_registry::provider_profile(&raw).unwrap())
-    );
+    let projected = cowork_storage::actor_model_registry::provider_profile(&raw).unwrap();
+    assert!(matches!(&projected.kind, ProviderKind::Codex));
+    assert!(projected.capabilities.image_input);
+    assert_eq!(projected.capabilities, profile.capabilities);
+    assert_eq!(canonical_hash(&profile), canonical_hash(&projected));
     let namespace = format!("actor:{}", a.identity_id());
+    let mut missing_image_capability = projected.clone();
+    missing_image_capability.capabilities.image_input = false;
+    assert!(
+        s.codex_model_profile_account(&namespace, &missing_image_capability)
+            .await
+            .is_err()
+    );
     assert!(
         s.codex_model_profile_account(&namespace, &profile)
             .await
@@ -268,6 +278,10 @@ async fn actor_history_survives_profile_edit_and_restart_then_explicit_deletion_
         .android_personal_provider_mutate(&a, "create", None, create(), Some("create"), &Keys, key)
         .await
         .unwrap();
+    let projected = cowork_storage::actor_model_registry::provider_profile(&original).unwrap();
+    assert!(matches!(&projected.kind, ProviderKind::OpenaiCompatible));
+    assert_eq!(projected.capabilities, ModelCapabilities::default());
+    assert!(!projected.capabilities.image_input);
     let id = uuid(&original, "id");
     let binding = android_personal_provider::binding(&original).unwrap();
     let updated=s.android_personal_provider_mutate(&a,"update",Some(id),json!({"expected_revision":1,"name":"Changed","provider_kind":"openai_compatible","api_key":"synthetic-replacement-key","model_defaults":{"base_url":"https://changed.example.test/v1","model":"changed-model","auth_mode":"bearer","context_tokens":32768,"temperature":0.8}}),Some("update"),&Keys,key).await.unwrap();

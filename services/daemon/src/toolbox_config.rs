@@ -148,6 +148,9 @@ fn open_at(
     .into_iter()
     .filter_map(|name| std::env::var(name).ok().map(|value| (name.into(), value)))
     .collect();
+    // Create a fresh root with the effective user as owner before Toolbox creates
+    // its children. Existing roots are validated without ownership or ACL repair.
+    let _root_custody = super::authority_token_file::private_directory(&root, web)?;
     let mut toolbox=cowork_toolbox::Toolbox::open(cowork_toolbox::Config{root:root.clone(),programs:settings.programs,environment,github_token}).map_err(|error|match error {cowork_toolbox::Error::RootInUse=>anyhow::anyhow!("This application data directory is already in use; close the other Cowork instance before starting another one"),_=>anyhow::anyhow!("Tool configuration is invalid or unavailable")})?;
     super::document_workspace::configure(data, &root, web, &mut toolbox)?;
     // Tool setup keeps the Tectonic cache and its warm marker in the private tool runtime.

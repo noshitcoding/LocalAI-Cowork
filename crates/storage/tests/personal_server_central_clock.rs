@@ -323,7 +323,15 @@ impl Fixture {
     }
     async fn close(self) {
         self.store.close().await;
-        self.pool.close().await;
+        // Drain connections returning after the first close pass, as Store.close
+        // does for its own pool, before removing the SQLite files on Windows.
+        loop {
+            self.pool.close().await;
+            if self.pool.size() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         drop(self.store);
         drop(self.pool);
         self.directory.close().unwrap();

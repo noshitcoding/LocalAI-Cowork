@@ -161,6 +161,54 @@ pub(super) fn check_package_access(token: HANDLE, package: &str, lpac: bool) -> 
     }
     Ok(())
 }
+/// Fresh control objects receive their operator owner and protected DACL at
+/// creation. Elevated tokens may otherwise select Administrators as default owner.
+/// Existing objects never pass through an ownership or ACL repair.
+fn control_descriptor(directory: bool) -> Result<Descriptor> {
+    let owner = owner_sid()?;
+    let inherit = if directory { "OICI" } else { "" };
+    Descriptor::new(&format!(
+        "O:{owner}D:P(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{owner})"
+    ))
+}
+pub(super) fn create_control_directory(path: &Path) -> Result<()> {
+    let descriptor = control_descriptor(true)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.pointer(),
+        bInheritHandle: 0,
+    };
+    let path: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+    if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+pub(super) fn create_control_file(path: &Path) -> Result<File> {
+    let descriptor = control_descriptor(false)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.pointer(),
+        bInheritHandle: 0,
+    };
+    let path: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &attributes,
+            CREATE_NEW,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
 pub(super) fn owner_only(root: &Path) -> Result<()> {
     set(
         root,

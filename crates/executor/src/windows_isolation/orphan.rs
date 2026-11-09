@@ -630,6 +630,24 @@ pub fn retired_marker(root: &Path) -> Result<OrphanRetirement> {
 mod tests {
     use super::*;
     #[test]
+    fn fresh_control_creation_never_adopts_existing_directories_or_files() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("private-control");
+        files::create_control_directory(&root).unwrap();
+        let directory = open_directory(&root).unwrap();
+        private_control(&directory, true).unwrap();
+        let path = root.join("identity.json");
+        let mut marker = files::create_control_file(&path).unwrap();
+        marker.write_all(b"original control bytes").unwrap();
+        marker.sync_all().unwrap();
+        private_control(&marker, false).unwrap();
+        assert!(matches!(files::create_control_directory(&root),
+            Err(Error::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists));
+        assert!(matches!(files::create_control_file(&path),
+            Err(Error::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists));
+        assert_eq!(fs::read(&path).unwrap(), b"original control bytes");
+    }
+    #[test]
     fn original_orphan_inspection_retirement_and_lost_reply_are_native_and_never_launch() {
         // Journal-before-OSCreate is a legitimate original pre-ownership phase.
         // Native missing-registration proof may be explicitly settled, with no
@@ -640,8 +658,7 @@ mod tests {
             let root = fs::canonicalize(parent.path())
                 .unwrap()
                 .join(format!("capsule-{suffix}"));
-            fs::create_dir(&root).unwrap();
-            files::owner_only(&root).unwrap();
+            files::create_control_directory(&root).unwrap();
             let profile = format!("LocalAI.Cowork.V2.{suffix}");
             write_marker(
                 &root,
@@ -677,8 +694,7 @@ mod tests {
         let root = fs::canonicalize(parent.path())
             .unwrap()
             .join(format!("capsule-{suffix}"));
-        fs::create_dir(&root).unwrap();
-        files::owner_only(&root).unwrap();
+        files::create_control_directory(&root).unwrap();
         let original_owner = lock(&root).unwrap();
         let profile = format!("LocalAI.Cowork.V2.{suffix}");
         write_marker(

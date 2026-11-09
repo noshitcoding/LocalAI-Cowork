@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 fn owner(data: &Path) -> Arc<cowork_toolbox::Toolbox> {
     let _guard = authority_token_file::private_directory(data, None).unwrap();
+    let _root_guard = authority_token_file::private_directory(&data.join("toolbox"), None).unwrap();
     cowork_toolbox::Toolbox::open(cowork_toolbox::Config {
         root: data.join("toolbox"),
         programs: BTreeMap::new(),
@@ -338,6 +339,52 @@ fn own_directory_acl(file: &File, replace: Option<&str>) -> Vec<u8> {
 }
 
 #[cfg(windows)]
+fn fixture_owner_from_parent(parent: &File, path: &Path) {
+    use std::{
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        ptr,
+    };
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{Authorization::*, *},
+    };
+    let mut descriptor = ptr::null_mut();
+    let mut owner = ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            GetSecurityInfo(
+                parent.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        },
+        0
+    );
+    let file = OpenOptions::new()
+        .access_mode(0x0008_0000)
+        .open(path)
+        .unwrap();
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    unsafe { LocalFree(descriptor) };
+    assert_eq!(result, 0);
+}
+
+#[cfg(windows)]
 #[test]
 fn broad_native_parent_is_unchanged_and_only_created_children_are_private() {
     use std::os::windows::fs::OpenOptionsExt;
@@ -367,6 +414,9 @@ fn broad_native_parent_is_unchanged_and_only_created_children_are_private() {
     // Core uses ordinary std::fs creation: verify inherited ACLs on actual descendants.
     let descendant = slot.join("home/inherited-private.txt");
     fs::write(&descendant, b"private engine descendant").unwrap();
+    // Windows inherits the DACL, but chooses a new object's owner from the token.
+    // Normalize only this synthetic child's owner; preserve its inherited DACL.
+    fixture_owner_from_parent(private.original_directory(), &descendant);
     super::super::private_secret_file::validate(&File::open(&descendant).unwrap()).unwrap();
     assert_eq!(fs::read(descendant).unwrap(), b"private engine descendant");
 }

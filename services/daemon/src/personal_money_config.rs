@@ -259,7 +259,17 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("personal-money.json");
-        std::fs::write(&path, serde_json::to_vec(&configuration()).unwrap()).unwrap();
+        let bytes = serde_json::to_vec(&configuration()).unwrap();
+        #[cfg(windows)]
+        {
+            use std::io::Write;
+            super::super::private_secret_file::create_private_file(&path)
+                .unwrap()
+                .write_all(&bytes)
+                .unwrap();
+        }
+        #[cfg(not(windows))]
+        std::fs::write(&path, bytes).unwrap();
         permissions(&path, false);
         (directory, path)
     }

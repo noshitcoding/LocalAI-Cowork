@@ -79,18 +79,14 @@ impl Capsule {
         }
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let root = parent.join(format!("capsule-{suffix}"));
-        fs::create_dir(&root)?;
-        files::owner_only(&root)?;
+        files::create_control_directory(&root)?;
         let lock = lock(&root)?;
         let profile = format!("LocalAI.Cowork.V2.{suffix}");
         let journal = Journal {
             version: 1,
             profile: profile.clone(),
         };
-        let mut marker = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(root.join("identity.json"))?;
+        let mut marker = files::create_control_file(&root.join("identity.json"))?;
         marker.write_all(&serde_json::to_vec(&journal).map_err(io::Error::other)?)?;
         marker.sync_all()?;
         // The journal precedes the OS mutation. Existing profiles are never adopted.
@@ -432,13 +428,16 @@ pub fn recover(root: &Path) -> Result<()> {
 }
 fn lock(root: &Path) -> Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .custom_flags(0x00200000)
-        .open(root.join("session.lock"))?;
+    let path = root.join("session.lock");
+    let file = match files::create_control_file(&path) {
+        Ok(file) => file,
+        Err(Error::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(0x00200000)
+            .open(path)?,
+        Err(error) => return Err(error),
+    };
     ordinary_file(&file, 0)?;
     file.try_lock()
         .map_err(|e| io::Error::other(format!("capsule lock unavailable: {e}")))?;
@@ -483,10 +482,7 @@ fn read_marker(root: &Path, name: &str, bound: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 fn write_marker(root: &Path, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(root.join(name))?;
+    let mut file = files::create_control_file(&root.join(name))?;
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())

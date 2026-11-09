@@ -1,7 +1,7 @@
 """Private tool setup. No global pip, system installer actions, or credentials."""
 from __future__ import annotations
 import argparse, ctypes, hashlib, io, json, os, pathlib, shutil, subprocess
-import sys, tarfile, time, urllib.request, uuid, zipfile, posixpath, shlex, copy, importlib.util, re
+import sys, tarfile, time, urllib.request, urllib.error, ssl, uuid, zipfile, posixpath, shlex, copy, importlib.util, re
 
 PIP=("https://files.pythonhosted.org/packages/62/36/a3aed958d60531cb442b7ab4596cda7b3621cfb916f8ae1d6769795c7dc1/pip-26.2-py3-none-any.whl","931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad")
 DOWNLOADS={
@@ -183,18 +183,30 @@ def progress(stage,message):
 def download(name,specification,bound=600*1024*1024):
  url,expected=specification;destination=STAGE/name
  started=time.monotonic()
- with urllib.request.urlopen(urllib.request.Request(url,headers={"User-Agent":"LocalAI-Cowork-V2-tool-setup"}),timeout=60) as response,destination.open("xb") as stream:
-  digest=hashlib.sha256();total=0
-  while True:
-   if time.monotonic()-started>600:raise RuntimeError("Tool download exceeded its time bound")
-   chunk=response.read1(64*1024)
-   if not chunk:break
-   total+=len(chunk)
-   if total>bound:raise RuntimeError("Tool download exceeds its bound")
-   digest.update(chunk);stream.write(chunk)
-  stream.flush();os.fsync(stream.fileno())
- if digest.hexdigest()!=expected:raise RuntimeError("Official archive SHA-256 does not match")
- return destination
+ for attempt in range(3):
+  created=False
+  try:
+   with urllib.request.urlopen(urllib.request.Request(url,headers={"User-Agent":"LocalAI-Cowork-V2-tool-setup"}),timeout=60) as response,destination.open("xb") as stream:
+    created=True;digest=hashlib.sha256();total=0
+    while True:
+     if time.monotonic()-started>600:raise RuntimeError("Tool download exceeded its time bound")
+     chunk=response.read1(64*1024)
+     if not chunk:break
+     total+=len(chunk)
+     if total>bound:raise RuntimeError("Tool download exceeds its bound")
+     digest.update(chunk);stream.write(chunk)
+    stream.flush();os.fsync(stream.fileno())
+   if digest.hexdigest()!=expected:raise RuntimeError("Official archive SHA-256 does not match")
+   return destination
+  except BaseException as error:
+   # Only this attempt's exclusive creation may be removed, never an existing file.
+   if created:destination.unlink(missing_ok=True)
+   transient=(error.code in (408,429,500,502,503,504) if isinstance(error,urllib.error.HTTPError)
+    else isinstance(error,urllib.error.URLError) and not isinstance(error.reason,(ssl.SSLError,PermissionError)))
+   if not transient or attempt==2:raise
+   delay=2*(attempt+1)
+   if time.monotonic()-started+delay>=600:raise RuntimeError("Tool download exceeded its time bound") from error
+   time.sleep(delay)
 
 def extract_zip(archive,destination):
  ordinary(destination,True)

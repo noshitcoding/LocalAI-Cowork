@@ -257,6 +257,7 @@ fn check(phase: &str, exit_code: i32) {
     ] {
         environment.insert(key.into(), value);
     }
+    let source_guard = authority_token_file::private_directory(&source, None).unwrap();
     let mut owner = Toolbox::open(Config {
         root: source.clone(),
         programs,
@@ -265,6 +266,7 @@ fn check(phase: &str, exit_code: i32) {
     })
     .unwrap();
     configure_at(&data, &source, None, &base, &mut owner).unwrap();
+    drop(source_guard);
     let workspace = {
         let source_directory = authority_token_file::private_directory(&source, None).unwrap();
         let (binding, held_marker) =

@@ -486,3 +486,89 @@ async fn no_implicit_tool_selection_or_key_creation_at_preflight() {
         0
     );
 }
+
+#[tokio::test]
+async fn required_task_finishes_after_approval_restart_without_replaying_tool() {
+    let mut f = fixture(AccessMode::ConfirmMutations, false).await;
+    f.remote
+        .state
+        .task_support
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut config = f.server.configuration.clone();
+    config.catalog = vec![remote::task_definition()];
+    f.server = f
+        .runtime
+        .store
+        .configure_mcp_server(
+            &f.server.project_id,
+            &f.server.id,
+            f.server.revision,
+            "enable-tasks",
+            &config,
+        )
+        .await
+        .unwrap()
+        .public_view();
+    f.input.mcp_tools[0].server_revision = f.server.revision;
+    let run = f.runtime.create_run(&f.input).await.unwrap();
+    let (stop, worker) = start(&f.runtime);
+    let waiting = wait(&f.runtime, &run.id, RunState::WaitingApproval).await;
+    stop.cancel();
+    worker.await.unwrap();
+    assert_eq!(f.remote.calls(), 0);
+    assert!(f.remote.state.task_operations.lock().unwrap().is_empty());
+    let providers = f.runtime.providers.read().await.clone();
+    f.runtime.store.close().await;
+    f.runtime = Runtime::new(Store::sqlite(&f.path).await.unwrap(), providers, false)
+        .unwrap()
+        .with_native_key_provider(f.keys.clone());
+    let approval = &waiting.approvals[0];
+    f.runtime
+        .store
+        .resolve_approval(
+            &run.id,
+            &approval.id,
+            ResolveApproval {
+                allow: true,
+                fingerprint: approval.fingerprint.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let (stop, worker) = start(&f.runtime);
+    wait(&f.runtime, &run.id, RunState::Completed).await;
+    stop.cancel();
+    worker.await.unwrap();
+    assert_eq!(f.remote.calls(), 1);
+    assert_eq!(
+        f.remote
+            .state
+            .durable_effects
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        *f.remote.state.task_operations.lock().unwrap(),
+        ["tasks/get", "tasks/result"]
+    );
+    let attempts = f.runtime.store.mcp_attempts(&run.id).await.unwrap();
+    assert_eq!(attempts.len(), 1);
+    let McpAttemptState::Completed { result } = &attempts[0].state else {
+        panic!("task result must finish original attempt")
+    };
+    let tasks = f.runtime.store.native_mcp_tasks(&run.id).await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].state, "completed");
+    assert!(!tasks[0].operation_pending);
+    assert_eq!(tasks[0].result_sha256.as_ref(), Some(&result.sha256));
+    let detail = f
+        .runtime
+        .native_mcp_task_detail(&run.id, &tasks[0].id)
+        .await
+        .unwrap();
+    assert_eq!(detail.task, tasks[0]);
+    assert_eq!(f.model.requests.lock().unwrap().len(), 2);
+    assert_eq!(f.runtime.create_run(&f.input).await.unwrap().id, run.id);
+    assert_eq!(f.remote.calls(), 1);
+    assert_eq!(f.remote.state.task_operations.lock().unwrap().len(), 2);
+}

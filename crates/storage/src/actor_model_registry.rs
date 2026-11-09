@@ -86,7 +86,9 @@ pub fn provider_profile(profile: &Value) -> Result<ProviderProfile> {
             .map_err(storage_error)?,
         credential_required: has_secret && auth != "none",
         credential_ready: true,
-        capabilities: Default::default(),
+        capabilities: ModelCapabilities {
+            image_input: profile["provider_kind"] == "codex",
+        },
     })
 }
 

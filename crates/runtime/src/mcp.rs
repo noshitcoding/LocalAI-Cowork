@@ -115,20 +115,20 @@ impl Runtime {
         };
         let observed = match observed {
             Ok(result) if result.task.is_some() => match task_keys.as_ref() {
-                Some((keys, key)) => self
-                    .await_native_mcp_task(
-                        run,
-                        token,
-                        tool,
-                        session,
-                        result,
-                        cipher,
-                        keys.as_ref(),
-                        *key,
-                        stop,
-                    )
-                    .await
-                    .map_err(|e| (e.code().to_owned(), None)),
+                // Keep the optional task state out of ordinary MCP dispatch frames.
+                Some((keys, key)) => Box::pin(self.await_native_mcp_task(
+                    run,
+                    token,
+                    tool,
+                    session,
+                    result,
+                    cipher,
+                    keys.as_ref(),
+                    *key,
+                    stop,
+                ))
+                .await
+                .map_err(|e| (e.code().to_owned(), None)),
                 None => Err(("mcp_task_custody_unavailable".into(), None)),
             },
             outcome => outcome,

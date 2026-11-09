@@ -76,23 +76,34 @@ async fn configured_https_origin_still_requires_exact_personal_authority() {
         let csp = response.headers()["content-security-policy"]
             .to_str()
             .unwrap();
-        let connect = csp
-            .split(';')
-            .find(|directive| directive.trim().starts_with("connect-src "))
-            .unwrap();
+        let directive = |name: &str| {
+            csp.split(';')
+                .map(str::trim)
+                .find(|value| value.split_whitespace().next() == Some(name))
+                .unwrap()
+        };
+        let connect = directive("connect-src");
         assert_eq!(
-            connect.trim(),
-            "connect-src 'self' https: http://127.0.0.1:* http://localhost:*"
+            connect,
+            "connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
         );
-        assert!(
-            !csp.contains("connect-src *")
-                && !connect.split_whitespace().any(|source| source == "http:")
-        );
-        assert!(
-            csp.contains("script-src 'self'")
-                && !csp.contains("'unsafe-inline'")
-                && !csp.contains("'unsafe-eval'")
-        );
+        assert!(!connect.split_whitespace().any(|source| {
+            [
+                "*",
+                "http:",
+                "ws:",
+                "http://*",
+                "ws://*",
+                "https://*",
+                "wss://*",
+            ]
+            .contains(&source)
+        }));
+        let script = directive("script-src");
+        assert_eq!(script, "script-src 'self'");
+        assert!(!script.contains("'unsafe-inline'"));
+        assert!(!script.contains("'unsafe-eval'"));
+        assert_eq!(directive("style-src"), "style-src 'self' 'unsafe-inline'");
         if expected == StatusCode::OK {
             assert_eq!(
                 response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],

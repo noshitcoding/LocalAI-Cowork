@@ -224,7 +224,7 @@ def tree(root, *, exclusions=()):
 def capture(root, *, name, version=None, components=(), exclusions=()):
     root = ordinary(root, directory=True)
     before = tree(root, exclusions=exclusions)
-    found = []
+    candidates = []
     for filename, record in before.items():
         if not filename.endswith('.dist-info/METADATA'):
             continue
@@ -240,21 +240,44 @@ def capture(root, *, name, version=None, components=(), exclusions=()):
             if not match:
                 raise ValueError('Unsupported Python dependency metadata')
             requires.append({'name': match[1], 'requirement': requirement})
-        found.append({'name': package, 'version': package_version, 'ecosystem': 'pypi', 'license': metadata.get('License-Expression') or 'NOASSERTION',
-                      'metadata': filename, 'metadata_sha256': record['sha256'], 'requires': requires})
-        record_name=filename.rsplit('/',1)[0]+'/RECORD'
+        candidates.append({'name': package, 'version': package_version, 'ecosystem': 'pypi', 'license': metadata.get('License-Expression') or 'NOASSERTION',
+                           'metadata': filename, 'metadata_sha256': record['sha256'], 'requires': requires})
+
+    def metadata_site(component):
+        return PurePosixPath(component['metadata']).parent.parent
+
+    # A nested wheel's original metadata is bundled data, not an installation
+    # manifest. Establish installed owners first, independently of traversal order.
+    sites = {metadata_site(component) for component in candidates}
+    installed_sites = {value for value in sites if value == PurePosixPath('.')
+                       or value.name in ('site-packages', 'dist-packages')}
+    installed_sites.update(value for value in sites
+                           if not any(parent != value and value.is_relative_to(parent)
+                                      for parent in sites | installed_sites)
+                           and not any(parent.name in ('site-packages', 'dist-packages')
+                                       for parent in value.parents))
+    found = []
+    strong_files = {}
+    for component in candidates:
+        if metadata_site(component) not in installed_sites:
+            continue
+        filename = component['metadata']
+        record_name = filename.rsplit('/', 1)[0] + '/RECORD'
+        if record_name not in before:
+            raise ValueError('Installed Python distribution lacks RECORD')
         if record_name in before:
             if before[record_name]['size']>MAX_HEADER or before[record_name].get('link'):
                 raise ValueError('Invalid Python RECORD metadata')
             package_files=[]
+            hashed_files=set()
             site=(root/filename).parent.parent
             with (root/record_name).open(encoding='utf-8',newline='') as stream:
                 for row in csv.reader(stream):
                     if len(row)!=3:raise ValueError('Invalid Python RECORD row')
-                    name,hash_value,byte_count=row
-                    if Path(name).is_absolute() or '\\' in name or '\0' in name:
+                    entry_name,hash_value,byte_count=row
+                    if Path(entry_name).is_absolute() or '\\' in entry_name or '\0' in entry_name:
                         raise ValueError('Python RECORD escapes its selected root')
-                    target=Path(os.path.abspath(site/name))
+                    target=Path(os.path.abspath(site/entry_name))
                     if not target.is_relative_to(root):raise ValueError('Python RECORD escapes its runtime')
                     actual=target.relative_to(root).as_posix()
                     if actual not in before:raise ValueError('Python RECORD claims an absent file')
@@ -264,8 +287,39 @@ def capture(root, *, name, version=None, components=(), exclusions=()):
                         if algorithm!='sha256':raise ValueError('Unsupported Python RECORD digest')
                         expected=base64.urlsafe_b64decode(value+'='*((4-len(value)%4)%4)).hex()
                         if expected!=before[actual]['sha256']:raise ValueError('Python RECORD hash differs')
+                        if byte_count:hashed_files.add(actual)
                     package_files.append(actual)
-            found[-1]['files']=sorted(set(package_files))
+            if filename not in hashed_files or record_name not in package_files:
+                raise ValueError('Installed Python RECORD does not bind its metadata')
+            component['files']=sorted(set(package_files))
+            strong_files[filename]=hashed_files
+            found.append(component)
+
+    for component in candidates:
+        if component in found:
+            continue
+        nested_site = PurePosixPath(component['metadata']).parent.parent
+        record_name = component['metadata'].rsplit('/', 1)[0] + '/RECORD'
+        if record_name not in before or before[record_name].get('link') or before[record_name]['size'] > MAX_HEADER:
+            raise ValueError('Bundled Python metadata lacks an ordinary RECORD')
+        nested_files = {filename for filename in before
+                        if PurePosixPath(filename).is_relative_to(nested_site)}
+        owners = [owner for owner in found
+                  if nested_site != PurePosixPath(owner['metadata']).parent.parent
+                  and nested_site.is_relative_to(PurePosixPath(owner['metadata']).parent.parent)
+                  and nested_files.issubset(owner['files'])
+                  and {component['metadata'], record_name}.issubset(strong_files[owner['metadata']])]
+        if len(owners) != 1:
+            raise ValueError('Bundled Python metadata requires one complete validated owner')
+        owner = owners[0]
+        owner.setdefault('vendored_metadata', []).append({
+            'name': component['name'], 'version': component['version'],
+            'metadata': component['metadata'], 'metadata_sha256': component['metadata_sha256'],
+            'record': record_name, 'record_sha256': before[record_name]['sha256']})
+    for owner in found:
+        if owner.get('vendored_metadata'):
+            owner['source'] = 'Nested bundled metadata, no separate installed dist: ' + '; '.join(
+                item['name'] + ' ' + item['version'] for item in owner['vendored_metadata'])
     selected = []
     for component in components:
         component = dict(component)
