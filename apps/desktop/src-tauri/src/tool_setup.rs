@@ -107,16 +107,17 @@ fn namespace(path: &Path) -> Result<(), String> {
         return Err("Absolute private tool directory required".into());
     }
     for parent in path.ancestors() {
-        if let Ok(metadata) = fs::symlink_metadata(parent) {
-            if metadata.is_symlink() {
-                return Err("Tool directory contains an alias".into());
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if metadata.file_attributes() & 0x400 != 0 {
-                    return Err("Tool directory contains a reparse point".into());
-                }
+        let Ok(metadata) = fs::symlink_metadata(parent) else {
+            continue;
+        };
+        if metadata.is_symlink() {
+            return Err("Tool directory contains an alias".into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err("Tool directory contains a reparse point".into());
             }
         }
     }

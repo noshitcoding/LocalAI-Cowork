@@ -377,6 +377,7 @@ pub async fn desktop_update_install(
         *pending = None;
         #[cfg(target_os = "linux")]
         app.restart();
+        #[cfg(not(target_os = "linux"))]
         Ok(())
     }
 }

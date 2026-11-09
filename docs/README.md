@@ -12,6 +12,7 @@ versioned under enterprise/.
 | Browser integrations | [Browser guide](BROWSER-INTEGRATION.md) |
 | Self-hosting | [Select V2 or Enterprise](PUBLIC-SELF-HOSTING.md) |
 | Native packages | [Desktop release tools](DESKTOP-RELEASE.md) |
+| Dependency findings and platform scope | [Security review](DEPENDENCY-SECURITY.md) |
 | Checked preview drafts | [Release workflow](V2-PREVIEW-RELEASE.md) |
 | Signed candidate and acceptance CI | [Producer setup and remaining gates](V2-PREVIEW-CANDIDATE-CI.md) |
 | V1 historical import | [Migration](MIGRATION-V1.md), [quarantine](QUARANTINE.md) |

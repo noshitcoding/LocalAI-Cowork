@@ -1,3 +1,38 @@
 # Synthetic UUID used to prove that the encrypted Android offline cache does not
 # persist run identifiers in plaintext. This is not a credential.
 4a6eda98b3ec71543c7edc831751235c75ca2150:app/src/mobile/mobileOfflineStore.test.ts:generic-api-key:13
+
+# Exact immutable source/fixture findings reviewed in scripts/gitleaks-history-fixtures.json.
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-71.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-75.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/app/src/mobile/mobileOfflineStore.test.ts:generic-api-key:31
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/001c108aa440cea63a1ae054b6c859ef29e4b3f677d5c7962ff7ea18c46098c3/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/1b16ee5c7f225f3652dc190637d64c366582d61ea519ecd1de63c42d9b37d5e1/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/fa838de02f3fe4faa65ce3b779e58a42c983734e51189864b58571cdd7672602/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/b26930323954804895a67b025cc5d7975d21af2950a72f7904490b29df4bf2fd/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/bda757adb1a8690763383f87642926e135d03f41ef9bb40b19da341c5c4b219b/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/b439a81d0c99367ccec19b664aff43972faa851200e93a7ea171cedf8ebc0371/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/9401ab5d83b43c85c6ebda8ac196ab3ae78e1c078a060f16046974a5ab2922d2/manifest.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:extensions/browser/identity.json:generic-api-key:4
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:packages/client/src/fixtures/execution-document-ocr-budget.json:generic-api-key:22
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:packages/client/src/fixtures/execution-document-ocr-budget.json:generic-api-key:48
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:services/daemon/src/device_operator_configuration.rs:private-key:189
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-67.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-66.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-71.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-75.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source66/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-71.json:generic-api-key:1
+cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/release/test_preview.py:generic-api-key:262

@@ -272,16 +272,22 @@ fn concurrent_registrations_do_not_lose_updates() {
                     .1,
                     writable: false,
                 };
-                for _ in 0..100 {
+                // Each durable registration holds the shared writer lock through publication.
+                // Eight concurrent writers need time for all serialized filesystem operations.
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
                     match broker.register_native_folder(&input) {
                         Ok(_) => return,
                         Err(Error::WorkspaceBusy) => {
+                            assert!(
+                                std::time::Instant::now() < until,
+                                "Registration lock never became available"
+                            );
                             std::thread::sleep(std::time::Duration::from_millis(5))
                         }
                         Err(error) => panic!("Unexpected registration error: {error}"),
                     }
                 }
-                panic!("Registration lock never became available");
             });
         }
     });

@@ -27,6 +27,7 @@ provisioner and management web. Existing Compose paths retain their structure.
 - [Implementation and limits](docs/ENTERPRISE_IMPLEMENTATION.md)
 - [Server deployment](docs/SERVER_DEPLOYMENT.md)
 - [Runtime secrets](deploy/secrets/README.md)
+- [Current Enterprise security scope](docs/PREVIEW-SECURITY-STATUS.md)
 
 Source integration does not deploy an instance, migrate a database, provide
 keys or qualify DNS/TLS, identity-provider, VM/container, storage or recovery

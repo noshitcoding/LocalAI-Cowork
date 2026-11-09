@@ -31,7 +31,13 @@ async fn shared_contract(store: &Store) {
             )
             .await
             .unwrap();
-        assert_eq!(selected, f.run.spec.mcp_tools);
+        assert_eq!(selected, f.server.bindings().unwrap());
+        if mode == AccessMode::ReadOnly {
+            assert!(f.run.spec.mcp_tools.is_empty());
+            assert!(f.run.spec.allowed_tools.is_empty());
+        } else {
+            assert_eq!(selected, f.run.spec.mcp_tools);
+        }
         let mut session = remote.session().await;
         if mode != AccessMode::Autonomous {
             assert!(matches!(

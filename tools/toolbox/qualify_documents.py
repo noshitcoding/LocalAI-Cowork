@@ -1,6 +1,6 @@
-"""Run mandatory document qualification with a private, explicitly provisioned TeX runtime.
+"""Run mandatory document qualification with private document, OCR and TeX runtimes.
 
-Use --install-tex in CI to download the pinned binary and warm its own cache. No
+Use --install-tex in CI to provision the pinned documents profile and warm its cache. No
 user data, global installation, browser or model provider is used.
 """
 import argparse
@@ -24,10 +24,13 @@ def main():
         if args.install_tex:
             data = pathlib.Path(temporary)
             subprocess.run([sys.executable, '-I', str(root / 'tools/toolbox/runtime_install.py'),
-                            '--data-dir', str(data), '--tectonic-only'], cwd=root, check=True, timeout=3600)
+                            '--data-dir', str(data), '--profile', 'documents'], cwd=root, check=True, timeout=3600)
             config = json.loads((data / 'toolbox.json').read_text(encoding='utf-8'))
             binary = config['programs']['tectonic']
             cache = str(data / 'tool-runtime/tectonic-cache')
+            env.update(COWORK_ENGINE_PYTHON=config['programs']['python'],
+                       COWORK_TEST_DOCUMENT_PYTHON=config['programs']['python'],
+                       COWORK_TEST_OCR_MODELS=str(data / 'tool-runtime/ocr/tessdata'))
         else:
             binary, cache = env.get('COWORK_TECTONIC'), env.get('COWORK_TECTONIC_CACHE')
             if not binary or not cache:
@@ -44,7 +47,7 @@ def main():
                    COWORK_TEST_TECTONIC=binary, COWORK_TEST_TECTONIC_CACHE=cache)
         commands = [
             [sys.executable, '-I', 'tools/toolbox/test_runtime_install.py'],
-            [sys.executable, 'crates/toolbox/tests/document_engine/run_tests.py', '-v'],
+            [env['COWORK_ENGINE_PYTHON'], 'crates/toolbox/tests/document_engine/run_tests.py', '-v'],
             ['cargo', 'test', '--locked', '-p', 'cowork-domain', '-p', 'cowork-policy'],
             ['cargo', 'test', '--locked', '-p', 'cowork-broker', '--test', 'generated'],
             ['cargo', 'test', '--locked', '-p', 'cowork-storage', '--test', 'document_drafts',
@@ -54,7 +57,7 @@ def main():
              '--', '--include-ignored', '--test-threads=1', '--nocapture'],
             ['cargo', 'test', '--locked', '-p', 'cowork-executor', '--test', 'tex_confinement', '--', '--nocapture'],
             ['cargo', 'build', '--locked', '-p', 'cowork-daemon'],
-            [sys.executable, '-I', 'tests/system/documents.py', '--latex'],
+            [env['COWORK_ENGINE_PYTHON'], '-I', 'tests/system/documents.py', '--latex'],
         ]
         for command in commands:
             subprocess.run(command, cwd=root, env=env, check=True)

@@ -35,6 +35,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,6 +55,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -70,6 +80,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,11 +104,31 @@ jobs:
       - run: python -I tests/system/documents.py --browser --tex-config .local/tex-ui-ci/toolbox.json
   core:
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
+      - name: Reclaim unused Android SDK space on the hosted Linux runner
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$CI_RUNNER_ENVIRONMENT" = github-hosted
+          sdk=/usr/local/lib/android
+          if test -d "$sdk"; then
+            test "$(realpath -- "$sdk")" = "$sdk"
+            sudo rm -rf -- "$sdk"
+          fi
+          df -h .
       - uses: actions/setup-node@v4
         with:
           node-version: '22.20.0'
@@ -101,7 +136,7 @@ jobs:
       - run: npm ci
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - run: cargo test --locked --workspace
+      - run: cargo test --locked --workspace --no-fail-fast
       - run: node tools/contracts/check.mjs
       - run: npm test
       - run: npm run typecheck
@@ -122,6 +157,7 @@ jobs:
   postgres:
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         include:
           - suite: contract
@@ -156,6 +192,10 @@ jobs:
           --health-cmd "pg_isready -U cowork_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
       COWORK_TEST_POSTGRES: postgresql://cowork_test:disposable-ci-only@localhost:5432/cowork_test
     steps:
       - uses: actions/checkout@v4
@@ -180,6 +220,10 @@ jobs:
           --health-cmd "pg_isready -U cowork_test -d cowork_device_actor_ci_fresh"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
       COWORK_DEVICE_ACTOR_PG_DATABASE_URL: postgresql://cowork_test:disposable-ci-only@localhost:5432/cowork_device_actor_ci_fresh
     steps:
       - uses: actions/checkout@v4
@@ -189,8 +233,27 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v4
+      - name: Reclaim unused Android SDK space on the hosted Linux runner
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$CI_RUNNER_ENVIRONMENT" = github-hosted
+          sdk=/usr/local/lib/android
+          if test -d "$sdk"; then
+            test "$(realpath -- "$sdk")" = "$sdk"
+            sudo rm -rf -- "$sdk"
+          fi
+          df -h .
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

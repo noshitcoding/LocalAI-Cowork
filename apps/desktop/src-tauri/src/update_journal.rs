@@ -301,11 +301,13 @@ pub fn pending(folder: &Path) -> Result<Vec<PendingAttempt>, String> {
         let (attempt, digest) = load(folder, id)?;
         let stopped = has_phase(folder, id, &digest, "daemon-stopped")?;
         let installed = has_phase(folder, id, &digest, "install-requested")?;
-        let mut failed = has_phase(folder, id, &digest, "installer-failed")?;
+        let failed = has_phase(folder, id, &digest, "installer-failed")?;
         let rejected = has_phase(folder, id, &digest, "shutdown-rejected")?;
         let undispatched = has_phase(folder, id, &digest, "shutdown-not-dispatched")?;
         let resolved = has_phase(folder, id, &digest, "reconciled-without-replay")?;
-        let mut applied = has_phase(folder, id, &digest, "install-applied")?;
+        let applied = has_phase(folder, id, &digest, "install-applied")?;
+        #[cfg(windows)]
+        let (mut failed, mut applied) = (failed, applied);
         #[cfg(windows)]
         {
             let outcome = super::update_installer::outcome(folder, id, &digest)?;

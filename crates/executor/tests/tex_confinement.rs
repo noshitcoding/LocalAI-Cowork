@@ -152,11 +152,18 @@ fn confined_probe_has_no_network_processes_or_outside_access() {
         shared.extend([loader.clone(), "/usr/lib".into(), "/etc/ld.so.cache".into()]);
         executable = loader;
     }
+    #[cfg(windows)]
+    let environment = BTreeMap::from([
+        ("uSeRpRoFiLe".into(), base.path().display().to_string()),
+        ("ApPdAtA".into(), base.path().display().to_string()),
+    ]);
+    #[cfg(not(windows))]
+    let environment = BTreeMap::new();
     let launch = TrustedLaunch {
         program: executable,
         arguments,
         directory: own.clone(),
-        environment: BTreeMap::new(),
+        environment,
         timeout: Duration::from_secs(30),
         capture_bytes_per_stream: 64 * 1024,
     };
@@ -192,6 +199,19 @@ fn confined_probe_has_no_network_processes_or_outside_access() {
     assert_eq!(fs::read(&outside).unwrap(), b"ORIGINAL");
     assert!(!outside.with_extension("planted").exists());
     if cfg!(windows) {
+        let folders = &report["known_folders"];
+        let profile = PathBuf::from(folders["profile"].as_str().unwrap());
+        assert!(profile.is_absolute());
+        for name in ["local", "roaming"] {
+            assert_eq!(folders[name]["hresult"], "0x00000000", "{folders}");
+            assert_eq!(folders[name]["exists"], true, "{folders}");
+            let path = PathBuf::from(folders[name]["path"].as_str().unwrap());
+            assert!(path.starts_with(&profile), "{folders}");
+        }
+        assert!(
+            !profile.parent().unwrap().exists(),
+            "fresh profile storage survived cleanup"
+        );
         assert!(
             report["host_process"]
                 .as_str()

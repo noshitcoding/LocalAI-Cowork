@@ -251,7 +251,11 @@ pub async fn setup_with_credential(
         model_binding: None,
         output: None,
         workflow: None,
-        mcp_tools: vec![binding],
+        mcp_tools: if mode == AccessMode::ReadOnly {
+            vec![]
+        } else {
+            vec![binding]
+        },
         environment: None,
         order_id: order.id.clone(),
         project_id: project.id.clone(),
@@ -273,7 +277,11 @@ pub async fn setup_with_credential(
         access_mode: mode.clone(),
         executor: "local-v2".into(),
         policy_revision: 1,
-        allowed_tools: vec![tool.name.clone()],
+        allowed_tools: if mode == AccessMode::ReadOnly {
+            vec![]
+        } else {
+            vec![tool.name.clone()]
+        },
         budgets: Budgets::default(),
         folders: vec![FolderGrant {
             id: id(),

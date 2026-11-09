@@ -347,9 +347,70 @@ mod confined {
             report["symlink"] = outcome(std::os::unix::fs::symlink(outside, own.join("link")));
             report["hardlink"] = outcome(fs::hard_link(outside, own.join("hard")));
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            report["known_folders"] = known_folders();
+        }
+        #[cfg(not(any(unix, windows)))]
         let _ = &mut report;
         println!("{report}");
+    }
+    #[cfg(windows)]
+    fn known_folders() -> serde_json::Value {
+        use std::ffi::c_void;
+        use windows_sys::{
+            Win32::{Foundation::FreeLibrary, System::LibraryLoader::*},
+            core::GUID,
+        };
+        // Load Shell only for this plain-AppContainer probe. The same fixture also
+        // exercises Win32k-disabled capsules, which must remain headless at startup.
+        let load = |name: &str| {
+            let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+            let handle = unsafe {
+                LoadLibraryExW(
+                    wide.as_ptr(),
+                    std::ptr::null_mut(),
+                    LOAD_LIBRARY_SEARCH_SYSTEM32,
+                )
+            };
+            assert!(!handle.is_null(), "{}", std::io::Error::last_os_error());
+            handle
+        };
+        let shell = load("shell32.dll");
+        let ole = load("ole32.dll");
+        let get: unsafe extern "system" fn(*const GUID, u32, *mut c_void, *mut *mut u16) -> i32 = unsafe {
+            std::mem::transmute(
+                GetProcAddress(shell, c"SHGetKnownFolderPath".as_ptr().cast()).unwrap(),
+            )
+        };
+        let free: unsafe extern "system" fn(*mut c_void) = unsafe {
+            std::mem::transmute(GetProcAddress(ole, c"CoTaskMemFree".as_ptr().cast()).unwrap())
+        };
+        let query = |id: GUID| {
+            let mut raw = std::ptr::null_mut();
+            let result = unsafe { get(&id, 0, std::ptr::null_mut(), &mut raw) };
+            let path = if raw.is_null() {
+                None
+            } else {
+                let mut length = 0;
+                while unsafe { *raw.add(length) } != 0 {
+                    length += 1;
+                }
+                Some(String::from_utf16_lossy(unsafe {
+                    std::slice::from_raw_parts(raw, length)
+                }))
+            };
+            unsafe { free(raw.cast()) };
+            let exists = path.as_ref().is_some_and(|path| Path::new(path).is_dir());
+            serde_json::json!({"hresult":format!("0x{:08x}",result as u32),"path":path,"exists":exists})
+        };
+        let local = query(GUID::from_u128(0xf1b32785_6fba_4fcf_9d55_7b8e7f157091));
+        let roaming = query(GUID::from_u128(0x3eb685db_65f9_4cf6_a03a_e3ef65729f3d));
+        unsafe {
+            FreeLibrary(ole);
+            FreeLibrary(shell);
+        }
+        serde_json::json!({"local":local,"roaming":roaming,"profile":std::env::var("USERPROFILE").ok()})
     }
     #[cfg(windows)]
     fn host_process(pid: u32) -> serde_json::Value {

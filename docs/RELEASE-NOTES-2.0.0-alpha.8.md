@@ -21,6 +21,20 @@ bestandener Releasebeleg.
 - Getrennte Runtime-Ergebnisversionen, frische Leserechte, Ergebnisansicht und
   ausdrücklicher Ergebnisabruf sind im Quellstand ergänzt; der vollständige
   verwaltete Betriebsablauf bleibt experimentell.
+- Arbeitsbereiche werden bei Bedarf nachgeladen; gemeinsam genutzte statische
+  Vertragsvalidatoren und getrennte Ansichten verringern den anfänglichen
+  JavaScript-Download. Die lokalen Browserprüfungen beziehen sich auf den
+  aktuellen Frontendbau, nicht auf eine bereits installierte Releaseversion.
+- Scheitert das Nachladen eines Arbeitsbereichs, bleiben Chat und Entwurf
+  erhalten. Eine ausdrückliche Wiederholung lädt den betroffenen Bereich neu;
+  der Fehler- und Wiederholungsweg wurde im lokalen Browser geprüft.
+- Gezielte Vite-/Vitest-/fast-uri-Aktualisierungen härten den V2-Frontendbau.
+  Die getrennte V2-Abhängigkeitsprüfung meldet am eingefrorenen Stand keine
+  bekannten npm-Auditfunde; Enterprise wird unabhängig geprüft.
+- Der Preview-Veröffentlichungsweg bindet Quellstand, Paketbelege,
+  Signieridentitäten und originale Build-/Abnahmeartefakte an ihre Prüfsummen
+  und Erzeugerläufe. Fehlende Signierung oder installierte Abnahme wird
+  dadurch nicht zu einem bestandenen Releasegate.
 
 Die genaue Abgrenzung steht im [Previewumfang](PREVIEW-SCOPE-2.0.0-alpha.8.md).
 Ein implementierter Quellpfad und seine Einzeltests sind keine vollständige

@@ -727,6 +727,7 @@ impl ControlPlaneClient {
         let response = self
             .leased_request(Method::POST, &path, lease.lease_token)
             .json(&BeginSnapshotUploadRequest {
+                idempotency_key: None,
                 project_id: lease.run.spec.project_id,
                 total_bytes: inventory.total_bytes,
                 files: inventory.files.clone(),

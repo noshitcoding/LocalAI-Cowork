@@ -299,12 +299,31 @@ impl Capsule {
         let sid = identity.sid_string()?;
         // Unlike `run`, the package keeps its own fresh storage: Tectonic resolves its known
         // folders there and fails without access. The profile and folder die on `close`.
-        let folder = identity.profile_folder()?;
+        let folder = PathBuf::from(identity.profile_folder()?);
+        // Shell expands USERPROFILE and adds Packages/<name>/AC for LocalAppData.
+        // Both known folders must exist before the child first resolves them.
+        // All storage stays inside this fresh identity and is removed on close.
+        let profile = folder.join("Profile");
+        let local = profile.join("AppData").join("Local");
+        let roaming = profile.join("AppData").join("Roaming");
+        fs::create_dir_all(local.join("Packages").join(identity.name()).join("AC"))?;
+        fs::create_dir_all(&roaming)?;
         let mut launch = launch.clone();
+        launch.environment.retain(|key, _| {
+            !key.eq_ignore_ascii_case("USERPROFILE") && !key.eq_ignore_ascii_case("APPDATA")
+        });
+        launch
+            .environment
+            .insert("USERPROFILE".into(), profile.display().to_string());
+        launch
+            .environment
+            .insert("APPDATA".into(), roaming.display().to_string());
         launch
             .environment
             .insert("SystemRoot".into(), files::system_root()?);
-        launch.environment.insert("LOCALAPPDATA".into(), folder);
+        launch
+            .environment
+            .insert("LOCALAPPDATA".into(), local.display().to_string());
         self.consumed = true;
         let mut granted: Vec<(&PathBuf, bool)> = Vec::new();
         let mut outcome = (|| {
