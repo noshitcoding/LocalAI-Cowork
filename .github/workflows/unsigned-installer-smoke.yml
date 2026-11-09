@@ -1,0 +1,174 @@
+name: V2 unsigned original installer smoke
+run-name: Unsigned installed smoke of ${{ inputs.source_commit }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact original unsigned package producer commit SHA
+        type: string
+        required: true
+      producer_run_id:
+        description: Successful original preview-build-review.yml run ID
+        type: string
+        required: true
+      windows_artifact_id:
+        description: Original immutable Windows package artifact ID
+        type: string
+        required: true
+      windows_archive_sha256:
+        description: SHA256 of the original Windows artifact ZIP
+        type: string
+        required: true
+      linux_artifact_id:
+        description: Original immutable Linux package artifact ID
+        type: string
+        required: true
+      linux_archive_sha256:
+        description: SHA256 of the original Linux artifact ZIP
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: unsigned-installed-smoke-${{ inputs.source_commit }}-${{ inputs.producer_run_id }}
+  cancel-in-progress: false
+env:
+  SOURCE_COMMIT: ${{ inputs.source_commit }}
+  PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+  WINDOWS_ARTIFACT_ID: ${{ inputs.windows_artifact_id }}
+  WINDOWS_ARCHIVE_SHA256: ${{ inputs.windows_archive_sha256 }}
+  LINUX_ARTIFACT_ID: ${{ inputs.linux_artifact_id }}
+  LINUX_ARCHIVE_SHA256: ${{ inputs.linux_archive_sha256 }}
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_sha256: ${{ steps.bind.outputs.source_sha256 }}
+      frontend_receipt_sha256: ${{ steps.bind.outputs.frontend_receipt_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source-material
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: bind
+        name: Bind both unchanged original artifacts before any installer execution
+        shell: python
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          out = Path(os.environ['RUNNER_TEMP']) / ('cw-smoke-policy-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          subprocess.run([sys.executable, '-B', str(root / 'trusted/tools/release/unsigned_smoke.py'), 'policy',
+              '--source-root', str(root / 'source-material'), '--output', str(out)], check=True)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unsigned-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/cw-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}/policy-binding.json
+            ${{ runner.temp }}/cw-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}/*/input-binding.json
+            ${{ runner.temp }}/cw-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}/*/run.json
+            ${{ runner.temp }}/cw-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}/*/artifact.json
+          if-no-files-found: warn
+          retention-days: 7
+  native:
+    needs: policy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: nsis
+            platform: windows
+            runner: windows-latest
+          - kind: deb
+            platform: linux
+            runner: ubuntu-24.04
+          - kind: appimage
+            platform: linux
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      SMOKE_KIND: ${{ matrix.kind }}
+      SMOKE_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_SOURCE_SHA256: ${{ needs.policy.outputs.source_sha256 }}
+      EXPECTED_FRONTEND_RECEIPT_SHA256: ${{ needs.policy.outputs.frontend_receipt_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: source-material
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Runtime/display prerequisites on the disposable Linux VM only
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$CI_RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 libgtk-3-0t64 libayatana-appindicator3-1 libxdo3 xvfb xauth dbus-x11
+      - id: prepare
+        name: Verify original archive, commit, receipts and installed payload pins
+        shell: python
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          out = Path(os.environ['RUNNER_TEMP']) / ('cw-smoke-prepared-' + os.environ['SMOKE_KIND'])
+          subprocess.run([sys.executable, '-B', str(root / 'trusted/tools/release/unsigned_smoke.py'), 'prepare',
+              '--platform', os.environ['SMOKE_PLATFORM'], '--source-root', str(root / 'source-material'), '--output', str(out)], check=True)
+      - name: Execute only the original bundle on this fresh native VM
+        shell: python
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GH_TOKEN: ${{ github.token }}
+          INPUT_BINDING_SHA256: ${{ steps.prepare.outputs.binding_sha256 }}
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          temporary = Path(os.environ['RUNNER_TEMP'])
+          kind = os.environ['SMOKE_KIND']
+          work_name = 'cw-smoke-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '-' + kind
+          work = (Path(temporary.anchor) if os.name == 'nt' else temporary) / work_name
+          output = temporary / ('cw-smoke-evidence-' + kind)
+          command = [sys.executable, '-B', str(root / 'trusted/tools/release/unsigned_smoke.py'), 'execute', '--kind', kind,
+              '--prepared', str(temporary / ('cw-smoke-prepared-' + kind)), '--source-root', str(root / 'source-material'),
+              '--binding-sha256', os.environ['INPUT_BINDING_SHA256'], '--work-root', str(work), '--output', str(output)]
+          if os.name != 'nt':
+              command = ['dbus-run-session', '--', 'xvfb-run', '-a', *command]
+          subprocess.run(command, check=True)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unsigned-smoke-${{ matrix.kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cw-smoke-evidence-${{ matrix.kind }}
+          if-no-files-found: warn
+          retention-days: 14
