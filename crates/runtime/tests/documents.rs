@@ -541,11 +541,11 @@ async fn document_action_refuses_a_changed_runtime_after_review() {
     f.toolbox
         .reload_programs(BTreeMap::from([("python".into(), python)]))
         .unwrap();
+    assert!(ready(&f.toolbox).await);
     assert_eq!(
         f.toolbox.document_engine_revision(),
         prepared.engine_revision
     );
-    assert!(ready(&f.toolbox).await);
     assert!(
         f.runtime
             .commit_document_action(order, &prepared.id)

@@ -423,15 +423,18 @@ fn confined_tectonic_reads_and_writes_only_its_stage() {
         "@book{leak, author={A}, title={SECRETMARKER}, year={2026}, note={\\typeout{LEAKED-SECRETMARKER}}}\n",
     )
     .unwrap();
-    let target = outside.join("target.txt");
+    // Exercise TeX-active characters and spaces even with an ordinary TEMP path.
+    let target = outside.join("target~with space.txt");
     fs::write(&target, b"ORIGINAL").unwrap();
     let cache_before = listing(&tex.cache);
     let program_dir = tex.tectonic.parent().unwrap().to_path_buf();
     let abs = tex_path(&canary);
     let caret = abs.replace(':', "^^3a").replace('/', "^^2f");
     let openout = |path: &str| {
+        // Windows temp paths can contain the active TeX character `~` (RUNNER~1).
+        // Quote the detokenized filename so this control reaches its exact target.
         format!(
-            "\\immediate\\openout\\w={path}\\relax\\immediate\\write\\w{{hello}}\\immediate\\closeout\\w"
+            "\\immediate\\openout\\w=\"\\detokenize{{{path}}}\"\\relax\\immediate\\write\\w{{hello}}\\immediate\\closeout\\w"
         )
     };
     let mut failures = Vec::new();

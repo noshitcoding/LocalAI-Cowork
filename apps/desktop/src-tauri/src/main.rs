@@ -7,6 +7,8 @@ mod backup_save;
 mod browser_host;
 mod connectors;
 mod daemon_process;
+#[cfg(windows)]
+mod data_directory;
 mod desktop_launch;
 mod desktop_preferences;
 mod folders;
@@ -57,13 +59,18 @@ fn private_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let launch = app
         .try_state::<desktop_launch::DataDirectory>()
         .ok_or("Desktop launch profile is unavailable")?;
-    match launch.path() {
+    let path = match launch.path() {
         Some(path) => Ok(path.to_path_buf()),
         None => app
             .path()
             .app_local_data_dir()
-            .map_err(|_| "Cannot resolve V2 data directory".into()),
-    }
+            .map_err(|_| String::from("Cannot resolve V2 data directory")),
+    }?;
+    #[cfg(windows)]
+    app.state::<data_directory::Root>()
+        .prepare(&path)
+        .map_err(|_| "Cannot prepare private V2 data directory")?;
+    Ok(path)
 }
 fn daemon_path() -> Result<PathBuf, String> {
     let name = if cfg!(windows) {
@@ -197,7 +204,10 @@ fn main() {
     let autostart = tauri_plugin_autostart::Builder::new().args(launch.autostart_args());
     #[cfg(target_os = "macos")]
     let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(windows)]
+    let builder = builder.manage(data_directory::Root::default());
+    builder
         .manage(launch)
         .plugin(tauri_plugin_dialog::init())
         .plugin(autostart.build())

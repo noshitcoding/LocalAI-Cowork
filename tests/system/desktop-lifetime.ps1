@@ -5,8 +5,10 @@ $taskHost = ((rustc -vV | Select-String '^host: ').Line -replace '^host: ','').T
 $daemonExe = Join-Path $root ('apps/desktop/src-tauri/binaries/cowork-daemon-'+$taskHost+'.exe')
 if (Get-NetTCPConnection -LocalPort 43821 -State Listen -ErrorAction SilentlyContinue) { throw 'Port 43821 is occupied. This test never stops an existing daemon.' }
 if (-not (Test-Path -LiteralPath $desktopExe)) { throw 'Build the desktop executable first' }
-$data = Join-Path $root ('.local/desktop-smoke-' + [Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $data | Out-Null
+$fixture = Join-Path $root ('.local/desktop-smoke-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $fixture | Out-Null
+# The desktop must create its own private authority root atomically. Logs live outside it.
+$data = Join-Path $fixture 'data'
 $env:COWORK_DATA_DIR = $data
 $env:COWORK_ENABLE_TEST_PROVIDER = '1'
 Remove-Item Env:COWORK_DATABASE_URL -ErrorAction SilentlyContinue
@@ -19,10 +21,10 @@ function Api($method, $path, $body) {
     Invoke-RestMethod @args
 }
 try {
-    $desktopProcess = Start-Process -FilePath $desktopExe -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $data 'desktop.out') -RedirectStandardError (Join-Path $data 'desktop.err')
+    $desktopProcess = Start-Process -FilePath $desktopExe -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixture 'desktop.out') -RedirectStandardError (Join-Path $fixture 'desktop.err')
     $ready = $false
     for ($i=0; $i -lt 80; $i++) {
-        if ($desktopProcess.HasExited) { throw ('Desktop exited: '+(Get-Content (Join-Path $data 'desktop.err') -Raw)) }
+        if ($desktopProcess.HasExited) { throw ('Desktop exited: '+(Get-Content (Join-Path $fixture 'desktop.err') -Raw)) }
         try {
             $token = [IO.File]::ReadAllText((Join-Path $data 'daemon.token')).Trim()
             $script:headers = @{Authorization=('Bearer '+$token)}
