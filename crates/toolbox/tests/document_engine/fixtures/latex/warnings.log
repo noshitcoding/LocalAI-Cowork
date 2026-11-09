@@ -1,0 +1,46 @@
+This is XeTeX, Version 3.141592653-2.6-0.999994 (Tectonic) (preloaded format=latex 2022.1.1)  19 OCT 2026 09:16
+entering extended mode
+ restricted \write18 enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2021-11-15> patch level 1
+(article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(size11.clo
+File: size11.clo 2021/10/04 v1.4n Standard LaTeX file (size option)
+))
+(./main.aux)
+
+Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+(hyperref)                removing `\textbf' on input line 9.
+
+
+LaTeX Warning: Reference `fig:x' on page 1 undefined on input line 14.
+
+
+Overfull \hbox (15.07pt too wide) in paragraph at lines 20--21
+[]\TU/NotoSerif(0)/m/n/10.95 Averyveryveryverylongword (with an open paren
+ []
+
+Missing character: There is no 中 (U+4E2D) in font NotoSerif/OT:script=latn;language=dflt;mapping=tex-text;!
+Missing character: There is no 文 (U+6587) in font NotoSerif/OT:script=latn;language=dflt;mapping=tex-text;!
+Missing character: There is no 中 (U+4E2D) in font NotoSerif/OT:script=latn;language=dflt;mapping=tex-text;!
+
+Underfull \hbox (badness 10000) in paragraph at lines 25--25
+
+ []
+
+
+LaTeX Font Warning: Font shape `TU/NotoSerif(0)/m/sc' undefined
+(Font)              using `TU/NotoSerif(0)/m/n' instead on input line 30.
+
+(./sections/part.tex
+Overfull \hbox (2.5pt too wide) detected at line 7
+[]
+)
+[1] [2] (./main.aux)
+
+LaTeX Warning: There were undefined references.
+
+ )
+Output written on main.xdv (2 pages, 12345 bytes).

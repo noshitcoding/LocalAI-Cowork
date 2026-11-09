@@ -1,0 +1,30 @@
+{
+  "format_version":1,
+  "workflow":{
+    "format_version":3,"name":"Typed caller","mode":{"mode":"parallel","max_parallel":4},"failure":"continue_independent",
+    "rights":{"tools":["read","write"],"folders":["project","private"]},
+    "budgets":{"max_steps":32,"max_seconds":60,"max_output_tokens":256,"max_total_tokens":8192},
+    "roles":[],"steps":[],
+    "controls":{"after":{"name":"Use returned amount","dependencies":["invoke"],"operation":{"kind":"compose"}}},
+    "dataflow":{"input":{"type":"object","fields":{"amount":{"type":"integer"},"private_note":{"type":"text"}}},"steps":{
+      "invoke":{"inputs":{"amount":{"value_type":{"type":"integer"},"value":{"source":"input","pointer":"/amount"}}},"output":{"type":"object","fields":{"amount":{"type":"integer"}}}},
+      "after":{"inputs":{"final":{"value_type":{"type":"integer"},"value":{"source":"step","step_id":"invoke","pointer":"/amount"}}},"output":{"type":"object","fields":{"final":{"type":"integer"}}}}
+    }}
+  },
+  "calls":{"invoke":{
+    "name":"Frozen amount subflow","dependencies":[],
+    "rights":{"tools":["read"],"folders":["project"]},
+    "budgets":{"max_steps":16,"max_seconds":20,"max_output_tokens":256,"max_total_tokens":8192},
+    "result":{"step_id":"echo","pointer":""},
+    "body":{"format_version":1,"calls":{},"workflow":{
+      "format_version":3,"name":"Amount body","mode":{"mode":"parallel","max_parallel":1},"failure":"stop",
+      "rights":{"tools":["read","write"],"folders":["project","private"]},
+      "budgets":{"max_steps":16,"max_seconds":20,"max_output_tokens":256,"max_total_tokens":8192},
+      "roles":[],"steps":[],
+      "controls":{"echo":{"name":"Copy selected input","dependencies":[],"operation":{"kind":"compose"}}},
+      "dataflow":{"input":{"type":"object","fields":{"amount":{"type":"integer"}}},"steps":{
+        "echo":{"inputs":{"amount":{"value_type":{"type":"integer"},"value":{"source":"input","pointer":"/amount"}}},"output":{"type":"object","fields":{"amount":{"type":"integer"}}}}
+      }}
+    }}
+  }}
+}

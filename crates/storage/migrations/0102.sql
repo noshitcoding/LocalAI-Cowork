@@ -1,0 +1,20 @@
+CREATE TABLE automation_events_v2 (
+ sequence BIGINT NOT NULL,
+ id TEXT PRIMARY KEY,
+ project_id TEXT NOT NULL REFERENCES projects(id),
+ trigger_id TEXT NOT NULL REFERENCES automation_triggers(id),
+ task_id TEXT NOT NULL REFERENCES native_workspace_tasks(id),
+ source TEXT NOT NULL,
+ event_key TEXT NOT NULL,
+ request_hash TEXT NOT NULL,
+ state TEXT NOT NULL,
+ received_at BIGINT NOT NULL,
+ run_key TEXT NOT NULL UNIQUE,
+ run_id TEXT REFERENCES runs(id),
+ run_request TEXT,
+ run_request_hash TEXT,
+ payload TEXT NOT NULL,
+ ingress_receipt TEXT NOT NULL,
+ UNIQUE(trigger_id,source,event_key),
+ UNIQUE(project_id,sequence)
+);

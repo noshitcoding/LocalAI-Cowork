@@ -15,7 +15,7 @@ body:
     attributes:
       label: LocalAI Cowork version
       description: Find the version in Settings or the release name.
-      placeholder: v0.1.7
+      placeholder: 2.0.0-alpha.8 (V2) or Enterprise server version
     validations:
       required: true
 
@@ -34,8 +34,8 @@ body:
   - type: input
     id: windows
     attributes:
-      label: Windows version
-      placeholder: Windows 11 24H2
+      label: Operating system and version
+      placeholder: Windows 11 or Linux distribution/glibc version
     validations:
       required: true
 

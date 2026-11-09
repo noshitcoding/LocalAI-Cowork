@@ -1,0 +1,42 @@
+.enterprise-rollouts { display: grid; gap: 20px; }
+.enterprise-rollouts h2, .enterprise-rollouts h3, .enterprise-rollouts p { margin: 0; }
+.enterprise-rollouts h2 { margin-block: 8px; font-size: 20px; font-weight: 600; }
+.enterprise-rollouts h3 { font-size: 15px; font-weight: 600; }
+.enterprise-rollouts p { color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
+.enterprise-rollouts-heading > div > span { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.enterprise-rollouts-note { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-light); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-rollouts-note > svg { flex: 0 0 auto; margin-top: 1px; color: var(--text-secondary); }
+.enterprise-management .enterprise-rollout-create { display: grid; grid-template-columns: minmax(0, 2fr) minmax(100px, 1fr); gap: 16px; align-items: start; padding: 20px; margin: 0; border: 1px solid var(--border-color); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-rollout-create h3, .enterprise-rollout-wide { grid-column: 1 / -1; }
+.enterprise-rollout-create label { min-width: 0; font-size: 12px; }
+.enterprise-rollout-create input:not([type='checkbox']), .enterprise-rollout-create select { box-sizing: border-box; width: 100%; min-height: 38px; background: var(--bg-white); }
+.enterprise-rollout-create fieldset { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--border-light); border-radius: var(--radius-surface); }
+.enterprise-rollout-create legend { padding-inline: 5px; color: var(--text-secondary); font-size: 12px; }
+.enterprise-rollout-create fieldset > .enterprise-check { display: flex; align-items: center; gap: 9px; flex-direction: row; padding: 10px; border: 1px solid var(--border-light); border-radius: var(--radius-control); background: var(--bg-white); }
+.enterprise-rollout-create fieldset > .enterprise-check:has(input:checked) { border-color: var(--accent-border); background: var(--selection-bg); }
+.enterprise-rollout-create input[type='checkbox'] { flex: 0 0 auto; accent-color: var(--accent-text); }
+.enterprise-rollout-create .enterprise-rollout-ack { display: flex; flex-direction: row; align-items: flex-start; gap: 9px; padding: 12px; background: var(--bg-primary); font-size: 12px; line-height: 1.6; }
+.enterprise-rollouts .ui-button { display: inline-flex; width: fit-content; min-height: 36px; align-items: center; justify-content: center; gap: 7px; font-size: 12px; }
+.enterprise-rollouts .ui-button--primary { border-color: var(--accent-border); background: var(--accent-fill); color: var(--accent-foreground); }
+.enterprise-rollouts .ui-button--secondary { background: var(--bg-white); }
+.enterprise-rollouts .ui-button--ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }
+.enterprise-rollouts .ui-button--danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.enterprise-rollouts .enterprise-rollout { display: grid; gap: 14px; padding: 20px; border: 1px solid var(--border-color); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-rollout > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.enterprise-rollout-status { padding: 3px 7px; border: 1px solid var(--border-color); border-radius: var(--radius-label); color: var(--text-secondary); background: var(--bg-primary); font-size: 11px; }
+.enterprise-rollout-status[data-state='succeeded'] { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border-color)); }
+.enterprise-rollout-status[data-state='paused'] { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); }
+.enterprise-rollout-summary { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--text-secondary); font-size: 12px; }
+.enterprise-rollout-summary code { font-size: 11px; }
+.enterprise-rollout > progress { width: 100%; height: 6px; accent-color: var(--accent-text); }
+.enterprise-rollout-targets { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border-light); }
+.enterprise-rollout-targets li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-block: 12px; border-bottom: 1px solid var(--border-light); }
+.enterprise-rollout-targets li > span:first-child { display: grid; gap: 5px; min-width: 0; }
+.enterprise-rollout-targets small { color: var(--text-muted); font-size: 10px; }
+.enterprise-rollout-targets strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.enterprise-rollout-target-state { display: grid; gap: 5px; justify-items: end; color: var(--text-secondary); font-size: 11px; text-align: right; }
+.enterprise-rollout-target-state code { overflow-wrap: anywhere; color: var(--danger); font-size: 10px; }
+.enterprise-management .enterprise-rollout-confirm { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 20px; border: 1px solid var(--warning); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-rollouts-empty { display: grid; justify-items: center; gap: 10px; padding: 32px 16px; border: 1px dashed var(--border-color); color: var(--text-muted); text-align: center; }
+.enterprise-rollouts-empty strong { color: var(--text-primary); font-size: 13px; font-weight: 500; }
+@media (max-width: 650px) { .enterprise-management .enterprise-rollout-create { grid-template-columns: 1fr; padding: 16px; } .enterprise-rollouts .enterprise-rollout { padding: 16px; } .enterprise-rollouts .ui-button { min-height: 42px; } .enterprise-rollout > header { flex-wrap: wrap; } }

@@ -1,0 +1,293 @@
+{
+  "source": {
+    "folder_id": "copy-files",
+    "path": "source.pdf",
+    "sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f"
+  },
+  "raw": {
+    "format": "ocr",
+    "source_sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f",
+    "engine": {
+      "name": "tesseract",
+      "version": "tesseract 5.5.3",
+      "binding_version": "2.12.0",
+      "languages": [
+        "deu",
+        "eng"
+      ],
+      "models_sha256": {
+        "deu": "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d",
+        "eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+      }
+    },
+    "total_pages": 1,
+    "pages": [
+      {
+        "page": 1,
+        "width": 1653,
+        "height": 2339,
+        "dpi": 200,
+        "rotation": 0,
+        "raster_sha256": "288ea29d18ab2267032baa3978ed150717e399de7f5d2af6ebbd3d96bd3683aa",
+        "preview_sha256": "cf710c9d63a7d300f23a1aa017e884951179096c5b84334ca2081a52e393b400",
+        "word_count": 19
+      }
+    ],
+    "pages_truncated": false,
+    "next_page": null,
+    "total_words": 19,
+    "offset": 0,
+    "next_offset": null,
+    "words": [
+      {
+        "page": 1,
+        "index": 0,
+        "line": 1,
+        "text": "RECHNUNG",
+        "text_truncated": false,
+        "x": 99,
+        "y": 135,
+        "width": 244,
+        "height": 34,
+        "score": 93.24512481689453
+      },
+      {
+        "page": 1,
+        "index": 1,
+        "line": 1,
+        "text": "R-2026-1042",
+        "text_truncated": false,
+        "x": 359,
+        "y": 135,
+        "width": 252,
+        "height": 34,
+        "score": 92.25962829589844
+      },
+      {
+        "page": 1,
+        "index": 2,
+        "line": 2,
+        "text": "Muster",
+        "text_truncated": false,
+        "x": 99,
+        "y": 258,
+        "width": 139,
+        "height": 35,
+        "score": 96.55148315429688
+      },
+      {
+        "page": 1,
+        "index": 3,
+        "line": 2,
+        "text": "GmbH",
+        "text_truncated": false,
+        "x": 250,
+        "y": 256,
+        "width": 124,
+        "height": 37,
+        "score": 96.59725952148438
+      },
+      {
+        "page": 1,
+        "index": 4,
+        "line": 3,
+        "text": "Datum:",
+        "text_truncated": false,
+        "x": 99,
+        "y": 382,
+        "width": 138,
+        "height": 34,
+        "score": 96.49515533447266
+      },
+      {
+        "page": 1,
+        "index": 5,
+        "line": 3,
+        "text": "31.10.2026",
+        "text_truncated": false,
+        "x": 251,
+        "y": 381,
+        "width": 223,
+        "height": 35,
+        "score": 96.71548461914062
+      },
+      {
+        "page": 1,
+        "index": 6,
+        "line": 4,
+        "text": "Nettobetrag:",
+        "text_truncated": false,
+        "x": 99,
+        "y": 503,
+        "width": 252,
+        "height": 46,
+        "score": 92.08296203613281
+      },
+      {
+        "page": 1,
+        "index": 7,
+        "line": 4,
+        "text": "100,00",
+        "text_truncated": false,
+        "x": 368,
+        "y": 504,
+        "width": 133,
+        "height": 40,
+        "score": 96.78031158447266
+      },
+      {
+        "page": 1,
+        "index": 8,
+        "line": 4,
+        "text": "EUR",
+        "text_truncated": false,
+        "x": 516,
+        "y": 505,
+        "width": 81,
+        "height": 34,
+        "score": 96.11772918701172
+      },
+      {
+        "page": 1,
+        "index": 9,
+        "line": 5,
+        "text": "Umsatzsteuer",
+        "text_truncated": false,
+        "x": 99,
+        "y": 628,
+        "width": 275,
+        "height": 34,
+        "score": 95.82035827636719
+      },
+      {
+        "page": 1,
+        "index": 10,
+        "line": 5,
+        "text": "19%:",
+        "text_truncated": false,
+        "x": 390,
+        "y": 627,
+        "width": 87,
+        "height": 35,
+        "score": 96.53514099121094
+      },
+      {
+        "page": 1,
+        "index": 11,
+        "line": 5,
+        "text": "19,00",
+        "text_truncated": false,
+        "x": 495,
+        "y": 627,
+        "width": 106,
+        "height": 40,
+        "score": 96.14181518554688
+      },
+      {
+        "page": 1,
+        "index": 12,
+        "line": 5,
+        "text": "EUR",
+        "text_truncated": false,
+        "x": 616,
+        "y": 628,
+        "width": 82,
+        "height": 34,
+        "score": 95.99478912353516
+      },
+      {
+        "page": 1,
+        "index": 13,
+        "line": 6,
+        "text": "Gesamtbetrag:",
+        "text_truncated": false,
+        "x": 97,
+        "y": 749,
+        "width": 294,
+        "height": 46,
+        "score": 96.64846801757812
+      },
+      {
+        "page": 1,
+        "index": 14,
+        "line": 6,
+        "text": "119,00",
+        "text_truncated": false,
+        "x": 408,
+        "y": 750,
+        "width": 133,
+        "height": 40,
+        "score": 95.68722534179688
+      },
+      {
+        "page": 1,
+        "index": 15,
+        "line": 6,
+        "text": "EUR",
+        "text_truncated": false,
+        "x": 556,
+        "y": 751,
+        "width": 81,
+        "height": 34,
+        "score": 95.68722534179688
+      },
+      {
+        "page": 1,
+        "index": 16,
+        "line": 7,
+        "text": "Invoice",
+        "text_truncated": false,
+        "x": 99,
+        "y": 874,
+        "width": 142,
+        "height": 34,
+        "score": 92.56226348876953
+      },
+      {
+        "page": 1,
+        "index": 17,
+        "line": 7,
+        "text": "reference:",
+        "text_truncated": false,
+        "x": 256,
+        "y": 872,
+        "width": 199,
+        "height": 36,
+        "score": 93.26072692871094
+      },
+      {
+        "page": 1,
+        "index": 18,
+        "line": 7,
+        "text": "INV-1042",
+        "text_truncated": false,
+        "x": 471,
+        "y": 873,
+        "width": 183,
+        "height": 35,
+        "score": 91.84937286376953
+      }
+    ],
+    "text": "RECHNUNG R-2026-1042\nMuster GmbH\nDatum: 31.10.2026\nNettobetrag: 100,00 EUR\nUmsatzsteuer 19%: 19,00 EUR\nGesamtbetrag: 119,00 EUR\nInvoice reference: INV-1042",
+    "truncated": false
+  },
+  "images": [
+    {
+      "sha256": "cf710c9d63a7d300f23a1aa017e884951179096c5b84334ca2081a52e393b400",
+      "media_type": "image/png",
+      "page": 1,
+      "width": 1131,
+      "height": 1600
+    }
+  ],
+  "options": {
+    "languages": [
+      "deu",
+      "eng"
+    ],
+    "dpi": 200,
+    "rotation": 0,
+    "offset": 0,
+    "limit": 100
+  }
+}

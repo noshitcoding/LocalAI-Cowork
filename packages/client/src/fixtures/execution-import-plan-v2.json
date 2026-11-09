@@ -1,0 +1,229 @@
+{
+  "prepare": {
+    "input": {
+      "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+      "sha256": "5adad905b3773433b1f4f957dc8385c019121688c06751e8227a819dc1a48075",
+      "snapshot_id": "316fe237-3ea6-446f-931c-fcb83b5d2a98"
+    },
+    "request": {
+      "access_mode": "confirm_mutations",
+      "base_revision": 2,
+      "idempotency_key": "copy-import",
+      "import": {
+        "expected_sha256": null,
+        "file": {
+          "file_name": "Prüfung.bin",
+          "sha256": "902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111",
+          "size": 4
+        },
+        "folder_id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+        "path": "new.bin",
+        "upload_id": "1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32"
+      },
+      "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+      "prompt": "Import into a new independent copy"
+    },
+    "target": {
+      "kind": "broker_controller"
+    }
+  },
+  "prepared": {
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":null,\"executor\":\"local-v2\",\"folders\":[{\"id\":\"workspace:0808b8cf-0020-4c72-b231-f22c08b663dc\",\"name\":\"Workspace\",\"order_id\":\"0808b8cf-0020-4c72-b231-f22c08b663dc\",\"project_id\":\"1adde369-efc6-4352-94fe-13ac69f2e1e8\",\"resource_id\":\"b7f74047d9d4772aaec26f051220dedf4d6a15b91bd9c419b47c5a99f942b6f4\",\"revision\":\"554173d27d3f1150fb3656d0ca0bddcedfc6342b2c04656cde8dcc8baef72611\",\"writable\":true}],\"input_snapshot_bound\":true,\"process_access\":\"broker_only\",\"process_network\":{\"kind\":\"no_process\"}},\"created_at\":1793347422829,\"expires_at\":1793347722829,\"format_version\":2,\"id\":\"5a064016-2aab-4057-b54e-783df6ac3af1\",\"idempotency_key\":\"copy-import\",\"input\":{\"created_at\":1793347422812,\"format_version\":1,\"id\":\"316fe237-3ea6-446f-931c-fcb83b5d2a98\",\"manifest\":{\"directories\":[\"input-0001\"],\"files\":[],\"format_version\":1,\"sha256\":\"78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c\",\"total_bytes\":0},\"order_id\":\"0808b8cf-0020-4c72-b231-f22c08b663dc\",\"order_revision\":2,\"project_id\":\"1adde369-efc6-4352-94fe-13ac69f2e1e8\",\"request_sha256\":\"e11ad0e8ea3403a86075770967f7e5101de9ed47d7f2a5287b4821898bfe0ba3\",\"sources\":[{\"alias\":\"input-0001\",\"name\":\"Workspace\"}]},\"order_id\":\"0808b8cf-0020-4c72-b231-f22c08b663dc\",\"preflight\":{\"kind\":\"import\",\"review\":{\"access_mode\":\"confirm_mutations\",\"allowed_tools\":[\"import_file\"],\"budgets\":{\"max_output_tokens\":4096,\"max_seconds\":1800,\"max_steps\":64},\"executor\":\"local-v2\",\"folders\":[{\"id\":\"workspace:0808b8cf-0020-4c72-b231-f22c08b663dc\",\"name\":\"Workspace\",\"order_id\":\"0808b8cf-0020-4c72-b231-f22c08b663dc\",\"project_id\":\"1adde369-efc6-4352-94fe-13ac69f2e1e8\",\"resource_id\":\"b7f74047d9d4772aaec26f051220dedf4d6a15b91bd9c419b47c5a99f942b6f4\",\"revision\":\"554173d27d3f1150fb3656d0ca0bddcedfc6342b2c04656cde8dcc8baef72611\",\"writable\":true}],\"import\":{\"expected_sha256\":null,\"file\":{\"file_name\":\"Prüfung.bin\",\"sha256\":\"902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111\",\"size\":4},\"folder_id\":\"workspace:0808b8cf-0020-4c72-b231-f22c08b663dc\",\"path\":\"new.bin\",\"upload_id\":\"1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32\"},\"ready\":true,\"upload\":{\"created_at\":1793347422792,\"file\":{\"file_name\":\"Prüfung.bin\",\"sha256\":\"902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111\",\"size\":4},\"id\":\"1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32\",\"order_id\":\"0808b8cf-0020-4c72-b231-f22c08b663dc\",\"project_id\":\"1adde369-efc6-4352-94fe-13ac69f2e1e8\",\"revision\":2,\"state\":\"ready\"}}},\"project_id\":\"1adde369-efc6-4352-94fe-13ac69f2e1e8\",\"request_sha256\":\"ca88ceadd784f34d9aa0338323b33476e59d7477a7f66ad715b3fdacd33dad44\",\"spec_sha256\":\"f5fa27af53e763a0e6b2b779e9995a38b52771f7fb240862d8c7ec92da02a1c1\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"73e7e7f2-a8c4-4f62-a6f2-893c33e8bae4\"},\"kind\":\"broker_controller\"},\"workspace\":{\"id\":\"27c5d160-7622-47ea-bc8a-27ed3e75ca6b\",\"input\":{\"manifest_sha256\":\"78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c\",\"sha256\":\"5adad905b3773433b1f4f957dc8385c019121688c06751e8227a819dc1a48075\",\"snapshot_id\":\"316fe237-3ea6-446f-931c-fcb83b5d2a98\"}}}",
+    "committed_run_id": null,
+    "plan": {
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "boundary": {
+        "connector_aliases": [],
+        "environment": null,
+        "executor": "local-v2",
+        "folders": [
+          {
+            "id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+            "name": "Workspace",
+            "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+            "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+            "resource_id": "b7f74047d9d4772aaec26f051220dedf4d6a15b91bd9c419b47c5a99f942b6f4",
+            "revision": "554173d27d3f1150fb3656d0ca0bddcedfc6342b2c04656cde8dcc8baef72611",
+            "writable": true
+          }
+        ],
+        "input_snapshot_bound": true,
+        "process_access": "broker_only",
+        "process_network": {
+          "kind": "no_process"
+        }
+      },
+      "created_at": 1793347422829,
+      "expires_at": 1793347722829,
+      "format_version": 2,
+      "id": "5a064016-2aab-4057-b54e-783df6ac3af1",
+      "idempotency_key": "copy-import",
+      "input": {
+        "created_at": 1793347422812,
+        "format_version": 1,
+        "id": "316fe237-3ea6-446f-931c-fcb83b5d2a98",
+        "manifest": {
+          "directories": [
+            "input-0001"
+          ],
+          "files": [],
+          "format_version": 1,
+          "sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "total_bytes": 0
+        },
+        "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+        "order_revision": 2,
+        "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+        "request_sha256": "e11ad0e8ea3403a86075770967f7e5101de9ed47d7f2a5287b4821898bfe0ba3",
+        "sources": [
+          {
+            "alias": "input-0001",
+            "name": "Workspace"
+          }
+        ]
+      },
+      "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+      "preflight": {
+        "kind": "import",
+        "review": {
+          "access_mode": "confirm_mutations",
+          "allowed_tools": [
+            "import_file"
+          ],
+          "budgets": {
+            "max_output_tokens": 4096,
+            "max_seconds": 1800,
+            "max_steps": 64
+          },
+          "executor": "local-v2",
+          "folders": [
+            {
+              "id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+              "name": "Workspace",
+              "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+              "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+              "resource_id": "b7f74047d9d4772aaec26f051220dedf4d6a15b91bd9c419b47c5a99f942b6f4",
+              "revision": "554173d27d3f1150fb3656d0ca0bddcedfc6342b2c04656cde8dcc8baef72611",
+              "writable": true
+            }
+          ],
+          "import": {
+            "expected_sha256": null,
+            "file": {
+              "file_name": "Prüfung.bin",
+              "sha256": "902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111",
+              "size": 4
+            },
+            "folder_id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+            "path": "new.bin",
+            "upload_id": "1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32"
+          },
+          "ready": true,
+          "upload": {
+            "created_at": 1793347422792,
+            "file": {
+              "file_name": "Prüfung.bin",
+              "sha256": "902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111",
+              "size": 4
+            },
+            "id": "1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32",
+            "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+            "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+            "revision": 2,
+            "state": "ready"
+          }
+        }
+      },
+      "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+      "request_sha256": "ca88ceadd784f34d9aa0338323b33476e59d7477a7f66ad715b3fdacd33dad44",
+      "spec_sha256": "f5fa27af53e763a0e6b2b779e9995a38b52771f7fb240862d8c7ec92da02a1c1",
+      "target": {
+        "controller": {
+          "generation": 1,
+          "id": "73e7e7f2-a8c4-4f62-a6f2-893c33e8bae4"
+        },
+        "kind": "broker_controller"
+      },
+      "workspace": {
+        "id": "27c5d160-7622-47ea-bc8a-27ed3e75ca6b",
+        "input": {
+          "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "sha256": "5adad905b3773433b1f4f957dc8385c019121688c06751e8227a819dc1a48075",
+          "snapshot_id": "316fe237-3ea6-446f-931c-fcb83b5d2a98"
+        }
+      }
+    },
+    "retired": false,
+    "sha256": "5e8a91464ac79fe92cfa1593c8082f792ad6d905a2ab95da1728e96bd3478b77"
+  },
+  "run": {
+    "created_at": 1793347422872,
+    "error_code": null,
+    "id": "bda83d40-8f3a-453a-88a9-e95e965fefbf",
+    "last_sequence": 1,
+    "revision": 1,
+    "spec": {
+      "access_mode": "confirm_mutations",
+      "allowed_tools": [
+        "import_file"
+      ],
+      "budgets": {
+        "max_output_tokens": 4096,
+        "max_seconds": 1800,
+        "max_steps": 64
+      },
+      "executor": "local-v2",
+      "file_action": {
+        "arguments": {
+          "expected_sha256": null,
+          "file": {
+            "file_name": "Prüfung.bin",
+            "sha256": "902f278e7b2fbd893838cf03ef8fe47f7259727d5c6343960ce30a95d7b57111",
+            "size": 4
+          },
+          "folder_id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+          "path": "new.bin",
+          "upload_id": "1d7452ce-49cc-4cf7-b2ec-9ccdd3a5fb32"
+        },
+        "id": "import",
+        "name": "import_file"
+      },
+      "folders": [
+        {
+          "id": "workspace:0808b8cf-0020-4c72-b231-f22c08b663dc",
+          "name": "Workspace",
+          "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+          "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+          "resource_id": "b7f74047d9d4772aaec26f051220dedf4d6a15b91bd9c419b47c5a99f942b6f4",
+          "revision": "554173d27d3f1150fb3656d0ca0bddcedfc6342b2c04656cde8dcc8baef72611",
+          "writable": true
+        }
+      ],
+      "input_workspace": {
+        "id": "27c5d160-7622-47ea-bc8a-27ed3e75ca6b",
+        "input": {
+          "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "sha256": "5adad905b3773433b1f4f957dc8385c019121688c06751e8227a819dc1a48075",
+          "snapshot_id": "316fe237-3ea6-446f-931c-fcb83b5d2a98"
+        }
+      },
+      "order_id": "0808b8cf-0020-4c72-b231-f22c08b663dc",
+      "policy_revision": 1,
+      "project_id": "1adde369-efc6-4352-94fe-13ac69f2e1e8",
+      "prompt": "Import into a new independent copy",
+      "provider": null
+    },
+    "started_at": null,
+    "state": "queued",
+    "steps": 0,
+    "updated_at": 1793347422872,
+    "usage": {
+      "cost": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "price_source_version": null
+    }
+  }
+}

@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (version BIGINT PRIMARY KEY, checksum TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), revision BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, revision BIGINT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE(order_id,idempotency_key));
+CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), sequence BIGINT NOT NULL, payload TEXT NOT NULL, UNIQUE(run_id,sequence));
+CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), order_id TEXT NOT NULL REFERENCES orders(id), created_at BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), order_id TEXT NOT NULL REFERENCES orders(id), payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS orders_project ON orders(project_id);
+CREATE INDEX IF NOT EXISTS runs_state ON runs(state);
+CREATE INDEX IF NOT EXISTS messages_order ON messages(order_id,created_at);
+CREATE INDEX IF NOT EXISTS artifacts_order ON artifacts(order_id);

@@ -1,0 +1,22 @@
+# Explicit operator authority: only the worker receives Docker control.
+# Never add these mounts or environment variables to the disposable tool guest.
+services:
+  api:
+    environment:
+      COWORK_TEAM_TOOL_IMAGE: ${COWORK_TEAM_TOOL_IMAGE:?Use immutable name@sha256 digest}
+      COWORK_TEAM_TOOL_HOST_ROOT: ${COWORK_TEAM_TOOL_HOST_ROOT:?Select an absolute host workspace root}
+      COWORK_TEAM_TOOL_RUNTIME: ${COWORK_TEAM_TOOL_RUNTIME:-}
+      COWORK_TEAM_TOOL_NETWORK: ${COWORK_TEAM_TOOL_NETWORK:-none}
+    volumes:
+      - "${COWORK_TEAM_TOOL_HOST_ROOT:?}:/var/lib/cowork/toolbox/workspaces"
+  worker:
+    group_add: ["${COWORK_DOCKER_GID:?Set the selected Docker socket group ID}"]
+    environment:
+      COWORK_DOCKER_HOST_ID: ${COWORK_DOCKER_HOST_ID:?Use the persistent operator Dockerhost UUID}
+      COWORK_TEAM_TOOL_IMAGE: ${COWORK_TEAM_TOOL_IMAGE:?Use immutable name@sha256 digest}
+      COWORK_TEAM_TOOL_HOST_ROOT: ${COWORK_TEAM_TOOL_HOST_ROOT:?Select an absolute host workspace root}
+      COWORK_TEAM_TOOL_RUNTIME: ${COWORK_TEAM_TOOL_RUNTIME:-}
+      COWORK_TEAM_TOOL_NETWORK: ${COWORK_TEAM_TOOL_NETWORK:-none}
+    volumes:
+      - "${COWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock"
+      - "${COWORK_TEAM_TOOL_HOST_ROOT:?}:/var/lib/cowork/toolbox/workspaces"

@@ -1,0 +1,11 @@
+import {describe,it,expect} from "vitest";
+import {gitWorkbenchAction,type GitState} from "./GitWorkbench";
+import {pinnedPullRequest} from "./PullRequestWorkbench";
+import {mergeBrowserAnnotations,annotationPrompt,browserAnnotationsKey} from "./browserAnnotations";
+import {officePatchAction,type OfficeModel} from "./officeDocuments";
+describe("reviewed developer workbench bindings",()=>{
+ it("requires a reviewed Git state for mutations and preserves exact selected paths",()=>{expect(()=>gitWorkbenchAction("stage","repo")).toThrow();expect(()=>gitWorkbenchAction("status","../outside")).toThrow();const state={binding:"a".repeat(64)} as GitState;expect(gitWorkbenchAction("stage","repo",state,{paths:["src/a.ts"]})).toEqual({kind:"git",operation:"stage",cwd:"repo",expected_state:state.binding,paths:["src/a.ts"]});});
+ it("pins PR merge and review to the selected exact commit",()=>{expect(()=>pinnedPullRequest({repository:"owner/repo",number:1,operation:"merge"})).toThrow();expect(pinnedPullRequest({repository:"owner/repo",number:1,operation:"merge",expected_head:"a".repeat(40),merge_method:"squash"})).toMatchObject({expected_head:"a".repeat(40),merge_method:"squash"});});
+ it("retains bounded annotation history without credentials in its key",()=>{const note={id:"note",selector:"#heading",text:"Fix label",url:"https://example.invalid/page",recorded_at:1};expect(mergeBrowserAnnotations([note],[{...note,text:"Changed"}])).toEqual([{...note,text:"Changed"}]);expect(annotationPrompt([note])).toContain("#heading\nFix label");expect(browserAnnotationsKey("https://user:secret@example.invalid/base","chat")).not.toContain("secret");expect(()=>mergeBrowserAnnotations([], [{...note,text:"x".repeat(2001)}])).toThrow();});
+ it("Office patches retain exact source hash and require matching copy format",()=>{const model={format:"docx",source_sha256:"b".repeat(64),input:"docs/source.docx"} as OfficeModel;const patch={paragraph:0,text:"Edited"};expect(officePatchAction(model,[patch],"docs/new.docx")).toMatchObject({operation:"edit_docx",input:model.input,text:JSON.stringify({source_sha256:model.source_sha256,patches:[patch]})});expect(()=>officePatchAction(model,[patch],"docs/wrong.xlsx")).toThrow();});
+});

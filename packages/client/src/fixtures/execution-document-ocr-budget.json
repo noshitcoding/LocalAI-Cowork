@@ -1,0 +1,171 @@
+{
+  "prepare": {
+    "target": {
+      "kind": "document_engine"
+    },
+    "request": {
+      "kind": "workflow",
+      "agent_config": {
+        "instructions": "",
+        "generation": {}
+      },
+      "order_id": "caa08e3f-edc1-402e-8cc0-cdf8b05a01d5",
+      "base_revision": 2,
+      "prompt": "Read this invoice scan locally and retain source and word locations.",
+      "inputs": {
+        "source_path": "invoice.pdf",
+        "source_sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f"
+      },
+      "workflow_id": "c326d949-7424-4705-931a-2660bb4891b5",
+      "version_id": "f7ce7549-040a-4cc9-8433-3f2fe2e6ad06",
+      "access_mode": "read_only",
+      "idempotency_key": "89900200-2857-4f81-88c0-40b33a40ff61",
+      "budgets": {
+        "max_output_tokens": 4096,
+        "max_seconds": 1800,
+        "max_steps": 64,
+        "max_total_tokens": 262144
+      },
+      "native_tools": [],
+      "folders": [],
+      "mcp_tools": []
+    },
+    "input": {
+      "snapshot_id": "76187b4d-46a2-4f65-bf94-0b1649f13fc4",
+      "sha256": "03bc83a75e0dbfe4c976fce44fc0012320afe231c00d7ca3a3ff033b399a0287",
+      "manifest_sha256": "083d3316e5019e4f790d8f330041ce91f0fbc9011989ef052506bbb1e143c83b"
+    }
+  },
+  "prepared": {
+    "plan": {
+      "format_version": 2,
+      "id": "a4b45d57-c46f-47d8-864f-f360ca461cb4",
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "project_id": "8a954c05-7e52-4d12-bde7-5461a6b7deca",
+      "order_id": "caa08e3f-edc1-402e-8cc0-cdf8b05a01d5",
+      "idempotency_key": "89900200-2857-4f81-88c0-40b33a40ff61",
+      "request_sha256": "9513d00317737f1a8b809accc7755439cc6aea8beee4bf15f0a30e57a402ceea",
+      "spec_sha256": "4ea55ff4b1697fc5e3fc4aa5a07f8160c0e36cc5da7d237fce9d2d411a0e0234",
+      "created_at": 1793506468195,
+      "expires_at": 1793506768195,
+      "target": {
+        "kind": "document_engine",
+        "controller": {
+          "id": "5194e46b-f568-45f7-91a1-212dd9bee5b6",
+          "generation": 1
+        },
+        "engine_revision": "9d0c49f99399f6d3df579a6a95605f7d9e7acdafb935da57fee6b78a06ebec20"
+      },
+      "input": {
+        "format_version": 1,
+        "id": "76187b4d-46a2-4f65-bf94-0b1649f13fc4",
+        "order_id": "caa08e3f-edc1-402e-8cc0-cdf8b05a01d5",
+        "project_id": "8a954c05-7e52-4d12-bde7-5461a6b7deca",
+        "order_revision": 2,
+        "request_sha256": "9f0ba03aff57e67cb2caf92739118c14a140b7c0137861e072dbbe4dbce5f918",
+        "created_at": 1793506465362,
+        "sources": [
+          {
+            "alias": "input-0001",
+            "name": "Workspace"
+          }
+        ],
+        "manifest": {
+          "format_version": 1,
+          "directories": [
+            "input-0001"
+          ],
+          "files": [
+            {
+              "path": "input-0001/invoice.pdf",
+              "size": 50946,
+              "sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f",
+              "chunks": [
+                {
+                  "offset": 0,
+                  "size": 50946,
+                  "sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f"
+                }
+              ]
+            }
+          ],
+          "total_bytes": 50946,
+          "sha256": "083d3316e5019e4f790d8f330041ce91f0fbc9011989ef052506bbb1e143c83b"
+        }
+      },
+      "workspace": {
+        "id": "81cc85d1-b73a-4688-87df-475f30615d56",
+        "input": {
+          "snapshot_id": "76187b4d-46a2-4f65-bf94-0b1649f13fc4",
+          "sha256": "03bc83a75e0dbfe4c976fce44fc0012320afe231c00d7ca3a3ff033b399a0287",
+          "manifest_sha256": "083d3316e5019e4f790d8f330041ce91f0fbc9011989ef052506bbb1e143c83b"
+        }
+      },
+      "preflight": {
+        "kind": "owner",
+        "review": {
+          "ready": true,
+          "workflow": {
+            "inputs": {
+              "source_path": "invoice.pdf",
+              "source_sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f"
+            },
+            "workflow_id": "c326d949-7424-4705-931a-2660bb4891b5",
+            "version_id": "f7ce7549-040a-4cc9-8433-3f2fe2e6ad06",
+            "definition_sha256": "1758998c60e8e3b1489025b0541d54fbd8d3a0dc4a14a3eb08b94263e9f86f40",
+            "plan_sha256": "75fa6b4821bb1aa8e5bfc8966fa618cfe773f6d219cf7a4158f6c268e76695f7"
+          },
+          "name": "Invoice OCR browser check",
+          "version_revision": 2,
+          "executor": "local-v2",
+          "policy_revision": 1,
+          "access_mode": "read_only",
+          "budgets": {
+            "max_steps": 32,
+            "max_seconds": 180,
+            "max_output_tokens": 1024,
+            "max_total_tokens": 4096
+          },
+          "allowed_tools": [
+            "list_artifacts",
+            "read_artifact",
+            "request_input",
+            "list_files",
+            "read_text_file",
+            "stat_file",
+            "document_read"
+          ],
+          "roles": [],
+          "max_parallel": 1
+        }
+      },
+      "boundary": {
+        "executor": "local-v2",
+        "process_access": "user_rights",
+        "process_network": {
+          "kind": "user_rights"
+        },
+        "environment": null,
+        "folders": [
+          {
+            "id": "workspace:caa08e3f-edc1-402e-8cc0-cdf8b05a01d5",
+            "project_id": "8a954c05-7e52-4d12-bde7-5461a6b7deca",
+            "name": "Workspace",
+            "writable": false,
+            "revision": "5806ed84a5b24587336ab7703e9e1b505d0b9d201918653893fc418505edc282",
+            "resource_id": "8a847f8de8f851b1cd3887a97f12d0fa0559b60bd4a035d9b7246d5bbeb04eb2",
+            "order_id": "caa08e3f-edc1-402e-8cc0-cdf8b05a01d5"
+          }
+        ],
+        "connector_aliases": [],
+        "input_snapshot_bound": true
+      }
+    },
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":null,\"executor\":\"local-v2\",\"folders\":[{\"id\":\"workspace:caa08e3f-edc1-402e-8cc0-cdf8b05a01d5\",\"name\":\"Workspace\",\"order_id\":\"caa08e3f-edc1-402e-8cc0-cdf8b05a01d5\",\"project_id\":\"8a954c05-7e52-4d12-bde7-5461a6b7deca\",\"resource_id\":\"8a847f8de8f851b1cd3887a97f12d0fa0559b60bd4a035d9b7246d5bbeb04eb2\",\"revision\":\"5806ed84a5b24587336ab7703e9e1b505d0b9d201918653893fc418505edc282\",\"writable\":false}],\"input_snapshot_bound\":true,\"process_access\":\"user_rights\",\"process_network\":{\"kind\":\"user_rights\"}},\"created_at\":1793506468195,\"expires_at\":1793506768195,\"format_version\":2,\"id\":\"a4b45d57-c46f-47d8-864f-f360ca461cb4\",\"idempotency_key\":\"89900200-2857-4f81-88c0-40b33a40ff61\",\"input\":{\"created_at\":1793506465362,\"format_version\":1,\"id\":\"76187b4d-46a2-4f65-bf94-0b1649f13fc4\",\"manifest\":{\"directories\":[\"input-0001\"],\"files\":[{\"chunks\":[{\"offset\":0,\"sha256\":\"70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f\",\"size\":50946}],\"path\":\"input-0001/invoice.pdf\",\"sha256\":\"70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f\",\"size\":50946}],\"format_version\":1,\"sha256\":\"083d3316e5019e4f790d8f330041ce91f0fbc9011989ef052506bbb1e143c83b\",\"total_bytes\":50946},\"order_id\":\"caa08e3f-edc1-402e-8cc0-cdf8b05a01d5\",\"order_revision\":2,\"project_id\":\"8a954c05-7e52-4d12-bde7-5461a6b7deca\",\"request_sha256\":\"9f0ba03aff57e67cb2caf92739118c14a140b7c0137861e072dbbe4dbce5f918\",\"sources\":[{\"alias\":\"input-0001\",\"name\":\"Workspace\"}]},\"order_id\":\"caa08e3f-edc1-402e-8cc0-cdf8b05a01d5\",\"preflight\":{\"kind\":\"owner\",\"review\":{\"access_mode\":\"read_only\",\"allowed_tools\":[\"list_artifacts\",\"read_artifact\",\"request_input\",\"list_files\",\"read_text_file\",\"stat_file\",\"document_read\"],\"budgets\":{\"max_output_tokens\":1024,\"max_seconds\":180,\"max_steps\":32,\"max_total_tokens\":4096},\"executor\":\"local-v2\",\"max_parallel\":1,\"name\":\"Invoice OCR browser check\",\"policy_revision\":1,\"ready\":true,\"roles\":[],\"version_revision\":2,\"workflow\":{\"definition_sha256\":\"1758998c60e8e3b1489025b0541d54fbd8d3a0dc4a14a3eb08b94263e9f86f40\",\"inputs\":{\"source_path\":\"invoice.pdf\",\"source_sha256\":\"70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f\"},\"plan_sha256\":\"75fa6b4821bb1aa8e5bfc8966fa618cfe773f6d219cf7a4158f6c268e76695f7\",\"version_id\":\"f7ce7549-040a-4cc9-8433-3f2fe2e6ad06\",\"workflow_id\":\"c326d949-7424-4705-931a-2660bb4891b5\"}}},\"project_id\":\"8a954c05-7e52-4d12-bde7-5461a6b7deca\",\"request_sha256\":\"9513d00317737f1a8b809accc7755439cc6aea8beee4bf15f0a30e57a402ceea\",\"spec_sha256\":\"4ea55ff4b1697fc5e3fc4aa5a07f8160c0e36cc5da7d237fce9d2d411a0e0234\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"5194e46b-f568-45f7-91a1-212dd9bee5b6\"},\"engine_revision\":\"9d0c49f99399f6d3df579a6a95605f7d9e7acdafb935da57fee6b78a06ebec20\",\"kind\":\"document_engine\"},\"workspace\":{\"id\":\"81cc85d1-b73a-4688-87df-475f30615d56\",\"input\":{\"manifest_sha256\":\"083d3316e5019e4f790d8f330041ce91f0fbc9011989ef052506bbb1e143c83b\",\"sha256\":\"03bc83a75e0dbfe4c976fce44fc0012320afe231c00d7ca3a3ff033b399a0287\",\"snapshot_id\":\"76187b4d-46a2-4f65-bf94-0b1649f13fc4\"}}}",
+    "sha256": "2152971c0cbb659ed02ef27abd05807bf6301c5eadeaa2ce4cfed7d043fbcda3",
+    "committed_run_id": null,
+    "retired": false
+  }
+}

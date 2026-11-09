@@ -1,0 +1,6 @@
+CREATE TABLE team_recovery_runs(run_id TEXT PRIMARY KEY REFERENCES team_runs(id),revision BIGINT NOT NULL,scope_sha256 TEXT NOT NULL,journal_version BIGINT NOT NULL);
+CREATE TABLE team_effect_intents(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES team_runs(id),slot TEXT NOT NULL,attempt BIGINT NOT NULL,sequence BIGINT NOT NULL,kind TEXT NOT NULL,state TEXT NOT NULL,request_sha256 TEXT NOT NULL,scope_sha256 TEXT NOT NULL,dispatch_owner TEXT NOT NULL,permit_token TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(run_id,slot,attempt));
+CREATE INDEX team_effect_run_sequence ON team_effect_intents(run_id,sequence);
+CREATE TABLE team_effect_receipts(effect_id TEXT PRIMARY KEY REFERENCES team_effect_intents(id),outcome TEXT NOT NULL,source TEXT NOT NULL,payload TEXT NOT NULL,result TEXT);
+CREATE TABLE team_graph_checkpoints(run_id TEXT NOT NULL REFERENCES team_runs(id),step_id TEXT NOT NULL,scope_sha256 TEXT NOT NULL,response TEXT NOT NULL,PRIMARY KEY(run_id,step_id));
+CREATE TABLE team_recovery_operations(run_id TEXT NOT NULL REFERENCES team_runs(id),actor_id TEXT NOT NULL,idempotency_key TEXT NOT NULL,request_sha256 TEXT NOT NULL,receipt TEXT NOT NULL,PRIMARY KEY(run_id,actor_id,idempotency_key));

@@ -1,0 +1,10 @@
+# Optional management overlay. Only the witness PUBLIC key reaches management.
+services:
+  management:
+    environment:
+      COWORK_AUDIT_WITNESS_ID: ${COWORK_AUDIT_WITNESS_ID:?Independent witness identity required}
+      COWORK_AUDIT_WITNESS_PUBLIC_KEY_FILE: /run/secrets/audit_witness_public_key
+    secrets: [audit_witness_public_key]
+secrets:
+  audit_witness_public_key:
+    file: ${COWORK_AUDIT_WITNESS_PUBLIC_KEY_FILE:?Independent witness public PEM key required}

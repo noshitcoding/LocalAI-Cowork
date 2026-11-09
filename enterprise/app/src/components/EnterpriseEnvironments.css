@@ -1,0 +1,51 @@
+.enterprise-management .enterprise-environments { display: grid; gap: 20px; margin-block: 24px; padding: 24px; border: 1px solid var(--border-color); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-environments .enterprise-environments-heading { display: flex; align-items: flex-start; gap: 16px; }
+.enterprise-environments-heading > div { flex: 1; min-width: 0; }
+.enterprise-environments h3, .enterprise-environments h4, .enterprise-environments p { margin: 0; }
+.enterprise-environments h3 { margin-block: 8px; font-size: 18px; font-weight: 600; }
+.enterprise-environments h4 { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; }
+.enterprise-environments p { color: var(--text-secondary); font-size: 12px; line-height: 1.65; }
+.enterprise-environments-eyebrow { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.enterprise-environments-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.enterprise-environments-summary > div { display: flex; align-items: flex-start; gap: 10px; padding: 14px; border: 1px solid var(--border-light); border-radius: var(--radius-surface); }
+.enterprise-environments-summary span { display: grid; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.enterprise-environments-summary strong { color: var(--text-primary); font-size: 13px; font-weight: 500; }
+.enterprise-environments-note, .enterprise-environments-notice { padding: 12px 14px; background: var(--bg-primary); border-radius: var(--radius-surface); }
+.enterprise-environments .enterprise-environments-notice { border-left: 3px solid var(--warning); }
+.enterprise-environments-block, .enterprise-template-detail { display: grid; min-width: 0; gap: 14px; }
+.enterprise-environments-block + .enterprise-environments-block { padding-top: 20px; border-top: 1px solid var(--border-light); }
+.enterprise-environments label { min-width: 0; font-size: 12px; }
+.enterprise-environments input:not([type='checkbox']), .enterprise-environments select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; background: var(--bg-white); }
+.enterprise-environments .ui-button { display: inline-flex; width: fit-content; min-height: 36px; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+.enterprise-environments .ui-button--primary { border-color: var(--accent-border); background: var(--accent-fill); color: var(--accent-foreground); }
+.enterprise-environments .ui-button--secondary { background: var(--bg-white); }
+.enterprise-environments .ui-button--ghost { border-color: transparent; background: transparent; }
+.enterprise-environments .ui-button--danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+.enterprise-environments-job { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: var(--radius-surface); color: var(--text-secondary); font-size: 12px; }
+.enterprise-environments code { overflow-wrap: anywhere; font-size: 11px; }
+.enterprise-physical-backends, .enterprise-environment-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+.enterprise-physical-backends > article, .enterprise-environment-card { display: grid; min-width: 0; align-content: start; gap: 14px; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-surface); background: var(--bg-white); }
+.enterprise-environment-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.enterprise-environment-card-heading strong { font-size: 13px; font-weight: 500; }
+.enterprise-environment-card-heading h4 { overflow-wrap: anywhere; }
+.enterprise-runtime-status { width: fit-content; padding: 3px 7px; border: 1px solid var(--border-light); border-radius: var(--radius-label); color: var(--text-secondary); background: var(--bg-primary); font-size: 11px; white-space: nowrap; }
+.enterprise-runtime-status[data-state='running'] { border-color: color-mix(in srgb, var(--success) 45%, var(--border-color)); color: var(--success); }
+.enterprise-runtime-status[data-state='held'], .enterprise-runtime-status[data-state='failed'] { border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); color: var(--warning); }
+.enterprise-environments .enterprise-environment-create { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 4px 0 0; padding-top: 20px; border-top: 1px solid var(--border-light); }
+.enterprise-environment-create h4, .enterprise-environment-wide { grid-column: 1 / -1; }
+.enterprise-environments .enterprise-environment-create .enterprise-check { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; }
+.enterprise-environments input[type='checkbox'] { accent-color: var(--accent-text); }
+.enterprise-environments details summary { width: fit-content; cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+.enterprise-template-register, .enterprise-environment-delete { padding-top: 14px; border-top: 1px solid var(--border-light); }
+.enterprise-environments .enterprise-template-register form { display: grid; gap: 12px; margin: 14px 0 0; }
+.enterprise-template-detail > code { padding: 10px 12px; background: var(--bg-primary); }
+.enterprise-environment-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; padding-block: 12px; border-block: 1px solid var(--border-light); }
+.enterprise-environment-resources dt { display: flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; }
+.enterprise-environment-resources dd { margin: 6px 0 0; font-size: 12px; font-weight: 500; }
+.enterprise-environment-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.enterprise-environment-runtime code { display: block; margin-top: 10px; }
+.enterprise-environment-delete[open] { display: grid; gap: 12px; }
+.enterprise-environment-delete summary { color: var(--danger); }
+.enterprise-environments-empty { display: grid; justify-items: center; gap: 10px; padding: 32px 16px; border: 1px dashed var(--border-color); color: var(--text-muted); text-align: center; }
+.enterprise-environments-empty strong { color: var(--text-primary); font-size: 13px; font-weight: 500; }
+@media (max-width: 700px) { .enterprise-management .enterprise-environments { padding: 16px; } .enterprise-environments-summary { grid-template-columns: 1fr; } .enterprise-environments .enterprise-environment-create { grid-template-columns: 1fr; } .enterprise-environments .ui-button { min-height: 42px; } }

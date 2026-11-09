@@ -1,0 +1,4 @@
+-- Canonical V1 projections remain separate from immutable operation receipts and raw local metadata.
+CREATE TABLE android_wire_projection_sources (owner_id TEXT NOT NULL REFERENCES identity_subjects(id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, applied_digest TEXT, PRIMARY KEY(owner_id,entity_type,entity_id), UNIQUE(entity_type,entity_id));
+CREATE TABLE android_personal_messages (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES identity_subjects(id), project_id TEXT NOT NULL REFERENCES android_personal_projects(id), thread_id TEXT NOT NULL REFERENCES android_personal_threads(id), revision BIGINT NOT NULL, payload TEXT NOT NULL, deleted BIGINT NOT NULL CHECK(deleted IN(0,1)));
+CREATE INDEX android_personal_messages_thread ON android_personal_messages(owner_id,thread_id,deleted);

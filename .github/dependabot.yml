@@ -1,28 +1,26 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: /app
+    directory: /
     schedule:
       interval: weekly
-    groups:
-      frontend-dependencies:
-        patterns:
-          - '*'
-
   - package-ecosystem: cargo
-    directory: /app/src-tauri
+    directory: /
     schedule:
       interval: weekly
-    groups:
-      rust-dependencies:
-        patterns:
-          - '*'
-
+  - package-ecosystem: cargo
+    directory: /apps/desktop/src-tauri
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /enterprise
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /enterprise/app
+    schedule:
+      interval: weekly
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    groups:
-      workflow-actions:
-        patterns:
-          - '*'

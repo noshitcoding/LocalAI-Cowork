@@ -1,0 +1,70 @@
+{
+  "format_version": 1,
+  "name": "Document workflow",
+  "mode": {
+    "mode": "sequential"
+  },
+  "failure": "stop",
+  "rights": {
+    "tools": [
+      "document_read",
+      "document_write",
+      "image_edit"
+    ],
+    "folders": [],
+    "current_workspace": true
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 180,
+    "max_output_tokens": 1024,
+    "max_total_tokens": 131072
+  },
+  "roles": [
+    {
+      "id": "worker",
+      "instructions": "Use the selected working copy. Produce a document only through the declared tools.",
+      "provider_id": "model",
+      "provider_revision": 1,
+      "rights": {
+        "tools": [
+          "document_read",
+          "document_write",
+          "image_edit"
+        ],
+        "folders": [],
+        "current_workspace": true
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 180,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 131072
+      },
+      "delegate_to": []
+    }
+  ],
+  "steps": [
+    {
+      "id": "document",
+      "role_id": "worker",
+      "goal": "Read or create the selected document.",
+      "dependencies": [],
+      "rights": {
+        "tools": [
+          "document_read",
+          "document_write",
+          "image_edit"
+        ],
+        "folders": [],
+        "current_workspace": true
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 180,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 131072
+      }
+    }
+  ]
+}

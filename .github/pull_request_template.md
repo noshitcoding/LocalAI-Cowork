@@ -4,7 +4,7 @@ Describe the user-facing problem and the focused change that solves it.
 
 ## Validation
 
-- [ ] I ran the relevant frontend checks (`npm run verify` where practical).
+- [ ] I ran the relevant workspace checks (V2: contracts, typecheck, tests and build).
 - [ ] I ran relevant Rust checks for backend changes.
 - [ ] I added or updated tests for changed behavior.
 - [ ] I updated public documentation when behavior or setup changed.

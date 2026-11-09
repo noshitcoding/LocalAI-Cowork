@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "management_origin": "https://management.example.com",
+  "instance_domain": "instances.example.com",
+  "certificate_file": "/srv/cowork-operator/tls/fullchain.pem",
+  "private_key_file": "/srv/cowork-operator/tls/privkey.pem",
+  "management_secrets": "/srv/cowork-operator/management",
+  "platform_policy_file": "/srv/cowork-operator/platform-policy.json",
+  "provisioner_configuration_file": "/srv/cowork-operator/executor_configuration.json",
+  "instance_passkeys_enabled": false,
+  "server_image": "cowork-server@sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST",
+  "web_image": "cowork-web@sha256:REPLACE_WITH_64_LOWERCASE_HEX_DIGEST",
+  "services_network": "cowork-services",
+  "routing_network": "cowork-routing"
+}

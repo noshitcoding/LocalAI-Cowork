@@ -1,0 +1,4 @@
+CREATE TABLE team_blobs (id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES identity_organizations(id), project_id TEXT NOT NULL REFERENCES tenant_projects(id), revision BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX team_blobs_project ON team_blobs(team_id,project_id,id);
+CREATE TABLE team_blob_versions (blob_id TEXT NOT NULL REFERENCES team_blobs(id), version BIGINT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(blob_id,version));
+CREATE TABLE team_blob_intents (id TEXT PRIMARY KEY, team_id TEXT NOT NULL REFERENCES identity_organizations(id), project_id TEXT NOT NULL REFERENCES tenant_projects(id), blob_id TEXT NOT NULL REFERENCES team_blobs(id), creator_id TEXT NOT NULL REFERENCES identity_subjects(id), idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE(team_id,creator_id,idempotency_key));

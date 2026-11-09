@@ -1,0 +1,112 @@
+name: ${COWORK_PROJECT:?Run lifecycle.py init first}
+x-daemon: &daemon
+  image: ${COWORK_IMAGE:-localai-cowork-v2:local}
+  build:
+    context: ${COWORK_SOURCE_ROOT:?}
+    dockerfile: deploy/v2/Dockerfile
+  user: "${COWORK_UID:-1000}:${COWORK_GID:-1000}"
+  init: true
+  restart: unless-stopped
+  stop_signal: SIGINT
+  stop_grace_period: 45s
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  tmpfs: [/tmp:size=256m,mode=1777]
+  shm_size: 256m
+  environment: &environment
+    COWORK_DATA_DIR: /var/lib/cowork
+    COWORK_WEB_DIR: /opt/cowork/web
+    COWORK_BIND_ADDRESS: 0.0.0.0
+    COWORK_PORT: "43821"
+    COWORK_PUBLIC_ORIGIN: https://${COWORK_SITE:?}
+    COWORK_DATABASE_HOST: postgres
+    COWORK_DATABASE_NAME: cowork
+    COWORK_DATABASE_USER: cowork
+    COWORK_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+    COWORK_ENABLE_TENANT_IDENTITY: "1"
+    COWORK_TEAM_MCP_ALLOWED_ORIGINS: ${COWORK_TEAM_MCP_ALLOWED_ORIGINS:-}
+    COWORK_TEAM_LITELLM_HTTP_ORIGINS: ${COWORK_TEAM_LITELLM_HTTP_ORIGINS:-}
+    COWORK_PASSKEY_ORIGIN: ${COWORK_PASSKEY_ORIGIN:-}
+    COWORK_PASSKEY_RP_ID: ${COWORK_PASSKEY_RP_ID:-}
+    COWORK_FCM_SERVICE_ACCOUNT_FILE: ${COWORK_FCM_SERVICE_ACCOUNT_FILE:-}
+    COWORK_FLEET_KEY_FILE: ${COWORK_FLEET_KEY_FILE:-}
+    COWORK_ORGANISATION_ID: ${COWORK_ORGANISATION_ID:-}
+    COWORK_INSTANCE_ID: ${COWORK_INSTANCE_ID:-}
+    COWORK_S3_ENDPOINT: ${COWORK_S3_ENDPOINT:-}
+    COWORK_S3_BUCKET: ${COWORK_S3_BUCKET:-}
+    COWORK_S3_REGION: ${COWORK_S3_REGION:-us-east-1}
+  secrets: [postgres_password]
+  volumes: ["${COWORK_DEPLOY_ROOT:?}/data:/var/lib/cowork"]
+  networks: [internal, external]
+  depends_on:
+    postgres: {condition: service_healthy}
+services:
+  postgres:
+    image: ${COWORK_POSTGRES_IMAGE:-postgres:17-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cowork
+      POSTGRES_DB: cowork
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: ["${COWORK_DEPLOY_ROOT:?}/postgres:/var/lib/postgresql/data"]
+    networks: [internal]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U cowork -d cowork"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    <<: *daemon
+    command: [--no-worker]
+  worker:
+    <<: *daemon
+    command: [--worker-only]
+    healthcheck: {disable: true}
+    depends_on:
+      postgres: {condition: service_healthy}
+      api: {condition: service_healthy}
+  proxy:
+    image: ${COWORK_CADDY_IMAGE:-caddy:2.10-alpine}
+    restart: unless-stopped
+    user: "${COWORK_UID:-1000}:${COWORK_GID:-1000}"
+    cap_add: [NET_BIND_SERVICE]
+    environment: {COWORK_SITE: "${COWORK_SITE:?}"}
+    ports: ["${COWORK_HTTPS_PORT:-443}:443", "${COWORK_HTTP_PORT:-80}:80"]
+    volumes:
+      - "${COWORK_SOURCE_ROOT:?}/deploy/v2/Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "${COWORK_DEPLOY_ROOT:?}/caddy-data:/data"
+      - "${COWORK_DEPLOY_ROOT:?}/caddy-config:/config"
+    depends_on: [api]
+    networks: [internal, external]
+  minio:
+    image: ${COWORK_MINIO_IMAGE:-localai-cowork-minio:operator}
+    build: {context: "${COWORK_SOURCE_ROOT:?}", dockerfile: deploy/v2/Dockerfile.minio}
+    profiles: [s3]
+    command: [server, /data]
+    user: "${COWORK_UID:-1000}:${COWORK_GID:-1000}"
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
+    secrets: [minio_access_key, minio_secret_key]
+    volumes: ["${COWORK_DEPLOY_ROOT:?}/minio:/data"]
+    networks: [internal]
+  minio-init:
+    image: ${COWORK_MINIO_IMAGE:-localai-cowork-minio:operator}
+    build: {context: "${COWORK_SOURCE_ROOT:?}", dockerfile: deploy/v2/Dockerfile.minio}
+    profiles: [s3]
+    entrypoint: [/bin/sh, -ec]
+    command: ['mc alias set own http://minio:9000 "$$(cat /run/secrets/minio_access_key)" "$$(cat /run/secrets/minio_secret_key)"; mc mb --ignore-existing own/cowork']
+    secrets: [minio_access_key, minio_secret_key]
+    depends_on: [minio]
+    restart: on-failure
+    networks: [internal]
+secrets:
+  postgres_password: {file: "${COWORK_DEPLOY_ROOT:?}/secrets/postgres_password"}
+  minio_access_key: {file: "${COWORK_DEPLOY_ROOT:?}/secrets/minio_access_key"}
+  minio_secret_key: {file: "${COWORK_DEPLOY_ROOT:?}/secrets/minio_secret_key"}
+networks:
+  internal: {internal: true}
+  external: {}

@@ -1,0 +1,7 @@
+import {describe,it,expect} from "vitest";
+import {actorSkillLearningDraft,actorSkillLearningHistory,type ActorSkillLearningOutcome} from "./actorSkillLearning";
+const outcome:ActorSkillLearningOutcome={run_id:"run",project_id:"project",skill_id:"skill",skill_revision:1,node_ids:["reader"],recorded_at:1,state:"completed",reason:"Observed execution, no quality rating",observed_tools:["browser"],source_definition:{prompt_template:"Original {{input}}",auto_learn:true},proposed_prompt_template:"Original {{input}}\nReview the actual result."};
+describe("Actor skill learning stays an explicit versioned draft",()=>{
+ it("retains frozen source evidence and preserves the current editor CAS baseline",()=>{expect(actorSkillLearningHistory({items:[outcome]},"project","skill")).toEqual([outcome]);expect(actorSkillLearningDraft(outcome,{id:"skill",revision:4,project_id:"project"})).toEqual({expected_revision:4,prompt_template:outcome.proposed_prompt_template,source_revision:1});expect(outcome.skill_revision).toBe(1);});
+ it("rejects foreign scope, wrong skill and oversized proposal without auto-adoption",()=>{expect(()=>actorSkillLearningHistory({items:[outcome]},"other","skill")).toThrow();expect(()=>actorSkillLearningDraft(outcome,{id:"other",revision:1,project_id:null})).toThrow();expect(()=>actorSkillLearningHistory({items:[{...outcome,proposed_prompt_template:"🧠".repeat(16001)}]},"project","skill")).toThrow();expect(()=>actorSkillLearningDraft({...outcome,proposed_prompt_template:null},{id:"skill",revision:4,project_id:null})).toThrow();});
+});

@@ -1,0 +1,11 @@
+{
+  "identifier": "main-window",
+  "description": "Minimal V2 WebView capability; application logic stays in the daemon.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy"
+  ]
+}

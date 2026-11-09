@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalAI Cowork V2 — 2.0.0-alpha.8 preview | LocalAI Cowork</title>
+  <meta name="description" content="The next LocalAI Cowork V2 preview: scope, package targets, installation boundaries, known limitations and publication status.">
+  <meta name="robots" content="index, follow, max-image-preview:large"><meta name="theme-color" content="#0A0A0B">
+  <link rel="canonical" href="https://noshitcoding.github.io/LocalAI-Cowork/preview/"><link rel="icon" href="../assets/logo.png" type="image/png">
+  <link rel="stylesheet" href="../styles.css">
+  <meta property="og:type" content="article"><meta property="og:site_name" content="LocalAI Cowork">
+  <meta property="og:title" content="LocalAI Cowork V2 — 2.0.0-alpha.8 preview"><meta property="og:description" content="The next LocalAI Cowork V2 preview: scope, package targets, installation boundaries, known limitations and publication status.">
+  <meta property="og:url" content="https://noshitcoding.github.io/LocalAI-Cowork/preview/"><meta property="og:image" content="https://noshitcoding.github.io/LocalAI-Cowork/assets/github-social-preview.png">
+  <link rel="alternate" hreflang="en" href="https://noshitcoding.github.io/LocalAI-Cowork/preview/"><link rel="alternate" hreflang="de" href="https://noshitcoding.github.io/LocalAI-Cowork/de/preview/">
+  <meta name="twitter:card" content="summary_large_image"><script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "LocalAI Cowork V2 — 2.0.0-alpha.8 preview", "dateModified": "2026-11-09", "inLanguage": "en", "mainEntityOfPage": "https://noshitcoding.github.io/LocalAI-Cowork/preview/", "author": {"@type": "Organization", "name": "LocalAI Cowork contributors"}}</script>
+</head><body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="nav shell" aria-label="Main navigation">
+    <a class="brand" href="../"><img src="../assets/logo.png" width="128" height="128" alt=""><span class="brand-name">LocalAI Cowork</span><span class="brand-badge">V2 preview</span></a>
+    <div class="nav-links"><a href="../#product">Product</a><a href="../linux/">Linux</a><a href="../privacy.html">Privacy</a><a class="nav-cta" href="../preview/">V2 preview</a></div>
+  </nav></header>
+  <main id="main" class="content-page shell"><article>
+<p class="eyebrow">V2 // Preview preparation // 9 November 2026</p>
+<h1>A new foundation.<br>A clearly scoped preview.</h1>
+<p class="content-lead">LocalAI Cowork V2 brings a shared Rust core and web interface to the desktop workspace. The next version is <code>2.0.0-alpha.8</code>. It is being prepared; no public V2 download is available from this page yet.</p>
+<div class="notice"><strong>Choose your channel:</strong> existing public V1 downloads remain on <a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">v0.3.1</a>. The reserved V2 release destination is <a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v2.0.0-alpha.8">v2.0.0-alpha.8</a>; it becomes usable only after publication. An old V1 download is not the V2 preview.</div>
+<figure class="product-stage"><div class="product-shot"><img src="../assets/app-preview-v2.png" width="1440" height="1000" alt="LocalAI Cowork V2 development preview showing a project chat and visible model and approval controls" loading="lazy"></div><figcaption>Current V2 development interface in a disposable workspace. This screenshot is not an installer acceptance result.</figcaption></figure>
+<h2>What to evaluate in V2</h2>
+<div class="runtime-grid">
+<article class="runtime-card"><span>01 / WORKSPACE</span><h3>Model choice and visible approvals.</h3><p>Projects, chat, selected file context, local Ollama or compatible hosted model endpoints, MCP tools and explicit execution plans.</p></article>
+<article class="runtime-card"><span>02 / WORKFLOWS</span><h3>Reusable steps with review.</h3><p>Typed inputs, connected results, conditions, branches, relative waits and human review forms. Availability depends on configured tools and permissions.</p></article>
+<article class="runtime-card"><span>03 / DOCUMENTS</span><h3>Selected sources and checked results.</h3><p>Guided document selection, source inspection, optional document engines, German/English OCR and editable extraction proposals. Review generated content before use.</p></article>
+<article class="runtime-card"><span>04 / KNOWLEDGE</span><h3>Project and personal context.</h3><p>Topic folders, notes, imports and graphs from tags and sources. Automatic semantic entity extraction is still in development.</p></article>
+</div>
+<h2>Package targets and requirements</h2>
+<table class="comparison"><thead><tr><th>Target</th><th>Planned package</th><th>Boundary</th></tr></thead><tbody>
+<tr><th>Windows x64</th><td>NSIS installer, current user</td><td>Separate V2 preview identity; final installer acceptance is required.</td></tr>
+<tr><th>Linux x86_64</th><td>DEB and AppImage</td><td>glibc 2.39 or newer, GTK 3 and WebKitGTK 4.1. See <a href="../linux/">Linux requirements</a>.</td></tr>
+<tr><th>Other platforms</th><td>No V2 preview package promised</td><td>RPM, macOS, ARM64, musl-only Linux and Android are outside this desktop preview.</td></tr>
+</tbody></table>
+<h2>What remains experimental</h2>
+<ul><li>Managed runtimes, registered runners, remote result retrieval and result adoption require additional service integration and installed-app acceptance.</li>
+<li>The complete invoice/OCR/accounting chain, absolute workflow deadlines and event waits are not complete preview promises.</li>
+<li>Windows document-engine paths have a preflight check; that check is not full long-path support.</li>
+<li>Enterprise, Android, multi-device sync, identity-provider and container/cluster operation have separate deployment and acceptance requirements.</li>
+<li>Signing, the update feed and recovery must be verified against the exact published package. No automatic V1-to-V2 update is promised.</li></ul>
+<h2>Start with a separate profile</h2>
+<ol><li>Keep your current V1 installation and a backup of its data.</li><li>After publication, select the V2 package on the explicitly versioned preview release page and verify its checksums and release notes.</li><li>Use the V2 preview's own profile and non-sensitive copies of working files. Never point V2 at a V1 database.</li><li>Choose the intended local sidecar or compatible self-hosted V2 server, then configure a model and the permissions needed for one small task.</li><li>Review the plan, tool approval, resulting file and restart behavior before expanding usage.</li></ol>
+<p>Historical import is a separate reviewed operation. It does not reactivate old runs, credentials, approvals, schedules or outgoing operations. V1 remains the rollback application; V2 does not downgrade its database into a V1 profile.</p>
+<h2>Publication checklist</h2>
+<p>The preview will be published only with a reproducible source revision, passing release checks, fresh package receipts, checksums, a software bill of materials, exact signing/update status and installation/recovery results. Development test results qualify their tested source and scope; they are not a substitute for package acceptance.</p>
+<div class="actions"><a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">Existing V1 v0.3.1 release</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/releases">All published releases</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v2.0.0-alpha.8">V2 release destination — after publication</a></div>
+<p lang="de">Die nächste V2-Preview wird vorbereitet und ist noch nicht veröffentlicht. Die bisherigen V1-Downloads bleiben erreichbar. V2 verwendet ein eigenes Profil; vorhandene V1-Datenbanken dürfen nicht direkt geöffnet werden. <a href="../de/preview/">Vollständige Hinweise auf Deutsch</a>.</p></article></main>
+  <footer class="site-footer"><div class="footer-row shell"><span>© 2026 LocalAI Cowork · Apache-2.0</span><div class="footer-links"><a href="../privacy.html">Privacy</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">V1 v0.3.1</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/issues">Issues</a></div></div></footer>
+</body></html>

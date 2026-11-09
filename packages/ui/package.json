@@ -1,0 +1,21 @@
+{
+  "name": "@cowork/ui",
+  "version": "2.0.0-alpha.8",
+  "private": true,
+  "type": "module",
+  "exports": "./src/App.tsx",
+  "dependencies": {
+    "@cowork/client": "*",
+    "@noble/hashes": "2.0.1",
+    "@novnc/novnc": "1.7.0",
+    "@tanstack/react-query": "5.101.4",
+    "@tauri-apps/api": "2.11.1",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "lucide-react": "1.30.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "snarkdown": "2.0.0",
+    "zustand": "5.0.14"
+  }
+}

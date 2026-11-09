@@ -1,0 +1,11 @@
+# Opt-in overlay after enterprise/docker-compose.production.yml. Private files
+# are operator material, mounted read-only; this does not enable tenant sync.
+services:
+  management:
+    environment:
+      COWORK_ORGANISATION_DIRECTORY_FILE: /run/cowork-directory/connectors.json
+    volumes:
+      - type: bind
+        source: ${COWORK_DIRECTORY_PRIVATE_DIR:?Reviewed private connector directory required}
+        target: /run/cowork-directory
+        read_only: true

@@ -1,0 +1,262 @@
+{
+  "format_version": 3,
+  "name": "Native document report",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 1
+  },
+  "failure": "stop",
+  "rights": {
+    "current_workspace": true,
+    "tools": [
+      "document_read",
+      "document_write"
+    ],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 180,
+    "max_output_tokens": 1024,
+    "max_total_tokens": 4096
+  },
+  "roles": [],
+  "steps": [],
+  "documents": {
+    "read-source": {
+      "name": "Read selected source",
+      "dependencies": [],
+      "folder": {
+        "kind": "current_workspace"
+      },
+      "operation": {
+        "kind": "read_text",
+        "path_input": "path",
+        "sha256_input": "sha",
+        "offset": 0
+      },
+      "rights": {
+        "current_workspace": true,
+        "tools": [
+          "document_read",
+          "document_write"
+        ],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 180,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 4096
+      }
+    },
+    "write-report": {
+      "name": "Create a report",
+      "dependencies": [
+        "read-source"
+      ],
+      "folder": {
+        "kind": "current_workspace"
+      },
+      "operation": {
+        "kind": "create",
+        "format": "docx",
+        "path_input": "path",
+        "content_input": "content"
+      },
+      "rights": {
+        "current_workspace": true,
+        "tools": [
+          "document_read",
+          "document_write"
+        ],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 180,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 4096
+      }
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "source_path": {
+          "type": "text"
+        },
+        "source_sha256": {
+          "type": "text"
+        }
+      }
+    },
+    "steps": {
+      "read-source": {
+        "inputs": {
+          "path": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/source_path"
+            }
+          },
+          "sha": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/source_sha256"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "source": {
+              "type": "object",
+              "fields": {
+                "folder_id": {
+                  "type": "text"
+                },
+                "path": {
+                  "type": "text"
+                },
+                "sha256": {
+                  "type": "text"
+                }
+              }
+            },
+            "text": {
+              "type": "text"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "diagnostics": {
+              "type": "list",
+              "item": {
+                "type": "object",
+                "fields": {
+                  "severity": {
+                    "type": "text"
+                  },
+                  "message": {
+                    "type": "text"
+                  },
+                  "file": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "text"
+                    }
+                  },
+                  "line": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "max_items": 64
+            },
+            "diagnostics_truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "write-report": {
+        "inputs": {
+          "path": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "literal",
+              "value": "report.docx"
+            }
+          },
+          "content": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "step",
+              "step_id": "read-source",
+              "pointer": "/text"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "file": {
+              "type": "object",
+              "fields": {
+                "folder_id": {
+                  "type": "text"
+                },
+                "path": {
+                  "type": "text"
+                },
+                "sha256": {
+                  "type": "text"
+                },
+                "mime_type": {
+                  "type": "text"
+                },
+                "bytes": {
+                  "type": "integer"
+                }
+              }
+            },
+            "diagnostics": {
+              "type": "list",
+              "item": {
+                "type": "object",
+                "fields": {
+                  "severity": {
+                    "type": "text"
+                  },
+                  "message": {
+                    "type": "text"
+                  },
+                  "file": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "text"
+                    }
+                  },
+                  "line": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "max_items": 64
+            },
+            "diagnostics_truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

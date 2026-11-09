@@ -1,0 +1,229 @@
+{
+  "format_version": 3,
+  "name": "Native conditional routing",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 2
+  },
+  "failure": "continue_independent",
+  "rights": {
+    "tools": [],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 64,
+    "max_seconds": 600,
+    "max_output_tokens": 2048,
+    "max_total_tokens": 65536
+  },
+  "roles": [],
+  "steps": [],
+  "controls": {
+    "large": {
+      "name": "Amount above 100",
+      "dependencies": [],
+      "operation": {
+        "kind": "condition",
+        "predicate": {
+          "operator": "greater",
+          "input": "amount",
+          "value": 100
+        }
+      }
+    },
+    "review": {
+      "name": "Needs review",
+      "dependencies": [
+        "large"
+      ],
+      "operation": {
+        "kind": "compose"
+      }
+    },
+    "automatic": {
+      "name": "Automatic route",
+      "dependencies": [
+        "large"
+      ],
+      "operation": {
+        "kind": "compose"
+      }
+    },
+    "choice": {
+      "name": "Chosen result",
+      "dependencies": [
+        "review",
+        "automatic"
+      ],
+      "operation": {
+        "kind": "select",
+        "candidates": [
+          {
+            "step_id": "review",
+            "pointer": ""
+          },
+          {
+            "step_id": "automatic",
+            "pointer": ""
+          }
+        ]
+      }
+    },
+    "results": {
+      "name": "Selected results",
+      "dependencies": [
+        "review",
+        "automatic"
+      ],
+      "operation": {
+        "kind": "collect",
+        "candidates": [
+          {
+            "step_id": "review",
+            "pointer": ""
+          },
+          {
+            "step_id": "automatic",
+            "pointer": ""
+          }
+        ]
+      }
+    }
+  },
+  "gates": {
+    "review": {
+      "step_id": "large",
+      "when": true
+    },
+    "automatic": {
+      "step_id": "large",
+      "when": false
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "amount": {
+          "type": "number"
+        }
+      }
+    },
+    "steps": {
+      "large": {
+        "inputs": {
+          "amount": {
+            "value_type": {
+              "type": "number"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/amount"
+            }
+          }
+        },
+        "output": {
+          "type": "boolean"
+        }
+      },
+      "review": {
+        "inputs": {
+          "amount": {
+            "value_type": {
+              "type": "number"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/amount"
+            }
+          },
+          "route": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "literal",
+              "value": "review"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "amount": {
+              "type": "number"
+            },
+            "route": {
+              "type": "text"
+            }
+          }
+        }
+      },
+      "automatic": {
+        "inputs": {
+          "amount": {
+            "value_type": {
+              "type": "number"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/amount"
+            }
+          },
+          "route": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "literal",
+              "value": "automatic"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "amount": {
+              "type": "number"
+            },
+            "route": {
+              "type": "text"
+            }
+          }
+        }
+      },
+      "choice": {
+        "inputs": {},
+        "output": {
+          "type": "object",
+          "fields": {
+            "amount": {
+              "type": "number"
+            },
+            "route": {
+              "type": "text"
+            }
+          }
+        }
+      },
+      "results": {
+        "inputs": {},
+        "output": {
+          "type": "list",
+          "item": {
+            "type": "object",
+            "fields": {
+              "amount": {
+                "type": "number"
+              },
+              "route": {
+                "type": "text"
+              }
+            }
+          },
+          "max_items": 2
+        }
+      }
+    }
+  }
+}

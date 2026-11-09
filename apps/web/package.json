@@ -1,0 +1,20 @@
+{
+  "name": "@cowork/web",
+  "private": true,
+  "type": "module",
+  "version": "2.0.0-alpha.8",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5175 --strictPort",
+    "build": "tsc --noEmit -p ../../tsconfig.json && vite build"
+  },
+  "dependencies": {
+    "@cowork/ui": "*",
+    "@cowork/client": "*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.5",
+    "vite": "8.3.6"
+  }
+}

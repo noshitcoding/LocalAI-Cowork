@@ -1,3 +1,12 @@
-app/src-tauri/python/crew_runtime/requirements.txt text eol=lf
-app/src-tauri/python/crew_runtime/requirements.lock text eol=lf
-contracts/generated/**/*.json text eol=lf
+# Preserve the reviewed source bytes on every build platform. Formatters own
+# textual normalization; Git must not rewrite a frozen release input on checkout.
+* -text
+*.png -text
+*.ico -text
+*.jpg -text
+*.jpeg -text
+*.webp -text
+*.pdf -text
+*.zip -text
+*.gz -text
+*.sqlite -text

@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "docker_executable": "/usr/local/bin/docker",
+  "docker_socket": "/run/cowork-docker/docker.sock",
+  "host_id": "00000000-0000-4000-8000-000000000001",
+  "engine_id": "REPLACE_WITH_THE_SELECTED_DOCKER_ENGINE_ID",
+  "office": true,
+  "browser": true,
+  "github": false,
+  "terminal_program": "bash",
+  "image": "localai-cowork-tools@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "programs": {
+    "python": "/opt/cowork/python/bin/python",
+    "node": "/usr/local/bin/node",
+    "bash": "/bin/bash"
+  }
+}

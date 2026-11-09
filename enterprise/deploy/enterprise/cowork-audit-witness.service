@@ -1,0 +1,18 @@
+[Unit]
+Description=Independent Cowork management audit archive witness
+After=network.target
+
+[Service]
+User=cowork-audit-witness
+Group=cowork-audit-witness
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/open-cowork/scripts/enterprise-audit-lifecycle.py witness --archive /srv/cowork-audit-witness/archive --signing-key /srv/cowork-audit-witness/signing-key.pem --token-file /srv/cowork-audit-witness/witness-token --witness-id external-operator-1 --port 18095
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/cowork-audit-witness/archive
+
+[Install]
+WantedBy=multi-user.target

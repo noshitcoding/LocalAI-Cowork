@@ -1,0 +1,90 @@
+# Render only through scripts/prepare-enterprise-gateway.py. Operator domains are validated.
+map $http_upgrade $gateway_connection { default upgrade; '' close; }
+server {
+    listen 8080 default_server;
+    server_name _;
+    return 404;
+}
+server {
+    listen 8080;
+    server_name __MANAGEMENT_HOST__ "~^[0-9a-f]{32}\.__INSTANCE_DOMAIN_REGEX__$";
+    return 308 https://$host$request_uri;
+}
+server {
+    listen 8443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+server {
+    listen 8443 ssl;
+    server_name __MANAGEMENT_HOST__;
+    ssl_certificate /run/secrets/gateway_certificate;
+    ssl_certificate_key /run/secrets/gateway_private_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    if ($ssl_server_name != $host) { return 421; }
+    resolver 127.0.0.11 valid=5s ipv6=off;
+    set $management_backend management:8080;
+    root /usr/share/nginx/html;
+    access_log off;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    location = / { return 302 /management; }
+    location ^~ /management/runner/ { return 404; }
+    location ^~ /instances/ { return 404; }
+    location ~ ^/(management/v1/|management/scim/v2/|api/v1/|healthz$|readyz$) {
+        proxy_pass http://$management_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $gateway_connection;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        client_max_body_size 2m;
+    }
+    location /assets/ { try_files $uri =404; }
+    location / { try_files $uri $uri/ /index.html; }
+}
+server {
+    listen 8443 ssl;
+    server_name "~^(?<instance>[0-9a-f]{32})\.__INSTANCE_DOMAIN_REGEX__$";
+    ssl_certificate /run/secrets/gateway_certificate;
+    ssl_certificate_key /run/secrets/gateway_private_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    if ($ssl_server_name != $host) { return 421; }
+    resolver 127.0.0.11 valid=5s ipv6=off;
+    # A UUID label selects only the provisioner's fixed routing alias, never a client URL/IP.
+    set $instance_backend cowork-$instance-api:8080;
+    root /usr/share/nginx/html;
+    access_log off;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    location ^~ /management/ { return 404; }
+    location ^~ /instances/ { return 404; }
+    location ~ ^/(api/v1/|healthz$|readyz$) {
+        proxy_pass http://$instance_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Cowork-Instance-Key "";
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $gateway_connection;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        client_max_body_size 32m;
+    }
+    location /assets/ { try_files $uri =404; }
+    location / { try_files $uri $uri/ /index.html; }
+}

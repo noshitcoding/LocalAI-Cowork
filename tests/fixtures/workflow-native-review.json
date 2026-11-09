@@ -1,0 +1,246 @@
+{
+  "format_version": 3,
+  "name": "Check invoice without a model",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 1
+  },
+  "failure": "stop",
+  "rights": {
+    "tools": [
+      "request_input"
+    ],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 180,
+    "max_output_tokens": 256,
+    "max_total_tokens": 4096
+  },
+  "roles": [],
+  "steps": [],
+  "controls": {
+    "review": {
+      "name": "Check invoice",
+      "dependencies": [],
+      "operation": {
+        "kind": "review",
+        "form": {
+          "question": "Check the invoice fields before booking.",
+          "fields": {
+            "invoice": {
+              "label": "Invoice number",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "text"
+                }
+              },
+              "format": "value",
+              "required": true,
+              "minimum": null,
+              "maximum": null
+            },
+            "issued": {
+              "label": "Issued on",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "text"
+                }
+              },
+              "format": "date",
+              "required": true,
+              "minimum": null,
+              "maximum": null
+            },
+            "net_minor": {
+              "label": "Net amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            },
+            "tax_minor": {
+              "label": "Tax amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            },
+            "gross_minor": {
+              "label": "Gross amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            }
+          },
+          "checks": [
+            {
+              "kind": "sum",
+              "terms": [
+                "net_minor",
+                "tax_minor"
+              ],
+              "total": "gross_minor"
+            }
+          ]
+        },
+        "rights": {
+          "tools": [
+            "request_input"
+          ],
+          "folders": []
+        }
+      }
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "invoice": {
+          "type": "nullable",
+          "value": {
+            "type": "text"
+          }
+        },
+        "issued": {
+          "type": "nullable",
+          "value": {
+            "type": "text"
+          }
+        },
+        "net_minor": {
+          "type": "nullable",
+          "value": {
+            "type": "integer"
+          }
+        },
+        "tax_minor": {
+          "type": "nullable",
+          "value": {
+            "type": "integer"
+          }
+        },
+        "gross_minor": {
+          "type": "nullable",
+          "value": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "steps": {
+      "review": {
+        "inputs": {
+          "invoice": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "text"
+              }
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/invoice"
+            }
+          },
+          "issued": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "text"
+              }
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/issued"
+            }
+          },
+          "net_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/net_minor"
+            }
+          },
+          "tax_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/tax_minor"
+            }
+          },
+          "gross_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/gross_minor"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "invoice": {
+              "type": "text"
+            },
+            "issued": {
+              "type": "text"
+            },
+            "net_minor": {
+              "type": "integer"
+            },
+            "tax_minor": {
+              "type": "integer"
+            },
+            "gross_minor": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}

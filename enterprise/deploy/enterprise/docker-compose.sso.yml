@@ -1,0 +1,17 @@
+# Optional override for either enterprise Compose profile. Only management sees
+# this operator-owned directory, which contains providers.json and secret files.
+services:
+  management:
+    environment:
+      COWORK_ORGANISATION_OIDC_PROVIDERS_FILE: /run/oidc/providers.json
+      # Optional global operator sign-in. Empty values preserve legacy absence.
+      COWORK_OIDC_ISSUER: ${COWORK_OIDC_ISSUER:-}
+      COWORK_OIDC_CLIENT_ID: ${COWORK_OIDC_CLIENT_ID:-}
+      COWORK_OIDC_CLIENT_SECRET_FILE: ${COWORK_OIDC_CLIENT_SECRET_FILE:-}
+      COWORK_OIDC_AUTO_PROVISION: ${COWORK_OIDC_AUTO_PROVISION:-false}
+      COWORK_OIDC_ASSURANCE_POLICY_FILE: ${COWORK_OIDC_ASSURANCE_POLICY_FILE:-}
+    volumes:
+      - type: bind
+        source: ${COWORK_ORGANISATION_SSO_DIR:?Set the private SSO configuration directory}
+        target: /run/oidc
+        read_only: true

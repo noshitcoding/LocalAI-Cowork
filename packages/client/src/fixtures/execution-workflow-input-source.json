@@ -1,0 +1,275 @@
+{
+  "prepare": {
+    "input": {
+      "manifest_sha256": "a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd",
+      "sha256": "a37aa129f49acd88900008e2c3df408e34198770087117b4c4ec5de67f5e1221",
+      "snapshot_id": "61dc4699-c7f1-40a9-9db5-72e711101315"
+    },
+    "request": {
+      "access_mode": "confirm_mutations",
+      "base_revision": 1,
+      "budgets": {
+        "max_output_tokens": 2048,
+        "max_seconds": 600,
+        "max_steps": 64,
+        "max_total_tokens": 65536
+      },
+      "folders": [
+        {
+          "id": "source",
+          "name": "Selected source",
+          "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+          "resource_id": "ee8c723deb8eb029b31ce86fa583c2c43dd6f65361d5a5b79978864f97782e64",
+          "revision": "cd114366655f39ee3139ad5e12bf6758e499c5e66b9c5eaae970f2d60d6f44db",
+          "writable": true
+        }
+      ],
+      "idempotency_key": "source-reuse",
+      "input_source": {
+        "run_id": "cc9f25f4-ed3a-4261-89bb-3aa2979d484c",
+        "sha256": "966c9a58ed6d8395e0ffaeba3958485187f471700366321f994f83767dd33195"
+      },
+      "kind": "workflow",
+      "order_id": "28f35f95-1e88-43ce-8117-5b29c5673d1b",
+      "prompt": "Keep the exact native input",
+      "version_id": "e4a7d31c-f214-41a7-9a5c-4d5f51a4d865",
+      "workflow_id": "4f567e53-af65-4efa-9599-b4e040526c15"
+    },
+    "target": {
+      "kind": "broker_controller"
+    }
+  },
+  "prepared": {
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":null,\"executor\":\"local-v2\",\"folders\":[{\"id\":\"source\",\"name\":\"Selected source\",\"project_id\":\"50c79593-d8f0-4f6c-ab2a-c7b79b8dc799\",\"resource_id\":\"3e20cb075ed61c28ec2676fb4cf1c39fb59106d3b0effef9a2d71a8972a625dc\",\"revision\":\"6091ccafb48a497a71c120ddca0c72bcf027137c8a0024eeca526c74c0a7ecfb\",\"writable\":true}],\"input_snapshot_bound\":true,\"process_access\":\"broker_only\",\"process_network\":{\"kind\":\"no_process\"}},\"created_at\":1793353914890,\"expires_at\":1793354214890,\"format_version\":2,\"id\":\"0cf9e318-3188-4b74-a9ed-bedec6a5fc97\",\"idempotency_key\":\"source-reuse\",\"input\":{\"created_at\":1793353914868,\"format_version\":1,\"id\":\"61dc4699-c7f1-40a9-9db5-72e711101315\",\"manifest\":{\"directories\":[\"input-0001\"],\"files\":[{\"chunks\":[{\"offset\":0,\"sha256\":\"6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb\",\"size\":6}],\"path\":\"input-0001/note.txt\",\"sha256\":\"6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb\",\"size\":6}],\"format_version\":1,\"sha256\":\"a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd\",\"total_bytes\":6},\"order_id\":\"28f35f95-1e88-43ce-8117-5b29c5673d1b\",\"order_revision\":1,\"project_id\":\"50c79593-d8f0-4f6c-ab2a-c7b79b8dc799\",\"request_sha256\":\"92b9bf30f4a2e9df747a891679f606aa721e4419933a1d4ca12e9215a386926c\",\"sources\":[{\"alias\":\"input-0001\",\"name\":\"Selected source\"}]},\"order_id\":\"28f35f95-1e88-43ce-8117-5b29c5673d1b\",\"preflight\":{\"kind\":\"owner\",\"review\":{\"access_mode\":\"confirm_mutations\",\"allowed_tools\":[\"create_artifact\",\"list_artifacts\",\"read_artifact\",\"request_input\",\"list_files\",\"read_text_file\",\"stat_file\",\"write_text_file\",\"create_directory\",\"rename_file\",\"remove_file\",\"restore_file\"],\"budgets\":{\"max_output_tokens\":2048,\"max_seconds\":600,\"max_steps\":64,\"max_total_tokens\":65536},\"executor\":\"local-v2\",\"input_source\":{\"run_id\":\"cc9f25f4-ed3a-4261-89bb-3aa2979d484c\",\"sha256\":\"966c9a58ed6d8395e0ffaeba3958485187f471700366321f994f83767dd33195\"},\"max_parallel\":2,\"name\":\"Native conditional routing\",\"policy_revision\":1,\"ready\":true,\"roles\":[],\"version_revision\":1,\"workflow\":{\"definition_sha256\":\"e68320d77b92bbf77dfa177986e40132e700ec775f895d97f9dbc0cc04eed7b0\",\"inputs\":{\"amount\":9007199254740993},\"plan_sha256\":\"f1ebe5b583cc84998114191f93225211eccca37f5c3b2fac65d703ec7331d3a5\",\"version_id\":\"e4a7d31c-f214-41a7-9a5c-4d5f51a4d865\",\"workflow_id\":\"4f567e53-af65-4efa-9599-b4e040526c15\"}}},\"project_id\":\"50c79593-d8f0-4f6c-ab2a-c7b79b8dc799\",\"request_sha256\":\"4fc1c7ac64fdee52fa60f23017ba5a25098e8fcd3ad66abddd15090d06393129\",\"spec_sha256\":\"90d4fda5022dea025538378b0433f08e546fb15faaa5b872b1e4659140380616\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"24732c15-b9ed-4f1a-9192-bb7be8240dfd\"},\"kind\":\"broker_controller\"},\"workspace\":{\"id\":\"7714bdb2-19d3-4b9e-ab0e-a7c4e3a32830\",\"input\":{\"manifest_sha256\":\"a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd\",\"sha256\":\"a37aa129f49acd88900008e2c3df408e34198770087117b4c4ec5de67f5e1221\",\"snapshot_id\":\"61dc4699-c7f1-40a9-9db5-72e711101315\"}}}",
+    "committed_run_id": null,
+    "plan": {
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "boundary": {
+        "connector_aliases": [],
+        "environment": null,
+        "executor": "local-v2",
+        "folders": [
+          {
+            "id": "source",
+            "name": "Selected source",
+            "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+            "resource_id": "3e20cb075ed61c28ec2676fb4cf1c39fb59106d3b0effef9a2d71a8972a625dc",
+            "revision": "6091ccafb48a497a71c120ddca0c72bcf027137c8a0024eeca526c74c0a7ecfb",
+            "writable": true
+          }
+        ],
+        "input_snapshot_bound": true,
+        "process_access": "broker_only",
+        "process_network": {
+          "kind": "no_process"
+        }
+      },
+      "created_at": 1793353914890,
+      "expires_at": 1793354214890,
+      "format_version": 2,
+      "id": "0cf9e318-3188-4b74-a9ed-bedec6a5fc97",
+      "idempotency_key": "source-reuse",
+      "input": {
+        "created_at": 1793353914868,
+        "format_version": 1,
+        "id": "61dc4699-c7f1-40a9-9db5-72e711101315",
+        "manifest": {
+          "directories": [
+            "input-0001"
+          ],
+          "files": [
+            {
+              "chunks": [
+                {
+                  "offset": 0,
+                  "sha256": "6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb",
+                  "size": 6
+                }
+              ],
+              "path": "input-0001/note.txt",
+              "sha256": "6db7d803e74f1ffa7d8f5adc0bf95b3e15bf4c8373fffadf546227cc6c6742cb",
+              "size": 6
+            }
+          ],
+          "format_version": 1,
+          "sha256": "a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd",
+          "total_bytes": 6
+        },
+        "order_id": "28f35f95-1e88-43ce-8117-5b29c5673d1b",
+        "order_revision": 1,
+        "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+        "request_sha256": "92b9bf30f4a2e9df747a891679f606aa721e4419933a1d4ca12e9215a386926c",
+        "sources": [
+          {
+            "alias": "input-0001",
+            "name": "Selected source"
+          }
+        ]
+      },
+      "order_id": "28f35f95-1e88-43ce-8117-5b29c5673d1b",
+      "preflight": {
+        "kind": "owner",
+        "review": {
+          "access_mode": "confirm_mutations",
+          "allowed_tools": [
+            "create_artifact",
+            "list_artifacts",
+            "read_artifact",
+            "request_input",
+            "list_files",
+            "read_text_file",
+            "stat_file",
+            "write_text_file",
+            "create_directory",
+            "rename_file",
+            "remove_file",
+            "restore_file"
+          ],
+          "budgets": {
+            "max_output_tokens": 2048,
+            "max_seconds": 600,
+            "max_steps": 64,
+            "max_total_tokens": 65536
+          },
+          "executor": "local-v2",
+          "input_source": {
+            "run_id": "cc9f25f4-ed3a-4261-89bb-3aa2979d484c",
+            "sha256": "966c9a58ed6d8395e0ffaeba3958485187f471700366321f994f83767dd33195"
+          },
+          "max_parallel": 2,
+          "name": "Native conditional routing",
+          "policy_revision": 1,
+          "ready": true,
+          "roles": [],
+          "version_revision": 1,
+          "workflow": {
+            "definition_sha256": "e68320d77b92bbf77dfa177986e40132e700ec775f895d97f9dbc0cc04eed7b0",
+            "inputs": {
+              "amount": 9007199254740993
+            },
+            "plan_sha256": "f1ebe5b583cc84998114191f93225211eccca37f5c3b2fac65d703ec7331d3a5",
+            "version_id": "e4a7d31c-f214-41a7-9a5c-4d5f51a4d865",
+            "workflow_id": "4f567e53-af65-4efa-9599-b4e040526c15"
+          }
+        }
+      },
+      "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+      "request_sha256": "4fc1c7ac64fdee52fa60f23017ba5a25098e8fcd3ad66abddd15090d06393129",
+      "spec_sha256": "90d4fda5022dea025538378b0433f08e546fb15faaa5b872b1e4659140380616",
+      "target": {
+        "controller": {
+          "generation": 1,
+          "id": "24732c15-b9ed-4f1a-9192-bb7be8240dfd"
+        },
+        "kind": "broker_controller"
+      },
+      "workspace": {
+        "id": "7714bdb2-19d3-4b9e-ab0e-a7c4e3a32830",
+        "input": {
+          "manifest_sha256": "a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd",
+          "sha256": "a37aa129f49acd88900008e2c3df408e34198770087117b4c4ec5de67f5e1221",
+          "snapshot_id": "61dc4699-c7f1-40a9-9db5-72e711101315"
+        }
+      }
+    },
+    "retired": false,
+    "sha256": "68950c063db698583e5e6b1562f9db89dba2974959c1b7703cedd57ee15e2e4e"
+  },
+  "run": {
+    "created_at": 1793353914946,
+    "error_code": null,
+    "id": "40512c51-c83e-4095-9150-95a7bf3683b3",
+    "last_sequence": 2,
+    "revision": 1,
+    "spec": {
+      "access_mode": "confirm_mutations",
+      "agent_config": {
+        "behavior": {
+          "command_allow_groups": [],
+          "command_blacklist": [],
+          "fallback_to_human_on_repeated_failure": true,
+          "max_tool_calls_per_loop": 64
+        },
+        "execution_mode": "execute",
+        "generation": {},
+        "instructions": ""
+      },
+      "allowed_tools": [
+        "create_artifact",
+        "list_artifacts",
+        "read_artifact",
+        "request_input",
+        "list_files",
+        "read_text_file",
+        "stat_file",
+        "write_text_file",
+        "create_directory",
+        "rename_file",
+        "remove_file",
+        "restore_file"
+      ],
+      "budgets": {
+        "max_output_tokens": 2048,
+        "max_seconds": 600,
+        "max_steps": 64,
+        "max_total_tokens": 65536
+      },
+      "executor": "local-v2",
+      "folders": [
+        {
+          "id": "source",
+          "name": "Selected source",
+          "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+          "resource_id": "3e20cb075ed61c28ec2676fb4cf1c39fb59106d3b0effef9a2d71a8972a625dc",
+          "revision": "6091ccafb48a497a71c120ddca0c72bcf027137c8a0024eeca526c74c0a7ecfb",
+          "writable": true
+        }
+      ],
+      "input_workspace": {
+        "id": "7714bdb2-19d3-4b9e-ab0e-a7c4e3a32830",
+        "input": {
+          "manifest_sha256": "a899911c3496ecb803b979a39f4713aa3a1062cf8574fd42e93845b7df65e9dd",
+          "sha256": "a37aa129f49acd88900008e2c3df408e34198770087117b4c4ec5de67f5e1221",
+          "snapshot_id": "61dc4699-c7f1-40a9-9db5-72e711101315"
+        }
+      },
+      "order_id": "28f35f95-1e88-43ce-8117-5b29c5673d1b",
+      "policy_revision": 1,
+      "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+      "prompt": "Keep the exact native input",
+      "provider": null,
+      "workflow": {
+        "definition_sha256": "e68320d77b92bbf77dfa177986e40132e700ec775f895d97f9dbc0cc04eed7b0",
+        "inputs": {
+          "amount": 9007199254740993
+        },
+        "plan_sha256": "f1ebe5b583cc84998114191f93225211eccca37f5c3b2fac65d703ec7331d3a5",
+        "version_id": "e4a7d31c-f214-41a7-9a5c-4d5f51a4d865",
+        "workflow_id": "4f567e53-af65-4efa-9599-b4e040526c15"
+      }
+    },
+    "started_at": null,
+    "state": "queued",
+    "steps": 0,
+    "updated_at": 1793353914946,
+    "usage": {
+      "cost": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "price_source_version": null
+    }
+  },
+  "snapshot": {
+    "canonical_json": "{\"amount\":9007199254740993}",
+    "definition_sha256": "e68320d77b92bbf77dfa177986e40132e700ec775f895d97f9dbc0cc04eed7b0",
+    "project_id": "50c79593-d8f0-4f6c-ab2a-c7b79b8dc799",
+    "source": {
+      "run_id": "cc9f25f4-ed3a-4261-89bb-3aa2979d484c",
+      "sha256": "966c9a58ed6d8395e0ffaeba3958485187f471700366321f994f83767dd33195"
+    },
+    "version_id": "e4a7d31c-f214-41a7-9a5c-4d5f51a4d865",
+    "workflow_id": "4f567e53-af65-4efa-9599-b4e040526c15"
+  }
+}

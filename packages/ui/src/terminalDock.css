@@ -1,0 +1,1 @@
+.terminal-dock{border:1px solid var(--border,#56616e);padding:1rem;border-radius:.6rem}.terminal-dock h2{margin:0}.terminal-viewport{height:360px;min-height:120px;max-height:75vh;resize:vertical;overflow:hidden;background:#10151b;padding:.5rem}.terminal-dock [role=tab][aria-selected=true]{outline:2px solid var(--accent,#688dff)}.terminal-viewport .xterm{height:100%}

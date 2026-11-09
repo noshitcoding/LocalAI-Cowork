@@ -1,0 +1,28 @@
+name: Enterprise source
+on:
+  push:
+    branches: [main]
+    paths: ['enterprise/**', '.github/workflows/enterprise-source.yml']
+  pull_request:
+    paths: ['enterprise/**', '.github/workflows/enterprise-source.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  server-and-management-web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: enterprise
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check independent Enterprise workspace
+        run: cargo check --locked --workspace --all-targets
+      - name: Install management web dependencies
+        run: npm ci --prefix app
+      - name: Build Enterprise management web
+        run: npm run build:web --prefix app

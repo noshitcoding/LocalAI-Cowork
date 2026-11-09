@@ -1,0 +1,2 @@
+export type ManagementArea = 'overview' | 'organisations' | 'catalog' | 'environments' | 'sharing' | 'instances' | 'imports' | 'rollouts' | 'policy' | 'members' | 'audit' | 'sso' | 'directory' | 'capacity' | 'mfa' | 'wallet'
+export const managementAreas: ManagementArea[] = ['overview', 'organisations', 'catalog', 'environments', 'sharing', 'instances', 'imports', 'rollouts', 'policy', 'members', 'audit', 'sso', 'directory', 'capacity', 'mfa', 'wallet']

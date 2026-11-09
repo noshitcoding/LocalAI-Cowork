@@ -1,0 +1,38 @@
+[package]
+name = "cowork-device-agent-v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+cowork-contracts.workspace = true
+cowork-domain.workspace = true
+cowork-toolbox.workspace = true
+cowork-executor.workspace = true
+cowork-mcp.workspace = true
+cowork-secrets.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+tokio-tungstenite = { version = "=0.29.0", features = ["rustls-tls-webpki-roots"] }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

@@ -1,0 +1,33 @@
+{
+  "name": "localai-cowork-v2",
+  "private": true,
+  "version": "2.0.0-alpha.8",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "packages/client",
+    "packages/ui"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @cowork/web",
+    "build": "npm run build --workspace @cowork/web",
+    "typecheck": "tsc --noEmit",
+    "contracts:generate": "cargo run -p cowork-contract-generator && node tools/contracts/typescript.mjs",
+    "contracts:check": "node tools/contracts/check.mjs",
+    "test": "vitest run",
+    "daemon": "cargo run -p cowork-daemon",
+    "browser:build": "tsc --project extensions/browser/tsconfig.json && node tools/browser/build.mjs",
+    "browser:package": "node tools/browser/package.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "26.2.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.12"
+  },
+  "packageManager": "npm@11.6.2"
+}

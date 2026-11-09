@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "issuer": "https://identity.example.com/realms/company",
+  "client_id": "cowork-management",
+  "max_age_seconds": 1800,
+  "mappings": [
+    {
+      "id": "company-mfa",
+      "acr": "urn:company:authentication:mfa",
+      "amr": ["otp", "pwd"]
+    }
+  ]
+}

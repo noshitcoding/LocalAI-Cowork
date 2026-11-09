@@ -1,0 +1,24 @@
+This is XeTeX, Version 3.141592653-2.6-0.999994 (Tectonic) (preloaded format=latex 2022.1.1)  19 OCT 2026 09:14
+entering extended mode
+ restricted \write18 enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2021-11-15> patch level 1
+(article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(size11.clo
+File: size11.clo 2021/10/04 v1.4n Standard LaTeX file (size option)
+))
+
+! ! LaTeX Error: File `minted.sty' not found..
+
+Type X to quit or <RETURN> to proceed,
+or enter new name. (Default extension: sty)
+
+Enter file name:
+! Emergency stop.
+<read *>
+
+l.4 \usepackage
+               {minted}^^M
+*** (cannot \read from terminal in nonstop modes)

@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS native_skill_learning(project_id TEXT NOT NULL REFERENCES projects(id),skill_id TEXT NOT NULL,skill_revision BIGINT NOT NULL,run_id TEXT NOT NULL REFERENCES runs(id),recorded_at BIGINT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(skill_id,skill_revision,run_id));

@@ -1,0 +1,192 @@
+{
+  "format_version": 5,
+  "name": "Dynamic list parent",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 4
+  },
+  "failure": "stop",
+  "rights": {
+    "tools": [],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 128,
+    "max_seconds": 120,
+    "max_output_tokens": 256,
+    "max_total_tokens": 8192
+  },
+  "roles": [],
+  "steps": [],
+  "controls": {
+    "after": {
+      "name": "Use ordered list",
+      "dependencies": [
+        "loop"
+      ],
+      "operation": {
+        "kind": "compose"
+      }
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "values": {
+          "type": "list",
+          "item": {
+            "type": "integer"
+          },
+          "max_items": 1000
+        }
+      }
+    },
+    "steps": {
+      "after": {
+        "inputs": {
+          "results": {
+            "value_type": {
+              "type": "list",
+              "item": {
+                "type": "integer"
+              },
+              "max_items": 1000
+            },
+            "value": {
+              "source": "step",
+              "step_id": "loop",
+              "pointer": ""
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "results": {
+              "type": "list",
+              "item": {
+                "type": "integer"
+              },
+              "max_items": 1000
+            }
+          }
+        }
+      },
+      "loop": {
+        "inputs": {
+          "items": {
+            "value_type": {
+              "type": "list",
+              "item": {
+                "type": "integer"
+              },
+              "max_items": 1000
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/values"
+            }
+          }
+        },
+        "output": {
+          "type": "list",
+          "item": {
+            "type": "integer"
+          },
+          "max_items": 1000
+        }
+      }
+    }
+  },
+  "iterations": {
+    "loop": {
+      "name": "Each value",
+      "dependencies": [],
+      "definition": {
+        "format_version": 3,
+        "name": "Amount body",
+        "mode": {
+          "mode": "parallel",
+          "max_parallel": 1
+        },
+        "failure": "stop",
+        "rights": {
+          "tools": [],
+          "folders": []
+        },
+        "budgets": {
+          "max_steps": 16,
+          "max_seconds": 20,
+          "max_output_tokens": 256,
+          "max_total_tokens": 8192
+        },
+        "roles": [],
+        "steps": [],
+        "controls": {
+          "echo": {
+            "name": "Copy selected input",
+            "dependencies": [],
+            "operation": {
+              "kind": "compose"
+            }
+          }
+        },
+        "dataflow": {
+          "input": {
+            "type": "object",
+            "fields": {
+              "amount": {
+                "type": "integer"
+              }
+            }
+          },
+          "steps": {
+            "echo": {
+              "inputs": {
+                "amount": {
+                  "value_type": {
+                    "type": "integer"
+                  },
+                  "value": {
+                    "source": "input",
+                    "pointer": "/amount"
+                  }
+                }
+              },
+              "output": {
+                "type": "object",
+                "fields": {
+                  "amount": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "collection_input": "items",
+      "arguments": {
+        "amount": {
+          "source": "item"
+        }
+      },
+      "result": {
+        "step_id": "echo",
+        "pointer": "/amount"
+      },
+      "rights": {
+        "tools": [],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 128,
+        "max_seconds": 120,
+        "max_output_tokens": 256,
+        "max_total_tokens": 8192
+      },
+      "max_parallel": 2
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# Explicit single-user Docker Desktop/Linux VM workspace. This is a separate
+# local execution location; no native Windows folder or Docker socket in guests.
+name: ${COWORK_LOCAL_PROJECT:?Initialize local_runner.py first}
+services:
+  app:
+    image: ${COWORK_LOCAL_APP_IMAGE:?Use the actual pinned V2 daemon image}
+    user: "1000:1000"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_signal: SIGINT
+    stop_grace_period: 60s
+    tmpfs: ["/tmp:size=256m,mode=1777"]
+    ports: ["127.0.0.1:${COWORK_LOCAL_APP_PORT:-43822}:${COWORK_LOCAL_APP_PORT:-43822}"]
+    environment:
+      COWORK_DATA_DIR: /var/lib/cowork/data
+      COWORK_PORT: ${COWORK_LOCAL_APP_PORT:-43822}
+      COWORK_BIND_ADDRESS: 0.0.0.0
+      COWORK_ENABLE_TENANT_IDENTITY: "0"
+      COWORK_PROCESS_RUNNER_CONFIG: /var/lib/cowork/runner/daemon-runner.json
+    volumes: ["workspace:/var/lib/cowork"]
+    networks: [control, outbound]
+    cpus: "1"
+    mem_limit: 2g
+    pids_limit: 256
+  runner:
+    image: ${COWORK_LOCAL_RUNNER_IMAGE:?Use the pinned trusted runner image}
+    user: "1000:1000"
+    group_add: ["${COWORK_LOCAL_DOCKER_GID:?Actual Docker socket group ID}"]
+    init: true
+    command: [serve, /var/lib/cowork/runner/runner.json]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_signal: SIGINT
+    stop_grace_period: 120s
+    tmpfs: ["/tmp:size=256m,mode=1777"]
+    ports: ["127.0.0.1:${COWORK_LOCAL_RUNNER_PORT:-9443}:8443"]
+    volumes:
+      - workspace:/var/lib/cowork
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [control]
+    cpus: "1"
+    mem_limit: 512m
+    pids_limit: 128
+networks:
+  control: {internal: true}
+  outbound: {}
+volumes:
+  workspace:
+    external: true
+    name: ${COWORK_LOCAL_WORKSPACE_VOLUME:?Original owned volume receipt}

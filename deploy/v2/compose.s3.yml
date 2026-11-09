@@ -1,0 +1,24 @@
+# Explicit optional local S3 credentials. Apply alongside compose.yml with --profile s3.
+services:
+  api:
+    environment:
+      COWORK_S3_ENDPOINT: http://minio:9000
+      COWORK_S3_BUCKET: cowork
+      COWORK_S3_REGION: us-east-1
+      COWORK_S3_ALLOW_INSECURE_HTTP: "1"
+      COWORK_S3_ACCESS_KEY_ID_FILE: /run/secrets/minio_access_key
+      COWORK_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/minio_secret_key
+    secrets: [postgres_password, minio_access_key, minio_secret_key]
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
+  worker:
+    environment:
+      COWORK_S3_ENDPOINT: http://minio:9000
+      COWORK_S3_BUCKET: cowork
+      COWORK_S3_REGION: us-east-1
+      COWORK_S3_ALLOW_INSECURE_HTTP: "1"
+      COWORK_S3_ACCESS_KEY_ID_FILE: /run/secrets/minio_access_key
+      COWORK_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/minio_secret_key
+    secrets: [postgres_password, minio_access_key, minio_secret_key]
+    depends_on:
+      minio-init: {condition: service_completed_successfully}

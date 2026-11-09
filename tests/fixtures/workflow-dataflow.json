@@ -1,0 +1,38 @@
+{
+  "format_version": 2,
+  "name": "Rechnungsdaten verbinden",
+  "mode": {"mode": "sequential"},
+  "failure": "stop",
+  "rights": {"tools": [], "folders": []},
+  "budgets": {"max_steps": 32, "max_seconds": 60, "max_output_tokens": 512, "max_total_tokens": 131072},
+  "roles": [{
+    "id": "reader", "instructions": "Use only declared input fields. Return the declared JSON result. Fixture data is not an actual invoice extraction.",
+    "provider_id": "typed-fixture", "provider_revision": 1,
+    "rights": {"tools": [], "folders": []}, "delegate_to": [],
+    "budgets": {"max_steps": 32, "max_seconds": 60, "max_output_tokens": 512, "max_total_tokens": 131072}
+  }],
+  "steps": [
+    {"id": "extract", "role_id": "reader", "goal": "Rechnungsdaten als Objekt ausgeben", "dependencies": [], "rights": {"tools": [], "folders": []}, "budgets": {"max_steps": 16, "max_seconds": 60, "max_output_tokens": 512, "max_total_tokens": 65536}},
+    {"id": "report", "role_id": "reader", "goal": "Geprüften Betrag zusammenfassen", "dependencies": ["extract"], "rights": {"tools": [], "folders": []}, "budgets": {"max_steps": 16, "max_seconds": 60, "max_output_tokens": 512, "max_total_tokens": 65536}}
+  ],
+  "dataflow": {
+    "input": {"type": "object", "fields": {"path": {"type": "text"}, "sha256": {"type": "text"}, "currency": {"type": "text"}, "private_note": {"type": "text"}}},
+    "steps": {
+      "extract": {
+        "inputs": {
+          "file": {"value_type": {"type": "text"}, "value": {"source": "input", "pointer": "/path"}},
+          "expected_sha256": {"value_type": {"type": "text"}, "value": {"source": "input", "pointer": "/sha256"}}
+        },
+        "output": {"type": "object", "fields": {"invoice_id": {"type": "text"}, "total": {"type": "number"}}}
+      },
+      "report": {
+        "inputs": {
+          "amount": {"value_type": {"type": "number"}, "value": {"source": "step", "step_id": "extract", "pointer": "/total"}},
+          "invoice": {"value_type": {"type": "text"}, "value": {"source": "step", "step_id": "extract", "pointer": "/invoice_id"}},
+          "currency": {"value_type": {"type": "text"}, "value": {"source": "input", "pointer": "/currency"}}
+        },
+        "output": {"type": "object", "fields": {"summary": {"type": "text"}}}
+      }
+    }
+  }
+}

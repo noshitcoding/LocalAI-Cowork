@@ -1,0 +1,34 @@
+# File-specific build context: never send local data, credentials or build caches.
+**
+!Cargo.toml
+!Cargo.lock
+!package.json
+!package-lock.json
+!tsconfig.json
+!crates/
+!crates/**
+!services/
+!services/**
+!tools/
+!tools/**
+!apps/
+!apps/web/
+!apps/web/**
+!packages/
+!packages/client/
+!packages/client/**
+!packages/ui/
+!packages/ui/**
+!deploy/
+!deploy/v2/
+!deploy/v2/entrypoint.py
+**/target/**
+**/node_modules/**
+**/dist/**
+**/__pycache__/**
+**/.local/**
+**/.env
+**/*.db
+**/*.sqlite3
+# Fixed synthetic compiler inputs only; all other databases remain excluded.
+!crates/storage/src/historical_imports/verifier/data/*.sqlite3

@@ -489,3 +489,8 @@ h1, h2, h3 { overflow-wrap: anywhere; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Shared guide footers and preview notices. */
+.footer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding-block: 30px; color: var(--muted); font-size: 0.86rem; }
+.notice { overflow-wrap: anywhere; }
+.content-page article { min-width: 0; }

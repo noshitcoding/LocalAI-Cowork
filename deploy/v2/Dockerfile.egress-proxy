@@ -1,0 +1,10 @@
+# Build separately and select its immutable digest in web_proxy.image.
+ARG PROXY_BASE_IMAGE
+FROM ${PROXY_BASE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends squid \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/spool/squid /var/log/squid /run/squid \
+    && chown -R 1000:1000 /var/spool/squid /var/log/squid /run/squid
+USER 1000:1000
+EXPOSE 3128
+ENTRYPOINT ["/usr/sbin/squid", "-N", "-f", "/etc/squid/squid.conf"]

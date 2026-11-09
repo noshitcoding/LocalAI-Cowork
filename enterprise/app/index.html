@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0A0A0B" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local AI Cowork</title>
+    <style>
+      :root {
+        --boot-bg: #f4f4f1;
+        --boot-panel: #fcfbf7;
+        --boot-text: #161615;
+        --boot-muted: #6b6b66;
+        --boot-border: #cbcbc4;
+        --boot-accent-fill: #ffd84d;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --boot-bg: #0a0a0b;
+          --boot-panel: #18181b;
+          --boot-text: #f5f5f2;
+          --boot-muted: #90908b;
+          --boot-border: #303034;
+          --boot-accent-fill: #ffd84d;
+        }
+      }
+
+      #boot-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        transition: opacity 180ms ease, visibility 180ms ease;
+      }
+
+      #boot-loader.boot-loader-hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      .boot-loader-panel {
+        width: min(420px, 100%);
+        display: grid;
+        gap: 14px;
+        padding: 22px;
+        border: 1px solid var(--boot-border);
+        border-radius: 10px;
+        background: var(--boot-panel);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+      }
+
+      .boot-loader-title {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1.3;
+        font-weight: 750;
+      }
+
+      .boot-loader-status {
+        margin: 0;
+        color: var(--boot-muted);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .boot-loader-bar {
+        height: 6px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--boot-border) 82%, transparent);
+      }
+
+      .boot-loader-bar span {
+        display: block;
+        width: 42%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--boot-accent-fill);
+        animation: boot-loader-slide 1.05s ease-in-out infinite;
+      }
+
+      @keyframes boot-loader-slide {
+        0% { transform: translateX(-105%); }
+        55%, 100% { transform: translateX(245%); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-loader-bar span {
+          width: 100%;
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-loader" role="progressbar" aria-label="Local AI Cowork startet">
+      <div class="boot-loader-panel">
+        <p class="boot-loader-title">Local AI Cowork</p>
+        <div class="boot-loader-bar" aria-hidden="true"><span></span></div>
+        <p class="boot-loader-status">Arbeitsbereich wird vorbereitet...</p>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

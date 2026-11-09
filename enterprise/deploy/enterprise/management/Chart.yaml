@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cowork-management
+description: Cowork organisation metadata service with redundant API replicas
+type: application
+version: 0.1.0
+appVersion: "0.3.12"

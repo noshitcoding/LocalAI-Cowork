@@ -1,0 +1,24 @@
+# runtimeClass applies to trusted daemon pods only when their host Docker client
+# remains compatible; guest containment is COWORK_TEAM_TOOL_RUNTIME=runsc.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork-api}
+spec:
+  template:
+    spec:
+      runtimeClassName: gvisor
+      containers:
+        - name: api
+          env:
+            - {name: COWORK_TEAM_TOOL_RUNTIME, value: runsc}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork-worker}
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          env:
+            - {name: COWORK_TEAM_TOOL_RUNTIME, value: runsc}

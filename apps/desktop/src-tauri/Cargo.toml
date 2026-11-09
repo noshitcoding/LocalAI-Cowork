@@ -1,0 +1,41 @@
+[package]
+name = "localai-cowork-v2-desktop"
+version = "2.0.0-alpha.8"
+edition = "2024"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "=0.22.1"
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+percent-encoding = "2.3"
+uuid = { version = "1", features = ["v4"] }
+cowork-contracts = { path = "../../../crates/contracts" }
+cowork-domain = { path = "../../../crates/domain" }
+cowork-broker = { path = "../../../crates/broker" }
+cowork-executor = { path = "../../../crates/executor" }
+sha2 = "0.10"
+zeroize = { version = "1.8", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["time", "sync", "fs", "io-util"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "=2.13.2"
+tauri-plugin-autostart = "=2.7.0"
+tauri-plugin-notification = "=2.7.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_System_Registry", "Win32_System_Com", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"

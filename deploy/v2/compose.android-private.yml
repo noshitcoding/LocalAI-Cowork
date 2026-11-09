@@ -1,0 +1,15 @@
+# Optional actor-private runner. Select one Docker engine and an immutable tools image.
+# API reads the same private operator binding; only the worker receives Docker control.
+services:
+  api:
+    environment:
+      COWORK_ANDROID_PRIVATE_RUNNER_CONFIG: /var/lib/cowork/operator/android-private-runner.json
+    volumes:
+      - "${COWORK_ANDROID_PRIVATE_RUNNER_FILE:?Select a private operator JSON file}:/var/lib/cowork/operator/android-private-runner.json:ro"
+  worker:
+    group_add: ["${COWORK_DOCKER_GID:?Set the selected Docker socket group ID}"]
+    environment:
+      COWORK_ANDROID_PRIVATE_RUNNER_CONFIG: /var/lib/cowork/operator/android-private-runner.json
+    volumes:
+      - "${COWORK_ANDROID_PRIVATE_RUNNER_FILE:?}:/var/lib/cowork/operator/android-private-runner.json:ro"
+      - "${COWORK_DOCKER_SOCKET:-/var/run/docker.sock}:/run/cowork-docker/docker.sock"

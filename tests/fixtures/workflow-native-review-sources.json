@@ -1,0 +1,477 @@
+{
+  "format_version": 3,
+  "name": "Recognize invoice and review original source",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 1
+  },
+  "failure": "stop",
+  "rights": {
+    "current_workspace": true,
+    "tools": [
+      "document_read",
+      "request_input"
+    ],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 180,
+    "max_output_tokens": 1024,
+    "max_total_tokens": 4096
+  },
+  "roles": [],
+  "steps": [],
+  "documents": {
+    "read-source": {
+      "name": "Recognize invoice",
+      "dependencies": [],
+      "folder": {
+        "kind": "current_workspace"
+      },
+      "operation": {
+        "kind": "ocr",
+        "path_input": "path",
+        "sha256_input": "sha",
+        "languages": [
+          "deu",
+          "eng"
+        ],
+        "pages": [],
+        "dpi": 200,
+        "rotation": 0,
+        "offset": 0,
+        "max_words": 100
+      },
+      "rights": {
+        "current_workspace": true,
+        "tools": [
+          "document_read"
+        ],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 180,
+        "max_output_tokens": 1024,
+        "max_total_tokens": 4096
+      }
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "source_path": {
+          "type": "text"
+        },
+        "source_sha256": {
+          "type": "text"
+        }
+      }
+    },
+    "steps": {
+      "read-source": {
+        "inputs": {
+          "path": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/source_path"
+            }
+          },
+          "sha": {
+            "value_type": {
+              "type": "text"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/source_sha256"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "source": {
+              "type": "object",
+              "fields": {
+                "folder_id": {
+                  "type": "text"
+                },
+                "path": {
+                  "type": "text"
+                },
+                "sha256": {
+                  "type": "text"
+                }
+              }
+            },
+            "engine": {
+              "type": "object",
+              "fields": {
+                "name": {
+                  "type": "text"
+                },
+                "version": {
+                  "type": "text"
+                },
+                "binding_version": {
+                  "type": "text"
+                },
+                "languages": {
+                  "type": "list",
+                  "item": {
+                    "type": "text"
+                  },
+                  "max_items": 2
+                },
+                "models": {
+                  "type": "list",
+                  "item": {
+                    "type": "object",
+                    "fields": {
+                      "language": {
+                        "type": "text"
+                      },
+                      "sha256": {
+                        "type": "text"
+                      }
+                    }
+                  },
+                  "max_items": 2
+                }
+              }
+            },
+            "total_pages": {
+              "type": "integer"
+            },
+            "pages": {
+              "type": "list",
+              "item": {
+                "type": "object",
+                "fields": {
+                  "page": {
+                    "type": "integer"
+                  },
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  },
+                  "dpi": {
+                    "type": "integer"
+                  },
+                  "rotation": {
+                    "type": "integer"
+                  },
+                  "raster_sha256": {
+                    "type": "text"
+                  },
+                  "preview_sha256": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "text"
+                    }
+                  },
+                  "word_count": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "max_items": 16
+            },
+            "pages_truncated": {
+              "type": "boolean"
+            },
+            "next_page": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "total_words": {
+              "type": "integer"
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "words": {
+              "type": "list",
+              "item": {
+                "type": "object",
+                "fields": {
+                  "page": {
+                    "type": "integer"
+                  },
+                  "index": {
+                    "type": "integer"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "text": {
+                    "type": "text"
+                  },
+                  "text_truncated": {
+                    "type": "boolean"
+                  },
+                  "x": {
+                    "type": "integer"
+                  },
+                  "y": {
+                    "type": "integer"
+                  },
+                  "width": {
+                    "type": "integer"
+                  },
+                  "height": {
+                    "type": "integer"
+                  },
+                  "score": {
+                    "type": "number"
+                  }
+                }
+              },
+              "max_items": 100
+            },
+            "text": {
+              "type": "text"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "diagnostics": {
+              "type": "list",
+              "item": {
+                "type": "object",
+                "fields": {
+                  "severity": {
+                    "type": "text"
+                  },
+                  "message": {
+                    "type": "text"
+                  },
+                  "file": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "text"
+                    }
+                  },
+                  "line": {
+                    "type": "nullable",
+                    "value": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "max_items": 64
+            },
+            "diagnostics_truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "review": {
+        "inputs": {
+          "invoice": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "text"
+              }
+            },
+            "value": {
+              "source": "literal",
+              "value": null
+            }
+          },
+          "issued": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "text"
+              }
+            },
+            "value": {
+              "source": "literal",
+              "value": null
+            }
+          },
+          "net_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "literal",
+              "value": null
+            }
+          },
+          "tax_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "literal",
+              "value": null
+            }
+          },
+          "gross_minor": {
+            "value_type": {
+              "type": "nullable",
+              "value": {
+                "type": "integer"
+              }
+            },
+            "value": {
+              "source": "literal",
+              "value": null
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "invoice": {
+              "type": "text"
+            },
+            "issued": {
+              "type": "text"
+            },
+            "net_minor": {
+              "type": "integer"
+            },
+            "tax_minor": {
+              "type": "integer"
+            },
+            "gross_minor": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  },
+  "controls": {
+    "review": {
+      "name": "Check invoice",
+      "dependencies": [
+        "read-source"
+      ],
+      "operation": {
+        "kind": "review",
+        "form": {
+          "question": "Check the invoice fields before booking.",
+          "fields": {
+            "invoice": {
+              "label": "Invoice number",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "text"
+                }
+              },
+              "format": "value",
+              "required": true,
+              "minimum": null,
+              "maximum": null
+            },
+            "issued": {
+              "label": "Issued on",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "text"
+                }
+              },
+              "format": "date",
+              "required": true,
+              "minimum": null,
+              "maximum": null
+            },
+            "net_minor": {
+              "label": "Net amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            },
+            "tax_minor": {
+              "label": "Tax amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            },
+            "gross_minor": {
+              "label": "Gross amount",
+              "help": "Compare with the source invoice.",
+              "value_type": {
+                "type": "nullable",
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "format": "money_minor",
+              "required": true,
+              "minimum": 0,
+              "maximum": null
+            }
+          },
+          "checks": [
+            {
+              "kind": "sum",
+              "terms": [
+                "net_minor",
+                "tax_minor"
+              ],
+              "total": "gross_minor"
+            }
+          ],
+          "source_steps": [
+            "read-source"
+          ]
+        },
+        "rights": {
+          "tools": [
+            "request_input"
+          ],
+          "folders": []
+        }
+      }
+    }
+  }
+}

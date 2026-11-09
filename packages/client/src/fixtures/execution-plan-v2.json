@@ -1,0 +1,170 @@
+{
+  "prepare": {
+    "target": {
+      "kind": "broker_controller"
+    },
+    "request": {
+      "order_id": "order",
+      "base_revision": 1,
+      "idempotency_key": "original",
+      "prompt": "Review",
+      "provider_id": "provider",
+      "provider_revision": 1,
+      "access_mode": "confirm_mutations"
+    },
+    "input": {
+      "snapshot_id": "11111111-1111-4111-8111-111111111111",
+      "sha256": "836aa6404b0aee675379d13ada60a1d77e9e52c8ef2b84d90b3385a854bf4a54",
+      "manifest_sha256": "005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c"
+    }
+  },
+  "prepared": {
+    "plan": {
+      "format_version": 2,
+      "id": "22222222-2222-4222-8222-222222222222",
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "project_id": "project",
+      "order_id": "order",
+      "idempotency_key": "original",
+      "request_sha256": "5eaa7f98a95f8a0030490c84cbfd14c195cc562c39385b1508d1d8df46b3e65a",
+      "spec_sha256": "9b3488aab6689c8f2f7d70fd21522f38cfd72a18cc639e219a6a21485ed29717",
+      "created_at": 1000,
+      "expires_at": 301000,
+      "target": {
+        "kind": "broker_controller",
+        "controller": {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "generation": 1
+        }
+      },
+      "input": {
+        "format_version": 1,
+        "id": "11111111-1111-4111-8111-111111111111",
+        "order_id": "order",
+        "project_id": "project",
+        "order_revision": 1,
+        "request_sha256": "71258ba3b89287d72cac0bd47c669c124f7cc25ae8defaa4d46351b2d0d43c93",
+        "created_at": 1,
+        "sources": [],
+        "manifest": {
+          "format_version": 1,
+          "directories": [],
+          "files": [],
+          "total_bytes": 0,
+          "sha256": "005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c"
+        }
+      },
+      "workspace": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "input": {
+          "snapshot_id": "11111111-1111-4111-8111-111111111111",
+          "sha256": "836aa6404b0aee675379d13ada60a1d77e9e52c8ef2b84d90b3385a854bf4a54",
+          "manifest_sha256": "005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c"
+        }
+      },
+      "preflight": {
+        "kind": "owner",
+        "review": {
+          "ready": true,
+          "provider": {
+            "generation": {
+              "temperature": 0.0
+            },
+            "id": "provider",
+            "name": "Fixture model",
+            "kind": "test",
+            "endpoint": "",
+            "model": "fixture",
+            "revision": 1,
+            "context_tokens": 8192,
+            "credential_required": false,
+            "credential_ready": true
+          },
+          "executor": "local-v2",
+          "policy_revision": 1,
+          "access_mode": "confirm_mutations",
+          "allowed_tools": [
+            "read_artifact"
+          ],
+          "budgets": {
+            "max_steps": 64,
+            "max_seconds": 1800,
+            "max_output_tokens": 4096
+          },
+          "folders": []
+        }
+      },
+      "boundary": {
+        "executor": "local-v2",
+        "process_access": "broker_only",
+        "process_network": {
+          "kind": "no_process"
+        },
+        "environment": null,
+        "folders": [],
+        "connector_aliases": [],
+        "input_snapshot_bound": true
+      }
+    },
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":null,\"executor\":\"local-v2\",\"folders\":[],\"input_snapshot_bound\":true,\"process_access\":\"broker_only\",\"process_network\":{\"kind\":\"no_process\"}},\"created_at\":1000,\"expires_at\":301000,\"format_version\":2,\"id\":\"22222222-2222-4222-8222-222222222222\",\"idempotency_key\":\"original\",\"input\":{\"created_at\":1,\"format_version\":1,\"id\":\"11111111-1111-4111-8111-111111111111\",\"manifest\":{\"directories\":[],\"files\":[],\"format_version\":1,\"sha256\":\"005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c\",\"total_bytes\":0},\"order_id\":\"order\",\"order_revision\":1,\"project_id\":\"project\",\"request_sha256\":\"71258ba3b89287d72cac0bd47c669c124f7cc25ae8defaa4d46351b2d0d43c93\",\"sources\":[]},\"order_id\":\"order\",\"preflight\":{\"kind\":\"owner\",\"review\":{\"access_mode\":\"confirm_mutations\",\"allowed_tools\":[\"read_artifact\"],\"budgets\":{\"max_output_tokens\":4096,\"max_seconds\":1800,\"max_steps\":64},\"executor\":\"local-v2\",\"folders\":[],\"policy_revision\":1,\"provider\":{\"context_tokens\":8192,\"credential_ready\":true,\"credential_required\":false,\"endpoint\":\"\",\"generation\":{\"temperature\":0.0},\"id\":\"provider\",\"kind\":\"test\",\"model\":\"fixture\",\"name\":\"Fixture model\",\"revision\":1},\"ready\":true}},\"project_id\":\"project\",\"request_sha256\":\"5eaa7f98a95f8a0030490c84cbfd14c195cc562c39385b1508d1d8df46b3e65a\",\"spec_sha256\":\"9b3488aab6689c8f2f7d70fd21522f38cfd72a18cc639e219a6a21485ed29717\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"44444444-4444-4444-8444-444444444444\"},\"kind\":\"broker_controller\"},\"workspace\":{\"id\":\"33333333-3333-4333-8333-333333333333\",\"input\":{\"manifest_sha256\":\"005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c\",\"sha256\":\"836aa6404b0aee675379d13ada60a1d77e9e52c8ef2b84d90b3385a854bf4a54\",\"snapshot_id\":\"11111111-1111-4111-8111-111111111111\"}}}",
+    "sha256": "37200dfd9075d1f7e6f310bcaab8e5894c057c3b04339b929c9fa5e44ecef035",
+    "committed_run_id": null,
+    "retired": false
+  },
+  "run": {
+    "id": "run",
+    "spec": {
+      "input_workspace": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "input": {
+          "snapshot_id": "11111111-1111-4111-8111-111111111111",
+          "sha256": "836aa6404b0aee675379d13ada60a1d77e9e52c8ef2b84d90b3385a854bf4a54",
+          "manifest_sha256": "005f084c54e7a3af50096ad93c91670457b375f1ab1e1b18922f5c0ba9bcd96c"
+        }
+      },
+      "order_id": "order",
+      "project_id": "project",
+      "prompt": "Review",
+      "provider": {
+        "generation": {
+          "temperature": 0.0
+        },
+        "id": "provider",
+        "name": "Fixture model",
+        "kind": "test",
+        "endpoint": "",
+        "model": "fixture",
+        "revision": 1,
+        "context_tokens": 8192,
+        "credential_required": false,
+        "credential_ready": true
+      },
+      "access_mode": "confirm_mutations",
+      "executor": "local-v2",
+      "policy_revision": 1,
+      "allowed_tools": [
+        "read_artifact"
+      ],
+      "budgets": {
+        "max_steps": 64,
+        "max_seconds": 1800,
+        "max_output_tokens": 4096
+      },
+      "folders": []
+    },
+    "state": "queued",
+    "revision": 1,
+    "last_sequence": 1,
+    "steps": 0,
+    "created_at": 1000,
+    "updated_at": 1000,
+    "usage": {
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost": null,
+      "price_source_version": null
+    }
+  }
+}

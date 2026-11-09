@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the selected Cowork TLS identity daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=cowork-certificate-lifecycle.service
+
+[Install]
+WantedBy=timers.target

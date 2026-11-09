@@ -1,0 +1,27 @@
+# File-specific minimal source context. Never upload local userdata or caches.
+**
+!Cargo.toml
+!Cargo.lock
+!crates/
+!crates/**
+!services/
+!services/**
+!tools/
+!tools/contracts/
+!tools/contracts/**
+!tools/migration/
+!tools/migration/v1_sqlite_export.py
+!tools/migration/schema_profiles.py
+!deploy/
+!deploy/v2/
+!deploy/v2/android-private-crew.py
+**/target/**
+**/node_modules/**
+**/dist/**
+**/__pycache__/**
+**/.local/**
+**/.git/**
+**/.env
+**/*.db
+**/*.sqlite3
+!crates/storage/src/historical_imports/verifier/data/*.sqlite3

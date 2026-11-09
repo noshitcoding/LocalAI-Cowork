@@ -3,7 +3,7 @@
         xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/</loc>
-    <lastmod>2026-08-08</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
     <xhtml:link rel="alternate" hreflang="en" href="https://noshitcoding.github.io/LocalAI-Cowork/"/>
@@ -11,7 +11,7 @@
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/de/</loc>
-    <lastmod>2026-08-08</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
     <xhtml:link rel="alternate" hreflang="en" href="https://noshitcoding.github.io/LocalAI-Cowork/"/>
@@ -19,68 +19,70 @@
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/linux/</loc>
-    <lastmod>2026-08-08</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/claude-cowork-alternative/</loc>
-    <lastmod>2026-07-21</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/copilot-cowork-alternative/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/open-source-ai-cowork/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/opencowork-alternative/</loc>
-    <lastmod>2026-07-21</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/local-ai-agent-windows/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/ollama-ai-agent/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/private-ai-workspace/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/ai-coworker-desktop/</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/privacy.html</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.4</priority>
   </url>
   <url>
     <loc>https://noshitcoding.github.io/LocalAI-Cowork/de/datenschutz.html</loc>
-    <lastmod>2026-07-16</lastmod>
+    <lastmod>2026-11-09</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.4</priority>
   </url>
+  <url><loc>https://noshitcoding.github.io/LocalAI-Cowork/preview/</loc><lastmod>2026-11-09</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://noshitcoding.github.io/LocalAI-Cowork/de/preview/</loc><lastmod>2026-11-09</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
 </urlset>

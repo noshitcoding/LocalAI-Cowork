@@ -1,0 +1,16 @@
+# Optional operator-owned image; no dependence on removed legacy binary images.
+# Override these immutable source release refs with the operator's maintained fork.
+ARG GO_IMAGE=golang:1.24-bookworm
+FROM ${GO_IMAGE} AS build
+ARG MINIO_REF=RELEASE.2025-10-15T17-29-55Z
+ARG MC_REF=RELEASE.2025-08-13T08-35-41Z
+RUN go install -trimpath github.com/minio/minio@${MINIO_REF} \
+    && go install -trimpath github.com/minio/mc@${MC_REF}
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /go/bin/minio /usr/local/bin/minio
+COPY --from=build /go/bin/mc /usr/local/bin/mc
+USER 1000:1000
+EXPOSE 9000
+ENTRYPOINT ["/usr/local/bin/minio"]

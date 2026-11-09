@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none">
+  <rect width="1280" height="640" fill="#0A0A0B"/>
+  <g stroke="#303034" stroke-width="1" opacity="0.48">
+    <path d="M0 128H1280M0 256H1280M0 384H1280M0 512H1280"/>
+    <path d="M128 0V640M256 0V640M384 0V640M512 0V640M640 0V640M768 0V640M896 0V640M1024 0V640M1152 0V640"/>
+  </g>
+  <rect x="88" y="86" width="154" height="154" rx="28" fill="#0A0A0B" stroke="#303034" stroke-width="2"/>
+  <path d="M196 123H126V202H196" stroke="#F5F5F2" stroke-width="16" stroke-linecap="square"/>
+  <path d="M208 150H159V180H208" stroke="#90908B" stroke-width="12" stroke-linecap="square"/>
+  <rect x="187" y="106" width="32" height="32" fill="#FFD84D"/>
+  <rect x="88" y="306" width="12" height="164" fill="#FFD84D"/>
+  <text x="140" y="374" fill="#F5F5F2" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="82" font-weight="760" letter-spacing="-4">LocalAI Cowork</text>
+  <text x="142" y="430" fill="#B8B8B3" font-family="Cascadia Code, Consolas, monospace" font-size="24" font-weight="600" letter-spacing="3">DELEGATE THE OUTCOME. KEEP CONTROL.</text>
+  <text x="142" y="490" fill="#90908B" font-family="Segoe UI Variable, Segoe UI, Arial, sans-serif" font-size="25">Local models · Files · Tools · Approvals · Open source</text>
+  <rect x="1032" y="92" width="160" height="9" fill="#303034"/>
+  <rect x="1128" y="92" width="64" height="9" fill="#FFD84D"/>
+</svg>

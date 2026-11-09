@@ -1,0 +1,37 @@
+image: ""
+replicas: 2
+existingSecret: cowork-management
+# The Secret must contain management_database_url, bootstrap_token, audit_key,
+# provisioner_token, auth_master_key (32 random bytes encoded as base64 or hex). It is operator-owned; this chart never creates these keys.
+databaseCidrs: []
+gatewayNamespace: cowork-ingress
+provisionerNamespace: cowork-provisioner
+sso:
+  # Optional operator-owned Secret: providers.json and referenced secret keys.
+  existingSecret: ""
+  global:
+    enabled: false
+    issuer: ""
+    clientId: ""
+    publicOrigin: ""
+    clientSecretKey: "global-client-secret"
+    # Optional; empty keeps global login without provider assurance.
+    assurancePolicyKey: ""
+    autoProvision: false
+  # Explicit discovery, JWKS and token endpoint destinations. No broad default.
+  egress: []
+  # - {cidr: "203.0.113.10/32", port: 443}
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "2", memory: 1Gi}
+policyCeiling:
+  revision: 1
+  extensions: catalog
+  content_access: support_grant
+  minimum_isolation: container
+  allow_laptop_full_access: false
+  allow_offline_continuation: true
+  allowed_network_origins: []
+  limits: {cpu_millis: 4000, memory_mib: 8192, storage_gib: 50, concurrent_runs: 2, instances: 3}
+  audit_retention_days: 365
+  content_logging: false

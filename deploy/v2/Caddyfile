@@ -1,0 +1,9 @@
+{$COWORK_SITE} {
+    encode zstd gzip
+    reverse_proxy api:43821
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+}

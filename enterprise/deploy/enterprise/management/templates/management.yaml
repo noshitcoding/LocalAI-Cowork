@@ -1,0 +1,163 @@
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$" .Values.image) }}
+{{- fail "image must be pinned by sha256 digest" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: management-policy
+data:
+  policy.json: {{ .Values.policyCeiling | toJson | quote }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cowork-management
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: management
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {cowork.component: management}
+  template:
+    metadata:
+      labels: {cowork.component: management}
+      annotations:
+        cowork.policy-checksum: {{ .Values.policyCeiling | toJson | sha256sum }}
+    spec:
+      serviceAccountName: cowork-management
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: {cowork.component: management}
+      containers:
+        - name: management
+          image: {{ .Values.image | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: COWORK_MODE, value: management}
+            - {name: COWORK_LISTEN_ADDR, value: "0.0.0.0:8080"}
+            - {name: DATABASE_URL_FILE, value: /run/secrets/management_database_url}
+            - {name: COWORK_BOOTSTRAP_TOKEN_FILE, value: /run/secrets/bootstrap_token}
+            - {name: COWORK_MANAGEMENT_AUDIT_KEY_FILE, value: /run/secrets/audit_key}
+            - {name: COWORK_AUTH_MASTER_KEY_FILE, value: /run/secrets/auth_master_key}
+            - {name: COWORK_PROVISIONER_TOKEN_FILE, value: /run/secrets/provisioner_token}
+            - {name: COWORK_MANAGEMENT_POLICY_CEILING_FILE, value: /etc/cowork/policy.json}
+            - {name: COWORK_WEB_PUSH_ENABLED, value: "false"}
+            {{- if .Values.sso.existingSecret }}
+            - {name: COWORK_ORGANISATION_OIDC_PROVIDERS_FILE, value: /run/oidc/providers.json}
+            {{- end }}
+            {{- if .Values.sso.global.enabled }}
+            {{- $secret := required "global OIDC needs sso.existingSecret" .Values.sso.existingSecret }}
+            {{- $clientKey := required "global OIDC needs a clientSecretKey" .Values.sso.global.clientSecretKey }}
+            {{- if not (regexMatch "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$" $clientKey) }}{{ fail "invalid global OIDC clientSecretKey" }}{{ end }}
+            - {name: COWORK_OIDC_ISSUER, value: {{ required "global OIDC needs an exact issuer" .Values.sso.global.issuer | quote }}}
+            - {name: COWORK_OIDC_CLIENT_ID, value: {{ required "global OIDC needs clientId" .Values.sso.global.clientId | quote }}}
+            - {name: COWORK_PUBLIC_ORIGIN, value: {{ required "global OIDC needs publicOrigin" .Values.sso.global.publicOrigin | quote }}}
+            - {name: COWORK_OIDC_CLIENT_SECRET_FILE, value: {{ printf "/run/oidc/%s" $clientKey | quote }}}
+            - {name: COWORK_OIDC_AUTO_PROVISION, value: {{ .Values.sso.global.autoProvision | quote }}}
+            {{- if .Values.sso.global.assurancePolicyKey }}
+            {{- $policyKey := .Values.sso.global.assurancePolicyKey }}
+            {{- if not (regexMatch "^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$" $policyKey) }}{{ fail "invalid global OIDC assurancePolicyKey" }}{{ end }}
+            - {name: COWORK_OIDC_ASSURANCE_POLICY_FILE, value: {{ printf "/run/oidc/%s" $policyKey | quote }}}
+            {{- end }}
+            {{- end }}
+          ports: [{name: http, containerPort: 8080}]
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources: {{ .Values.resources | toJson }}
+          volumeMounts:
+            - {name: secrets, mountPath: /run/secrets, readOnly: true}
+            - {name: policy, mountPath: /etc/cowork, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if .Values.sso.existingSecret }}
+            - {name: oidc, mountPath: /run/oidc, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: secrets
+          secret:
+            secretName: {{ required "existingSecret is required" .Values.existingSecret | quote }}
+            defaultMode: 0440
+        - name: policy
+          configMap: {name: management-policy}
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+        {{- if .Values.sso.existingSecret }}
+        - name: oidc
+          secret:
+            secretName: {{ .Values.sso.existingSecret | quote }}
+            defaultMode: 0440
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: management
+spec:
+  selector: {cowork.component: management}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: management
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {cowork.component: management}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: management-boundary
+spec:
+  podSelector:
+    matchLabels: {cowork.component: management}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.gatewayNamespace | quote }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.provisionerNamespace | quote }}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    {{- range .Values.databaseCidrs }}
+    - to:
+        - ipBlock: {cidr: {{ . | quote }}}
+      ports: [{protocol: TCP, port: 5432}]
+    {{- end }}
+    {{- range .Values.sso.egress }}
+    - to:
+        - ipBlock: {cidr: {{ required "SSO egress requires a CIDR" .cidr | quote }}}
+      ports: [{protocol: TCP, port: {{ .port | default 443 }}}]
+    {{- end }}

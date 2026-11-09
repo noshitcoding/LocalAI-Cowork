@@ -1,0 +1,129 @@
+{
+  "tool": {
+    "id": "native-document",
+    "name": "document_write",
+    "arguments": {
+      "operation": "edit",
+      "inputs": [
+        {
+          "folder_id": "files",
+          "path": "invoices.xlsx",
+          "expected_sha256": "ec4b1115413e566305477962e366d1bdd6921042de42c8961b09b0b1349a8ae0"
+        }
+      ],
+      "output": {
+        "folder_id": "files",
+        "path": "updated.xlsx"
+      },
+      "spec": {
+        "source_sha256": "ec4b1115413e566305477962e366d1bdd6921042de42c8961b09b0b1349a8ae0",
+        "patches": [
+          {
+            "op": "append_table_rows",
+            "sheet": "Invoices",
+            "table": "InvoiceTable",
+            "columns": [
+              {
+                "header": "Invoice",
+                "kind": "text",
+                "nullable": false
+              },
+              {
+                "header": "Gross",
+                "kind": "money_minor",
+                "nullable": false
+              },
+              {
+                "header": "Issued",
+                "kind": "date",
+                "nullable": false
+              },
+              {
+                "header": "Paid",
+                "kind": "boolean",
+                "nullable": false
+              },
+              {
+                "header": "Note",
+                "kind": "text",
+                "nullable": true
+              }
+            ],
+            "key_columns": [
+              0
+            ],
+            "rows": [
+              [
+                "INV-002",
+                11900,
+                "2026-11-01",
+                false,
+                "=HYPERLINK(\"https://example.invalid\")"
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "engine": {
+    "format": "cowork-document-receipt/1",
+    "ok": true,
+    "engine_version": "1",
+    "result": {
+      "patches_applied": 1,
+      "formulas_updated": 0,
+      "defined_names_updated": 0,
+      "table_append": {
+        "sheet": "Invoices",
+        "table": "InvoiceTable",
+        "rows_added": 1,
+        "first_row": 3,
+        "last_row": 3,
+        "previous_range": "A1:E2",
+        "range": "A1:E3",
+        "key_columns": [
+          0
+        ]
+      },
+      "format": "xlsx",
+      "bytes": 7596,
+      "source_sha256": "ec4b1115413e566305477962e366d1bdd6921042de42c8961b09b0b1349a8ae0"
+    },
+    "outputs": [
+      {
+        "name": "out/updated.xlsx",
+        "sha256": "f7dacacf63901208a88a74ac9f8946766c64e76c6c3b2af67e809050db114b88",
+        "bytes": 7596,
+        "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      }
+    ],
+    "previews": [],
+    "diagnostics": [
+      {
+        "severity": "warning",
+        "message": "Formula values have not been calculated; use an explicit LibreOffice recalculation before relying on result values"
+      }
+    ],
+    "qa": {
+      "calculation": {
+        "status": "unverified",
+        "engine": null,
+        "formula_cells": 1,
+        "missing_values": 1,
+        "error_values": 0
+      },
+      "roundtrip": {
+        "protected_parts_checked": 1,
+        "missing_parts": 0
+      },
+      "table_append": {
+        "status": "verified",
+        "rows_checked": 1
+      },
+      "warnings": [
+        "Formula values have not been calculated; use an explicit LibreOffice recalculation before relying on result values"
+      ]
+    }
+  }
+}

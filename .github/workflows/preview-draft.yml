@@ -1,0 +1,100 @@
+name: V2 preview draft
+run-name: Check and draft ${{ inputs.tag }}
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v2.x-alpha.N/beta.N/rc.N tag accepted by verification
+        required: true
+        type: string
+      candidate_run_id:
+        description: Same-repository Actions run containing the signed candidate artifact
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Immutable artifact ID containing the original signed candidate and acceptance
+        required: true
+        type: string
+      verification_run_id:
+        description: Successful V2 verification run on this exact tag commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: v2-preview-draft-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  draft:
+    # Configure required reviewers for this environment before enabling releases.
+    environment: v2-preview-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Load independently reviewed release tooling and policy
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/release-policy
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - name: Fetch exact digest-bound artifact from the trusted producer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_TAG: ${{ inputs.tag }}
+          PREVIEW_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+        run: >-
+          python .local/release-policy/tools/release/preview.py fetch
+          --source-root "$GITHUB_WORKSPACE"
+          --tag "$PREVIEW_TAG" --repository "$PREVIEW_REPOSITORY"
+          --trusted-policy "$GITHUB_WORKSPACE/.local/release-policy/.github/v2-preview-policy.json"
+          --candidate-run-id "$CANDIDATE_RUN_ID" --candidate-artifact-id "$CANDIDATE_ARTIFACT_ID"
+          --archive "$GITHUB_WORKSPACE/.local/preview-candidate.zip"
+          --output "$GITHUB_WORKSPACE/.local/preview-candidate"
+      - name: Verify source, CI, signed bytes, SBOMs and installed acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_TAG: ${{ inputs.tag }}
+          VERIFY_RUN_ID: ${{ inputs.verification_run_id }}
+          PREVIEW_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+        run: >-
+          python .local/release-policy/tools/release/preview.py stage
+          --source-root "$GITHUB_WORKSPACE"
+          --tag "$PREVIEW_TAG" --repository "$PREVIEW_REPOSITORY"
+          --ci-run-id "$VERIFY_RUN_ID"
+          --trusted-policy "$GITHUB_WORKSPACE/.local/release-policy/.github/v2-preview-policy.json"
+          --candidate-run-id "$CANDIDATE_RUN_ID" --candidate-artifact-id "$CANDIDATE_ARTIFACT_ID"
+          --archive "$GITHUB_WORKSPACE/.local/preview-candidate.zip"
+          --candidate "$GITHUB_WORKSPACE/.local/preview-candidate"
+          --output "$GITHUB_WORKSPACE/.local/preview-public"
+      - name: Retain checked public release set
+        uses: actions/upload-artifact@v4
+        with:
+          name: checked-v2-preview-${{ inputs.tag }}
+          path: .local/preview-public
+          if-no-files-found: error
+      - name: Create prerelease draft without changing stable latest or Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python .local/release-policy/tools/release/draft_preview.py
+          --trusted-policy "$GITHUB_WORKSPACE/.local/release-policy/.github/v2-preview-policy.json"
+          --staged "$GITHUB_WORKSPACE/.local/preview-public" --create-draft

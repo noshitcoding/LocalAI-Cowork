@@ -1,7 +1,7 @@
 {
   "name": "LocalAI Cowork",
   "short_name": "LocalAI Cowork",
-  "description": "Local-first AI agent workspace for Windows and Linux with Ollama, MCP tools, tasks, files, and approval controls.",
+  "description": "LocalAI Cowork V2 preview preparation, scope and requirements; existing public V1 releases remain available separately.",
   "start_url": "/LocalAI-Cowork/",
   "display": "standalone",
   "background_color": "#0A0A0B",

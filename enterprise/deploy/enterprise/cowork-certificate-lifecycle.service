@@ -1,0 +1,18 @@
+[Unit]
+Description=Renew and verify the selected Cowork control or VM TLS identity
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cowork-operator
+Group=cowork-operator
+UMask=0077
+EnvironmentFile=/etc/cowork/certificate-lifecycle.env
+ExecStart=/usr/bin/python3 /opt/open-cowork/scripts/enterprise-certificate-lifecycle.py maintain --config ${COWORK_CERTIFICATE_CONFIG} --state ${COWORK_CERTIFICATE_STATE}
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/cowork-operator /srv/cowork-vms
+

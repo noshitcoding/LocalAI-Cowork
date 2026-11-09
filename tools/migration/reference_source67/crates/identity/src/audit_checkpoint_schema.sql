@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS audit_witness_bindings(scope TEXT PRIMARY KEY,request_id TEXT NOT NULL,request_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_checkpoint_requests(scope TEXT NOT NULL,request_id TEXT NOT NULL,request_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,completed BIGINT NOT NULL CHECK(completed IN(0,1)),PRIMARY KEY(scope,request_id));
+CREATE UNIQUE INDEX IF NOT EXISTS audit_checkpoint_one_pending ON audit_checkpoint_requests(scope) WHERE completed=0;
+CREATE TABLE IF NOT EXISTS audit_checkpoint_imports(scope TEXT NOT NULL,request_id TEXT NOT NULL,request_sha256 TEXT NOT NULL,candidate_request_id TEXT NOT NULL,original_base64 TEXT NOT NULL,original_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,PRIMARY KEY(scope,request_id),UNIQUE(scope,candidate_request_id));
+CREATE TABLE IF NOT EXISTS audit_checkpoint_heads(scope TEXT PRIMARY KEY,checkpoint_sha256 TEXT NOT NULL,candidate_request_id TEXT NOT NULL);

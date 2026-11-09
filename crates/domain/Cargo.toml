@@ -1,0 +1,17 @@
+[package]
+name = "cowork-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cowork-contracts.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jsonschema.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+url = "=2.5.8"
+

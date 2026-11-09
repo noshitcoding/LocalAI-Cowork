@@ -1,0 +1,95 @@
+{
+  "format_version": 3,
+  "name": "Geplant fortsetzen",
+  "mode": {
+    "mode": "parallel",
+    "max_parallel": 2
+  },
+  "failure": "stop",
+  "rights": {
+    "tools": [],
+    "folders": []
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 60,
+    "max_output_tokens": 512,
+    "max_total_tokens": 65536
+  },
+  "roles": [],
+  "steps": [],
+  "controls": {
+    "wait": {
+      "name": "Bis zum Termin warten",
+      "dependencies": [],
+      "operation": {
+        "kind": "wait",
+        "seconds_input": "seconds"
+      }
+    },
+    "after": {
+      "name": "Nach der Wartezeit fortsetzen",
+      "dependencies": [
+        "wait"
+      ],
+      "operation": {
+        "kind": "compose"
+      }
+    }
+  },
+  "dataflow": {
+    "input": {
+      "type": "object",
+      "fields": {
+        "delay": {
+          "type": "integer"
+        }
+      }
+    },
+    "steps": {
+      "wait": {
+        "inputs": {
+          "seconds": {
+            "value_type": {
+              "type": "integer"
+            },
+            "value": {
+              "source": "input",
+              "pointer": "/delay"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "wake_at": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "after": {
+        "inputs": {
+          "scheduled_at": {
+            "value_type": {
+              "type": "integer"
+            },
+            "value": {
+              "source": "step",
+              "step_id": "wait",
+              "pointer": "/wake_at"
+            }
+          }
+        },
+        "output": {
+          "type": "object",
+          "fields": {
+            "scheduled_at": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}

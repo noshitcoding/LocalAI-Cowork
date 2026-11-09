@@ -1,0 +1,19 @@
+[Unit]
+Description=LocalAI Cowork V2 personal server
+After=network.target
+
+[Service]
+Type=simple
+# Adjust this path if install-user.sh was given a custom destination.
+ExecStart=%h/.local/share/localai-cowork-v2/server-bundle/start.sh
+Environment=COWORK_DATA_DIR=%h/.local/share/localai-cowork-v2/server-data
+# For nginx HTTPS access, add the exact origin with no trailing slash:
+# Environment=COWORK_PUBLIC_ORIGIN=https://cowork.example
+UMask=0077
+KillSignal=SIGINT
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
