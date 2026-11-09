@@ -1,0 +1,349 @@
+name: V2 unsigned package build review
+run-name: Unsigned review of ${{ inputs.source_commit }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact 40-character dispatched commit SHA, already verified
+        required: true
+        type: string
+      verification_run_id:
+        description: Successful verify.yml run on that exact commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: v2-unsigned-review-${{ inputs.source_commit }}
+  cancel-in-progress: false
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      verification: ${{ steps.check.outputs.verification }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: check
+        name: Bind explicit unsigned opt-in, commit and successful native verification
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_UNSIGNED_RELEASE: ${{ vars.LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          VERIFY_RUN_ID: ${{ inputs.verification_run_id }}
+        run: |
+          import json, os, re, subprocess, sys, tomllib
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          commit = os.environ['SOURCE_COMMIT']
+          if os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch' or os.environ.get('ALLOW_UNSIGNED_RELEASE') != 'true':
+              raise SystemExit('Manual unsigned review requires repository variable LOCALAI_COWORK_ALLOW_UNSIGNED_RELEASE=true.')
+          if not re.fullmatch(r'[0-9a-f]{40}', commit) or commit != os.environ['GITHUB_SHA']:
+              raise SystemExit('source_commit must be the exact dispatched 40-character commit SHA.')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != commit:
+              raise SystemExit('Checkout and dispatched commit differ.')
+          if not re.fullmatch(r'[1-9][0-9]{0,19}', os.environ['VERIFY_RUN_ID']):
+              raise SystemExit('Select the successful verification run ID.')
+          sys.path.insert(0, str(root / 'tools/release'))
+          import preview
+          version = preview.preview_version(json.loads((root / 'package.json').read_bytes())['version'])
+          cargo = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))
+          desktop = json.loads((root / 'apps/desktop/src-tauri/tauri.conf.json').read_bytes())
+          if cargo['workspace']['package']['version'] != version or desktop['version'] != version:
+              raise SystemExit('npm, workspace and desktop versions differ.')
+          # live_ci accepts a commit directly; no tag or signed-candidate evidence is fabricated.
+          verification = preview.live_ci(root, os.environ['GITHUB_REPOSITORY'], int(os.environ['VERIFY_RUN_ID']), commit)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('version=' + version + '\n')
+              output.write('verification=' + json.dumps(verification, sort_keys=True) + '\n')
+  frontend:
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      receipt_sha256: ${{ steps.build.outputs.receipt_sha256 }}
+      source_sha256: ${{ steps.build.outputs.source_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - run: npm install --global npm@11.6.2
+      - run: npm ci
+      - id: build
+        name: Build one frontend and pin complete packaging inputs
+        shell: python
+        env:
+          VERIFIED_CI: ${{ needs.policy.outputs.verification }}
+          EXPECTED_VERSION: ${{ needs.policy.outputs.version }}
+        run: |
+          import hashlib, json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=root, check=True)
+          sys.path.insert(0, str(root / 'tools/desktop'))
+          import frontend, package, release
+          before = release.source_manifest(root)
+          common = root / '.local/unsigned-review-common'
+          common.mkdir(parents=True)
+          node = Path(shutil.which('node'))
+          npm = Path(shutil.which('npm')).resolve()
+          if subprocess.check_output([str(node), '--version'], text=True).strip() != 'v22.20.0' or subprocess.check_output([str(node), str(npm), '--version'], text=True).strip() != '11.6.2':
+              raise SystemExit('Pinned Node/npm are required.')
+          subprocess.run(['python', 'tools/desktop/frontend.py', '--node', str(node), '--npm', str(npm), '--output', str(common / 'frontend')], cwd=root, check=True)
+          receipt_path = common / 'frontend/receipt.json'
+          front = json.loads(receipt_path.read_bytes())
+          if front.get('format') != 'localai-cowork-frontend-build/1' or front.get('version') != os.environ['EXPECTED_VERSION'] or front.get('exit_code') != 0 or front.get('sources_unchanged') is not True or front.get('sources') != frontend.sources() or release.source_manifest(root) != before:
+              raise SystemExit('Common frontend source or build receipt changed.')
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=root, check=True)
+          shutil.copytree(root / 'apps/web/dist', common / 'dist')
+          sources = package.input_manifest(root)
+          digest = hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          provenance = {'format': 'localai-cowork-unsigned-review-source/1', 'commit': os.environ['GITHUB_SHA'],
+              'verification': json.loads(os.environ['VERIFIED_CI']), 'sources': sources, 'source_sha256': digest,
+              'signed': False, 'installed': False, 'published': False, 'release_qualified': False}
+          (common / 'source-provenance.json').write_text(json.dumps(provenance, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('receipt_sha256=' + hashlib.sha256(receipt_path.read_bytes()).hexdigest() + '\n')
+              output.write('source_sha256=' + digest + '\n')
+      - id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-unsigned-review-common-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/unsigned-review-common
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+  native:
+    needs: [policy, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            host: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: linux
+            runner: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTUP_TOOLCHAIN: '1.94.1'
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      NATIVE_HOST: ${{ matrix.host }}
+      NATIVE_BUNDLES: ${{ matrix.bundles }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reclaim unused Android SDK only on the hosted Linux VM
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        env:
+          CI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$CI_RUNNER_ENVIRONMENT" = github-hosted
+          sdk=/usr/local/lib/android
+          if test -d "$sdk"; then
+            test "$(realpath -- "$sdk")" = "$sdk"
+            sudo rm -rf -- "$sdk"
+          fi
+          df -h .
+      - name: Install native Linux bundle prerequisites
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev
+          libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf file
+          dpkg-dev fakeroot xvfb xauth
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - run: npm install --global npm@11.6.2
+      - run: npm ci
+      - run: rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy
+      - name: Select a new short private Windows build directory and native Perl
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $taskDrive = [System.IO.Path]::GetPathRoot($env:RUNNER_TEMP)
+          $taskRoot = Join-Path $taskDrive "cw-review-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $taskRoot) { throw 'Review build directory must be new' }
+          New-Item -ItemType Directory -Path $taskRoot -ErrorAction Stop | Out-Null
+          $taskUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+          $taskAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+          $taskAcl.SetOwner($taskUser)
+          $taskAcl.SetAccessRuleProtection($true, $false)
+          foreach ($taskSid in @($taskUser.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+            $taskRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+              [System.Security.Principal.SecurityIdentifier]::new($taskSid), 'FullControl',
+              'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $taskAcl.AddAccessRule($taskRule)
+          }
+          Set-Acl -LiteralPath $taskRoot -AclObject $taskAcl
+          $taskTemp = Join-Path $taskRoot 'tmp'
+          New-Item -ItemType Directory -Path $taskTemp -ErrorAction Stop | Out-Null
+          $taskPerlCandidates = @('C:\Strawberry\perl\bin\perl.exe') + @(Get-Command perl.exe -All -CommandType Application -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+          $taskPerl = $null
+          foreach ($taskCandidate in ($taskPerlCandidates | Select-Object -Unique)) {
+            if (-not (Test-Path -LiteralPath $taskCandidate -PathType Leaf)) { continue }
+            & $taskCandidate -MFile::Copy -MFile::Path -MText::ParseWords -e 'die "native Windows Perl required" unless $^O eq "MSWin32"; print "native-perl-ready\n"'
+            if ($LASTEXITCODE -eq 0) { $taskPerl = $taskCandidate; break }
+          }
+          if (-not $taskPerl) { throw 'Hosted image needs full native Windows Perl and its standard modules' }
+          $taskVswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $taskVswhere)) { throw 'Native MSVC discovery is missing' }
+          $taskVisualStudio = & $taskVswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $taskVisualStudio) { throw 'Native x64 MSVC build tools are missing' }
+          "OPENSSL_SRC_PERL=$taskPerl" >> $env:GITHUB_ENV
+          (Split-Path -Parent $taskPerl) >> $env:GITHUB_PATH
+          "REVIEW_BUILD_ROOT=$taskRoot" >> $env:GITHUB_ENV
+          "TEMP=$taskTemp" >> $env:GITHUB_ENV
+          "TMP=$taskTemp" >> $env:GITHUB_ENV
+      - name: Select a new private native Linux build directory
+        if: runner.os == 'Linux'
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / ('cw-review-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          root.mkdir(mode=0o700)
+          temporary = root / 'tmp'
+          temporary.mkdir(mode=0o700)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('REVIEW_BUILD_ROOT=' + str(root) + '\n')
+              output.write('TMPDIR=' + str(temporary) + '\n')
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.frontend.outputs.artifact_id }}
+          path: .local/unsigned-review-common
+          merge-multiple: true
+      - name: Verify original common frontend, complete source and native tools
+        shell: python
+        env:
+          FRONTEND_RECEIPT_SHA256: ${{ needs.frontend.outputs.receipt_sha256 }}
+          COMMON_SOURCE_SHA256: ${{ needs.frontend.outputs.source_sha256 }}
+          VERIFIED_CI: ${{ needs.policy.outputs.verification }}
+        run: |
+          import hashlib, json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          common = root / '.local/unsigned-review-common'
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=root, check=True)
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip() != os.environ['GITHUB_SHA']:
+              raise SystemExit('Native checkout differs from dispatched commit.')
+          node = Path(shutil.which('node'))
+          npm = Path(shutil.which('npm.cmd')).parent / 'node_modules/npm/bin/npm-cli.js' if os.name == 'nt' else Path(shutil.which('npm')).resolve()
+          if subprocess.check_output([str(node), '--version'], text=True).strip() != 'v22.20.0' or subprocess.check_output([str(node), str(npm), '--version'], text=True).strip() != '11.6.2':
+              raise SystemExit('Native Node/npm differs from the pinned frontend toolchain.')
+          rustc = subprocess.check_output(['rustc', '-vV'], text=True)
+          if not rustc.startswith('rustc 1.94.1 ') or ('host: ' + os.environ['NATIVE_HOST']) not in rustc:
+              raise SystemExit('Native pinned Rust host differs from matrix.')
+          receipt_path = common / 'frontend/receipt.json'
+          if hashlib.sha256(receipt_path.read_bytes()).hexdigest() != os.environ['FRONTEND_RECEIPT_SHA256']:
+              raise SystemExit('Original common frontend receipt digest changed.')
+          sys.path.insert(0, str(root / 'tools/desktop'))
+          import frontend, package
+          front = json.loads(receipt_path.read_bytes())
+          if front.get('sources') != frontend.sources() or front.get('exit_code') != 0 or front.get('sources_unchanged') is not True:
+              raise SystemExit('Common frontend does not bind the native source checkout.')
+          shutil.copytree(common / 'dist', root / 'apps/web/dist')
+          if frontend.manifest([p for p in (root / 'apps/web/dist').rglob('*') if p.is_file()]) != front['outputs']:
+              raise SystemExit('Downloaded frontend output bytes changed.')
+          source = json.loads((common / 'source-provenance.json').read_bytes())
+          actual = package.input_manifest(root)
+          digest = hashlib.sha256(json.dumps(actual, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          if source.get('commit') != os.environ['GITHUB_SHA'] or source.get('verification') != json.loads(os.environ['VERIFIED_CI']) or source.get('sources') != actual or source.get('source_sha256') != digest or digest != os.environ['COMMON_SOURCE_SHA256']:
+              raise SystemExit('Native packaging inputs differ from the original common source manifest.')
+      - name: Build unsigned native packages with full native desktop checks
+        shell: python
+        env:
+          VERIFIED_CI: ${{ needs.policy.outputs.verification }}
+          COMMON_SOURCE_SHA256: ${{ needs.frontend.outputs.source_sha256 }}
+          FRONTEND_RECEIPT_SHA256: ${{ needs.frontend.outputs.receipt_sha256 }}
+          EXPECTED_VERSION: ${{ needs.policy.outputs.version }}
+        run: |
+          import hashlib, json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          work = Path(os.environ['REVIEW_BUILD_ROOT'])
+          sidecar = work / 'sidecar'
+          output = root / '.local/unsigned-review-package'
+          output.parent.mkdir(exist_ok=True)
+          subprocess.run(['python', 'tools/desktop/release.py', '--output-dir', str(sidecar), '--target-dir', str(work / 'core-target')], cwd=root, check=True)
+          # No --fast and no signing profile: package.py performs native format/test/Clippy/build and uses --no-sign.
+          command = ['python', 'tools/desktop/package.py', '--sidecar-dir', str(sidecar), '--output-dir', str(output), '--target-dir', str(work / 'desktop-target'), '--bundles', os.environ['NATIVE_BUNDLES']]
+          if os.name != 'nt':
+              command = ['xvfb-run', '-a', *command]
+          subprocess.run(command, cwd=root, check=True)
+          receipt = json.loads((output / 'receipt.json').read_bytes())
+          expected_bundles = set(os.environ['NATIVE_BUNDLES'].split(','))
+          if receipt.get('format') != 'localai-cowork-native-desktop-package/1' or receipt.get('result') != 'passed' or receipt.get('product_version') != os.environ['EXPECTED_VERSION'] or receipt.get('host') != os.environ['NATIVE_HOST'] or receipt.get('validation_scope') != 'format_tests_clippy_build' or receipt.get('desktop_format_test_clippy_exit_codes') != [0, 0, 0] or set(receipt.get('bundles', {})) != expected_bundles or receipt.get('source_before_after_equal') is not True or receipt.get('staged_source_bytes_equal') is not True:
+              raise SystemExit('Full native package build evidence is incomplete.')
+          if any(receipt.get(flag) is not False for flag in ('signed', 'installed', 'published', 'release_qualified')):
+              raise SystemExit('Unsigned review must remain unsigned, uninstalled and unqualified.')
+          for record in [*receipt['bundles'].values(), receipt['sbom']]:
+              path = output / record['filename']
+              if path.parent != output or not path.is_file() or path.is_symlink() or path.stat().st_size != record['size'] or hashlib.sha256(path.read_bytes()).hexdigest() != record['sha256']:
+                  raise SystemExit('Native package or SBOM bytes differ from their original receipt.')
+          common = root / '.local/unsigned-review-common'
+          shutil.copytree(common / 'frontend', output / 'frontend')
+          shutil.copyfile(common / 'source-provenance.json', output / 'source-provenance.json')
+          shutil.copyfile(sidecar / 'receipt.json', output / 'sidecar-receipt.json')
+          shutil.copyfile(sidecar / 'cargo-build.jsonl', output / 'sidecar-cargo-build.jsonl')
+          context = Path(receipt['source_context'])
+          if not context.is_dir() or context.is_symlink() or context.parent != Path(os.environ['TEMP'] if os.name == 'nt' else os.environ['TMPDIR']) or not context.name.startswith('cowork-desktop-package-context-'):
+              raise SystemExit('Build log context must belong to this review invocation.')
+          logs = sorted([*context.glob('*.stdout.log'), *context.glob('*.stderr.log')])
+          if not logs or any(path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024 * 1024 for path in logs) or sum(path.stat().st_size for path in logs) > 256 * 1024 * 1024:
+              raise SystemExit('Build logs must be bounded regular files.')
+          log_output = output / 'build-logs'
+          log_output.mkdir()
+          log_pins = {}
+          for path in logs:
+              target = log_output / path.name
+              shutil.copyfile(path, target)
+              log_pins[path.name] = {'size': target.stat().st_size, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}
+          review = {'format': 'localai-cowork-unsigned-build-review/1', 'commit': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'host': os.environ['NATIVE_HOST'], 'verification': json.loads(os.environ['VERIFIED_CI']),
+              'source_sha256': os.environ['COMMON_SOURCE_SHA256'], 'frontend_receipt_sha256': os.environ['FRONTEND_RECEIPT_SHA256'],
+              'package_receipt_sha256': hashlib.sha256((output / 'receipt.json').read_bytes()).hexdigest(),
+              'build_logs': log_pins,
+              'signed': False, 'installed': False, 'published': False, 'release_qualified': False,
+              'installer_execution_performed': False, 'installed_acceptance': 'pending'}
+          (output / 'UNSIGNED-BUILD-REVIEW.json').write_text(json.dumps(review, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('Unsigned ' + os.environ['NATIVE_HOST'] + ' packages built for commit `' + os.environ['GITHUB_SHA'] + '`.\n\nFull native desktop checks passed. Installation and release qualification remain pending.\n')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-unsigned-review-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/unsigned-review-package
+          if-no-files-found: error
+          retention-days: 14

@@ -1,17 +1,25 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = join(appRoot, '..')
+const publicationRoot = join(repositoryRoot, '..')
 
-test('the Windows release smoke exercises the installed native sandbox', () => {
+test('retained Enterprise sandbox guards stay separate from the current V2 release boundary', () => {
   const installerSmoke = readFileSync(join(appRoot, 'scripts', 'installer-crew-runtime-smoke.ps1'), 'utf8')
   const nativeSandbox = readFileSync(join(appRoot, 'src-tauri', 'src', 'native_windows_sandbox.rs'), 'utf8')
-  const releaseWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release.yml'), 'utf8')
-  const candidateWorkflow = readFileSync(join(repositoryRoot, '.github', 'workflows', 'release-candidate.yml'), 'utf8')
+  const readCurrent = (path) => readFileSync(join(publicationRoot, path), 'utf8')
+  const candidateWorkflow = readCurrent('.github/workflows/preview-candidate.yml')
+  const releaseWorkflow = readCurrent('.github/workflows/preview-draft.yml')
+  const acceptanceWorkflow = readCurrent('.github/workflows/preview-acceptance.yml')
+  const enterpriseWorkflow = readCurrent('.github/workflows/enterprise-source.yml')
+  const previewTool = readCurrent('tools/release/draft_preview.py')
+  const enterpriseScope = readFileSync(join(repositoryRoot, 'README.md'), 'utf8')
+  const currentVersion = JSON.parse(readCurrent('package.json')).version
+  const desktopVersion = JSON.parse(readCurrent('apps/desktop/src-tauri/tauri.conf.json')).version
 
   assert.match(nativeSandbox, /--lacowork-native-sandbox-smoke/)
   assert.match(nativeSandbox, /#\[cfg\(debug_assertions\)\][\s\S]*LACOWORK_NATIVE_SANDBOX_SKIP_SETUP/)
@@ -39,13 +47,33 @@ test('the Windows release smoke exercises the installed native sandbox', () => {
   assert.match(installerSmoke, /repeatedSetupReady -ne \$true/)
   assert.match(installerSmoke, /identityVerified -ne \$true/)
   assert.match(installerSmoke, /markerWritten -ne \$true/)
-  assert.match(releaseWorkflow, /installer-crew-runtime-smoke\.ps1/)
-  assert.doesNotMatch(releaseWorkflow, /SkipNativeSandbox/)
+  // Retained Enterprise helper guards do not qualify or advertise the V2 desktop.
+  assert.match(currentVersion, /^2\./)
+  assert.equal(desktopVersion, currentVersion)
   assert.match(candidateWorkflow, /workflow_dispatch:/)
-  assert.match(candidateWorkflow, /git merge-base --is-ancestor \$checkedOut origin\/main/)
-  assert.match(candidateWorkflow, /installer-crew-runtime-smoke\.ps1/)
-  assert.match(candidateWorkflow, /UninstallAfterVerification/)
-  assert.doesNotMatch(candidateWorkflow, /SkipNativeSandbox/)
-  assert.doesNotMatch(candidateWorkflow, /LACOWORK_NATIVE_SANDBOX_SKIP_SETUP/)
+  assert.match(candidateWorkflow, /tools\/desktop\/release\.py/)
+  assert.match(candidateWorkflow, /tools\/desktop\/package\.py/)
+  assert.match(candidateWorkflow, /--signing-profile/)
+  assert.match(candidateWorkflow, /preview\.live_ci/)
+  assert.match(acceptanceWorkflow, /package-specific installed QA/)
+  assert.match(acceptanceWorkflow, /preview_candidate\.py/)
+  assert.match(releaseWorkflow, /github\.event\.repository\.default_branch/)
+  assert.match(releaseWorkflow, /--trusted-policy/)
+  assert.match(releaseWorkflow, /signed bytes, SBOMs and installed acceptance/)
+  assert.match(previewTool, /--draft/)
+  assert.match(previewTool, /--prerelease/)
+  assert.match(previewTool, /--latest=false/)
   assert.doesNotMatch(candidateWorkflow, /gh release|docker\/build-push-action|packages: write/)
+  for (const workflow of [candidateWorkflow, releaseWorkflow, acceptanceWorkflow]) {
+    assert.doesNotMatch(workflow, /enterprise\/app|installer-crew-runtime-smoke|LACOWORK_NATIVE_SANDBOX_SKIP_SETUP/)
+  }
+  assert.match(enterpriseWorkflow, /working-directory: enterprise/)
+  assert.match(enterpriseWorkflow, /cargo check --locked --workspace --all-targets/)
+  assert.match(enterpriseWorkflow, /npm run build:web --prefix app/)
+  assert.doesNotMatch(enterpriseWorkflow, /tauri build|tauri-action|gh release|contents: write|packages: write/)
+  assert.match(enterpriseScope, /independent Enterprise server workspace/)
+  assert.match(enterpriseScope, /current V2 app is at/)
+  assert.match(enterpriseScope, /Do not run tauri build here for a V2 release/)
+  assert.equal(existsSync(join(repositoryRoot, '.github/workflows/release.yml')), false)
+  assert.equal(existsSync(join(repositoryRoot, '.github/workflows/release-candidate.yml')), false)
 })
