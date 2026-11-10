@@ -434,7 +434,15 @@ impl Fixture {
         } = self;
         drop(service);
         store.close().await;
-        pool.close().await;
+        // Drain connections returning after the first close pass, as Store.close
+        // does for its own pool, before removing the SQLite files on Windows.
+        loop {
+            pool.close().await;
+            if pool.size() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         drop(store);
         drop(pool);
         directory.close().unwrap();
@@ -1111,7 +1119,15 @@ async fn private_owner_tombstones_do_not_restore_content_or_revoked_authority() 
         );
     }
     drop(identity);
-    pool.close().await;
+    // Drain connections returning after the first close pass, as Store.close
+    // does for its own pool, before removing the SQLite files on Windows.
+    loop {
+        pool.close().await;
+        if pool.size() == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     store.close().await;
     drop(pool);
     drop(store);

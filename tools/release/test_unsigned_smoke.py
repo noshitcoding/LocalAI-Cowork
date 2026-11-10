@@ -42,11 +42,16 @@ class CoordinatorTests(unittest.TestCase):
         selected = coordinator.clean_environment({**self.env, 'PATH': '/usr/bin', 'DISPLAY': ':99',
             'GH_TOKEN': 'secret-a', 'GITHUB_TOKEN': 'secret-b', 'ACTIONS_RUNTIME_TOKEN': 'secret-c',
             'MODEL_API_PASSWORD': 'secret-d', 'AWS_SECRET_ACCESS_KEY': 'secret-e',
-            'COWORK_DATABASE_URL': 'foreign', 'HTTPS_PROXY': 'foreign'})
+            'COWORK_DATABASE_URL': 'foreign', 'HTTPS_PROXY': 'foreign',
+            'PSModulePath': 'foreign-ps7', 'PSMODULEPATH': 'foreign-ps7',
+            'psmodulepath': 'foreign-ps7'})
         self.assertEqual(selected['PATH'], '/usr/bin')
         self.assertEqual(selected['DISPLAY'], ':99')
         self.assertTrue(all(value not in selected.values() for value in ['secret-a', 'secret-b', 'secret-c', 'secret-d', 'secret-e', 'foreign']))
         self.assertEqual(selected['GITHUB_EVENT_NAME'], 'workflow_dispatch')
+        for key in ('PSModulePath', 'PSMODULEPATH', 'psmodulepath'):
+            with self.subTest(key=key):
+                self.assertNotIn(key, selected)
 
     def test_exact_bundle_command_and_package_name_no_shell_fallback(self):
         for bad in ['', '-foreign', 'pkg; touch /tmp/x', '../pkg', 'pkg\nother']:

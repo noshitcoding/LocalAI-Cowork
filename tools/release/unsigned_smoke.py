@@ -45,6 +45,7 @@ def clean_environment(environment=None):
     return {key: value for key, value in env.items()
             if not key.upper().startswith(('COWORK_', 'GH_', 'ACTIONS_'))
             and not any(word in key.upper() for word in ('TOKEN', 'PASSWORD', 'SECRET', 'CREDENTIAL'))
+            and key.upper() != 'PSMODULEPATH'
             and key.upper() not in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')}
 
 

@@ -321,7 +321,15 @@ async fn original_personal_server_lease_rechecks_identity_clock_before_renewal()
     drop(session_after);
     drop(identity);
     store.close().await;
-    pool.close().await;
+    // Drain connections returning after the first close pass, as Store.close
+    // does for its own pool, before removing the SQLite files on Windows.
+    loop {
+        pool.close().await;
+        if pool.size() == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     drop(store);
     drop(pool);
     directory.close().unwrap();

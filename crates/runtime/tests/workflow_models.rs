@@ -4233,13 +4233,27 @@ async fn monetary_workflow_node_deadline_after_writer_wait_rolls_back_global_hol
         false,
         60,
         GraphOptions {
-            a_seconds: Some(1),
+            a_seconds: Some(5),
             ..Default::default()
         },
     )
     .await;
     bind_private_workflow_money(&f).await;
+    let pool =
+        sqlx::SqlitePool::connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&f.path))
+            .await
+            .unwrap();
+    // Connection setup must precede the claim that starts the node's clock.
     let a = claim(&f, "a").await;
+    let graph = f
+        .runtime
+        .store
+        .stored_workflow(&f.project, &f.run.id)
+        .await
+        .unwrap();
+    let node = &graph.progress.nodes()["a"];
+    let node_deadline_ms =
+        (node.started_at.unwrap() + i64::try_from(node.plan.budgets.max_seconds).unwrap()) * 1000;
     let (expected, context) = f
         .runtime
         .store
@@ -4269,10 +4283,6 @@ async fn monetary_workflow_node_deadline_after_writer_wait_rolls_back_global_hol
         .lease
         .unwrap()
         .until;
-    let pool =
-        sqlx::SqlitePool::connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&f.path))
-            .await
-            .unwrap();
     let mut writer = pool.begin().await.unwrap();
     sqlx::query("UPDATE accounting_ledgers SET revision=revision")
         .execute(&mut *writer)
@@ -4282,7 +4292,16 @@ async fn monetary_workflow_node_deadline_after_writer_wait_rolls_back_global_hol
     let project = f.project.clone();
     let run = f.run.id.clone();
     let lease = f.lease.clone();
-    let waiting = tokio::spawn(async move {
+    // SQLite Store has one connection; WAL readers remain available while
+    // this separate connection holds the global writer.
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        f.runtime.store.stored_run(&f.run.id),
+    )
+    .await
+    .expect("fixture writer must leave independent WAL reads available")
+    .unwrap();
+    let mut waiting = tokio::spawn(async move {
         store
             .begin_prepared_workflow_model(
                 &project,
@@ -4296,7 +4315,40 @@ async fn monetary_workflow_node_deadline_after_writer_wait_rolls_back_global_hol
             )
             .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+    // Observe admission holding the Store's sole connection, rather than
+    // mistaking task startup or pre-admission work for a writer wait.
+    loop {
+        assert!(
+            cowork_storage::now() < node_deadline_ms,
+            "fixture must reach writer before node deadline"
+        );
+        assert!(
+            !waiting.is_finished(),
+            "admission must reach the writer before its deadline"
+        );
+        if tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            f.runtime.store.stored_run(&f.run.id),
+        )
+        .await
+        .is_err()
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let remaining_ms = node_deadline_ms - cowork_storage::now();
+    assert!(
+        remaining_ms > 0,
+        "writer wait must be observed before node expiry"
+    );
+    let mut queued_reader = Box::pin(f.runtime.store.stored_run(&f.run.id));
+    tokio::select! {
+        _ = &mut waiting => panic!("admission returned while global writer was held"),
+        _ = &mut queued_reader => panic!("admission did not retain the Store connection during writer wait"),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(u64::try_from(remaining_ms).unwrap() + 100)) => {}
+    }
+    assert!(cowork_storage::now() >= node_deadline_ms);
     assert!(
         !waiting.is_finished(),
         "actual admission waited on global writer"
@@ -4304,6 +4356,7 @@ async fn monetary_workflow_node_deadline_after_writer_wait_rolls_back_global_hol
     assert!(lease_until > cowork_storage::now());
     writer.rollback().await.unwrap();
     assert!(matches!(waiting.await.unwrap(), Err(Error::BudgetExceeded)));
+    queued_reader.await.unwrap();
     assert!(
         f.runtime
             .store
