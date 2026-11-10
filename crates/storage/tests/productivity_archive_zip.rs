@@ -172,7 +172,7 @@ fn malformed_manifest_json_is_rejected() {
 }
 
 #[test]
-fn invalid_utf8_entry_name_returns_validation_error() {
+fn invalid_utf8_raw_entry_name_is_rejected_after_decode_fallback() {
     let mut bytes = zip_entries(
         &[("manif\u{00e9}st.json", &body())],
         CompressionMethod::Deflated,
@@ -201,6 +201,10 @@ fn invalid_utf8_entry_name_returns_validation_error() {
     bytes[local + 30] = 0xff;
     bytes[central + 46] = 0xff;
     let mut reader = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
-    assert!(reader.by_index(0).unwrap().name().is_err());
+    let entry = reader.by_index(0).unwrap();
+    // zip9.0.5 falls back to CP437 even when invalid raw UTF-8 is flagged as UTF-8.
+    // Prove malformed raw bytes and reject the decoded non-manifest name.
+    assert!(std::str::from_utf8(entry.name_raw()).is_err());
+    assert_ne!(entry.name().unwrap(), "manifest.json");
     assert_validation_rejected(&bytes);
 }
