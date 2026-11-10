@@ -6,6 +6,14 @@ The adopted core lock still reports **six vulnerabilities** and the desktop lock
 **four vulnerabilities**, plus informational warnings. No advisory ignore list
 was added. This source review does not qualify a signed package or deployment.
 
+A separate GitHub Dependabot snapshot on 10 November 2026 reports 63 open
+manifest alerts: 35 in frozen migration reference locks, 21 in the independent
+Enterprise workspace, and seven in active V2 locks. The seven V2 alerts are
+three ZIP advisories in each of the core and desktop locks, plus glib in the
+desktop lock. These per-manifest GitHub counts describe a different catalogue
+and scope from the pinned RustSec counts above. The alerts remain open; no
+advisory ignore or dismissal was added.
+
 The narrow lock updates cover rustls 0.23.46, rustls-webpki 0.103.16,
 webpki-roots 1.0.10 and Tokio 1.53.3; desktop also updates webpki-root-certs
 1.0.10 and async-executor 1.14.1. Existing unrelated dependency bindings are
@@ -53,6 +61,49 @@ The main WebView capability exposes no updater plugin commands, and checked-in
 updater keys/endpoints are empty. Direct plugin installation or Windows ZIP
 updates require a fresh review. A broader updater/ZIP major migration remains
 separate work; the scanner findings are retained.
+
+## GitHub ZIP advisories and reviewed callers
+
+The live GitHub catalogue also identifies the following mechanisms:
+
+| Advisory | Mechanism and first patched release |
+| --- | --- |
+| [GHSA-8hxf-qr8p-62x4](https://github.com/zip-rs/zip2/security/advisories/GHSA-8hxf-qr8p-62x4), CVE-2026-115906 | AES entry authentication can be bypassed on premature EOF in password-bearing decryption APIs; affected `>=0.6.0,<9.0.0`, patched in 9.0.0. |
+| [GHSA-q7v9-x93c-xqv3](https://github.com/zip-rs/zip2/security/advisories/GHSA-q7v9-x93c-xqv3), CVE-2026-115909 | Symlink-target allocation during extraction can abort the process; affected `>=1.3.0,<9.0.0`, patched in 9.0.0. This is the RUSTSEC-2026-0429 finding already listed above. |
+| [GHSA-m665-v7pm-7grj](https://github.com/zip-rs/zip2/security/advisories/GHSA-m665-v7pm-7grj), CVE-2026-115905 | Different central-directory and local-header interpretations can bypass inspection before a later streaming extraction; affected `<=9.0.4`, patched in 9.0.5. |
+
+AES authentication and the central/local-header differential are additional
+mechanisms to the four RustSec extraction findings described above. The current
+core ZIP configuration disables default features and enables deflate, without
+AES support. Desktop's Windows updater ZIP dependency also disables default
+features and does not enable AES. The reviewed application calls supply no
+password and use no decrypt API; the normal entry reader rejects encrypted
+entries. This bounds the reviewed AES path without clearing the library alerts.
+
+Core reads one central-directory `manifest.json` entry in memory and returns
+bounded parsed JSON for application validation and import. The reviewed flow
+does not pass the original ZIP to a local-header streaming extractor or ZIP
+filesystem extraction. Inconsistent local-header names are not explicitly
+rejected by that reader. Size limits, JSON validation and artifact hashes do not
+prove header consistency or archive authenticity. The published mixed-parser
+file-overwrite chain was not found in this reviewed flow; that is a bounded
+caller finding, not a general claim that the ZIP library is unaffected.
+
+Desktop retains the real Windows updater runtime dependency and its upstream
+`ZipArchive::extract` implementation. The application's Windows path downloads
+signature-verified raw NSIS bytes for its own installer observer; it does not
+invoke the plugin's Windows ZIP installation path. Its plugin install call is
+restricted to non-Windows builds. The checked main capability grants no updater
+IPC commands, and checked-in updater keys and endpoints remain empty. Enabling
+those commands, introducing ZIP updates, or changing the reviewed caller flow
+requires reassessment; the upstream extraction implementation remains present.
+
+A future migration intended to address all three GitHub ZIP advisories must
+target at least 9.0.5; 9.0.0 does not resolve the reported header differential.
+The current core ZIP major and updater's Windows ZIP 4 constraint require a
+separately checked migration rather than an assumed lock-only replacement.
+No such upgrade, parser hardening or general non-affected declaration is made
+by this documentation update. The raw alerts and unresolved glib finding remain.
 
 ## Linux GUI and release limits
 
