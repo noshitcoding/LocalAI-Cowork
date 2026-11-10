@@ -27,7 +27,7 @@ webauthn-rs = { version = "=0.5.5", default-features = false, features = ["dange
 reqwest.workspace = true
 sha2.workspace = true
 chrono.workspace = true
-hmac = "0.12"
+hmac = "0.13"
 zeroize.workspace = true
 axum.workspace = true
 futures-util.workspace = true
