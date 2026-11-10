@@ -675,7 +675,7 @@ async fn a_forged_early_projection_never_wakes_and_does_not_poison_the_queue() {
 
 #[tokio::test]
 async fn an_overdue_wait_expires_without_admitting_its_next_step() {
-    let mut f = Fixture::new(2).await;
+    let mut f = Fixture::new(1).await;
     f.request.budgets.max_seconds = 4;
     let run = f.park().await;
     let remaining = (run.started_at.unwrap() + 4100).saturating_sub(cowork_storage::now());
