@@ -204,7 +204,7 @@ def checked_pin(root, record, name=None):
     require(pin(root / filename) == {key: record[key] for key in ('size', 'sha256')}, 'Original bytes changed: ' + filename)
 
 
-def checked_tree(root, source_root, selection, run):
+def _checked_material_tree(root, source_root, selection, origin):
     review = read_json(root / 'UNSIGNED-BUILD-REVIEW.json')
     package = read_json(root / 'receipt.json')
     provenance = read_json(root / 'source-provenance.json')
@@ -213,10 +213,8 @@ def checked_tree(root, source_root, selection, run):
     host = HOSTS[selection['platform']]
     version = read_json(source_root / 'package.json')['version']
     require(version == '2.0.0-alpha.8', 'This bounded proposal targets alpha.8 only')
-    require(review.get('format') == 'localai-cowork-unsigned-build-review/1'
-            and review.get('commit') == selection['source_commit'] and review.get('host') == host
-            and str(review.get('run_id')) == str(run['id'])
-            and str(review.get('run_attempt')) == str(run['run_attempt'])
+    origin(review, provenance)
+    require(review.get('commit') == selection['source_commit'] and review.get('host') == host
             and review.get('package_receipt_sha256') == digest(root / 'receipt.json')
             and review.get('frontend_receipt_sha256') == digest(root / 'frontend/receipt.json')
             and review.get('installer_execution_performed') is False
@@ -232,14 +230,10 @@ def checked_tree(root, source_root, selection, run):
             and package.get('source_before_after_equal') is True
             and package.get('staged_source_bytes_equal') is True
             and set(package.get('bundles', {})) == bundles, 'Complete original native package checks are required')
-    require(provenance.get('format') == 'localai-cowork-unsigned-review-source/1'
-            and provenance.get('commit') == selection['source_commit']
+    require(provenance.get('commit') == selection['source_commit']
             and provenance.get('sources') == package.get('sources')
             and provenance.get('source_sha256') == canonical(package['sources']) == review.get('source_sha256')
-            and provenance.get('verification') == review.get('verification')
-            and review.get('verification', {}).get('head_sha') == selection['source_commit']
-            and review.get('verification', {}).get('path') == '.github/workflows/verify.yml'
-            and review.get('verification', {}).get('conclusion') == 'success', 'Original source/verify binding mismatch')
+            and provenance.get('verification') == review.get('verification'), 'Original source/verify binding mismatch')
     require(front.get('format') == 'localai-cowork-frontend-build/1' and front.get('version') == version
             and front.get('exit_code') == 0 and front.get('sources_unchanged') is True,
             'Original frontend build is incomplete')
@@ -305,6 +299,31 @@ def checked_tree(root, source_root, selection, run):
                 'daemon': {key: artifact[key] for key in ('size', 'sha256')}, 'browser_host': package['browser_host']},
             'original_receipts_unchanged': True, 'installer_execution_performed': False,
             'installed_smoke': 'not_run', 'signed': False, 'published': False, 'release_qualified': False}
+
+
+
+def checked_tree(root, source_root, selection, run):
+    def hosted(review, provenance):
+        require(review.get('format') == 'localai-cowork-unsigned-build-review/1'
+                and str(review.get('run_id')) == str(run['id'])
+                and str(review.get('run_attempt')) == str(run['run_attempt'])
+                and provenance.get('format') == 'localai-cowork-unsigned-review-source/1'
+                and review.get('verification', {}).get('head_sha') == selection['source_commit']
+                and review.get('verification', {}).get('path') == '.github/workflows/verify.yml'
+                and review.get('verification', {}).get('conclusion') == 'success',
+                'Original hosted source/verify binding mismatch')
+    return _checked_material_tree(root, source_root, selection, hosted)
+
+
+def checked_local_tree(root, source_root, selection, context):
+    from local_origin import checked_origin
+    record = _checked_material_tree(root, source_root, selection,
+        lambda review, provenance: checked_origin(review, provenance, selection, context))
+    record['format'] = 'localai-cowork-local-unsigned-installer-smoke-input/1'
+    record['origin'] = {'transport': 'local-operator-original-receipts',
+        'operator_selection_sha256': context['selection_sha256'],
+        'producer_receipt_sha256': context['selection']['producer']['result']['sha256']}
+    return record
 
 
 def main():
