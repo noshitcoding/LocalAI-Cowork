@@ -86,7 +86,7 @@ jobs:
           --candidate "$GITHUB_WORKSPACE/.local/preview-candidate"
           --output "$GITHUB_WORKSPACE/.local/preview-public"
       - name: Retain checked public release set
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: checked-v2-preview-${{ inputs.tag }}
           path: .local/preview-public

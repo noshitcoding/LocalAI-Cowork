@@ -97,7 +97,7 @@ jobs:
               '--trusted-policy', str(root / '.local/trusted-release/.github/v2-preview-policy.json'),
               '--candidate-run-id', os.environ['ORIGINAL_RUN'], '--candidate-artifact-id', os.environ['ORIGINAL_ARTIFACT'],
               '--qa-dir', str(qa), '--output', str(root / '.local/qa-artifact')], check=True)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: v2-preview-acceptance
           path: .local/qa-artifact

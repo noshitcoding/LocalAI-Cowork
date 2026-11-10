@@ -121,7 +121,7 @@ jobs:
               output.write('receipt_sha256=' + hashlib.sha256(receipt_path.read_bytes()).hexdigest() + '\n')
               output.write('source_sha256=' + digest + '\n')
       - id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: v2-unsigned-review-common-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/unsigned-review-common
@@ -341,7 +341,7 @@ jobs:
           (output / 'UNSIGNED-BUILD-REVIEW.json').write_text(json.dumps(review, indent=2, sort_keys=True) + '\n', encoding='utf-8')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
               summary.write('Unsigned ' + os.environ['NATIVE_HOST'] + ' packages built for commit `' + os.environ['GITHUB_SHA'] + '`.\n\nFull native desktop checks passed. Installation and release qualification remain pending.\n')
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: v2-unsigned-review-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .local/unsigned-review-package

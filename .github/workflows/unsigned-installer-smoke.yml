@@ -74,7 +74,7 @@ jobs:
           out = Path(os.environ['RUNNER_TEMP']) / ('cw-smoke-policy-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
           subprocess.run([sys.executable, '-B', str(root / 'trusted/tools/release/unsigned_smoke.py'), 'policy',
               '--source-root', str(root / 'source-material'), '--output', str(out)], check=True)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: unsigned-smoke-policy-${{ github.run_id }}-${{ github.run_attempt }}
@@ -165,7 +165,7 @@ jobs:
           if os.name != 'nt':
               command = ['dbus-run-session', '--', 'xvfb-run', '-a', *command]
           subprocess.run(command, check=True)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: unsigned-smoke-${{ matrix.kind }}-${{ github.run_id }}-${{ github.run_attempt }}
