@@ -489,16 +489,14 @@ async fn actual_sqlite_progress_deadline_interrupts_and_rollback_is_private() {
     let buffers = fixture("rich-desktop");
     let stage = capture(buffers.streams(), &buffers.pins, Budget::new()).unwrap();
     let path = stage.directory.path().to_owned();
-    let mut conn = connection(
-        &stage,
-        "cold-target.sqlite3",
-        true,
-        Budget {
-            deadline: Instant::now() + Duration::from_millis(40),
-        },
-    )
-    .await
-    .unwrap();
+    let mut conn = connection(&stage, "cold-target.sqlite3", true, Budget::new())
+        .await
+        .unwrap();
+    {
+        let mut handle = conn.lock_handle().await.unwrap();
+        let deadline = Instant::now() + Duration::from_millis(40);
+        handle.set_progress_handler(1000, move || Instant::now() <= deadline);
+    }
     let failure = sqlx::query(
         "WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n",
     )
@@ -514,16 +512,14 @@ async fn canceled_sqlite_future_keeps_private_stage_until_actual_worker_close() 
     let buffers = fixture("rich-desktop");
     let stage = capture(buffers.streams(), &buffers.pins, Budget::new()).unwrap();
     let path = stage.directory.path().to_owned();
-    let mut conn = connection(
-        &stage,
-        "cold-target.sqlite3",
-        true,
-        Budget {
-            deadline: Instant::now() + Duration::from_millis(80),
-        },
-    )
-    .await
-    .unwrap();
+    let mut conn = connection(&stage, "cold-target.sqlite3", true, Budget::new())
+        .await
+        .unwrap();
+    {
+        let mut handle = conn.lock_handle().await.unwrap();
+        let deadline = Instant::now() + Duration::from_millis(80);
+        handle.set_progress_handler(1000, move || Instant::now() <= deadline);
+    }
     drop(stage);
     let task = tokio::spawn(async move {
         sqlx::query(
@@ -797,16 +793,14 @@ async fn canceled_close_acknowledgment_cannot_release_stage_before_native_handle
     let buffers = fixture("rich-desktop");
     let stage = capture(buffers.streams(), &buffers.pins, Budget::new()).unwrap();
     let path = stage.directory.path().to_owned();
-    let mut conn = connection(
-        &stage,
-        "cold-target.sqlite3",
-        true,
-        Budget {
-            deadline: Instant::now() + Duration::from_millis(100),
-        },
-    )
-    .await
-    .unwrap();
+    let mut conn = connection(&stage, "cold-target.sqlite3", true, Budget::new())
+        .await
+        .unwrap();
+    {
+        let mut handle = conn.lock_handle().await.unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        handle.set_progress_handler(1000, move || Instant::now() <= deadline);
+    }
     drop(stage);
     // Leave one real VM query in the SQLx worker by canceling only its receiver.
     let mut query = Box::pin(
