@@ -1,4 +1,5 @@
 """Real-process qualification using disposable data and a deterministic provider, never V1 data."""
+from private_fixture import protect_empty_fixture
 from execution_plan_client import reviewed_run
 import argparse, hashlib, json, os, pathlib, socket, subprocess, tempfile, time, urllib.request, urllib.error, urllib.parse
 parser=argparse.ArgumentParser()
@@ -10,6 +11,7 @@ with socket.socket() as s:
     s.bind(("127.0.0.1",0)); port=s.getsockname()[1]
 with tempfile.TemporaryDirectory(prefix="cowork-v2-system-") as temp:
     data=pathlib.Path(temp)
+    protect_empty_fixture(data)
     env={**os.environ,"COWORK_DATA_DIR":str(data),"COWORK_ENABLE_TEST_PROVIDER":"1","COWORK_PORT":str(port),"RUST_LOG":"error"}
     env.pop("COWORK_DATABASE_URL",None)
     env.pop("COWORK_WEB_DIR",None)
@@ -31,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix="cowork-v2-system-") as temp:
             try:
                 token=(data/"daemon.token").read_text().strip()
                 call("GET","/health");return
-            except (FileNotFoundError,urllib.error.URLError,TimeoutError):time.sleep(.05)
+            except (FileNotFoundError,PermissionError,urllib.error.URLError,TimeoutError):time.sleep(.05)
         raise AssertionError("Daemon did not start")
     def kill():
         global process

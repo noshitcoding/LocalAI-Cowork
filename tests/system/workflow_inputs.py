@@ -4,9 +4,9 @@ The fixture owns temporary SQLite data, daemon processes and a synthetic loopbac
 provider. It does not open a preview, change an installed app or use a real model.
 """
 from execution_plan_client import reviewed_run
+from private_fixture import protect_empty_fixture
 import argparse
 import contextlib
-import csv
 import hashlib
 import http.client
 import http.server
@@ -26,21 +26,6 @@ ANSWERS = {
     "ask_a": '  Antwort A: "ja" \\pfad\r\nGrüße 日本語\n  ',
     "ask_b": 'Antwort B\nzweite Zeile 🌻\r\n  ',
 }
-
-
-def protect_empty_fixture(root):
-    """Bind a newly created, still empty test root to the current Windows user."""
-    root=pathlib.Path(root).resolve()
-    assert root.is_dir() and not any(root.iterdir()), 'Only a new empty fixture may receive private ACLs'
-    if os.name!='nt':
-        return
-    options={'creationflags':subprocess.CREATE_NO_WINDOW}
-    identity=subprocess.check_output(['whoami','/user','/fo','csv','/nh'],text=True,**options)
-    sid=next(csv.reader(identity.strip().splitlines()))[1]
-    assert sid.startswith('S-1-5-')
-    subprocess.run(['icacls',str(root),'/inheritance:r','/grant:r',f'*{sid}:(OI)(CI)F',
-        '*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F'],check=True,stdout=subprocess.DEVNULL,**options)
-    subprocess.run(['icacls',str(root),'/setowner','*'+sid],check=True,stdout=subprocess.DEVNULL,**options)
 
 
 def string_values(value):
@@ -193,7 +178,7 @@ class Fixture:
                 self.token = (self.data / "daemon.token").read_text().strip()
                 self.call("GET", "/health")
                 return
-            except (FileNotFoundError, urllib.error.URLError, TimeoutError):
+            except (FileNotFoundError, PermissionError, urllib.error.URLError, TimeoutError):
                 time.sleep(.05)
         raise AssertionError("Daemon startup timeout")
 
@@ -415,6 +400,10 @@ def main():
                 "fingerprint": q["fingerprint"], "base_draft_revision": 1, "idempotency_key": "invalid-blank-answer"}, 400)
             saved = fixture.save(interrupted, q, ANSWERS["ask_a"], "restart-draft", 1)
             pending = fixture.prepare(interrupted, q, 2, "restart-answer")
+            # This case resumes only human waits. A still-running parallel
+            # model request correctly makes recovery an uncertain effect.
+            fixture.wait(f"/runs/{interrupted}/workflow", lambda v: any(
+                n["id"] == "independent" and n["state"] == "completed" for n in v["nodes"]))
             before = Provider.count()
             fixture.kill(); fixture.start()
             fixture.wait(f"/runs/{interrupted}", lambda v: v["run"]["state"] == "interrupted")

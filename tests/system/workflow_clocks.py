@@ -4,6 +4,7 @@ Only this fixture's disposable SQLite database is edited, while its own daemon
 is stopped. Production UTC is unchanged. This proves durable missing/future-HWM
 queue guards, not an OS clock rollback, human resume, desktop or Enterprise.
 """
+from private_fixture import protect_empty_fixture
 from execution_plan_client import reviewed_run
 import argparse
 import contextlib
@@ -18,7 +19,7 @@ import tempfile
 import threading
 import time
 
-from workflow_inputs import Fixture as InputFixture, protect_empty_fixture
+from workflow_inputs import Fixture as InputFixture
 
 
 def digest(path):
@@ -81,6 +82,7 @@ class Fixture(InputFixture):
     def __init__(self, binary, data, provider):
         super().__init__(binary, data, provider)
         self.data.mkdir(parents=True)
+        protect_empty_fixture(self.data)
         self.owned_data = self.data.resolve()
         self.pids = []
         self.budgets = {"max_steps": 8, "max_seconds": 180,
@@ -266,7 +268,8 @@ def main():
     if args.expected_daemon_sha256:
         assert args.expected_daemon_sha256 == binary_sha256, "Daemon does not match the qualified binary"
     source_manifest = {path.name: digest(path) for path in [pathlib.Path(__file__).resolve(),
-        pathlib.Path(__file__).with_name("workflow_inputs.py").resolve()]}
+        pathlib.Path(__file__).with_name("workflow_inputs.py").resolve(),
+        pathlib.Path(__file__).with_name("private_fixture.py").resolve()]}
     provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
@@ -290,7 +293,8 @@ def main():
     assert not thread.is_alive(), "Owned provider must be stopped before pass"
     assert digest(source) == binary_sha256, "Daemon build changed during qualification"
     assert source_manifest == {path.name: digest(path) for path in [pathlib.Path(__file__).resolve(),
-        pathlib.Path(__file__).with_name("workflow_inputs.py").resolve()]}, "Fixture sources changed"
+        pathlib.Path(__file__).with_name("workflow_inputs.py").resolve(),
+        pathlib.Path(__file__).with_name("private_fixture.py").resolve()]}, "Fixture sources changed"
     print(json.dumps({"result": "passed", "daemon_sha256": binary_sha256,
         "source_manifest": source_manifest, "private_daemon_pids": scenario.pids,
         "ownDaemonStopped": True, "provider_stopped": True, "real_model": False,

@@ -3,6 +3,7 @@
 Only disposable fixture data and this script's child daemons are used.
 Synthetic loopback HTTP is counted; no system clock changes or stack overrides.
 """
+from private_fixture import protect_empty_fixture
 import argparse
 import contextlib
 import http.server
@@ -85,6 +86,7 @@ def main():
     threading.Thread(target=provider.serve_forever, daemon=True).start()
     checks = []
     with tempfile.TemporaryDirectory(prefix="cowork-v2-human-resume-") as temp:
+        protect_empty_fixture(temp)
         f = Fixture(binary, pathlib.Path(temp), provider)
         try:
             f.start(); f.initialize()

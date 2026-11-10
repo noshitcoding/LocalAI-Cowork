@@ -3,6 +3,7 @@
 Only a temporary V2 dataset and a loopback synthetic provider are used. No real
 model, live installation, preview process or global database is touched.
 """
+from private_fixture import protect_empty_fixture
 import argparse
 import contextlib
 import hashlib
@@ -108,6 +109,7 @@ def main():
     scenarios = []
     with tempfile.TemporaryDirectory(prefix="cowork-v2-workflow-journal-") as temp:
         data = pathlib.Path(temp)
+        protect_empty_fixture(data)
         process = None
         token = ""
         env = {**os.environ, "COWORK_DATA_DIR": str(data), "COWORK_PORT": str(port), "RUST_LOG": "error"}
@@ -159,7 +161,7 @@ def main():
                     token = (data / "daemon.token").read_text().strip()
                     call("GET", "/health")
                     return
-                except (FileNotFoundError, urllib.error.URLError, TimeoutError):
+                except (FileNotFoundError, PermissionError, urllib.error.URLError, TimeoutError):
                     time.sleep(.05)
             raise AssertionError("Daemon startup timeout")
 

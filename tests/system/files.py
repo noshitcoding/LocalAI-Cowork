@@ -3,6 +3,7 @@
 The SQLite fault trigger is installed only in this test's temporary database. No production
 fault hook or provider is added. --serve-provider exposes just the fixture for manual UI QA.
 """
+from private_fixture import protect_empty_fixture
 from execution_plan_client import reviewed_run
 import argparse, contextlib, hashlib, http.server, json, os, pathlib, socket, sqlite3, subprocess, tempfile, threading, time, urllib.request, urllib.error
 
@@ -44,7 +45,7 @@ def main():
     binary=args.binary.resolve();assert binary.is_file(), "Build the daemon first"
     with socket.socket() as s: s.bind(("127.0.0.1",0));port=s.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix="cowork-v2-files-") as temp:
-        root=pathlib.Path(temp);data=root/"private";work=root/"work";data.mkdir();work.mkdir()
+        root=pathlib.Path(temp);data=root/"private";work=root/"work";data.mkdir();protect_empty_fixture(data);work.mkdir()
         (work/"note.txt").write_text("original fixture",encoding="utf-8")
         env={**os.environ,"COWORK_DATA_DIR":str(data),"COWORK_PORT":str(port),"RUST_LOG":"error"}
         for name in ["COWORK_DATABASE_URL","COWORK_WEB_DIR","COWORK_ENABLE_TEST_PROVIDER"]:env.pop(name,None)
@@ -65,7 +66,7 @@ def main():
                 if process.poll() is not None: raise AssertionError(process.stderr.read().decode())
                 try:
                     token=(data/"daemon.token").read_text().strip();call("GET","/health");return
-                except (FileNotFoundError,urllib.error.URLError,TimeoutError):time.sleep(.05)
+                except (FileNotFoundError,PermissionError,urllib.error.URLError,TimeoutError):time.sleep(.05)
             raise AssertionError("Daemon start timeout")
         def kill():
             nonlocal process

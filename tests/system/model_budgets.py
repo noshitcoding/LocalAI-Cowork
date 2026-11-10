@@ -1,4 +1,5 @@
 """Real daemon/provider process qualification of model reservations; disposable data only."""
+from private_fixture import protect_empty_fixture
 from execution_plan_client import reviewed_run
 import argparse,contextlib,hashlib,http.server,json,os,pathlib,socket,sqlite3,subprocess,tempfile,threading,time,urllib.request,urllib.error
 
@@ -30,6 +31,7 @@ def main():
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix='cowork-v2-budget-') as temp:
         data=pathlib.Path(temp);process=None;token='';env={**os.environ,'COWORK_DATA_DIR':str(data),'COWORK_PORT':str(port),'RUST_LOG':'error'}
+        protect_empty_fixture(data)
         for key in ['COWORK_DATABASE_URL','COWORK_WEB_DIR','COWORK_ENABLE_TEST_PROVIDER']:env.pop(key,None)
         def call(method,path,body=None):
             request=urllib.request.Request(f'http://127.0.0.1:{port}/api/v2'+path,data=None if body is None else json.dumps(body).encode(),method=method,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
@@ -42,7 +44,7 @@ def main():
             while time.monotonic()<deadline:
                 if process.poll() is not None:raise AssertionError(process.stderr.read().decode())
                 try:token=(data/'daemon.token').read_text().strip();call('GET','/health');return
-                except (FileNotFoundError,urllib.error.URLError,TimeoutError):time.sleep(.05)
+                except (FileNotFoundError,PermissionError,urllib.error.URLError,TimeoutError):time.sleep(.05)
             raise AssertionError('Daemon startup timeout')
         def kill():
             nonlocal process

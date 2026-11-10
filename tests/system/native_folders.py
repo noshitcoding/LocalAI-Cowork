@@ -3,6 +3,7 @@
 This intentionally calls the privileged API as a native-client fixture; it is not an
 interactive OS picker qualification. No native credential is returned or logged.
 """
+from private_fixture import protect_empty_fixture
 from execution_plan_client import reviewed_run
 import argparse,contextlib,hashlib,http.server,json,os,pathlib,socket,sqlite3,subprocess,tempfile,threading,time,urllib.request,urllib.error,urllib.parse
 from files import Provider,CONTENT
@@ -32,7 +33,7 @@ def main():
     provider=http.server.ThreadingHTTPServer(("127.0.0.1",0),Provider);thread=threading.Thread(target=provider.serve_forever,daemon=True);thread.start()
     with socket.socket() as sock:sock.bind(("127.0.0.1",0));port=sock.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix="cowork-v2-native-folders-") as temp:
-        root=pathlib.Path(temp);data=root/"private";work=root/"chosen";data.mkdir();work.mkdir();(work/"note.txt").write_text("original fixture",encoding="utf-8")
+        root=pathlib.Path(temp);data=root/"private";work=root/"chosen";data.mkdir();protect_empty_fixture(data);work.mkdir();(work/"note.txt").write_text("original fixture",encoding="utf-8")
         process=None;token="";native="";env={**os.environ,"COWORK_DATA_DIR":str(data),"COWORK_PORT":str(port),"RUST_LOG":"error"}
         for key in ["COWORK_DATABASE_URL","COWORK_WEB_DIR","COWORK_ENABLE_TEST_PROVIDER"]:env.pop(key,None)
         def call(method,path,body=None,privileged=False,origin=None):
@@ -54,7 +55,7 @@ def main():
                 if process.poll() is not None:raise AssertionError(process.stderr.read().decode())
                 try:
                     token=(data/"daemon.token").read_text().strip();native=(data/"native.token").read_text().strip();call("GET","/health");assert token!=native;return
-                except (FileNotFoundError,urllib.error.URLError,TimeoutError):time.sleep(.05)
+                except (FileNotFoundError,PermissionError,urllib.error.URLError,TimeoutError):time.sleep(.05)
             raise AssertionError("Daemon start timeout")
         def kill():
             nonlocal process
