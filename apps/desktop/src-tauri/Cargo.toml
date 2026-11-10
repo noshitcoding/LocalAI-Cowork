@@ -26,7 +26,7 @@ zeroize = { version = "1.8", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["time", "sync", "fs", "io-util"] }
 tauri-plugin-dialog = "2"
-tauri-plugin-updater = "=2.13.2"
+tauri-plugin-updater = "=2.14.1"
 tauri-plugin-autostart = "=2.7.0"
 tauri-plugin-notification = "=2.7.0"
 

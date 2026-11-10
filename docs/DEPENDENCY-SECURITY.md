@@ -1,5 +1,89 @@
 # Dependency security scope for alpha.8
 
+## ZIP migration review — 10 November 2026
+
+The release candidate pins **zip 9.0.5** in both active V2 locks and updates
+the desktop updater dependency to **tauri-plugin-updater 2.14.1**. Core keeps
+default ZIP features disabled and enables deflate. Its only codec API change
+maps the new fallible `entry.name()` result to the existing archive validation
+error; the one-entry, filename, size, directory and symlink checks remain.
+Desktop also disables ZIP default features through the updater dependency.
+
+Version 9.0.5 is outside the published affected ranges of
+[GHSA-8hxf-qr8p-62x4](https://github.com/zip-rs/zip2/security/advisories/GHSA-8hxf-qr8p-62x4),
+[GHSA-q7v9-x93c-xqv3](https://github.com/zip-rs/zip2/security/advisories/GHSA-q7v9-x93c-xqv3)
+and [GHSA-m665-v7pm-7grj](https://github.com/zip-rs/zip2/security/advisories/GHSA-m665-v7pm-7grj).
+The last advisory concerns central-directory/local-header inconsistencies and
+is first patched in 9.0.5; upgrading only to 9.0.0 would be insufficient.
+Updater 2.14.1 permits ZIP 9, but its release-tag lock used 9.0.3. This
+candidate therefore resolves the desktop lock explicitly to 9.0.5.
+
+These locks are normal Cargo resolver output, not manually repaired graphs.
+The migration also updates minisign-verify to 0.3.0, introduces typed-path and
+removes the unused arbitrary/derive_arbitrary pair. Existing desktop packages
+have permitted Windows/getrandom dependency-edge rebindings without version
+changes; this does not demonstrate a defect in the former lock. Core deflate
+now selects the upstream zlib-rs backend. Both complete `cargo metadata
+--locked` graphs resolved successfully: 557 core packages and 581 desktop
+packages, with unchanged lock bytes during metadata inspection. Metadata
+resolution does not compile or typecheck the codec adaptation.
+
+## Actual pinned RustSec results and remaining findings
+
+The candidate locks were audited with cargo-audit 0.22.2 against the unchanged
+1,422-advisory RustSec database commit
+`7a40350e1b8ba5b656d909f88222a8059a83d88d`. The commands used `--no-fetch
+--no-yanked`, with no advisory ignores or target filters. **Yanked status was
+not checked.** The original reports and nonzero core exit code are retained.
+
+| Lock | Vulnerabilities | Other reported findings | Audit exit |
+| --- | --- | --- | --- |
+| Core | 2: crypto-bigint 0.5.5 and rsa 0.9.10 | 4 unmaintained warnings | 1 |
+| Desktop | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
+
+Zero desktop vulnerabilities does not mean zero findings or Linux GUI
+acceptance. [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
+remains for glib's unsound VariantStrIter. Version 0.18.5 is the latest 0.18
+release checked for this migration; the existing Tauri/GTK family constrains
+glib to 0.18. A compatible upstream resolution remains open. No ignore,
+vendored patch or claim of unreachable transitive GUI code was added.
+
+The two core findings remain
+[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+and [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).
+The earlier caller review below bounds the existing OIDC path to public-key
+verification; it does not remove either scanner finding. Informational
+unmaintained notices also remain in both raw reports.
+
+The earlier GitHub snapshot of **63 open manifest alerts** (35 reference,
+21 Enterprise, seven active V2) is historical and uses a different catalogue.
+Checking these three ZIP version predicates is not a fresh remote alert scan
+or dismissal. The independent Enterprise workspace is unchanged; its
+[security status](../enterprise/docs/PREVIEW-SECURITY-STATUS.md) remains
+separate from V2.
+
+## Validation still required for the combined source
+
+At this review, the ZIP migration has resolver, source and advisory checks;
+the combined candidate has not yet been compiled, tested, packaged or
+installed. The added archive regression tests must run with the complete
+local platform checks on the final source revision. Results recorded for
+the previous source do not qualify the changed dependency graph. Actual
+installed-package acceptance, signing and update-feed requirements remain
+in [the release procedure](V2-PREVIEW-RELEASE.md).
+
+## Historical review before the ZIP migration
+
+The following retained review describes the earlier locks and caller analysis
+on 9–10 November 2026. Its six-core/four-desktop and 63-alert counts, old ZIP
+versions and statements about a future migration are historical, not the
+candidate status above.
+
+<details>
+<summary>Earlier alpha.8 dependency and caller review (original text)</summary>
+
+# Dependency security scope for alpha.8
+
 Reviewed on 9 November 2026 against RustSec database commit
 `7a40350e1b8ba5b656d909f88222a8059a83d88d` (1,422 advisories).
 The adopted core lock still reports **six vulnerabilities** and the desktop lock
@@ -119,3 +203,5 @@ graphs. Enterprise also has its own [security status](../enterprise/docs/PREVIEW
 including real WebPush secret-key arithmetic and an open production gate.
 Passing source checks does not establish installed-package acceptance, signing,
 update-feed configuration or release readiness for a platform.
+
+</details>

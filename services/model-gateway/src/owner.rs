@@ -131,8 +131,9 @@ impl BackendOwner {
                             .cast::<MIB_TCPROW_OWNER_PID>(),
                     )
                 };
-                if row.dwState == 2
-                    && row.dwLocalAddr.to_ne_bytes() == ip.octets()
+                // TCP_TABLE_OWNER_PID_LISTENER already selects only listeners.
+                // Native Windows observations can leave dwState zero in this table.
+                if row.dwLocalAddr.to_ne_bytes() == ip.octets()
                     && u16::from_be(row.dwLocalPort as u16) == address.port()
                 {
                     matches.push(row.dwOwningPid)
