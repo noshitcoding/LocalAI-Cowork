@@ -24,7 +24,7 @@ dotenvy = "0.15"
 base64 = "0.22"
 futures-util = "0.3"
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 getrandom = "0.4"
 ldap3 = { version = "=0.12.1", default-features = false, features = ["tls-rustls-ring"] }
 libc = "0.2"
