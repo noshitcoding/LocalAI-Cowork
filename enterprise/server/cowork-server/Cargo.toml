@@ -21,7 +21,7 @@ cowork-runtime = { path = "../../crates/cowork-runtime" }
 cron = "0.15"
 diffy = "0.4"
 dotenvy = "0.15"
-base64 = "0.22"
+base64 = "0.23"
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
