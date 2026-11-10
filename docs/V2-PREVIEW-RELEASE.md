@@ -1,3 +1,82 @@
+# V2 preview: lokaler Releaseweg
+
+**10. November 2026:** Auf ausdrücklichen Nutzerwunsch werden keine
+GitHub-Runner mehr verwendet. GitHub Actions ist für dieses Repository
+deaktiviert; verbliebene Runs sind beendet. Keine Workflows dispatchen,
+wiederholen oder als kommenden Releaseplan verwenden.
+
+Quellprüfungen und neue unsignierte Pakete laufen lokal auf dem exakt
+ausgewählten V2-Commit. Eine GitHub-Run-/Artefakt-ID wird nicht durch eine
+erfundene ID ersetzt. Der lokale Operator bindet den sauberen Git-Commit/Tree,
+den vollständigen Source-Snapshot, den vorab geprüften Befehlsplan,
+Toolversionen/-hashes, Original-stdout/-stderr, tatsächliche Exitcodes
+und physische Beendigung der eigenen Prozesse. Die sechs Windows- und
+18 Linux-Prüfgruppen aus dem gepinnten verify.yml sowie der Secretscan
+behalten ihren fachlichen Umfang. Fehlende, gescheiterte oder noch nicht
+ausgeführte Prüfungen bleiben offen.
+
+## Vorhandene lokale Builder verwenden
+
+Aus einem neuen, bytegebundenen Snapshot, mit eigenen Arbeits-/Datenpfaden:
+
+~~~text
+python tools/desktop/frontend.py --node <Node22.20.0> --npm <npm11.6.2-cli.js> --output <neues-Frontend-Receiptverzeichnis>
+python tools/desktop/release.py --offline --output-dir <neuer-Sidecar> --target-dir <eigener-Core-Target>
+python tools/desktop/package.py --offline --sidecar-dir <neuer-Sidecar> --output-dir <neue-Pakete> --target-dir <eigener-Desktop-Target> --bundles nsis
+xvfb-run -a python tools/desktop/package.py --offline --sidecar-dir <neuer-Linux-Sidecar> --output-dir <neue-Linux-Pakete> --target-dir <eigener-Linux-Desktop-Target> --bundles deb,appimage
+~~~
+
+Windows baut nativ NSIS; Linux baut DEB/AppImage auf einem nativen
+Linux-Dateisystem. --offline benötigt zuvor vollständige gebundene Caches;
+fehlende Abhängigkeiten sind ein echter Vorbereitungsfehler. Private
+Dokumentruntimes werden nur aus den gepinnten Versionen/HASH-Locks vorbereitet.
+Kein --fast: native Format-/Test-/Clippy-/Releaseprofil-, Cargoartefakt-,
+Installervertrags-, Byte- und SPDX-Prüfungen bleiben aktiv. Reale Modelle
+oder Benutzerprofile sind kein Bestandteil der synthetischen Quellprüfungen.
+
+Das gemeinsame **Paketfrontend wird genau einmal** gebaut. Dieselben
+451 Frontendeingaben, Ausgabebytes und die unveränderte Originalquittung
+werden an beide Paketbuilder gegeben und dort gegen den vollständigen
+Paketinputmanifest geprüft. Zusätzliche plattformeigene Frontendtests
+ersetzen diese gemeinsame Lieferung nicht. Zahl und Bytes neuer Ausgaben
+werden tatsächlich gemessen; alte 58 Ausgaben werden nicht nachträglich
+auf einen neuen Build übertragen.
+
+Lokale Originalreceipts, Paketbytes, SBOMs und ein einmal erzeugtes
+Originalarchiv erhalten SHA256-Pins und werden unverändert aufbewahrt.
+Unsigned Builder brauchen keine neuen Kryptoschlüssel oder GitHub-IDs:
+signed, installed, published und release_qualified bleiben false.
+
+## Installation, Signierung und Staging
+
+Installationssmokes benötigen frische wegwerfbare Gäste; NSIS/DEB laufen
+nicht auf dem Entwicklerhost oder in einer persönlich genutzten Distro.
+Die bisherigen Smoke-Helfer erzwingen hosted-Guards. Vor ihrem lokalen
+Einsatz ist ein gesonderter VM-/Originalartefakt-gebundener Adapter zu
+prüfen; GITHUB_*-Variablen werden dafür nicht vorgetäuscht.
+
+Der bestehende preview.py stage/draft_preview.py-Weg liest derzeit noch
+Live-Actions-Metadaten. Er wird für den lokalen Weg nicht unverändert
+gestartet. Die lokale Transportanpassung muss die gleiche vollständige
+Material-, Quell-, Signatur-, SBOM- und installierte Abnahmeprüfung
+wiederverwenden. Ein SHA-Receipt allein ersetzt diese Prüfungen nicht.
+
+Für angebotene signierte Binaries bleiben reale unabhängig geprüfte
+Updater-/Authenticode-Identitäten, die exakte Tagbindung und alle elf
+installierten Produktpfade erforderlich: installed_start, first_setup,
+model_connection, chat_tool_approval, file_import_download, workflow,
+cancel, restart_recovery, backup_restore, fresh_profile, v1_profile_isolation.
+Ein deterministischer Provider belegt keine echte Modellverbindung.
+Fehlende Signingprofile sperren diesen signierten Veröffentlichungsschritt,
+nicht reversible lokale Quelltests oder unsignierte Paketvorbereitung.
+release-gates.json bleibt von diesem Transportwechsel unberührt.
+
+Die nachfolgende frühere Hosted-Anleitung ist ausschließlich historisch
+und kein aktueller Ausführungsauftrag.
+
+<details>
+<summary>Historischer GitHub-Actions-Veröffentlichungsweg</summary>
+
 # V2 preview: prüfbarer Veröffentlichungsweg
 
 Zielversion dieses Arbeitsstands ist `2.0.0-alpha.8`. Eine öffentliche Preview
@@ -178,3 +257,5 @@ Das abschließende Veröffentlichen des geprüften Entwurfs sowie der getrennte
 Website-/Previewfeed-Wechsel sind eigene Operatoraktionen. Dabei Downloadlinks
 und Plattformumfang mit den tatsächlichen Releaseassets abgleichen. Das reguläre
 `release-gates.json` wird durch den Previewweg nicht freigeschaltet.
+
+</details>

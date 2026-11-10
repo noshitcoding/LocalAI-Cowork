@@ -1,3 +1,24 @@
+# Lokaler V2-Buildkandidat
+
+**Aktueller Weg, 10. November 2026:** GitHub Actions ist auf Nutzerwunsch
+deaktiviert. Keine GitHub- oder selbst gehosteten Actions-Runner verwenden,
+keine Workflows dispatchen und keine Producer-/QA-Run-IDs erfinden.
+
+Der aktive Ablauf steht im [lokalen Releaseweg](V2-PREVIEW-RELEASE.md):
+exakten Source-/Befehlsplan prüfen, alle benötigten lokalen Quellgates
+tatsächlich ausführen, gemeinsames Frontend genau einmal erzeugen und
+unverändert an die nativen release.py-/package.py-Builder geben.
+Originalreceipts und Artefakt-SHA256 ersetzen den Actions-Transport.
+Build-/Testumfang, Produkt-Signing und vollständige Installed-Acceptance
+werden dadurch nicht aufgehoben. Lokale unsignierte Vorbereitung benötigt
+keine neu eingerichteten Signingrunner oder Schlüssel.
+
+Die früheren CI-Infrastrukturflags, Environment-/Runnerlabels und
+Actions-Artefakt-IDs unten beschreiben ausschließlich den damaligen Weg.
+
+<details>
+<summary>Historische signierte Buildkandidaten in GitHub Actions</summary>
+
 # Signierte V2-Buildkandidaten in GitHub Actions
 
 `.github/workflows/preview-candidate.yml` ergänzt den Erzeuger für den bestehenden
@@ -139,3 +160,5 @@ Die Ergänzung dieser Workflows, Infrastrukturhelfer und Anleitung verändert ke
 Rust-/Frontend-Compilerdateien. Sie wird getrennt in die öffentliche
 Veröffentlichungshistorie übernommen; frühere lokale Paketbelege werden dadurch
 nicht nachträglich erweitert.
+
+</details>

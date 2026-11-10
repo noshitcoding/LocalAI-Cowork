@@ -1,3 +1,21 @@
+# Lokale unsignierte Paketprüfung
+
+**10. November 2026:** Auf Nutzerwunsch keine GitHub-Runner mehr verwenden;
+Repository-Actions ist deaktiviert. Der frühere Dispatch unten ist historisch.
+
+Der aktuelle [lokale Releaseweg](V2-PREVIEW-RELEASE.md) verwendet dieselben
+frontend.py, release.py und package.py ohne --fast, einen exakt gepinnten
+Source-/Befehlsplan, gemeinsame Frontendbytes und unveränderte
+Originalreceipts/Artefakte mit SHA256. Keine Fantasie-Run-IDs.
+Keine neuen Signingkeys für unsignierte Vorbereitung.
+Echte Installer-Smokes bleiben an frische isolierte Gäste und einen
+vorher geprüften lokalen Harness gebunden; die bisherigen hosted-Guards
+werden nicht auf dem Entwicklerhost entfernt. Alle Unsigned-Limits bleiben
+wahrheitsgemäß erhalten.
+
+<details>
+<summary>Historischer gehosteter Unsigned-Review-Producer</summary>
+
 # Unsigned native package review
 
 `preview-build-review.yml` baut nach einem vollständig erfolgreichen `verify.yml`
@@ -36,3 +54,5 @@ gebundenen Bundlewerkzeuge bereit. Linux führt die Desktop-Prüfungen unter
 Xvfb aus, installiert GTK/WebKit-/Bundlevoraussetzungen und darf nur auf dem
 GitHub-gehosteten Linux-Runner das unbenutzte feste Android-SDK-Verzeichnis
 freigeben. Auf einem Benutzerrechner ist keine Bereinigung vorgesehen.
+
+</details>
