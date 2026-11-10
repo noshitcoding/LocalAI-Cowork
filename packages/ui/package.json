@@ -6,7 +6,7 @@
   "exports": "./src/App.tsx",
   "dependencies": {
     "@cowork/client": "*",
-    "@noble/hashes": "2.0.1",
+    "@noble/hashes": "2.4.0",
     "@novnc/novnc": "1.7.0",
     "@tanstack/react-query": "5.101.4",
     "@tauri-apps/api": "2.11.1",
