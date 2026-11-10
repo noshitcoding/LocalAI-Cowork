@@ -58,7 +58,7 @@ jobs:
           ref: ${{ inputs.source_commit }}
           path: source-material
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - id: bind
@@ -118,7 +118,7 @@ jobs:
           ref: ${{ inputs.source_commit }}
           path: source-material
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Runtime/display prerequisites on the disposable Linux VM only

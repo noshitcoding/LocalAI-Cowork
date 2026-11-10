@@ -31,7 +31,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: .local/trusted-release
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Require exact tag and configured reviewed acceptance infrastructure
@@ -74,7 +74,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: .local/trusted-release
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Bind original package-specific installed QA without rewriting package bytes
