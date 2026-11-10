@@ -1,0 +1,42 @@
+[package]
+name = "cowork-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+cowork-executor.workspace = true
+cowork-model-accounting.workspace = true
+cowork-contracts.workspace = true
+cowork-workflow-contracts.workspace = true
+cowork-domain.workspace = true
+cowork-policy.workspace = true
+cowork-storage.workspace = true
+cowork-broker.workspace = true
+cowork-mcp.workspace = true
+cowork-secrets.workspace = true
+cowork-runner-protocol.workspace = true
+cowork-toolbox.workspace = true
+ring.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+uuid.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+cowork-executor.workspace = true
+percent-encoding.workspace = true
+tempfile.workspace = true
+axum.workspace = true
+zeroize.workspace = true
+sqlx.workspace = true

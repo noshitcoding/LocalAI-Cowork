@@ -1,0 +1,10 @@
+# Opt-in addition after docker-compose.yml and docker-compose.oidc.yml.
+# Existing OIDC installations do not need this file or a new secret.
+services:
+  api:
+    environment:
+      COWORK_OIDC_ASSURANCE_POLICY_FILE: /run/secrets/oidc_assurance_policy
+    secrets: [oidc_assurance_policy]
+secrets:
+  oidc_assurance_policy:
+    file: ${COWORK_OIDC_ASSURANCE_POLICY_PATH:?Set the reviewed private assurance policy file}

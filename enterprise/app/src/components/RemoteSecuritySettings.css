@@ -1,0 +1,4 @@
+.remote-security-settings .remote-security-totp-setup { display: grid; gap: 18px; padding-block: 8px; }
+.remote-security-totp-setup .remote-security-totp-code { display: grid; gap: 7px; min-width: 0; font-size: 12px; color: var(--text-primary); }
+.remote-security-totp-code input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-control); background: var(--bg-primary); color: var(--text-primary); font-size: 20px; letter-spacing: .45em; text-align: center; font-variant-numeric: tabular-nums; }
+.remote-security-settings .remote-security-totp-setup > .ui-button--primary { min-height: 44px; border-color: var(--accent-primary); background: var(--accent-primary); color: var(--text-on-accent); }

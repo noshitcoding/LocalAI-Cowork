@@ -1,0 +1,19 @@
+.authenticator-setup { display: grid; min-width: 0; gap: 12px; }
+.authenticator-setup .authenticator-setup-steps { display: grid; gap: 20px; margin: 0; padding: 0; list-style: none; counter-reset: authenticator-step; }
+.authenticator-setup-steps > li { position: relative; min-width: 0; padding-left: 34px; counter-increment: authenticator-step; }
+.authenticator-setup-steps > li::before { content: counter(authenticator-step); position: absolute; left: 0; top: -1px; display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--border-color, #dedbd2); border-radius: var(--radius-label); color: var(--text-secondary, #66645c); font-size: 12px; font-weight: 600; }
+.authenticator-setup-step-title { display: flex; align-items: center; gap: 7px; }
+.authenticator-setup strong { font-size: 13px; font-weight: 600; }
+.authenticator-setup p { margin: 6px 0 0; color: var(--text-secondary, #66645c); font-size: 12px; line-height: 1.6; }
+.authenticator-setup-qr { display: grid; width: min(224px, 100%); min-height: 190px; margin: 14px auto; place-items: center; background: #fff; border: 1px solid var(--border-color, #dedbd2); border-radius: var(--radius-control); overflow: hidden; }
+.authenticator-setup-qr img { display: block; width: 100%; height: auto; }
+.authenticator-setup-qr p { padding: 20px; text-align: center; color: #555; }
+.authenticator-setup-manual summary { display: flex; align-items: center; gap: 6px; width: fit-content; cursor: pointer; color: var(--text-secondary, #66645c); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.authenticator-setup-manual summary:focus-visible { outline: 2px solid var(--accent-primary, #ebbe48); outline-offset: 4px; }
+.authenticator-setup .authenticator-setup-manual label { display: block; margin: 12px 0 6px; min-width: 0; font-size: 11px; color: var(--text-secondary, #66645c); }
+.authenticator-setup-key { display: flex; min-width: 0; align-items: stretch; gap: 6px; }
+.authenticator-setup-key input { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border-color, #dedbd2); border-radius: var(--radius-control); background: var(--bg-primary, #faf9f6); color: var(--text-primary, #24231f); font: 11px/1.4 ui-monospace, monospace; }
+.authenticator-setup-key button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 5px; }
+.authenticator-setup .authenticator-setup-note { padding: 10px 12px; border-radius: var(--radius-control); background: var(--bg-primary, #f5f4ef); }
+.authenticator-setup .authenticator-setup-expiry { margin: 0; font-size: 11px; }
+@media (max-width: 400px) { .authenticator-setup-key { flex-wrap: wrap; } .authenticator-setup-key button { width: 100%; } }

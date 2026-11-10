@@ -1,0 +1,5 @@
+html, body, #root { min-height: 100%; margin: 0; }
+body { display: block; background: var(--bg-primary); color: var(--text-primary); }
+.management-preview-banner { display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--accent-border); background: var(--accent-soft); color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+.management-preview-banner strong { padding: 2px 6px; border: 1px solid var(--accent-border); border-radius: var(--radius-label); white-space: nowrap; font-size: 10px; }
+@media (max-width: 600px) { .management-preview-banner { padding: 9px 12px; align-items: flex-start; } }

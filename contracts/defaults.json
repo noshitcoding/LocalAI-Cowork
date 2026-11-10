@@ -1,0 +1,8 @@
+{
+  "run_budgets": {
+    "max_output_tokens": 4096,
+    "max_seconds": 1800,
+    "max_steps": 64,
+    "max_total_tokens": 262144
+  }
+}

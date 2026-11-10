@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "kind": "control",
+  "hostname": "operator-control",
+  "certificate_file": "/srv/cowork-operator/secrets/control_tls_certificate",
+  "private_key_file": "/srv/cowork-operator/secrets/control_tls_key",
+  "operator_state_directory": "/srv/cowork-operator/state",
+  "renew_before_days": 14,
+  "probe_origin": "https://operator-control:8443",
+  "probe_path": "/readyz",
+  "consumer": {
+    "project": "cowork-control",
+    "files": ["/srv/cowork-operator/docker-compose.yml", "/srv/cowork-operator/pinned-images.json"],
+    "env_file": "/srv/cowork-operator/control.env",
+    "services": ["operator-control", "provisioner"]
+  }
+}

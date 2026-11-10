@@ -1,0 +1,5 @@
+# Explicit operator choice: install and register Docker's runsc runtime first.
+# This applies to native-tool API/worker containers, not PostgreSQL/proxy.
+services:
+  api: {runtime: runsc}
+  worker: {runtime: runsc}

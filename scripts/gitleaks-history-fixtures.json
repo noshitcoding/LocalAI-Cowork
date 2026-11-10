@@ -1,0 +1,338 @@
+{
+  "format": "localai-cowork-reviewed-history-scan-fixtures/1",
+  "scope": "Only these immutable commit/file/rule/line fingerprints. Any future changed fixture or actual secret remains subject to the scanner; no tests/docs/PEM/path blanket exemptions.",
+  "observed_matches": 427,
+  "distinct_reviewed_fingerprints": 33,
+  "entries": [
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "crates/storage/src/historical_imports/verifier/data/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "crates/storage/src/historical_imports/verifier/data/current-target-66.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "9289f2883e2bb838847ace9ce624a18f36b18fb59be441e262cb8b841d01e8d2",
+      "file_sha256": "b6aa739bf422a550a0de001df4617f5ab11e9e4ec02fb142daa46f58ee775ac7",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "crates/storage/src/historical_imports/verifier/data/current-target-67.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "4e1f872eeac10ec7104bc14f5eb3358c92609b131170dfbc850c91b55f0efb32",
+      "file_sha256": "7d73781783626a3ec58a9e04173dc61c32f01a2f156ae09ac5fff52855695f49",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-71.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "crates/storage/src/historical_imports/verifier/data/current-target-71.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "5bd10817a89d9939117d2693d27fe8bfaba6bc50743993f651800a978266546d",
+      "file_sha256": "9a9ed9622c45ca0149f3a927dd5d5a3acb03d60bb07a3ea0f1bb6e007f3c1efd",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:crates/storage/src/historical_imports/verifier/data/current-target-75.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "crates/storage/src/historical_imports/verifier/data/current-target-75.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "fe955dad45ebd569d215c74b48deb347f3bc0b4aaa9b91514abd0a9dde22bbec",
+      "file_sha256": "9f69a559a70a7adf9c87d5d166c2270e8ee6d4288e8f792efcefdc2f2ecfc50c",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/app/src/mobile/mobileOfflineStore.test.ts:generic-api-key:31",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/app/src/mobile/mobileOfflineStore.test.ts",
+      "rule": "generic-api-key",
+      "line": 31,
+      "line_sha256": "ead2fe5fbbda0f28db8df118e6cf1e46d955ab1320fa9ad28f0654499819e812",
+      "file_sha256": "9d081f91ef5da2f8860631c0da7d6be382a0dcb228ee9a5ace23d7aab2d77011",
+      "reason": "Synthetic run UUID proving offline-cache plaintext does not contain a run identifier; same historical fixture moved into the Enterprise subtree."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/001c108aa440cea63a1ae054b6c859ef29e4b3f677d5c7962ff7ea18c46098c3/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/001c108aa440cea63a1ae054b6c859ef29e4b3f677d5c7962ff7ea18c46098c3/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "8423e85c27f09bd00249b72c2e9c5827536d3a8ab480bb827bafe8a377f7987c",
+      "file_sha256": "001c108aa440cea63a1ae054b6c859ef29e4b3f677d5c7962ff7ea18c46098c3",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/1b16ee5c7f225f3652dc190637d64c366582d61ea519ecd1de63c42d9b37d5e1/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/1b16ee5c7f225f3652dc190637d64c366582d61ea519ecd1de63c42d9b37d5e1/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "ff1dfa8333c1d26c96499006803249ab511f7beb68d04645c71df6ff5d1465e8",
+      "file_sha256": "1b16ee5c7f225f3652dc190637d64c366582d61ea519ecd1de63c42d9b37d5e1",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/fa838de02f3fe4faa65ce3b779e58a42c983734e51189864b58571cdd7672602/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/fa838de02f3fe4faa65ce3b779e58a42c983734e51189864b58571cdd7672602/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "52a8a3b3ea101abe229842bfc7626b16d29849a7d15f40888e1aead444347a8e",
+      "file_sha256": "fa838de02f3fe4faa65ce3b779e58a42c983734e51189864b58571cdd7672602",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/b26930323954804895a67b025cc5d7975d21af2950a72f7904490b29df4bf2fd/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/b26930323954804895a67b025cc5d7975d21af2950a72f7904490b29df4bf2fd/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "56cbe08b447efb6aa25d113848463c1b7363eab2c91a73e28daaf60c1c1a3ea0",
+      "file_sha256": "b26930323954804895a67b025cc5d7975d21af2950a72f7904490b29df4bf2fd",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/bda757adb1a8690763383f87642926e135d03f41ef9bb40b19da341c5c4b219b/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/bda757adb1a8690763383f87642926e135d03f41ef9bb40b19da341c5c4b219b/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "eadd421037a3ea3f4f186041ee633546f80d9fb6ab0a43384953c81847609982",
+      "file_sha256": "bda757adb1a8690763383f87642926e135d03f41ef9bb40b19da341c5c4b219b",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/b439a81d0c99367ccec19b664aff43972faa851200e93a7ea171cedf8ebc0371/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/b439a81d0c99367ccec19b664aff43972faa851200e93a7ea171cedf8ebc0371/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "68d2e0d48f2ed623a215f62945a116af1002de39c5c0f1e1c57a6410a1d13a75",
+      "file_sha256": "b439a81d0c99367ccec19b664aff43972faa851200e93a7ea171cedf8ebc0371",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:enterprise/contracts/v2-runtime/9401ab5d83b43c85c6ebda8ac196ab3ae78e1c078a060f16046974a5ab2922d2/manifest.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "enterprise/contracts/v2-runtime/9401ab5d83b43c85c6ebda8ac196ab3ae78e1c078a060f16046974a5ab2922d2/manifest.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "72fa4aa0d6176c1895de9731f182b1ba56c5edda8a87d47f3c844d88b2c2cf3b",
+      "file_sha256": "9401ab5d83b43c85c6ebda8ac196ab3ae78e1c078a060f16046974a5ab2922d2",
+      "reason": "Content-addressed public contract manifest: source/exporter/file digests, not authentication keys."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:extensions/browser/identity.json:generic-api-key:4",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "extensions/browser/identity.json",
+      "rule": "generic-api-key",
+      "line": 4,
+      "line_sha256": "784d5d3c990dd5c674f5084d0c1b516725637bab8d85c62253eeaeddfeee8332",
+      "file_sha256": "dbd11281e8572876fabafabcaa4ff76129f447371e73dd0bfdbf58d73df50e71",
+      "reason": "RSA SPKI public key used for stable browser-extension identity; parsed as an RSA public key, contains no private key."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:packages/client/src/fixtures/execution-document-ocr-budget.json:generic-api-key:22",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "packages/client/src/fixtures/execution-document-ocr-budget.json",
+      "rule": "generic-api-key",
+      "line": 22,
+      "line_sha256": "a0929e2d401964ac5cf1edc8f457e5fcd21337d4c902f0917ea8ab06d67570cf",
+      "file_sha256": "ec3d42feee25f74330e0c0cae84a408801200f9f48bf0ef0118211aa788032a8",
+      "reason": "Synthetic execution-plan fixture UUID used as an idempotency identifier; not a bearer credential."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:packages/client/src/fixtures/execution-document-ocr-budget.json:generic-api-key:48",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "packages/client/src/fixtures/execution-document-ocr-budget.json",
+      "rule": "generic-api-key",
+      "line": 48,
+      "line_sha256": "a0929e2d401964ac5cf1edc8f457e5fcd21337d4c902f0917ea8ab06d67570cf",
+      "file_sha256": "ec3d42feee25f74330e0c0cae84a408801200f9f48bf0ef0118211aa788032a8",
+      "reason": "Synthetic execution-plan fixture UUID used as an idempotency identifier; not a bearer credential."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:services/daemon/src/device_operator_configuration.rs:private-key:189",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "services/daemon/src/device_operator_configuration.rs",
+      "rule": "private-key",
+      "line": 189,
+      "line_sha256": "7c76eb9137c66400f166ad4e5745a6f856efca53aea12e826d485de24205c850",
+      "file_sha256": "f988908853379398c8e20579cbd763dda520a30c8c08abba7abb253d8682fada",
+      "reason": "Parser code matching the literal PEM header; this line contains no encoded private-key bytes."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-67.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/current-target-67.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "4e1f872eeac10ec7104bc14f5eb3358c92609b131170dfbc850c91b55f0efb32",
+      "file_sha256": "7d73781783626a3ec58a9e04173dc61c32f01a2f156ae09ac5fff52855695f49",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-66.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/current-target-66.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "9289f2883e2bb838847ace9ce624a18f36b18fb59be441e262cb8b841d01e8d2",
+      "file_sha256": "b6aa739bf422a550a0de001df4617f5ab11e9e4ec02fb142daa46f58ee775ac7",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-71.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/current-target-71.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "5bd10817a89d9939117d2693d27fe8bfaba6bc50743993f651800a978266546d",
+      "file_sha256": "9a9ed9622c45ca0149f3a927dd5d5a3acb03d60bb07a3ea0f1bb6e007f3c1efd",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/current-target-75.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/current-target-75.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "fe955dad45ebd569d215c74b48deb347f3bc0b4aaa9b91514abd0a9dde22bbec",
+      "file_sha256": "9f69a559a70a7adf9c87d5d166c2270e8ee6d4288e8f792efcefdc2f2ecfc50c",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source66/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source66/crates/storage/src/historical_imports/verifier/data/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source67/crates/storage/src/historical_imports/verifier/data/current-target-66.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "9289f2883e2bb838847ace9ce624a18f36b18fb59be441e262cb8b841d01e8d2",
+      "file_sha256": "b6aa739bf422a550a0de001df4617f5ab11e9e4ec02fb142daa46f58ee775ac7",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-66.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "9289f2883e2bb838847ace9ce624a18f36b18fb59be441e262cb8b841d01e8d2",
+      "file_sha256": "b6aa739bf422a550a0de001df4617f5ab11e9e4ec02fb142daa46f58ee775ac7",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source71/crates/storage/src/historical_imports/verifier/data/current-target-67.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "4e1f872eeac10ec7104bc14f5eb3358c92609b131170dfbc850c91b55f0efb32",
+      "file_sha256": "7d73781783626a3ec58a9e04173dc61c32f01a2f156ae09ac5fff52855695f49",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-64.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-64.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "c7dce04587494b8433ce01334116956b62a8d849431326cefcf30929f387706e",
+      "file_sha256": "910bc94e96a5753160cc53ca525c90b1836fd37013b9063f6885796053d77aa3",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-67.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-67.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "4e1f872eeac10ec7104bc14f5eb3358c92609b131170dfbc850c91b55f0efb32",
+      "file_sha256": "7d73781783626a3ec58a9e04173dc61c32f01a2f156ae09ac5fff52855695f49",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-66.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-66.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "9289f2883e2bb838847ace9ce624a18f36b18fb59be441e262cb8b841d01e8d2",
+      "file_sha256": "b6aa739bf422a550a0de001df4617f5ab11e9e4ec02fb142daa46f58ee775ac7",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-71.json:generic-api-key:1",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/migration/reference_source75/crates/storage/src/historical_imports/verifier/data/current-target-71.json",
+      "rule": "generic-api-key",
+      "line": 1,
+      "line_sha256": "5bd10817a89d9939117d2693d27fe8bfaba6bc50743993f651800a978266546d",
+      "file_sha256": "9a9ed9622c45ca0149f3a927dd5d5a3acb03d60bb07a3ea0f1bb6e007f3c1efd",
+      "reason": "Generated migration/verifier source-file SHA256 bindings. Source filenames containing credentials/secret keywords cause generic-key matches; hashes are provenance, not authentication material."
+    },
+    {
+      "fingerprint": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1:tools/release/test_preview.py:generic-api-key:262",
+      "commit": "cb61fd5798e233374c13e4ae8ca8f1ce247195e1",
+      "file": "tools/release/test_preview.py",
+      "rule": "generic-api-key",
+      "line": 262,
+      "line_sha256": "2bc36e301edc64d7c7338f42c136fa5e1e2856d48f503e9b6ec5e98ca1fcf68d",
+      "file_sha256": "da69e4352e7e5582c4d8baa5ba29c618ef7cd70a13af08e0a6ee8aff4380a1f7",
+      "reason": "Public minisign-verify 0.2.5 interoperability vector verification key; no signing secret."
+    }
+  ]
+}

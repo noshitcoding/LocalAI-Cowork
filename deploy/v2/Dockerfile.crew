@@ -1,0 +1,12 @@
+# PRIVATE_TOOLS_IMAGE must be the operator's exact qualified @sha256 image.
+# The build context supplies a complete hash-pinned offline wheel closure and
+# crew-requirements.lock; no index, provider credential or daemon state is used.
+ARG PRIVATE_TOOLS_IMAGE
+FROM ${PRIVATE_TOOLS_IMAGE}
+USER 0:0
+COPY crew-wheels /opt/cowork-crew-build/wheels
+COPY crew-requirements.lock /opt/cowork-crew-build/requirements.lock
+RUN /opt/cowork/python/bin/python -I -m pip install --no-index --require-hashes --find-links=/opt/cowork-crew-build/wheels -r /opt/cowork-crew-build/requirements.lock \
+ && /opt/cowork/python/bin/python -I /opt/cowork-private-tools/crew.py --inventory \
+ && rm -rf /opt/cowork-crew-build
+USER 0:0

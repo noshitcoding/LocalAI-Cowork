@@ -1,0 +1,37 @@
+[
+  {
+    "id": "9d9d62d1-20fa-4e31-83c7-670c88e9b631",
+    "organisation_id": "00000000-0000-4000-8000-000000000001",
+    "provider_id": "company",
+    "issuer": "https://identity.example.invalid/realms/company",
+    "client_id": "cowork-management",
+    "kind": "scim",
+    "credential_file": "/run/cowork-directory/scim_token",
+    "ldap": null
+  },
+  {
+    "id": "3e9c3282-7e75-43e5-840e-7e2ee638c643",
+    "organisation_id": "00000000-0000-4000-8000-000000000001",
+    "provider_id": "company",
+    "issuer": "https://identity.example.invalid/realms/company",
+    "client_id": "cowork-management",
+    "kind": "ldap",
+    "credential_file": "/run/cowork-directory/ldap_password",
+    "ldap": {
+      "url": "ldaps://directory.example.invalid:636",
+      "base_dn": "dc=example,dc=invalid",
+      "bind_dn": "uid=cowork-reader,ou=services,dc=example,dc=invalid",
+      "users_filter": "(objectClass=inetOrgPerson)",
+      "groups_filter": "(objectClass=groupOfNames)",
+      "subject_attribute": "entryUUID",
+      "username_attribute": "uid",
+      "group_name_attribute": "cn",
+      "member_attribute": "member",
+      "disabled_attribute": null,
+      "disabled_value": null,
+      "ca_file": "/run/cowork-directory/ldap_ca.pem",
+      "page_size": 200,
+      "poll_seconds": 300
+    }
+  }
+]

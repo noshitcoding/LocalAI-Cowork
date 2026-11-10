@@ -1,29 +1,63 @@
 [workspace]
-members = [
-    "crates/cowork-contracts",
-    "crates/cowork-runtime",
-    "server/cowork-server",
-    "server/cowork-runner",
-    "agents/cowork-device-agent",
-    "agents/cowork-local-daemon",
-]
-exclude = ["app/src-tauri", "clients/android/src-tauri", "clients/android/plugins/mobile-secure", "clients/android/plugins/mobile-push"]
 resolver = "2"
+members = ["crates/workflow-contracts", "crates/contracts", "crates/domain", "crates/policy", "crates/storage", "crates/broker", "crates/executor", "crates/mcp", "crates/secrets", "crates/identity", "crates/model-accounting", "crates/runner-protocol", "crates/agent-sandbox", "crates/managed-runtime", "crates/runtime", "crates/toolbox", "services/daemon", "services/device-agent", "services/browser-host", "services/process-runner", "services/sandbox-preview", "services/model-gateway", "services/audit-witness", "tools/contracts"]
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
-version = "0.3.4"
-edition = "2021"
-rust-version = "1.85"
+version = "2.0.0-alpha.8"
+edition = "2024"
+rust-version = "1.94"
 license = "Apache-2.0"
-repository = "https://github.com/noshitcoding/LocalAI-Cowork"
 
 [workspace.dependencies]
+cowork-agent-sandbox = { path = "crates/agent-sandbox" }
+tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"] }
+tonic-prost = "0.14"
+prost = "0.14"
+base64 = "=0.22.1"
+chrono-tz = "0.10"
+cron = "=0.15.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+cowork-toolbox = { path = "crates/toolbox" }
 anyhow = "1.0"
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
 async-trait = "0.1"
+http-body-util = "=0.1.3"
+axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+libc = "0.2"
+jsonschema = { version = "=0.58.6", default-features = false }
+percent-encoding = "2.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+ring = "=0.17.14"
+zeroize = { version = "1.8", features = ["serde"] }
+schemars = { version = "1.2", features = ["chrono04", "uuid1"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "any", "migrate", "macros"] }
 thiserror = "2.0"
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace", "fs"] }
 tracing = "0.1"
-uuid = { version = "1.18", features = ["v4", "serde"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tempfile = "3"
+cowork-workflow-contracts = { path = "crates/workflow-contracts" }
+cowork-contracts = { path = "crates/contracts" }
+cowork-domain = { path = "crates/domain" }
+cowork-policy = { path = "crates/policy" }
+cowork-storage = { path = "crates/storage" }
+cowork-runtime = { path = "crates/runtime" }
+cowork-broker = { path = "crates/broker" }
+cowork-executor = { path = "crates/executor" }
+cowork-mcp = { path = "crates/mcp" }
+cowork-secrets = { path = "crates/secrets" }
+cowork-identity = { path = "crates/identity" }
+cowork-model-accounting = { path = "crates/model-accounting" }
+cowork-runner-protocol = { path = "crates/runner-protocol" }
+tokenizers = { version = "=0.23.1", default-features = false, features = ["fancy-regex"] }

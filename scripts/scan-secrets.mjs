@@ -2,6 +2,19 @@
 
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+
+// Each exception binds a reviewed synthetic/default source line, not an entire
+// path or rule. Editing that line requires a fresh review; new values still fail.
+const reviewedFixtures = new Set(JSON.parse(readFileSync(new URL('./secret-scan-fixtures.json', import.meta.url), 'utf8')).entries
+  .map(entry => [entry.file, entry.rule, entry.line_sha256].join(':')))
+function reviewedFixture(rule, file, text, offset) {
+  const start = text.lastIndexOf('\n', offset - 1) + 1
+  const end = text.indexOf('\n', offset)
+  const line = text.slice(start, end < 0 ? text.length : end)
+  const hash = createHash('sha256').update(line, 'utf8').digest('hex')
+  return reviewedFixtures.has([file, rule, hash].join(':'))
+}
 
 const HISTORY = process.argv.includes('--history')
 const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
@@ -79,6 +92,7 @@ function allowedPrivacyMatch(rule, match, file) {
   if (rule === 'private-ipv4' && (
     /(?:^|\/)network_safety\.rs$/.test(file)
     || file === 'deploy/egress-proxy/squid.conf'
+    || file === 'enterprise/deploy/egress-proxy/squid.conf'
   )) {
     return true
   }
@@ -91,6 +105,10 @@ function allowedPrivacyMatch(rule, match, file) {
     const topLevel = domain.split('.').at(-1)
     return domain === 'example.com'
       || domain === 'example.test'
+      || domain === 'example.org'
+      || domain === 'example.net'
+      || domain.endsWith('.test')
+      || domain.endsWith('.example')
       || domain.endsWith('.example.com')
       || domain.endsWith('.invalid')
       || domain === 'users.noreply.github.com'
@@ -118,6 +136,7 @@ function scanCurrent() {
       expression.lastIndex = 0
       for (const match of text.matchAll(expression)) {
         if (allowedSecretMatch(rule, match, file)) continue
+        if (reviewedFixture(rule, file, text, match.index ?? 0)) continue
         findings.push({ file, line: lineNumber(text, match.index ?? 0), rule })
       }
     }
@@ -127,6 +146,7 @@ function scanCurrent() {
       expression.lastIndex = 0
       for (const match of text.matchAll(expression)) {
         if (allowedPrivacyMatch(rule, match, file)) continue
+        if (reviewedFixture(rule, file, text, match.index ?? 0)) continue
         findings.push({ file, line: lineNumber(text, match.index ?? 0), rule })
       }
     }

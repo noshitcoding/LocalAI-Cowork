@@ -1,0 +1,160 @@
+{
+  "type": "object",
+  "required": [
+    "replicas",
+    "serviceResources",
+    "resources",
+    "organisationMfa",
+    "fleetManagementUrl"
+  ],
+  "properties": {
+    "replicas": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "serviceResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "api",
+        "worker",
+        "runner",
+        "egress-proxy"
+      ],
+      "properties": {
+        "api": {
+          "$ref": "#/definitions/serviceResources"
+        },
+        "worker": {
+          "$ref": "#/definitions/serviceResources"
+        },
+        "runner": {
+          "$ref": "#/definitions/serviceResources"
+        },
+        "egress-proxy": {
+          "$ref": "#/definitions/serviceResources"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "cpu_millis",
+        "memory_mib",
+        "storage_gib",
+        "concurrent_runs"
+      ],
+      "properties": {
+        "cpu_millis": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 1024000
+        },
+        "memory_mib": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 4194304
+        },
+        "storage_gib": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "concurrent_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "fleetManagementUrl": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 2048
+    },
+    "organisationMfa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "instance_id",
+        "policy"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "instance_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "organisation_id",
+            "revision",
+            "epoch",
+            "required",
+            "max_age_seconds",
+            "allow_validated_idp"
+          ],
+          "properties": {
+            "organisation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "max_age_seconds": {
+              "type": "integer",
+              "minimum": 300,
+              "maximum": 43200
+            },
+            "allow_validated_idp": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "serviceResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpu_millis",
+        "memory_mib",
+        "pids"
+      ],
+      "properties": {
+        "cpu_millis": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 32000
+        },
+        "memory_mib": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 32768
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 4096
+        }
+      }
+    }
+  }
+}

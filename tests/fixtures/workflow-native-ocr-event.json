@@ -1,0 +1,323 @@
+{
+  "schema_version": 8,
+  "id": "e43ea900-8d2e-4685-8063-a6dcd8812df3",
+  "run_id": "58202e03-730e-4d7e-8f57-51a307b10d16",
+  "sequence": 7,
+  "kind": "workflow_native_tool_completed",
+  "payload": {
+    "model_turn_id": "9b8503fe-16df-4d15-ae2e-74126a7dc429",
+    "node_id": "read-source",
+    "receipt": {
+      "id": "6461c6b648a972db1852aa954eb532c315374b5fbed2008f7d374332a3628c14",
+      "result": {
+        "_workflow_success": true,
+        "cowork_images": [
+          {
+            "height": 1600,
+            "media_type": "image/png",
+            "page": 1,
+            "sha256": "5d5e1437c35211909e0ac798e041483289ed0fd9b03f10f065e3398db4732ca7",
+            "width": 1131
+          }
+        ],
+        "document_engine_revision": "9d0c49f99399f6d3df579a6a95605f7d9e7acdafb935da57fee6b78a06ebec20",
+        "engine": {
+          "diagnostics": [],
+          "previews": {
+            "count": 1,
+            "note": "This model has no image input; use the text, inspect or metadata results instead.",
+            "shown_to_model": false
+          },
+          "result": {
+            "engine": {
+              "binding_version": "2.12.0",
+              "languages": [
+                "eng",
+                "deu"
+              ],
+              "models_sha256": {
+                "deu": "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d",
+                "eng": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+              },
+              "name": "tesseract",
+              "version": "tesseract 5.5.3"
+            },
+            "format": "ocr",
+            "next_offset": null,
+            "next_page": null,
+            "offset": 0,
+            "pages": [
+              {
+                "dpi": 180,
+                "height": 2105,
+                "page": 1,
+                "preview_sha256": "5d5e1437c35211909e0ac798e041483289ed0fd9b03f10f065e3398db4732ca7",
+                "raster_sha256": "34c65b9179b4f878648f43252074b8ef4d2503775b950113bb8985617b4a1ea3",
+                "rotation": 0,
+                "width": 1488,
+                "word_count": 19
+              }
+            ],
+            "pages_truncated": false,
+            "source_sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f",
+            "text": "RECHNUNG R-2026-1042\nMuster GmbH\nDatum: 31.10.2026\nNettobetrag: 100,00 EUR\nUmsatzsteuer 19%: 19,00 EUR\nGesamtbetrag: 119,00 EUR\nInvoice reference: INV-1042",
+            "total_pages": 1,
+            "total_words": 19,
+            "truncated": false,
+            "words": [
+              {
+                "height": 31,
+                "index": 0,
+                "line": 1,
+                "page": 1,
+                "score": 92.54309844970703,
+                "text": "RECHNUNG",
+                "text_truncated": false,
+                "width": 219,
+                "x": 89,
+                "y": 121
+              },
+              {
+                "height": 31,
+                "index": 1,
+                "line": 1,
+                "page": 1,
+                "score": 92.66780090332031,
+                "text": "R-2026-1042",
+                "text_truncated": false,
+                "width": 227,
+                "x": 323,
+                "y": 121
+              },
+              {
+                "height": 30,
+                "index": 2,
+                "line": 2,
+                "page": 1,
+                "score": 96.13789367675781,
+                "text": "Muster",
+                "text_truncated": false,
+                "width": 125,
+                "x": 89,
+                "y": 233
+              },
+              {
+                "height": 32,
+                "index": 3,
+                "line": 2,
+                "page": 1,
+                "score": 95.8021240234375,
+                "text": "GmbH",
+                "text_truncated": false,
+                "width": 112,
+                "x": 225,
+                "y": 231
+              },
+              {
+                "height": 31,
+                "index": 4,
+                "line": 3,
+                "page": 1,
+                "score": 96.73051452636719,
+                "text": "Datum:",
+                "text_truncated": false,
+                "width": 125,
+                "x": 89,
+                "y": 343
+              },
+              {
+                "height": 31,
+                "index": 5,
+                "line": 3,
+                "page": 1,
+                "score": 95.62812805175781,
+                "text": "31.10.2026",
+                "text_truncated": false,
+                "width": 201,
+                "x": 226,
+                "y": 343
+              },
+              {
+                "height": 42,
+                "index": 6,
+                "line": 4,
+                "page": 1,
+                "score": 92.1778335571289,
+                "text": "Nettobetrag:",
+                "text_truncated": false,
+                "width": 227,
+                "x": 89,
+                "y": 452
+              },
+              {
+                "height": 36,
+                "index": 7,
+                "line": 4,
+                "page": 1,
+                "score": 96.3465576171875,
+                "text": "100,00",
+                "text_truncated": false,
+                "width": 119,
+                "x": 332,
+                "y": 454
+              },
+              {
+                "height": 31,
+                "index": 8,
+                "line": 4,
+                "page": 1,
+                "score": 96.85331726074219,
+                "text": "EUR",
+                "text_truncated": false,
+                "width": 74,
+                "x": 464,
+                "y": 454
+              },
+              {
+                "height": 31,
+                "index": 9,
+                "line": 5,
+                "page": 1,
+                "score": 90.4394302368164,
+                "text": "Umsatzsteuer",
+                "text_truncated": false,
+                "width": 248,
+                "x": 89,
+                "y": 565
+              },
+              {
+                "height": 32,
+                "index": 10,
+                "line": 5,
+                "page": 1,
+                "score": 96.63552856445312,
+                "text": "19%:",
+                "text_truncated": false,
+                "width": 78,
+                "x": 351,
+                "y": 564
+              },
+              {
+                "height": 37,
+                "index": 11,
+                "line": 5,
+                "page": 1,
+                "score": 89.92698669433594,
+                "text": "19,00",
+                "text_truncated": false,
+                "width": 96,
+                "x": 445,
+                "y": 564
+              },
+              {
+                "height": 31,
+                "index": 12,
+                "line": 5,
+                "page": 1,
+                "score": 96.70807647705078,
+                "text": "EUR",
+                "text_truncated": false,
+                "width": 73,
+                "x": 555,
+                "y": 565
+              },
+              {
+                "height": 41,
+                "index": 13,
+                "line": 6,
+                "page": 1,
+                "score": 92.27859497070312,
+                "text": "Gesamtbetrag:",
+                "text_truncated": false,
+                "width": 265,
+                "x": 87,
+                "y": 674
+              },
+              {
+                "height": 36,
+                "index": 14,
+                "line": 6,
+                "page": 1,
+                "score": 96.3512954711914,
+                "text": "119,00",
+                "text_truncated": false,
+                "width": 119,
+                "x": 368,
+                "y": 675
+              },
+              {
+                "height": 30,
+                "index": 15,
+                "line": 6,
+                "page": 1,
+                "score": 96.60824584960938,
+                "text": "EUR",
+                "text_truncated": false,
+                "width": 73,
+                "x": 501,
+                "y": 676
+              },
+              {
+                "height": 31,
+                "index": 16,
+                "line": 7,
+                "page": 1,
+                "score": 96.27456665039062,
+                "text": "Invoice",
+                "text_truncated": false,
+                "width": 128,
+                "x": 89,
+                "y": 786
+              },
+              {
+                "height": 33,
+                "index": 17,
+                "line": 7,
+                "page": 1,
+                "score": 93.2497787475586,
+                "text": "reference:",
+                "text_truncated": false,
+                "width": 178,
+                "x": 231,
+                "y": 784
+              },
+              {
+                "height": 31,
+                "index": 18,
+                "line": 7,
+                "page": 1,
+                "score": 91.44701385498047,
+                "text": "INV-1042",
+                "text_truncated": false,
+                "width": 165,
+                "x": 424,
+                "y": 786
+              }
+            ]
+          }
+        }
+      },
+      "result_sha256": "987809bcbf1fd0d899c3955ef223355588cbbc2e9e3208d1c0488505381a0202",
+      "succeeded": true,
+      "tool": {
+        "arguments": {
+          "dpi": 180,
+          "expected_sha256": "70317470ad5675ca94cd734d619982f3231c58b23e42af18b9406f8ead10f73f",
+          "folder_id": "workspace:caa08e3f-edc1-402e-8cc0-cdf8b05a01d5",
+          "languages": [
+            "eng",
+            "deu"
+          ],
+          "limit": 100,
+          "offset": 0,
+          "operation": "ocr",
+          "path": "invoice.pdf",
+          "rotation": 0
+        },
+        "id": "native-document",
+        "name": "document_read"
+      }
+    }
+  },
+  "created_at": 1793507463761
+}

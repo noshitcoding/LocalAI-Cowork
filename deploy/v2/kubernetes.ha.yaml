@@ -1,0 +1,204 @@
+# Alternative to kubernetes.yaml, never apply both topologies to one installation.
+# Operator prerequisites: initialized private UID1000 data/key custody; external
+# HA PostgreSQL + HTTPS S3; rook-cephfs RWX with qualified cross-node flock,
+# atomic rename and fsync. No generic NFS or load/failover guarantee is asserted.
+apiVersion: v1
+kind: Namespace
+metadata: {name: "${COWORK_NAMESPACE}"}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: cowork-ha-data, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  storageClassName: rook-cephfs
+  accessModes: [ReadWriteMany]
+  resources: {requests: {storage: 50Gi}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: cowork-ha-operator, namespace: "${COWORK_NAMESPACE}"}
+data:
+  COWORK_DATA_DIR: /var/lib/cowork
+  COWORK_WEB_DIR: /opt/cowork/web
+  COWORK_BIND_ADDRESS: 0.0.0.0
+  COWORK_PORT: "43821"
+  COWORK_PUBLIC_ORIGIN: "https://${COWORK_SITE}"
+  COWORK_ENABLE_TENANT_IDENTITY: "1"
+  COWORK_TEAM_MCP_ALLOWED_ORIGINS: ""
+  COWORK_TEAM_LITELLM_HTTP_ORIGINS: ""
+  COWORK_PASSKEY_ORIGIN: ""
+  COWORK_PASSKEY_RP_ID: ""
+  COWORK_FCM_SERVICE_ACCOUNT_FILE: ""
+  COWORK_FLEET_KEY_FILE: ""
+  COWORK_ORGANISATION_ID: ""
+  COWORK_INSTANCE_ID: ""
+  COWORK_DATABASE_HOST: "${COWORK_HA_DATABASE_HOST}"
+  COWORK_DATABASE_NAME: cowork
+  COWORK_DATABASE_USER: cowork
+  COWORK_DATABASE_PORT: "5432"
+  COWORK_DATABASE_SSLMODE: verify-full
+  COWORK_DATABASE_SSLROOTCERT: /run/private/keys/postgres_ca.pem
+  COWORK_DATABASE_PASSWORD_FILE: /run/private/keys/postgres_password
+  COWORK_S3_ENDPOINT: "${COWORK_HA_S3_ENDPOINT}"
+  COWORK_S3_BUCKET: "${COWORK_HA_S3_BUCKET}"
+  COWORK_S3_REGION: "${COWORK_HA_S3_REGION}"
+  COWORK_S3_ACCESS_KEY_ID_FILE: /run/private/keys/s3_access_key
+  COWORK_S3_SECRET_ACCESS_KEY_FILE: /run/private/keys/s3_secret_key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork-api, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  replicas: 2
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector: {matchLabels: {app: cowork-api}}
+  template:
+    metadata: {labels: {app: cowork-api}}
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext: {runAsUser: 1000, runAsGroup: 1000}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions: [{key: cowork.local/shared-workspaces-ready, operator: In, values: ["true"]}]
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm: {labelSelector: {matchLabels: {app: cowork-api}}, topologyKey: kubernetes.io/hostname}
+      initContainers:
+        - name: private-operator-keys
+          image: busybox:1.37
+          command: [/bin/sh, -ec, "umask 077; mkdir -p /private/keys; chown 1000:1000 /private /private/keys; chmod 700 /private /private/keys; for f in postgres_password postgres_ca.pem s3_access_key s3_secret_key; do cp /projected/$f /private/keys/$f; chown 1000:1000 /private/keys/$f; chmod 600 /private/keys/$f; done; test -d /data/identity-bootstrap; test -d /data/toolbox; if test -f /device-hub/device_hub.json; then for f in device_hub.json device_hub_cert.pem device_hub_key.pem device_hub_ca.pem; do cp /device-hub/$f /private/keys/$f; chown 1000:1000 /private/keys/$f; chmod 600 /private/keys/$f; done; fi"]
+          securityContext: {runAsUser: 0, runAsGroup: 0, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL], add: [CHOWN, DAC_OVERRIDE, FOWNER]}}
+          volumeMounts:
+            - {name: projected-keys, mountPath: /projected, readOnly: true}
+            - {name: projected-device-hub, mountPath: /device-hub, readOnly: true}
+            - {name: private-keys, mountPath: /private}
+            - {name: data, mountPath: /data}
+      containers:
+        - name: api
+          image: "${COWORK_IMAGE}"
+          args: [--no-worker]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          envFrom: [{configMapRef: {name: cowork-ha-operator}}]
+          env:
+            - {name: COWORK_TEAM_TOOL_IMAGE, value: "${COWORK_TEAM_TOOL_IMAGE}"}
+            - {name: COWORK_TEAM_TOOL_HOST_ROOT, value: /srv/cowork-team-workspaces}
+            - {name: COWORK_TEAM_TOOL_NETWORK, value: none}
+            - {name: COWORK_DEVICE_HUB_CONFIG, valueFrom: {secretKeyRef: {name: cowork-device-hub, key: configuration_path, optional: true}}}
+            - {name: COWORK_DEVICE_HUB_NODE_ID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+            - {name: COWORK_DEVICE_HUB_POD_IP, valueFrom: {fieldRef: {fieldPath: status.podIP}}}
+            - {name: COWORK_DEVICE_HUB_NAMESPACE, valueFrom: {fieldRef: {fieldPath: metadata.namespace}}}
+          ports: [{containerPort: 43821}, {containerPort: 43822}]
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/cowork}
+            - {name: tool-workspaces, mountPath: /var/lib/cowork/toolbox/workspaces}
+            - {name: private-keys, mountPath: /run/private, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+          readinessProbe: {httpGet: {path: /health, port: 43821}, initialDelaySeconds: 10, periodSeconds: 5}
+          startupProbe: {httpGet: {path: /health, port: 43821}, failureThreshold: 60, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /health, port: 43821}, initialDelaySeconds: 30, periodSeconds: 15}
+          resources: {requests: {cpu: 500m, memory: 1Gi}, limits: {cpu: "4", memory: 8Gi}}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: cowork-ha-data}}
+        # This is a pre-mounted RWX filesystem on each enumerated node, not an
+        # arbitrary node-local directory. It gives Docker the same host pathname.
+        - {name: tool-workspaces, hostPath: {path: /srv/cowork-team-workspaces, type: Directory}}
+        - {name: projected-keys, secret: {secretName: cowork-ha-keys, defaultMode: 0400}}
+        - {name: projected-device-hub, secret: {secretName: cowork-device-hub, optional: true, defaultMode: 0400}}
+        - {name: private-keys, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 512Mi}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 256Mi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork-worker, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  replicas: 2
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector: {matchLabels: {app: cowork-worker}}
+  template:
+    metadata: {labels: {app: cowork-worker}}
+    spec:
+      terminationGracePeriodSeconds: 90
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, supplementalGroups: [${COWORK_DOCKER_GID}]}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: cowork.local/shared-workspaces-ready, operator: In, values: ["true"]}
+                  - {key: cowork.local/docker-tools-ready, operator: In, values: ["true"]}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm: {labelSelector: {matchLabels: {app: cowork-worker}}, topologyKey: kubernetes.io/hostname}
+      initContainers:
+        - name: private-operator-keys
+          image: busybox:1.37
+          command: [/bin/sh, -ec, "umask 077; mkdir -p /private/keys; chown 1000:1000 /private /private/keys; chmod 700 /private /private/keys; for f in postgres_password postgres_ca.pem s3_access_key s3_secret_key; do cp /projected/$f /private/keys/$f; chown 1000:1000 /private/keys/$f; chmod 600 /private/keys/$f; done; test -d /data/identity-bootstrap; test -d /data/toolbox; cp /docker-nodes/bindings.json /private/keys/docker_host_nodes.json; chown 1000:1000 /private/keys/docker_host_nodes.json; chmod 600 /private/keys/docker_host_nodes.json"]
+          securityContext: {runAsUser: 0, runAsGroup: 0, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL], add: [CHOWN, DAC_OVERRIDE, FOWNER]}}
+          volumeMounts:
+            - {name: projected-keys, mountPath: /projected, readOnly: true}
+            - {name: docker-node-bindings, mountPath: /docker-nodes, readOnly: true}
+            - {name: private-keys, mountPath: /private}
+            - {name: data, mountPath: /data}
+      containers:
+        - name: worker
+          image: "${COWORK_IMAGE}"
+          args: [--worker-only]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          envFrom: [{configMapRef: {name: cowork-ha-operator}}]
+          env:
+            - {name: COWORK_TEAM_TOOL_IMAGE, value: "${COWORK_TEAM_TOOL_IMAGE}"}
+            - {name: COWORK_TEAM_TOOL_HOST_ROOT, value: /srv/cowork-team-workspaces}
+            - {name: COWORK_TEAM_TOOL_NETWORK, value: none}
+            - {name: COWORK_DOCKER_NODE_NAME, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
+            - {name: COWORK_DOCKER_NODE_BINDINGS_FILE, value: /run/private/keys/docker_host_nodes.json}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/cowork}
+            - {name: tool-workspaces, mountPath: /var/lib/cowork/toolbox/workspaces}
+            - {name: docker-control, mountPath: /var/run/docker.sock}
+            - {name: private-keys, mountPath: /run/private, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+          resources: {requests: {cpu: 500m, memory: 1Gi}, limits: {cpu: "4", memory: 8Gi}}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: cowork-ha-data}}
+        - {name: tool-workspaces, hostPath: {path: /srv/cowork-team-workspaces, type: Directory}}
+        - {name: docker-control, hostPath: {path: /var/run/docker.sock, type: Socket}}
+        - {name: projected-keys, secret: {secretName: cowork-ha-keys, defaultMode: 0400}}
+        - {name: docker-node-bindings, configMap: {name: cowork-docker-hosts, defaultMode: 0444}}
+        - {name: private-keys, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 512Mi}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 256Mi}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: cowork-api, namespace: "${COWORK_NAMESPACE}"}
+spec: {minAvailable: 1, selector: {matchLabels: {app: cowork-api}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: cowork-worker, namespace: "${COWORK_NAMESPACE}"}
+spec: {minAvailable: 1, selector: {matchLabels: {app: cowork-worker}}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: cowork, namespace: "${COWORK_NAMESPACE}"}
+spec: {selector: {app: cowork-api}, ports: [{port: 43821, targetPort: 43821}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: cowork, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  tls: [{hosts: ["${COWORK_SITE}"], secretName: cowork-tls}]
+  rules:
+    - host: "${COWORK_SITE}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: cowork, port: {number: 43821}}}

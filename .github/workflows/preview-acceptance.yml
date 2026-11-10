@@ -1,0 +1,105 @@
+name: V2 reviewed preview acceptance
+run-name: Collect original acceptance for ${{ github.ref_name }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Original successful signed build candidate run on this exact tag commit
+        required: true
+        type: string
+      candidate_artifact_id:
+        description: Exact immutable original signed build candidate artifact ID
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: v2-preview-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/trusted-release
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require exact tag and configured reviewed acceptance infrastructure
+        shell: python
+        env:
+          ACCEPTANCE_READY: ${{ vars.V2_PREVIEW_ACCEPTANCE_RUNNER_READY }}
+          QA_DIRECTORY: ${{ vars.V2_PREVIEW_ACCEPTANCE_DIRECTORY }}
+          ORIGINAL_RUN: ${{ inputs.candidate_run_id }}
+          ORIGINAL_ARTIFACT: ${{ inputs.candidate_artifact_id }}
+        run: |
+          import os, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / '.local/trusted-release/tools/release'))
+          import preview, preview_trust
+          if os.environ.get('GITHUB_REF_TYPE') != 'tag':
+              raise SystemExit('Dispatch acceptance only on an exact reviewed V2 prerelease tag.')
+          trusted = preview_trust.policy(root / '.local/trusted-release/.github/v2-preview-policy.json', os.environ['GITHUB_REPOSITORY'])
+          if trusted['candidate_workflow'] != '.github/workflows/preview-candidate.yml':
+              raise SystemExit('The independent policy does not authorize the signed candidate producer.')
+          if os.environ.get('ACCEPTANCE_READY') != 'true' or not os.environ.get('QA_DIRECTORY'):
+              raise SystemExit('Infrastructure blocked: configure the dedicated acceptance runner and original reviewed QA directory.')
+          if not all(os.environ.get(key, '').isdigit() for key in ('ORIGINAL_RUN', 'ORIGINAL_ARTIFACT')):
+              raise SystemExit('Select exact original signed build run/artifact IDs.')
+          source = preview.source_snapshot(root, os.environ['GITHUB_REF_NAME'])
+          if source['commit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Workflow context and tagged source commit differ.')
+  collect:
+    needs: policy
+    runs-on: [self-hosted, localai-preview-acceptance]
+    environment: v2-preview-acceptance
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/trusted-release
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bind original package-specific installed QA without rewriting package bytes
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_DIRECTORY: ${{ vars.V2_PREVIEW_ACCEPTANCE_DIRECTORY }}
+          ORIGINAL_RUN: ${{ inputs.candidate_run_id }}
+          ORIGINAL_ARTIFACT: ${{ inputs.candidate_artifact_id }}
+        run: |
+          import os, subprocess
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          if subprocess.check_output(['node', '--version'], text=True).strip() != 'v22.20.0':
+              raise SystemExit('Dedicated acceptance runner requires native Node 22.20.0 for cryptographic package verification.')
+          qa = Path(os.environ['QA_DIRECTORY'])
+          if not qa.is_absolute(): raise SystemExit('Configure an explicit absolute original QA directory.')
+          subprocess.run(['python', str(root / '.local/trusted-release/.github/scripts/preview_candidate.py'), 'collect',
+              '--source-root', str(root), '--tag', os.environ['GITHUB_REF_NAME'], '--repository', os.environ['GITHUB_REPOSITORY'],
+              '--trusted-policy', str(root / '.local/trusted-release/.github/v2-preview-policy.json'),
+              '--candidate-run-id', os.environ['ORIGINAL_RUN'], '--candidate-artifact-id', os.environ['ORIGINAL_ARTIFACT'],
+              '--qa-dir', str(qa), '--output', str(root / '.local/qa-artifact')], check=True)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-preview-acceptance
+          path: .local/qa-artifact
+          if-no-files-found: error
+          retention-days: 14

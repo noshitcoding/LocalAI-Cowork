@@ -1,0 +1,257 @@
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$" .Values.image) }}
+{{- fail "image must be pinned by sha256 digest" }}
+{{- end }}
+{{- $instance := required "instanceId is required" .Values.instanceId }}
+{{- $organisation := required "organisationId is required" .Values.organisationId }}
+{{- $mfa := required "current organisationMfa configuration is required" .Values.organisationMfa }}
+{{- if or (ne (int $mfa.version) 1) (ne $mfa.instance_id $instance) (ne $mfa.policy.organisation_id $organisation) }}
+{{- fail "organisationMfa must bind this exact organisation and instance" }}
+{{- end }}
+{{- if or (lt (int .Values.replicas) 0) (gt (int .Values.replicas) 1) }}
+{{- fail "instance replicas must be zero (stopped) or one" }}
+{{- end }}
+{{- range $mode := list "api" "worker" }}
+{{- $caps := index $.Values.serviceResources $mode }}
+{{- if or (lt (int $caps.cpu_millis) 100) (gt (int $caps.cpu_millis) 32000) (lt (int $caps.memory_mib) 64) (gt (int $caps.memory_mib) 32768) }}
+{{- fail "API/worker resource caps require bounded positive CPU and memory" }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: instance-services
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+spec:
+  hard:
+    limits.cpu: {{ printf "%dm" (add (int .Values.resources.cpu_millis) (int .Values.serviceResources.api.cpu_millis) (int .Values.serviceResources.worker.cpu_millis) (int .Values.serviceResources.runner.cpu_millis) (int (index .Values.serviceResources "egress-proxy").cpu_millis)) | quote }}
+    limits.memory: {{ printf "%dMi" (add (int .Values.resources.memory_mib) (int .Values.serviceResources.api.memory_mib) (int .Values.serviceResources.worker.memory_mib) (int .Values.serviceResources.runner.memory_mib) (int (index .Values.serviceResources "egress-proxy").memory_mib)) | quote }}
+    requests.storage: {{ printf "%dGi" (int .Values.resources.storage_gib) | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runtime
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+type: Opaque
+stringData:
+{{- range $key, $value := .Values.secrets }}
+  {{ $key }}: {{ required (printf "secrets.%s is required" $key) $value | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cowork-instance
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+automountServiceAccountToken: false
+{{- range $mode := list "api" "worker" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $mode }}
+  labels:
+    cowork.instance: {{ $instance | quote }}
+    cowork.organisation: {{ $organisation | quote }}
+  annotations:
+    cowork.original-operation: {{ $.Values.originalOperationId | quote }}
+spec:
+  replicas: {{ $.Values.replicas }}
+  selector:
+    matchLabels:
+      cowork.component: {{ $mode }}
+  template:
+    metadata:
+      finalizers: [cowork.opencowork.dev/physical-stop]
+      labels:
+        cowork.component: {{ $mode }}
+        cowork.instance: {{ $instance | quote }}
+        cowork.organisation: {{ $organisation | quote }}
+    spec:
+      serviceAccountName: cowork-instance
+      nodeSelector: {{ toJson $.Values.nodeSelector }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              cowork.component: {{ $mode }}
+      containers:
+        - name: {{ $mode }}
+          image: {{ $.Values.image | quote }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: COWORK_MODE
+              value: {{ $mode }}
+            - name: COWORK_LISTEN_ADDR
+              value: "0.0.0.0:8080"
+            {{- if eq $mode "api" }}
+            {{- range $key, $value := $.Values.gatewayEnvironment }}
+            {{- if not (has $key (list "COWORK_PUBLIC_ORIGIN" "COWORK_INSTANCE_GATEWAY_DOMAIN" "COWORK_DESKTOP_ORIGINS" "COWORK_WEBAUTHN_RP_ID")) }}
+            {{- fail "unsupported gateway environment key" }}
+            {{- end }}
+            - {name: {{ $key | quote }}, value: {{ $value | quote }}}
+            {{- end }}
+            {{- end }}
+            - name: COWORK_INSTANCE_ID
+              value: {{ $instance | quote }}
+            - name: COWORK_ORGANISATION_ID
+              value: {{ $organisation | quote }}
+            - name: COWORK_ORGANISATION_MFA_POLICY
+              value: {{ toJson $.Values.organisationMfa | quote }}
+            - name: COWORK_FLEET_MANAGEMENT_URL
+              value: {{ required "fleetManagementUrl is required for current MFA authority" $.Values.fleetManagementUrl | quote }}
+            - name: COWORK_FLEET_KEY_FILE
+              value: /run/secrets/fleet_key
+            - name: DATABASE_URL_FILE
+              value: /run/secrets/database_url
+            - name: COWORK_BOOTSTRAP_TOKEN_FILE
+              value: /run/secrets/bootstrap_token
+            - name: COWORK_STORAGE_MASTER_KEY_FILE
+              value: /run/secrets/storage_master_key
+            - name: COWORK_S3_ACCESS_KEY_FILE
+              value: /run/secrets/s3_access_key
+            - name: COWORK_S3_SECRET_KEY_FILE
+              value: /run/secrets/s3_secret_key
+            - name: COWORK_RUNNER_SIGNING_KEY_FILE
+              value: /run/secrets/runner_signing_key
+            - name: COWORK_RUNNER_URL
+              value: {{ required "runnerUrl must identify a qualified instance runner" $.Values.runnerUrl | quote }}
+            - name: COWORK_RUNNER_BACKEND
+              value: kubernetes
+            - name: COWORK_SERVER_CAPABILITIES
+              value: {{ if $.Values.desktopProfile }}model.external,files,shell,git,web.fetch,browser.headless,browser.visible,desktop.linux,office.ooxml,office.libreoffice,crew.python,tool.mcp.invoke{{ else }}model.external,files,shell,git,web.fetch,crew.python,tool.mcp.invoke{{ end }}
+            - {name: COWORK_KUBE_NAMESPACE_UID, value: {{ $.Values.namespaceUid | quote }}}
+            - {name: COWORK_KUBE_CLUSTER_UID, value: {{ $.Values.clusterUid | quote }}}
+            - {name: COWORK_KUBE_GENERATION, value: {{ $.Values.storageGeneration | quote }}}
+            {{- if $.Values.desktopProfile }}
+            - {name: COWORK_RUNNER_KUBERNETES_DESKTOP_PROOFS, value: "true"}
+            {{- end }}
+            - name: COWORK_RUNNER_CA_CERTIFICATE_FILE
+              value: /run/runner-trust/ca.pem
+            - name: COWORK_FLEET_EXECUTION_ADMISSION
+              value: "true"
+            - name: COWORK_EXECUTION_EPOCH
+              value: {{ required "executionEpoch is required" $.Values.executionEpoch | quote }}
+            - name: COWORK_S3_ENDPOINT
+              value: {{ required "s3Endpoint is required" $.Values.s3Endpoint | quote }}
+            - name: COWORK_S3_BUCKET
+              value: {{ required "s3Bucket is required" $.Values.s3Bucket | quote }}
+            - name: COWORK_WEB_PUSH_ENABLED
+              value: "false"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: {{ printf "%dm" (int (index $.Values.serviceResources $mode).cpu_millis) | quote }}
+              memory: {{ printf "%dMi" (int (index $.Values.serviceResources $mode).memory_mib) | quote }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: runner-trust
+              mountPath: /run/runner-trust
+              readOnly: true
+          {{- if eq $mode "api" }}
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          {{- end }}
+      volumes:
+        - name: runtime
+          secret:
+            secretName: runtime
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: runner-trust
+          configMap: {name: runner-trust}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $mode }}
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      cowork.component: {{ $mode }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+spec:
+  selector:
+    cowork.component: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: instance-boundary
+  labels: {cowork.instance: {{ $instance | quote }}, cowork.organisation: {{ $organisation | quote }}}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: cowork.managed, operator: NotIn, values: [native-runner]}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {cowork.instance: {{ $instance | quote }}}}}]
+      ports: [{protocol: TCP, port: 8090}, {protocol: TCP, port: 3128}]
+    {{- if not .Values.maintenanceMode }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.routingNamespace | quote }}
+      ports: [{protocol: TCP, port: 8080}]
+    {{- end }}
+  egress:
+    - to: [{podSelector: {matchLabels: {cowork.instance: {{ $instance | quote }}}}}]
+      ports: [{protocol: TCP, port: 8090}, {protocol: TCP, port: 3128}]
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    {{- range .Values.serviceCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 443}, {protocol: TCP, port: 9000}, {protocol: TCP, port: 8090}]
+    {{- end }}

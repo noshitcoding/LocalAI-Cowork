@@ -1,0 +1,9 @@
+{
+  "format": "localai-cowork-preview-trust/1",
+  "enabled": false,
+  "repository": "noshitcoding/LocalAI-Cowork",
+  "updater_key_sha256": null,
+  "updater_endpoint": null,
+  "windows_certificate_thumbprint": null,
+  "candidate_workflow": null
+}

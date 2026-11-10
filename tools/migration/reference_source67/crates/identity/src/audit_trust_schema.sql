@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS audit_witness_binding_history(scope TEXT NOT NULL,binding_id TEXT NOT NULL,request_id TEXT NOT NULL,request_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,PRIMARY KEY(scope,binding_id));
+CREATE TABLE IF NOT EXISTS audit_trust_transition_requests(scope TEXT NOT NULL,request_id TEXT NOT NULL,input_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,completed BIGINT NOT NULL CHECK(completed IN(0,1)),PRIMARY KEY(scope,request_id));
+CREATE UNIQUE INDEX IF NOT EXISTS audit_trust_one_pending ON audit_trust_transition_requests(scope) WHERE completed=0;
+CREATE TABLE IF NOT EXISTS audit_trust_transition_imports(scope TEXT NOT NULL,request_id TEXT NOT NULL,input_sha256 TEXT NOT NULL,proposal_request_id TEXT NOT NULL,original_base64 TEXT NOT NULL,original_sha256 TEXT NOT NULL,payload TEXT NOT NULL,payload_sha256 TEXT NOT NULL,PRIMARY KEY(scope,request_id),UNIQUE(scope,proposal_request_id));

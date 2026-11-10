@@ -1,0 +1,22 @@
+[Unit]
+Description=Original VM or Kubernetes Cowork instance operator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cowork-operator
+Group=cowork-operator
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/cowork/bound-provisioner.env
+ExecStart=/usr/bin/python3 /opt/open-cowork/server/cowork-provisioner/provisioner.py --config ${COWORK_BOUND_OPERATOR_CONFIG}
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/cowork-operator /srv/cowork-vms
+ReadWritePaths=-/home/cowork-operator/.local/share/cowork
+
+[Install]
+WantedBy=multi-user.target

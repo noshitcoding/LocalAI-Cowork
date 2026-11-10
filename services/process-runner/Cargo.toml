@@ -1,0 +1,59 @@
+[package]
+name = "cowork-process-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+managed-runtime-service = ["dep:cowork-managed-runtime"]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64 = "=0.22.1"
+cowork-contracts.workspace = true
+cowork-domain.workspace = true
+cowork-executor.workspace = true
+cowork-runner-protocol.workspace = true
+cowork-agent-sandbox.workspace = true
+reqwest.workspace = true
+percent-encoding.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+uuid.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cowork-managed-runtime = { path = "../../crates/managed-runtime", optional = true, features = ["containerd"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_Storage_Vhd", "Win32_System_IO", "Win32_System_Ioctl"] }
+
+[[bin]]
+name = "cowork-process-runner"
+path = "src/main.rs"
+
+[[bin]]
+name = "cowork-runner-probe"
+path = "src/probe.rs"
+
+[[bin]]
+name = "cowork-managed-runtime-service"
+path = "src/managed_main.rs"
+required-features = ["managed-runtime-service"]

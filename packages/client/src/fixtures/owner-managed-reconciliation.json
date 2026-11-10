@@ -1,0 +1,171 @@
+{
+  "intent": {
+    "expected_request_sha256": "4448a96d8c75b000230329508caea5115dcee8e03f43121aed1d08e00926b135",
+    "expected_run_revision": 6,
+    "finish_cancellation": true
+  },
+  "provenance": "synthetic controller/Store test, no physical qualification",
+  "response": {
+    "process_attempt": {
+      "created_at": 1793425855739,
+      "environment": {
+        "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+        "environment_id": "f9371f37-1fac-4c97-b2b4-536d5f0adbaa",
+        "qualification_sha256": "d877eb21b68f92dd63328aa37859db8b5b3dcf614d293b3b426041668ea69404",
+        "version_id": "6b271263-c3ff-43f1-a12c-131feaed1fbc"
+      },
+      "id": "c5c8fa85-72d4-4220-bbc1-6a7e3b78f294",
+      "project_id": "bda80073-54dc-42e6-884a-c6f0a3bd34eb",
+      "request_sha256": "4448a96d8c75b000230329508caea5115dcee8e03f43121aed1d08e00926b135",
+      "revision": 2,
+      "run_id": "eb77eb0f-c88d-44d9-bc38-ababdbdf5741",
+      "state": {
+        "evidence_sha256": "824e8986c9fc67e3cfb72e9e776a7ca108254f8560c10c2c9e44921f1516d8ea",
+        "result": {
+          "duration_ms": 5,
+          "exit_code": 0,
+          "output_complete": true,
+          "process_id": 42,
+          "signal": null,
+          "stderr": {
+            "bytes": [],
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "stdout": {
+            "bytes": [
+              99,
+              111,
+              112,
+              121,
+              32,
+              100,
+              111,
+              110,
+              101
+            ],
+            "sha256": "c853d5666aaa98ff282aab75862f38a3e705b166bd364265ed97d418af972580",
+            "total_bytes": 9,
+            "truncated": false
+          },
+          "termination": "exited"
+        },
+        "state": "reconciled_completed"
+      },
+      "tool": {
+        "arguments": {
+          "arguments": [
+            "value"
+          ],
+          "program": "probe",
+          "timeout_seconds": 5
+        },
+        "id": "program-once",
+        "name": "execute_program"
+      },
+      "updated_at": 1793425855904,
+      "workspace_resource_id": "606fe5bf2c74e0b478ffeb474f11eae9cffd450f3dd37792299b42fba57ecbc0"
+    },
+    "run": {
+      "created_at": 1793425855692,
+      "error_code": "executor_interrupted",
+      "id": "eb77eb0f-c88d-44d9-bc38-ababdbdf5741",
+      "last_sequence": 8,
+      "revision": 7,
+      "spec": {
+        "access_mode": "autonomous",
+        "agent_config": {
+          "behavior": {
+            "command_allow_groups": [],
+            "command_blacklist": [],
+            "fallback_to_human_on_repeated_failure": true,
+            "max_tool_calls_per_loop": 64
+          },
+          "execution_mode": "execute",
+          "generation": {},
+          "instructions": ""
+        },
+        "allowed_tools": [
+          "create_artifact",
+          "list_artifacts",
+          "read_artifact",
+          "request_input",
+          "list_files",
+          "read_text_file",
+          "stat_file",
+          "write_text_file",
+          "create_directory",
+          "rename_file",
+          "remove_file",
+          "restore_file",
+          "execute_program"
+        ],
+        "budgets": {
+          "max_output_tokens": 4096,
+          "max_seconds": 1800,
+          "max_steps": 64
+        },
+        "environment": {
+          "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+          "environment_id": "f9371f37-1fac-4c97-b2b4-536d5f0adbaa",
+          "qualification_sha256": "d877eb21b68f92dd63328aa37859db8b5b3dcf614d293b3b426041668ea69404",
+          "version_id": "6b271263-c3ff-43f1-a12c-131feaed1fbc"
+        },
+        "executor": "managed-input-fixture",
+        "folders": [
+          {
+            "id": "source",
+            "name": "Source",
+            "project_id": "bda80073-54dc-42e6-884a-c6f0a3bd34eb",
+            "resource_id": "ef6da4988a2de8e010f5f7ab8adc4ce998df07827d22dcd53a23aa5b0eea49cb",
+            "revision": "06dd3bd72ee58479daf9521c560ebe2ec1f0473db92a7c172e08760303736386",
+            "writable": true
+          },
+          {
+            "id": "workspace:0a95f635-c6cd-4e98-8b9a-8c667790e55c",
+            "name": "Workspace",
+            "order_id": "0a95f635-c6cd-4e98-8b9a-8c667790e55c",
+            "project_id": "bda80073-54dc-42e6-884a-c6f0a3bd34eb",
+            "resource_id": "606fe5bf2c74e0b478ffeb474f11eae9cffd450f3dd37792299b42fba57ecbc0",
+            "revision": "bf115d9d46b4c8e687f90081191bc774082100fd6b976cb089af3f4039671d35",
+            "writable": true
+          }
+        ],
+        "input_workspace": {
+          "id": "676e41db-8c6c-4b65-915f-1e2dfe0110ac",
+          "input": {
+            "manifest_sha256": "042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd",
+            "sha256": "5f23e8abcf3898c991a9e414821f245df20b20b8579e023f277e94390d8f6498",
+            "snapshot_id": "2bc7a1e0-7c46-4aa3-9886-9b5029637592"
+          }
+        },
+        "order_id": "0a95f635-c6cd-4e98-8b9a-8c667790e55c",
+        "policy_revision": 1,
+        "project_id": "bda80073-54dc-42e6-884a-c6f0a3bd34eb",
+        "prompt": "Use a separate copy",
+        "provider": {
+          "context_tokens": 32768,
+          "credential_ready": true,
+          "credential_required": false,
+          "endpoint": "",
+          "id": "fixture",
+          "kind": "test",
+          "model": "fixture",
+          "name": "Fixture",
+          "revision": 1
+        }
+      },
+      "started_at": 1793425855724,
+      "state": "canceled",
+      "steps": 1,
+      "updated_at": 1793425855906,
+      "usage": {
+        "cost": null,
+        "input_tokens": null,
+        "output_tokens": null,
+        "price_source_version": null
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+CREATE TABLE productivity_guard (id BIGINT PRIMARY KEY);
+INSERT INTO productivity_guard(id) VALUES(1);
+CREATE TABLE productivity_objects (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), kind TEXT NOT NULL, revision BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX productivity_objects_project ON productivity_objects(project_id,kind,id);
+CREATE TABLE productivity_schedules (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), revision BIGINT NOT NULL, next_run BIGINT NOT NULL, paused BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX productivity_schedules_due ON productivity_schedules(paused,next_run);
+CREATE TABLE productivity_changes (project_id TEXT NOT NULL REFERENCES projects(id), sequence BIGINT NOT NULL, kind TEXT NOT NULL, object_id TEXT NOT NULL, deleted BIGINT NOT NULL, payload TEXT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY(project_id,sequence));
+CREATE TABLE productivity_imports (idempotency_key TEXT PRIMARY KEY, request_hash TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE productivity_devices (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL, revoked BIGINT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE productivity_offline_queue (id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES productivity_devices(id), project_id TEXT NOT NULL REFERENCES projects(id), idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, status TEXT NOT NULL, revision BIGINT NOT NULL, payload TEXT NOT NULL, UNIQUE(device_id,idempotency_key));
+CREATE INDEX productivity_queue_device ON productivity_offline_queue(device_id,status,id);

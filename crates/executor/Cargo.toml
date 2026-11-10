@@ -1,0 +1,47 @@
+[package]
+name = "cowork-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autotests = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Synthetic executable used by the integration tests; not staged in the desktop/runtime.
+[[bin]]
+name = "cowork-executor-fixture"
+path = "tests/fixture/main.rs"
+test = false
+bench = false
+
+[[test]]
+name = "supervision"
+path = "tests/supervision.rs"
+
+[[test]]
+name = "windows_isolation"
+path = "tests/windows_isolation.rs"
+
+[[test]]
+name = "tex_confinement"
+path = "tests/tex_confinement.rs"
+
+[[bin]]
+name = "cowork-isolation-fixture"
+path = "tests/isolation-fixture/main.rs"
+test = false
+bench = false

@@ -1,0 +1,111 @@
+{
+  "provenance": "Independent Python sorted-key JSON and SHA-256; fixed abc and empty content",
+  "valid": {
+    "entry": {
+      "order_id": "order",
+      "run_id": "run",
+      "process_attempt_id": "attempt",
+      "version": {
+        "id": "version",
+        "revision": 3,
+        "state": "ready",
+        "created_at": 1700000000000,
+        "manifest_sha256": "8c174d70f3f58e9e0a13f6c2aeb70d6a11a817041ad85ec68a315b89689af2e7",
+        "file_count": 1,
+        "total_bytes": 3
+      }
+    },
+    "manifest": {
+      "format_version": 1,
+      "directories": [
+        "input-0001"
+      ],
+      "files": [
+        {
+          "path": "input-0001/proof.bin",
+          "size": 3,
+          "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "chunks": [
+            {
+              "offset": 0,
+              "size": 3,
+              "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            }
+          ]
+        }
+      ],
+      "total_bytes": 3,
+      "sha256": "8c174d70f3f58e9e0a13f6c2aeb70d6a11a817041ad85ec68a315b89689af2e7"
+    }
+  },
+  "wrong_full_file_hash": {
+    "entry": {
+      "order_id": "order",
+      "run_id": "run",
+      "process_attempt_id": "attempt",
+      "version": {
+        "id": "version",
+        "revision": 3,
+        "state": "ready",
+        "created_at": 1700000000000,
+        "manifest_sha256": "05763c77be447a091db1c20668f80d37387e98444b50aeaa92e7c71e570939ee",
+        "file_count": 1,
+        "total_bytes": 3
+      }
+    },
+    "manifest": {
+      "format_version": 1,
+      "directories": [
+        "input-0001"
+      ],
+      "files": [
+        {
+          "path": "input-0001/proof.bin",
+          "size": 3,
+          "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "chunks": [
+            {
+              "offset": 0,
+              "size": 3,
+              "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            }
+          ]
+        }
+      ],
+      "total_bytes": 3,
+      "sha256": "05763c77be447a091db1c20668f80d37387e98444b50aeaa92e7c71e570939ee"
+    }
+  },
+  "empty_file": {
+    "entry": {
+      "order_id": "order",
+      "run_id": "run",
+      "process_attempt_id": "attempt",
+      "version": {
+        "id": "version",
+        "revision": 3,
+        "state": "ready",
+        "created_at": 1700000000000,
+        "manifest_sha256": "185916e11424d866d19785c66168e6342431309504be7d69e1a96f4415c258d2",
+        "file_count": 1,
+        "total_bytes": 0
+      }
+    },
+    "manifest": {
+      "format_version": 1,
+      "directories": [
+        "input-0001"
+      ],
+      "files": [
+        {
+          "path": "input-0001/proof.bin",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "chunks": []
+        }
+      ],
+      "total_bytes": 0,
+      "sha256": "185916e11424d866d19785c66168e6342431309504be7d69e1a96f4415c258d2"
+    }
+  }
+}

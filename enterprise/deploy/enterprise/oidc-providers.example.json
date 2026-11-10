@@ -1,0 +1,14 @@
+[
+  {
+    "id": "company",
+    "label": "Company SSO",
+    "organisation_ids": ["00000000-0000-0000-0000-000000000000"],
+    "issuer": "https://identity.example.com/realms/company",
+    "client_id": "cowork-management",
+    "client_secret_file": "/run/oidc/company-secret",
+    "public_origin": "https://cowork.example.com",
+    "groups_claim": "groups",
+    "scopes": [],
+    "assurance": null
+  }
+]

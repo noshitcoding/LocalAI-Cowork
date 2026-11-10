@@ -1,0 +1,10 @@
+import {describe,it,expect,vi,afterEach} from "vitest";
+import {Client} from "@cowork/client";
+import {connectorRecovery,validateConnectorPending,saveConnector} from "./connectorApi";
+import {PersistentRequestLatch} from "./requestJournal";
+const request={id:"00000000-0000-4000-8000-000000000001",idempotency_key:"same-save",expected_revision:1,name:"Team webhook",note:"Reviewed messages",enabled:true,url:"https://service.example/private-key?token=PRIVATE",bearer:"PRIVATE-BEARER",remove_bearer:false,recover_only:false};
+afterEach(()=>vi.unstubAllGlobals());
+describe("secret-free connector recovery",()=>{
+ it("persists only the exact public request and restores without URL/key",()=>{const data=new Map<string,string>(),storage={getItem:(k:string)=>data.get(k)??null,setItem:(k:string,v:string)=>{data.set(k,v);},removeItem:(k:string)=>{data.delete(k);}},first=new PersistentRequestLatch("connector-scope",validateConnectorPending,storage);const expected=connectorRecovery(request);first.prepare(()=>expected);expect(data.get("connector-scope")).not.toContain("PRIVATE");expect(data.get("connector-scope")).not.toContain("service.example");const restored=new PersistentRequestLatch("connector-scope",validateConnectorPending,storage);expect(restored.prepare(()=>{throw new Error("must restore");})).toEqual(expected);expect(()=>validateConnectorPending({operation:"save",request})).toThrow("connector_journal_contains_secret");expect(()=>validateConnectorPending({...expected,token:"PRIVATE"})).toThrow();});
+ it("refuses a mismatched ACK while sending the original fields",async()=>{let sent:unknown;vi.stubGlobal("fetch",vi.fn(async(_url,options)=>{sent=JSON.parse(options.body);return new Response(JSON.stringify({id:request.id,project_id:"project",revision:4,name:request.name,note:request.note,enabled:true,deleted:false,native_only:false,server_id:"server",destination:"https://service.example",has_bearer:true}),{status:200});}));const client=new Client("owner","https://installation.example");await expect(saveConnector(client,"project",request,"en")).rejects.toThrow("connector_receipt_mismatch");expect(sent).toEqual(request);});
+});

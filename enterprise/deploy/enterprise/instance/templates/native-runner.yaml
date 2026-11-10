@@ -1,0 +1,229 @@
+{{- $instance := required "instanceId" .Values.instanceId }}
+{{- $org := required "organisationId" .Values.organisationId }}
+{{- $epoch := required "storageGeneration" .Values.storageGeneration }}
+{{- $labels := dict "cowork.instance" $instance "cowork.organisation" $org }}
+{{- $runtimeNames := list .Values.runtimeClass }}
+{{- $nodeNames := .Values.nodeNames }}
+{{- if .Values.desktopProfile }}
+{{- $runtimeNames = append $runtimeNames .Values.desktopProfile.runtime_class }}
+{{- $nodeNames = concat $nodeNames .Values.desktopProfile.node_names }}
+{{- end }}
+{{- range $image := list .Values.images.runner .Values.images.egress_proxy .Values.images.sandbox_core .Values.images.sandbox_crew }}
+{{- if not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[0-9a-f]{64}$" $image) }}
+{{- fail "all native runner and sandbox images must be digest pinned" }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runner-trust
+  labels: {{ toJson $labels }}
+data:
+  ca.pem: {{ required "runner CA" .Values.runnerCA | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-config
+  labels: {{ toJson $labels }}
+data:
+  squid.conf: {{ required "scoped egress configuration" .Values.egressConfiguration | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: runner-journal-{{ sha256sum $epoch | trunc 32 }}
+  labels: {{ toJson (merge (dict "cowork.managed" "runner-journal" "cowork.generation" $epoch) $labels) }}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ required "storageClass" .Values.storageClass | quote }}
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cowork-native-runner
+  labels: {{ toJson $labels }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cowork-native-runner
+  labels: {{ toJson $labels }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims, configmaps]
+    verbs: [get, list, create, delete, patch]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cowork-native-runner
+  labels: {{ toJson $labels }}
+subjects: [{kind: ServiceAccount, name: cowork-native-runner, namespace: {{ .Release.Namespace | quote }}}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: cowork-native-runner}
+---
+# The UID-only cluster reads are explicitly named. This role cannot enumerate
+# another tenant's workload, credentials, persistent volume, or node state.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cowork-native-runner-{{ $instance | replace "-" "" }}
+  labels: {{ toJson $labels }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [kube-system, {{ .Release.Namespace | quote }}]
+    verbs: [get]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    resourceNames: {{ toJson $runtimeNames }}
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [nodes, nodes/proxy]
+    resourceNames: {{ toJson (required "nodeNames" $nodeNames) }}
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cowork-native-runner-{{ $instance | replace "-" "" }}
+  labels: {{ toJson $labels }}
+subjects: [{kind: ServiceAccount, name: cowork-native-runner, namespace: {{ .Release.Namespace | quote }}}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cowork-native-runner-{{ $instance | replace "-" "" }}}
+{{- range $mode := list "runner" "egress-proxy" }}
+{{- $caps := index $.Values.serviceResources $mode }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $mode }}
+  labels: {{ toJson $labels }}
+  annotations: {cowork.original-operation: {{ $.Values.originalOperationId | quote }}}
+spec:
+  replicas: {{ if eq $mode "runner" }}1{{ else }}{{ $.Values.replicas }}{{ end }}
+  strategy: {type: Recreate}
+  selector: {matchLabels: {cowork.component: {{ $mode }}}}
+  template:
+    metadata:
+      finalizers: [cowork.opencowork.dev/physical-stop]
+      labels: {{ toJson (merge (dict "cowork.component" $mode) $labels) }}
+    spec:
+      nodeSelector: {{ toJson $.Values.nodeSelector }}
+      serviceAccountName: {{ if eq $mode "runner" }}cowork-native-runner{{ else }}cowork-instance{{ end }}
+      automountServiceAccountToken: {{ eq $mode "runner" }}
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      {{- if eq $mode "runner" }}
+      initContainers:
+        - name: copy-native-tls
+          image: {{ $.Values.images.sandbox_core | quote }}
+          command: [python3, -c, "import pathlib,os; [(pathlib.Path('/run/tls')/n).write_bytes((pathlib.Path('/run/tls-source')/n).read_bytes()) for n in ('tls.crt','tls.key')]; [os.chmod('/run/tls/'+n,0o600) for n in ('tls.crt','tls.key')]"]
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 100m, memory: 64Mi}}
+          volumeMounts:
+            - {name: tls-source, mountPath: /run/tls-source, readOnly: true}
+            - {name: tls, mountPath: /run/tls}
+      {{- end }}
+      containers:
+        - name: {{ $mode }}
+          image: {{ if eq $mode "runner" }}{{ $.Values.images.runner | quote }}{{ else }}{{ $.Values.images.egress_proxy | quote }}{{ end }}
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: {{ printf "%dm" (int $caps.cpu_millis) | quote }}, memory: {{ printf "%dMi" (int $caps.memory_mib) | quote }}}
+            limits: {cpu: {{ printf "%dm" (int $caps.cpu_millis) | quote }}, memory: {{ printf "%dMi" (int $caps.memory_mib) | quote }}}
+          {{- if eq $mode "runner" }}
+          env:
+            - {name: COWORK_RUNNER_BACKEND, value: kubernetes}
+            - {name: COWORK_RUNNER_INSTANCE_ID, value: {{ $instance | quote }}}
+            - {name: COWORK_RUNNER_ORGANISATION_ID, value: {{ $org | quote }}}
+            - {name: COWORK_RUNNER_STORAGE_GENERATION, value: {{ $epoch | quote }}}
+            - {name: COWORK_KUBE_NAMESPACE, value: {{ $.Release.Namespace | quote }}}
+            - {name: COWORK_KUBE_NAMESPACE_UID, value: {{ required "namespaceUid" $.Values.namespaceUid | quote }}}
+            - {name: COWORK_KUBE_CLUSTER_UID, value: {{ required "clusterUid" $.Values.clusterUid | quote }}}
+            - {name: COWORK_KUBE_EXECUTOR_HOST_ID, value: {{ required "executorHostId" $.Values.executorHostId | quote }}}
+            - {name: COWORK_KUBE_NODE_SELECTOR, value: {{ toJson $.Values.nodeSelector | quote }}}
+            - {name: COWORK_KUBE_NODE_NAMES, value: {{ toJson $.Values.nodeNames | quote }}}
+            - {name: COWORK_KUBE_NODE_UIDS, value: {{ toJson $.Values.nodeUids | quote }}}
+            - {name: COWORK_KUBE_RUNTIME_CLASS, value: {{ $.Values.runtimeClass | quote }}}
+            - {name: COWORK_KUBE_STORAGE_CLASS, value: {{ $.Values.storageClass | quote }}}
+            - {name: COWORK_KUBE_STORAGE_GIB, value: {{ $.Values.resources.storage_gib | quote }}}
+            - {name: COWORK_KUBE_WORKSPACE_CLAIM_GIB, value: {{ $.Values.workspaceClaimGiB | quote }}}
+            {{- if $.Values.desktopProfile }}
+            - {name: COWORK_KUBE_DESKTOP_PROFILE, value: {{ toJson $.Values.desktopProfile | quote }}}
+            - {name: COWORK_RUNNER_KUBERNETES_DESKTOP_PROOFS, value: "true"}
+            - {name: COWORK_RUNNER_GUI_IMAGE, value: {{ $.Values.images.sandbox_gui | quote }}}
+            {{- end }}
+            - {name: COWORK_RUNNER_ADMISSION_DIRECTORY, value: /var/lib/cowork/ledger}
+            - {name: COWORK_RUNNER_SIGNING_KEY_FILE, value: /run/runtime/runner_signing_key}
+            - {name: COWORK_RUNNER_TLS_CERTIFICATE_FILE, value: /run/tls/tls.crt}
+            - {name: COWORK_RUNNER_TLS_PRIVATE_KEY_FILE, value: /run/tls/tls.key}
+            - {name: COWORK_RUNNER_CORE_IMAGE, value: {{ $.Values.images.sandbox_core | quote }}}
+            - {name: COWORK_RUNNER_CREW_IMAGE, value: {{ $.Values.images.sandbox_crew | quote }}}
+            - {name: COWORK_RUNNER_CPU_MILLIS, value: {{ $.Values.resources.cpu_millis | quote }}}
+            - {name: COWORK_RUNNER_MEMORY_MIB, value: {{ $.Values.resources.memory_mib | quote }}}
+            - {name: COWORK_RUNNER_CONCURRENT_RUNS, value: {{ $.Values.resources.concurrent_runs | quote }}}
+            - {name: COWORK_SANDBOX_EGRESS_NETWORK, value: bound-kubernetes-filtered-policy}
+            - {name: COWORK_SANDBOX_HTTP_PROXY, value: http://egress-proxy:3128}
+          volumeMounts:
+            - {name: journal, mountPath: /var/lib/cowork}
+            - {name: runtime, mountPath: /run/runtime, readOnly: true}
+            - {name: tls, mountPath: /run/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          ports: [{name: https, containerPort: 8090}]
+          readinessProbe: {httpGet: {path: /healthz, port: https, scheme: HTTPS}}
+          {{- else }}
+          volumeMounts:
+            - {name: egress, mountPath: /etc/squid/squid.conf, subPath: squid.conf, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: run, mountPath: /run}
+          ports: [{name: proxy, containerPort: 3128}]
+          {{- end }}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 128Mi}}
+        {{- if eq $mode "runner" }}
+        - {name: journal, persistentVolumeClaim: {claimName: runner-journal-{{ sha256sum $epoch | trunc 32 }}}}
+        - {name: runtime, secret: {secretName: runtime, defaultMode: 0440, items: [{key: runner_signing_key, path: runner_signing_key}]}}
+        - {name: tls-source, secret: {secretName: {{ $.Values.runnerTls.secret_name | quote }}, defaultMode: 0440}}
+        - {name: tls, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
+        {{- else }}
+        - {name: egress, configMap: {name: egress-config}}
+        - {name: run, emptyDir: {sizeLimit: 16Mi}}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $mode }}
+  labels: {{ toJson $labels }}
+spec:
+  selector: {cowork.component: {{ $mode }}}
+  ports: [{port: {{ if eq $mode "runner" }}8090{{ else }}3128{{ end }}, targetPort: {{ if eq $mode "runner" }}https{{ else }}proxy{{ end }}}]
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-deny
+  labels: {{ toJson $labels }}
+spec:
+  podSelector: {matchLabels: {cowork.managed: native-runner}}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-filtered-proxy
+  labels: {{ toJson $labels }}
+spec:
+  podSelector: {matchLabels: {cowork.managed: native-runner, cowork.network: filtered}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{podSelector: {matchLabels: {cowork.component: egress-proxy}}}]
+      ports: [{protocol: TCP, port: 3128}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

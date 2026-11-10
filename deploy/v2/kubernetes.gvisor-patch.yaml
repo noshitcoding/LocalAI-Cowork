@@ -1,0 +1,8 @@
+# Apply as an explicit strategic merge patch after operator provisions RuntimeClass.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork}
+spec:
+  template:
+    spec:
+      runtimeClassName: gvisor

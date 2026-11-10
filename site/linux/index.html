@@ -1,50 +1,36 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Download LocalAI Cowork for Linux – AppImage, DEB, RPM</title>
-    <meta name="description" content="Download LocalAI Cowork for Linux x86_64 as AppImage, DEB, or RPM and review compatibility, installation steps, and current beta limitations.">
-    <meta name="robots" content="index, follow, max-image-preview:large">
-    <meta name="theme-color" content="#0A0A0B">
-    <link rel="canonical" href="https://noshitcoding.github.io/LocalAI-Cowork/linux/">
-    <link rel="icon" href="../assets/logo.png" type="image/png">
-    <link rel="stylesheet" href="../styles.css">
-    <meta property="og:type" content="article">
-    <meta property="og:site_name" content="LocalAI Cowork">
-    <meta property="og:title" content="LocalAI Cowork for Linux">
-    <meta property="og:description" content="Linux x86_64 releases in AppImage, DEB, and RPM formats.">
-    <meta property="og:url" content="https://noshitcoding.github.io/LocalAI-Cowork/linux/">
-    <meta property="og:image" content="https://noshitcoding.github.io/LocalAI-Cowork/assets/github-social-preview.png">
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"LocalAI Cowork","applicationCategory":"BusinessApplication","operatingSystem":"Linux x86_64","license":"https://www.apache.org/licenses/LICENSE-2.0","url":"https://noshitcoding.github.io/LocalAI-Cowork/linux/","downloadUrl":"https://github.com/noshitcoding/LocalAI-Cowork/releases/latest"}</script>
-  </head>
-  <body>
-    <a class="skip-link" href="#main">Skip to content</a>
-    <header class="site-header"><nav class="nav shell" aria-label="Main navigation"><a class="brand" href="../"><img src="../assets/logo.png" width="128" height="128" alt=""><span class="brand-name">LocalAI Cowork</span><span class="brand-badge">Linux beta</span></a><div class="nav-links"><a href="../#product">Product</a><a href="../#control">Control</a><a href="../privacy.html">Privacy</a><a class="nav-cta" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest">All releases</a></div></nav></header>
-    <main id="main" class="content-page shell">
-      <article>
-        <p class="eyebrow">Linux x86_64 // Beta release</p>
-        <h1>Choose the Linux package that fits your distribution.</h1>
-        <p class="content-lead">AppImage provides the broadest coverage across glibc-based desktop distributions. DEB and RPM packages integrate with the two most common native package families.</p>
-        <div class="actions">
-          <a class="button primary" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest/download/LocalAI-Cowork-x86_64.AppImage">Download AppImage</a>
-          <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest/download/LocalAI-Cowork-x86_64.deb">Download DEB</a>
-          <a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/latest/download/LocalAI-Cowork-x86_64.rpm">Download RPM</a>
-        </div>
-        <h2>AppImage: widest distribution coverage</h2>
-        <p>Use the AppImage on Arch, Manjaro, Gentoo, or another glibc-based desktop distribution when no native package is available. Make the download executable with <code>chmod +x LocalAI-Cowork-x86_64.AppImage</code>, then run it. The signed in-app updater uses this format.</p>
-        <h2>DEB: Debian family</h2>
-        <p>Install on Debian, Ubuntu, Linux Mint, and related distributions with <code>sudo apt install ./LocalAI-Cowork-x86_64.deb</code>.</p>
-        <h2>RPM: Fedora and openSUSE families</h2>
-        <p>Install with <code>sudo dnf install ./LocalAI-Cowork-x86_64.rpm</code> or, on openSUSE, <code>sudo zypper install ./LocalAI-Cowork-x86_64.rpm</code>.</p>
-        <h2>Compatibility boundary</h2>
-        <p>Releases are built on Ubuntu 22.04 for a conservative glibc baseline and require GTK 3 plus WebKitGTK 4.1. No single glibc desktop binary can promise literal compatibility with every Linux distribution. ARM64 and musl-only systems such as Alpine are not release targets yet.</p>
-        <h2>Crew workflows and current limits</h2>
-        <p>Crew workflows require Python 3.10 through 3.13 on Linux and create an isolated environment during first initialization. Native Windows sandboxing, Windows Credential Manager integration, Windows Office automation, and the bundled Windows PDFium library are not available. The core workspace, Ollama route, files, MCP tools, terminal, and tasks remain Linux release targets.</p>
-        <p lang="de"><strong>Kurz auf Deutsch:</strong> Für die größte Distributionsabdeckung nutze das AppImage. DEB ist für Debian/Ubuntu/Mint gedacht, RPM für Fedora/openSUSE. Linux wird derzeit als x86_64-Beta veröffentlicht; Crew-Abläufe benötigen Python 3.10 bis 3.13.</p>
-        <p>Every release includes <code>SHA256SUMS</code>, a software bill of materials, signed updater metadata, and GitHub build attestations.</p>
-      </article>
-    </main>
-    <footer class="site-footer"><div class="footer-row shell"><span>© 2026 LocalAI Cowork · Apache-2.0</span><div class="footer-links"><a href="../privacy.html">Privacy</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/issues">Report a Linux issue</a></div></div></footer>
-  </body>
-</html>
+<html lang="en"><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalAI Cowork V2 on Linux — DEB and AppImage | LocalAI Cowork</title>
+  <meta name="description" content="V2 preview Linux package targets, glibc 2.39 requirement, DEB and AppImage installation, and the separate existing V1 release.">
+  <meta name="robots" content="index, follow, max-image-preview:large"><meta name="theme-color" content="#0A0A0B">
+  <link rel="canonical" href="https://noshitcoding.github.io/LocalAI-Cowork/linux/"><link rel="icon" href="../assets/logo.png" type="image/png">
+  <link rel="stylesheet" href="../styles.css">
+  <meta property="og:type" content="article"><meta property="og:site_name" content="LocalAI Cowork">
+  <meta property="og:title" content="LocalAI Cowork V2 on Linux — DEB and AppImage"><meta property="og:description" content="V2 preview Linux package targets, glibc 2.39 requirement, DEB and AppImage installation, and the separate existing V1 release.">
+  <meta property="og:url" content="https://noshitcoding.github.io/LocalAI-Cowork/linux/"><meta property="og:image" content="https://noshitcoding.github.io/LocalAI-Cowork/assets/github-social-preview.png">
+  <meta name="twitter:card" content="summary_large_image"><script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "LocalAI Cowork V2 on Linux — DEB and AppImage", "dateModified": "2026-11-09", "inLanguage": "en", "mainEntityOfPage": "https://noshitcoding.github.io/LocalAI-Cowork/linux/", "author": {"@type": "Organization", "name": "LocalAI Cowork contributors"}}</script>
+</head><body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><nav class="nav shell" aria-label="Main navigation">
+    <a class="brand" href="../"><img src="../assets/logo.png" width="128" height="128" alt=""><span class="brand-name">LocalAI Cowork</span><span class="brand-badge">V2 preview</span></a>
+    <div class="nav-links"><a href="../#product">Product</a><a href="../linux/">Linux</a><a href="../privacy.html">Privacy</a><a class="nav-cta" href="../preview/">V2 preview</a></div>
+  </nav></header>
+  <main id="main" class="content-page shell"><article>
+<p class="eyebrow">Linux x86_64 // V2 preview preparation</p><h1>Check the platform.<br>Choose the package.</h1>
+<p class="content-lead">The next V2 preview targets DEB and AppImage on Linux x86_64. Its native baseline is glibc 2.39 or newer, with GTK 3 and WebKitGTK 4.1. An AppImage does not remove this glibc requirement.</p><p class="notice"><strong>Release channels:</strong> V2 <code>2.0.0-alpha.8</code> is being prepared and is not published yet. The existing public V1 release is <a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">v0.3.1</a>. These are separate applications and data profiles. <a href="../preview/">Read the V2 preview scope</a>.</p>
+<h2>V2 compatibility</h2>
+<p>Check your libc version with <code>ldd --version</code>. Ubuntu 24.04 is an example of the glibc 2.39 baseline; distribution name alone is not package acceptance. Older systems require an upgrade or a compatible source build. A Linux desktop session and the package's native library requirements are needed.</p>
+<p>RPM, ARM64, macOS and musl-only distributions such as Alpine are outside this V2 desktop preview. Do not use earlier V1 instructions promising Ubuntu 22.04 compatibility or RPM packages for V2.</p>
+<h2>Install after publication</h2>
+<ol><li>Open the explicitly versioned <a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v2.0.0-alpha.8">V2 release destination</a> after it has been published. Read its actual Linux acceptance result and download the DEB or AppImage asset and <code>SHA256SUMS</code>.</li>
+<li>Verify the exact downloaded bytes with <code>sha256sum -c SHA256SUMS --ignore-missing</code>. Keep the release notes and original package for recovery.</li>
+<li>For a DEB, replace <code>&lt;package.deb&gt;</code> with the downloaded filename and run <code>sudo apt install ./&lt;package.deb&gt;</code>. For an AppImage, run <code>chmod +x ./&lt;package.AppImage&gt;</code> and launch that exact file. Angle-bracket names are placeholders, not literal filenames.</li>
+<li>Launch using a fresh V2 profile and copies of working files; configure the local sidecar or a compatible V2 server explicitly.</li></ol>
+<h2>Tools, permissions and updates</h2>
+<p>Ollama, optional document engines, external MCP servers and sandbox backends have their own setup requirements. The previous Python/CrewAI requirements are not a blanket V2 desktop dependency. No signed automatic-update feed is promised by this preparation page; the exact release notes must state whether updates are enabled and signed.</p>
+<h2>Existing V1 downloads</h2>
+<p>The public <a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">V1 v0.3.1 release page</a> retains its own package inventory and requirements. It is separate from the V2 preview; use only instructions matching the downloaded version.</p>
+<p lang="de"><strong>Auf Deutsch:</strong> V2 wird als DEB/AppImage für Linux x86_64 mit glibc ab 2.39 vorbereitet. Ein AppImage macht ältere glibc-Versionen nicht kompatibel. RPM und Android sind keine Ziele dieser Desktop-Preview. <a href="../de/preview/">Previewumfang und Datenübernahme</a>.</p><div class="actions"><a class="button primary" href="../preview/">V2 preview scope</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">Existing V1 v0.3.1 release</a><a class="button" href="https://github.com/noshitcoding/LocalAI-Cowork">Project on GitHub</a></div></article></main>
+  <footer class="site-footer"><div class="footer-row shell"><span>© 2026 LocalAI Cowork · Apache-2.0</span><div class="footer-links"><a href="../privacy.html">Privacy</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/releases/tag/v0.3.1">V1 v0.3.1</a><a href="https://github.com/noshitcoding/LocalAI-Cowork/issues">Issues</a></div></div></footer>
+</body></html>

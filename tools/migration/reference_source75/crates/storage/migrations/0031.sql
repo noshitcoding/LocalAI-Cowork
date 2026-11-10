@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS v1_migration_configurations(id TEXT PRIMARY KEY,scope TEXT NOT NULL CHECK(scope IN('personal','team')),team_id TEXT,project_id TEXT NOT NULL,receipt_id TEXT NOT NULL,source_id TEXT NOT NULL,source_kind TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(scope,receipt_id,source_kind,source_id));
+CREATE INDEX IF NOT EXISTS v1_migration_configuration_project ON v1_migration_configurations(scope,team_id,project_id);

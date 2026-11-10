@@ -1,0 +1,102 @@
+/* Sidebar areas with V1-style submenus */
+.sidebar{overflow-y:auto;overscroll-behavior:contain;min-height:0}
+.sidebar>footer{position:sticky;bottom:-14px;margin-bottom:-14px;padding-bottom:14px;background:var(--panel);z-index:1}
+.sidebar .order-list{flex:1 0 auto;min-height:120px;overflow:visible}
+.primary-nav{display:flex;flex-direction:column;gap:1px;margin-bottom:10px;flex-shrink:0}
+.nav-group-toggle .nav-chevron{margin-left:auto;transition:transform .15s ease}
+.nav-group.open>.nav-group-toggle .nav-chevron{transform:rotate(90deg)}
+.nav-group.open>.nav-group-toggle{font-weight:600}
+.nav-submenu{display:flex;flex-direction:column;gap:1px;margin:0 0 6px 20px;padding-left:9px;border-left:1px solid var(--line)}
+.nav-submenu[hidden]{display:none}
+.nav-subitem{width:100%;justify-content:flex-start;text-align:left;border:0;background:transparent;font-size:12px;color:var(--muted);padding:7px 10px;min-height:32px;border-radius:7px}
+.nav-subitem:hover{color:var(--text)}
+.nav-subitem.selected{background:var(--hover);color:var(--text);font-weight:600}
+
+/* Extra areas expand within the sidebar while projects and chats stay mounted. */
+.sidebar-header{display:flex;align-items:center;gap:6px;margin:0 0 22px -6px;flex-shrink:0}
+.sidebar-header .app-menu-button{width:34px;height:34px;min-height:34px;padding:0;color:var(--muted)}
+.sidebar-header .app-menu-button:hover,.sidebar-header .app-menu-button[aria-expanded=true]{background:var(--hover);color:var(--text)}
+.app-menu{display:flex;flex-direction:column;flex:0 0 auto;min-width:0;max-height:min(400px,38dvh);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:6px 0;margin-bottom:10px;border-block:1px solid var(--line)}
+.app-menu[hidden]{display:none}
+.app-menu>.primary-nav{margin-bottom:0}
+.app-menu .nav-item kbd{margin-left:auto;font:inherit;font-size:11px;color:var(--muted);background:var(--hover);border-radius:5px;padding:1px 6px}
+.sidebar:has(>.app-menu:not([hidden]))>footer{position:static;flex-shrink:0}
+
+/* Edge tab that collapses and expands the sidebar */
+.app{--sidebar-width:258px}
+.sidebar-toggle{position:fixed;left:0;top:50%;z-index:42;width:18px;height:52px;min-height:52px;padding:0;transform:translateY(-50%);border:1px solid var(--line);border-left:0;border-radius:0 8px 8px 0;background:var(--panel);color:var(--muted);transition:left .15s ease}
+.sidebar-toggle:hover{background:var(--hover);color:var(--text)}
+.app.sidebar-open .sidebar-toggle{left:var(--sidebar-width)}
+@media(min-width:1024px){
+  .sidebar{transition:margin-left .15s ease,visibility 0s}
+  .app:not(.sidebar-open) .sidebar{margin-left:calc(-1 * var(--sidebar-width));visibility:hidden;transition:margin-left .15s ease,visibility 0s .15s}
+}
+@media(max-width:1023px){.app{--sidebar-width:280px}}
+@media(max-width:719px){.sidebar-toggle{width:16px;height:48px;min-height:48px}}
+
+/* Chat header */
+.order-header{flex-wrap:wrap}
+.order-main>.order-header{padding-bottom:10px}
+.order-header>div:first-child{min-width:0;flex:1 1 220px}
+.order-header>.order-actions{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;min-width:auto}
+
+/* Composer: the prompt and one slim bar; everything else lives in the plus menu */
+.composer{display:flex;flex-direction:column;padding:4px 10px 8px;margin-bottom:16px}
+.composer textarea{min-height:64px;padding:12px 4px 6px}
+.composer-bar{display:flex;align-items:center;gap:6px;min-width:0}
+.composer-bar-spacer{flex:1}
+.composer-plus{position:relative;width:34px;height:34px;min-height:34px;padding:0;border-radius:50%;border:1px solid var(--line);background:var(--bg);flex-shrink:0}
+.composer-plus[aria-expanded=true]{background:var(--hover)}
+.composer-plus-badge{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--yellow);color:#262822;font-size:10px;font-weight:700;line-height:16px;text-align:center}
+.composer-pill{display:inline-flex;flex-direction:row;align-items:center;gap:6px;min-width:0;height:34px;padding:0 4px 0 11px;border-radius:17px;background:var(--panel);font-size:12px;font-weight:500;color:var(--muted)}
+.composer-pill>svg{flex-shrink:0}
+.composer-pill select{border:0;background:transparent;height:32px;padding:0 4px;font-size:12px;color:var(--text);min-width:0;max-width:230px;text-overflow:ellipsis;box-shadow:none}
+.composer-access select{max-width:180px}
+.composer-connect{gap:6px;padding:0 13px;color:var(--text);border:1px solid var(--line);min-height:34px}
+.composer-mic,.composer-send{width:34px;height:34px;min-height:34px;padding:0;border-radius:50%;flex-shrink:0}
+.composer-mic.listening{background:#b3392c;border-color:#b3392c;color:#fff;animation:composer-mic-pulse 1.4s ease-in-out infinite}
+@keyframes composer-mic-pulse{0%,100%{box-shadow:0 0 0 0 #b3392c55}50%{box-shadow:0 0 0 6px #b3392c00}}
+.composer-hint{display:flex;align-items:center;gap:8px;margin:8px 2px 0;font-size:12px;color:var(--muted)}
+.composer-hint button{min-height:24px;height:24px;width:24px;padding:0;margin-left:auto;flex-shrink:0}
+
+/* Plus menu: a tidy list that drills into one settings page at a time */
+.composer-menu{position:fixed;inset:auto;margin:0;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text);box-shadow:0 12px 32px #0000001f,0 2px 6px #0000000f;overflow:auto;overscroll-behavior:contain}
+.composer-menu-section{padding:6px 2px;border-bottom:1px solid var(--line)}
+.composer-menu-label{margin:2px 10px 6px;font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
+.composer-menu-segmented{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;margin:0 6px 2px;border-radius:9px;background:var(--panel)}
+.composer-menu-segmented button{min-height:32px;font-size:12px;border-color:transparent;background:transparent;gap:6px;padding:4px 8px}
+.composer-menu-segmented button[aria-pressed=true]{background:var(--bg);border-color:var(--line);font-weight:600}
+.composer-menu-item{width:100%;justify-content:flex-start;text-align:left;border:0;background:transparent;gap:11px;padding:7px 10px;min-height:44px;border-radius:8px}
+.composer-menu-item:hover{background:var(--hover)}
+.composer-menu-item>svg{color:var(--muted);flex-shrink:0}
+.composer-menu-item>span:not(.count){display:flex;flex-direction:column;min-width:0;flex:1}
+.composer-menu-item strong{font-size:13px;font-weight:550}
+.composer-menu-item small{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.composer-menu-item>.count{margin-left:0;background:var(--yellow);color:#262822}
+.composer-menu-footer{display:flex;align-items:flex-start;gap:6px;margin:8px 10px 4px;font-size:11px;line-height:1.4;color:var(--muted)}
+.composer-menu-footer svg{flex-shrink:0;margin-top:1px}
+.composer-menu-header{display:flex;align-items:center;gap:8px;padding:0 2px 8px;margin-bottom:8px;border-bottom:1px solid var(--line);position:sticky;top:-6px;background:var(--bg);z-index:1}
+.composer-menu-header button{min-height:30px;padding:4px 8px;gap:4px}
+.composer-menu-header strong{font-size:13px}
+.composer-option-panel{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0 6px 6px}
+.composer-option-panel[hidden]{display:none}
+.composer-option-panel .chat-agent-settings{margin:0;border:0;padding:0}
+.composer-option-panel details[open]>summary{margin-bottom:6px}
+@media(min-width:720px){.order-controls{max-height:min(560px,64dvh)}}
+@media(max-width:719px){
+  .composer-pill{flex:1 1 0}
+  .composer-bar-spacer{display:none}
+  .composer-pill select{max-width:none;width:100%}
+  .composer-access select{max-width:none}
+  .conversation>.order-controls{margin-top:auto;position:sticky;bottom:0;z-index:2;background:var(--bg);padding-top:8px}
+  .composer{margin-bottom:10px}
+}
+
+/* Checkbox and radio labels read left to right in every panel */
+label.product-check,label:has(>input[type=checkbox]:first-child),label:has(>input[type=radio]:first-child){flex-direction:row;align-items:center;gap:10px;font-weight:450}
+label.product-check>input,label:has(>input[type=checkbox]:first-child)>input,label:has(>input[type=radio]:first-child)>input{width:17px;height:17px;flex-shrink:0;margin:0;accent-color:#8d803e}
+
+/* Option panels reuse fieldsets without the browser frame */
+.composer-option-panel fieldset{border:0;padding:0;margin:0;min-width:0;display:flex;flex-direction:column;gap:var(--field-gap)}
+.composer textarea:focus-visible,.composer-pill select:focus-visible{outline-offset:-2px}
+.sidebar{scrollbar-width:thin}

@@ -1,0 +1,19 @@
+{
+  "quarantine_manifest": "outputs\\quarantine\\quarantine.json",
+  "quarantine_database": "outputs\\quarantine\\quarantine.sqlite3",
+  "mapping": "mapping.json",
+  "preview": "preview.json",
+  "cold_target_snapshot": "inputs/target.sqlite3",
+  "pins": {
+    "quarantine_manifest": "42116779e80c700886e0edbbce40f642186e00f7123637c20d177bb4cb154faa",
+    "quarantine_database": "90adbf517411c2da93620e1e5bc6adeb614f76364d79d79ba2ea3ab210585d23",
+    "export_manifest": "37223dbb3428e152e5e9bff5441ca351414969ea84238f671840001d3bc787a0",
+    "mapping": "2436fa0494ee9016519d678df76be257ab9fe4d1278ad0acd377d9410fbe6857",
+    "preview": "531c5cc24ed2232ea7195084d2071b902b4eef52cd50b1c15f0a1d4f2c75eccd",
+    "cold_target_snapshot": "b4ea7494e7d8f45bbff8dc53604ec6dec48890a0205c875a93e33bf72a6eb119"
+  },
+  "source_profile": "desktop-25",
+  "source_fixture_sha256": "febdafc83908f6561a8028225faf5a8c5aa72fad77e364289f20a362d9c1868b",
+  "new_rust_singleton_rule": true,
+  "frozen_python_preview_parity_claimed": false
+}

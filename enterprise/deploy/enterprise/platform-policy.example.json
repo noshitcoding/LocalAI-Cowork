@@ -1,0 +1,12 @@
+{
+  "revision": 1,
+  "extensions": "catalog",
+  "content_access": "support_grant",
+  "minimum_isolation": "container",
+  "allow_laptop_full_access": false,
+  "allow_offline_continuation": true,
+  "allowed_network_origins": [],
+  "limits": {"cpu_millis": 4000, "memory_mib": 8192, "storage_gib": 50, "concurrent_runs": 2, "instances": 3},
+  "audit_retention_days": 365,
+  "content_logging": false
+}

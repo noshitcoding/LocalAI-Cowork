@@ -1,0 +1,44 @@
+This is XeTeX, Version 3.141592653-2.6-0.999994 (Tectonic) (preloaded format=latex 2022.1.1)  19 OCT 2026 09:12
+entering extended mode
+ restricted \write18 enabled.
+**main.tex
+(./main.tex
+LaTeX2e <2021-11-15> patch level 1
+L3 programming layer <2022-02-24>
+(article.cls
+Document Class: article 2021/10/04 v1.4n Standard LaTeX document class
+(size11.clo
+File: size11.clo 2021/10/04 v1.4n Standard LaTeX file (size option)
+)
+\c@part=\count185
+\c@section=\count186
+)
+(fontspec.sty (expl3.sty
+Package: expl3 2022-02-24 L3 programming layer (loader)
+) (xparse.sty
+Package: xparse 2022-01-12 L3 Experimental document command parser
+))
+No file main.aux.
+\openout1 = `main.aux'.
+
+(./chapters/intro.tex
+! Undefined control sequence.
+l.3 Some text with a \foo
+                          bar and (parentheses) here.
+The control sequence at the end of the top line
+of your error message was never \def'ed. If you have
+misspelled it (e.g., `\hobx'), type `I' and the correct
+spelling (e.g., `I\hbox'). Otherwise just continue,
+and I'll forget about whatever was undefined.
+
+)
+! Missing $ inserted.
+<inserted text>
+                $
+l.17 x_
+       1 is a subscript
+I've inserted a begin-math/end-math symbol since I think
+you left one out. Proceed, with fingers crossed.
+
+[1] (./main.aux) )
+Output written on main.xdv (1 page, 2340 bytes).

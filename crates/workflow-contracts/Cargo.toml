@@ -1,0 +1,13 @@
+[package]
+name = "cowork-workflow-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cowork-contracts.workspace = true
+cowork-domain.workspace = true
+serde.workspace = true
+schemars.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

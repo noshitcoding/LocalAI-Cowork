@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "kind": "vm",
+  "vm_root": "/srv/cowork-vms/cowork-executor-REPLACE_WITH_EXACT_UUID_HEX",
+  "provisioner_configuration_file": "/srv/cowork-operator/executor_configuration.json",
+  "operator_state_directory": "/srv/cowork-operator/state",
+  "renew_before_days": 14,
+  "consumer": {
+    "project": "cowork-vm-provisioner",
+    "files": ["/srv/cowork-operator/docker-compose.yml"],
+    "env_file": "/srv/cowork-operator/control.env",
+    "services": ["provisioner"]
+  }
+}

@@ -1,0 +1,327 @@
+name: V2 signed preview candidate
+run-name: Build candidate for ${{ github.ref_name }}
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build original signed packages or finalize those unchanged packages with reviewed QA
+        required: true
+        default: build
+        type: choice
+        options: [build, finalize]
+      verification_run_id:
+        description: Successful verify.yml run on this exact tag commit
+        required: true
+        type: string
+      candidate_run_id:
+        description: Finalize only - original successful candidate run on the same commit
+        required: false
+        type: string
+      candidate_artifact_id:
+        description: Finalize only - exact original signed build candidate artifact ID
+        required: false
+        type: string
+      qa_run_id:
+        description: Finalize only - successful preview-acceptance.yml run on the same commit
+        required: false
+        type: string
+      qa_artifact_id:
+        description: Finalize only - exact reviewed QA artifact ID
+        required: false
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: v2-preview-candidate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/trusted-release
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - id: check
+        name: Require exact tag, verified commit and actual signing infrastructure
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFY_RUN_ID: ${{ inputs.verification_run_id }}
+          SIGNING_RUNNERS_READY: ${{ vars.V2_PREVIEW_SIGNING_RUNNERS_READY }}
+          WINDOWS_PROFILE: ${{ vars.V2_PREVIEW_WINDOWS_SIGNING_PROFILE }}
+          LINUX_PROFILE: ${{ vars.V2_PREVIEW_LINUX_SIGNING_PROFILE }}
+          PRODUCER_MODE: ${{ inputs.mode }}
+          ORIGINAL_RUN: ${{ inputs.candidate_run_id }}
+          ORIGINAL_ARTIFACT: ${{ inputs.candidate_artifact_id }}
+          QA_RUN: ${{ inputs.qa_run_id }}
+          QA_ARTIFACT: ${{ inputs.qa_artifact_id }}
+        run: |
+          import os, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / '.local/trusted-release/tools/release'))
+          import preview, preview_trust
+          if os.environ.get('GITHUB_REF_TYPE') != 'tag':
+              raise SystemExit('Dispatch this workflow with --ref v2.x-alpha.N/beta.N/rc.N; branch/PR builds cannot sign.')
+          trusted = preview_trust.policy(root / '.local/trusted-release/.github/v2-preview-policy.json', os.environ['GITHUB_REPOSITORY'])
+          if trusted['candidate_workflow'] != '.github/workflows/preview-candidate.yml':
+              raise SystemExit('The independent policy does not authorize this producer.')
+          if os.environ['PRODUCER_MODE'] == 'build' and (os.environ.get('SIGNING_RUNNERS_READY') != 'true' or not all(os.environ.get(k) for k in ('WINDOWS_PROFILE', 'LINUX_PROFILE'))):
+              raise SystemExit('Infrastructure blocked: configure both dedicated signing runners and actual private profile paths first.')
+          if os.environ['PRODUCER_MODE'] == 'finalize' and not all(os.environ.get(k, '').isdigit() for k in ('ORIGINAL_RUN', 'ORIGINAL_ARTIFACT', 'QA_RUN', 'QA_ARTIFACT')):
+              raise SystemExit('Select exact original candidate and reviewed QA run/artifact IDs.')
+          source = preview.source_snapshot(root, os.environ['GITHUB_REF_NAME'])
+          if source['commit'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Dispatched tag and workflow source commit differ.')
+          preview.live_ci(root, os.environ['GITHUB_REPOSITORY'], int(os.environ['VERIFY_RUN_ID']), source['commit'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('version=' + source['version'] + '\n')
+  frontend:
+    needs: policy
+    if: inputs.mode == 'build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - run: npm install --global npm@11.6.2
+      - run: npm ci
+      - name: Freeze exact source and build one shared frontend
+        shell: python
+        run: |
+          import json, os, shutil, subprocess
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          common = root / '.local/common-candidate'
+          common.mkdir(parents=True)
+          subprocess.run(['python', 'tools/release/preview.py', 'snapshot', '--tag', os.environ['GITHUB_REF_NAME'], '--output', str(common / 'source-provenance.json')], check=True)
+          npm = Path(shutil.which('npm')).resolve()
+          subprocess.run(['python', 'tools/desktop/frontend.py', '--node', shutil.which('node'), '--npm', str(npm), '--output', str(common / 'frontend')], check=True)
+          shutil.copytree(root / 'apps/web/dist', common / 'dist')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-preview-common
+          path: .local/common-candidate
+          if-no-files-found: error
+          retention-days: 14
+  native:
+    needs: [policy, frontend]
+    if: inputs.mode == 'build'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: localai-preview-signing-windows-x64
+            host: x86_64-pc-windows-msvc
+            bundles: nsis
+          - platform: linux
+            runner: localai-preview-signing-linux-x64
+            host: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+    runs-on: [self-hosted, '${{ matrix.runner }}']
+    environment: v2-preview-signing
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: '1'
+      PRIVATE_PROFILE: ${{ matrix.platform == 'windows' && vars.V2_PREVIEW_WINDOWS_SIGNING_PROFILE || vars.V2_PREVIEW_LINUX_SIGNING_PROFILE }}
+      NATIVE_HOST: ${{ matrix.host }}
+      NATIVE_BUNDLES: ${{ matrix.bundles }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/trusted-release
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: v2-preview-common
+          path: .local/common-candidate
+      - name: Validate actual runtime, independent signer and common frontend bytes
+        shell: python
+        run: |
+          import json, os, shutil, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / '.local/trusted-release/tools/release'))
+          import preview, preview_trust
+          trusted = preview_trust.policy(root / '.local/trusted-release/.github/v2-preview-policy.json', os.environ['GITHUB_REPOSITORY'])
+          source = preview.source_snapshot(root, os.environ['GITHUB_REF_NAME'])
+          common = root / '.local/common-candidate'
+          if json.loads((common / 'source-provenance.json').read_bytes()) != source:
+              raise SystemExit('Common frontend source is not this exact dispatched tag.')
+          if subprocess.check_output(['node', '--version'], text=True).strip() != 'v22.20.0':
+              raise SystemExit('Dedicated signing runner requires native Node 22.20.0.')
+          node = Path(shutil.which('node'))
+          npm = Path(shutil.which('npm')).resolve()
+          if os.name == 'nt': npm = node.parent / 'node_modules/npm/bin/npm-cli.js'
+          if subprocess.check_output([str(node), str(npm), '--version'], text=True).strip() != '11.6.2':
+              raise SystemExit('Dedicated signing runner requires npm 11.6.2.')
+          rustc = subprocess.check_output(['rustc', '-vV'], text=True)
+          if not rustc.startswith('rustc 1.94.1 ') or ('host: ' + os.environ['NATIVE_HOST']) not in rustc:
+              raise SystemExit('Dedicated signing runner requires native pinned Rust 1.94.1.')
+          sys.path.insert(0, str(root / 'tools/desktop'))
+          import signing, frontend
+          configuration, private_environment, public_profile = signing.profile(Path(os.environ['PRIVATE_PROFILE']))
+          preview_trust.identity({'host': os.environ['NATIVE_HOST'], 'signing_profile': public_profile}, trusted)
+          del configuration, private_environment
+          subprocess.run([str(node), str(npm), 'ci'], check=True)
+          front = json.loads((common / 'frontend/receipt.json').read_bytes())
+          if front.get('sources') != frontend.sources() or front.get('exit_code') != 0 or front.get('sources_unchanged') is not True:
+              raise SystemExit('Common frontend build does not bind this complete source.')
+          shutil.copytree(common / 'dist', root / 'apps/web/dist')
+          if frontend.manifest([p for p in (root / 'apps/web/dist').rglob('*') if p.is_file()]) != front['outputs']:
+              raise SystemExit('Common frontend bytes changed during download/copy.')
+      - name: Build source-bound native sidecar and actually signed desktop packages
+        shell: python
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          output = root / '.local/native-candidate'
+          output.mkdir()
+          subprocess.run(['python', 'tools/desktop/release.py', '--output-dir', str(output / 'sidecar'), '--target-dir', str(output / 'target')], check=True)
+          subprocess.run(['python', 'tools/desktop/package.py', '--sidecar-dir', str(output / 'sidecar'), '--output-dir', str(output / os.environ['NATIVE_HOST']), '--target-dir', str(output / 'desktop-target'), '--bundles', os.environ['NATIVE_BUNDLES'], '--signing-profile', os.environ['PRIVATE_PROFILE']], check=True)
+          sys.path.insert(0, str(root / '.local/trusted-release/tools/release'))
+          from release_checks import checked_package
+          from preview_trust import policy
+          import json
+          version = json.loads((root / 'package.json').read_bytes())['version']
+          checked_package(output / os.environ['NATIVE_HOST'], version, strict_preview=True, trusted_policy=policy(root / '.local/trusted-release/.github/v2-preview-policy.json', os.environ['GITHUB_REPOSITORY']))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-preview-native-${{ matrix.platform }}
+          path: .local/native-candidate/${{ matrix.host }}
+          if-no-files-found: error
+          retention-days: 14
+  candidate:
+    needs: [policy, frontend, native]
+    if: inputs.mode == 'build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v2-preview-*
+          path: .local/candidate-inputs
+      - name: Assemble original build candidate; leave physical installed acceptance pending
+        shell: python
+        run: |
+          import json, os, shutil, sys
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE'])
+          sys.path.insert(0, str(root / 'tools/release'))
+          import preview
+          from release_checks import HOSTS, pin
+          source = preview.source_snapshot(root, os.environ['GITHUB_REF_NAME'])
+          inputs = root / '.local/candidate-inputs'
+          common = inputs / 'v2-preview-common'
+          if json.loads((common / 'source-provenance.json').read_bytes()) != source:
+              raise SystemExit('Candidate source provenance differs from this tag.')
+          candidate = root / '.local/candidate'
+          candidate.mkdir()
+          shutil.copyfile(common / 'source-provenance.json', candidate / 'source-provenance.json')
+          shutil.copytree(common / 'frontend', candidate / 'frontend')
+          platforms = {}
+          packages = {}
+          for host in HOSTS:
+              platform = 'windows' if host.endswith('msvc') else 'linux'
+              folder = inputs / ('v2-preview-native-' + platform)
+              receipt = json.loads((folder / 'receipt.json').read_bytes())
+              if receipt.get('host') != host or receipt.get('product_version') != source['version'] or receipt.get('signed') is not True:
+                  raise SystemExit('Native candidate platform/version/signing receipt differs.')
+              shutil.copytree(folder, candidate / host)
+              packages[host] = host
+              platforms[host] = {'receipt_sha256': pin(folder / 'receipt.json')['sha256'],
+                  'packages': {kind: record['sha256'] for kind, record in receipt['bundles'].items()},
+                  'checks': {key: {'result': 'pending', 'evidence': None, 'sha256': None} for key in sorted(preview.ACCEPTANCE_CHECKS)}}
+          notes = root / 'docs' / ('RELEASE-NOTES-' + source['version'] + '.md')
+          if not notes.is_file(): raise SystemExit('Add the actual reviewed version-specific release notes before building a candidate.')
+          shutil.copyfile(notes, candidate / 'RELEASE-NOTES.md')
+          values = {'candidate.json': {'format': 'localai-cowork-preview-candidate/1', 'frontend_receipt': 'frontend/receipt.json', 'packages': packages, 'acceptance': 'acceptance.json', 'notes': 'RELEASE-NOTES.md'},
+              'acceptance.json': {'format': 'localai-cowork-preview-installed-acceptance/1', **{key: source[key] for key in ('version', 'commit', 'source_sha256')}, 'platforms': platforms},
+              'PRODUCER-BUILD.json': {'format': 'localai-cowork-preview-build-candidate/1', 'commit': source['commit'], 'version': source['version'], 'signed': True, 'installed_acceptance': False, 'release_qualified': False, 'published': False}}
+          for name, value in values.items(): (candidate / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-preview-candidate
+          path: .local/candidate
+          if-no-files-found: error
+          retention-days: 14
+  finalize:
+    needs: policy
+    if: inputs.mode == 'finalize'
+    runs-on: ubuntu-24.04
+    environment: v2-preview-release
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .local/trusted-release
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - name: Finalize a new artifact from unchanged native packages and exact reviewed QA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_RUN: ${{ inputs.candidate_run_id }}
+          ORIGINAL_ARTIFACT: ${{ inputs.candidate_artifact_id }}
+          QA_RUN: ${{ inputs.qa_run_id }}
+          QA_ARTIFACT: ${{ inputs.qa_artifact_id }}
+        run: >-
+          python .local/trusted-release/.github/scripts/preview_candidate.py finalize
+          --source-root "$GITHUB_WORKSPACE" --tag "$GITHUB_REF_NAME" --repository "$GITHUB_REPOSITORY"
+          --trusted-policy "$GITHUB_WORKSPACE/.local/trusted-release/.github/v2-preview-policy.json"
+          --candidate-run-id "$ORIGINAL_RUN" --candidate-artifact-id "$ORIGINAL_ARTIFACT"
+          --qa-run-id "$QA_RUN" --qa-artifact-id "$QA_ARTIFACT"
+          --output "$GITHUB_WORKSPACE/.local/final-candidate"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-preview-candidate
+          path: .local/final-candidate
+          if-no-files-found: error
+          retention-days: 14

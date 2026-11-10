@@ -1,0 +1,5 @@
+# Keep the full Enterprise lockfile findings visible. RSA 0.10 is patched,
+# but the current OIDC/WebPush parents still require RSA 0.9. Audit results
+# and application reachability are separate; see docs/PREVIEW-SECURITY-STATUS.md.
+[advisories]
+ignore = []

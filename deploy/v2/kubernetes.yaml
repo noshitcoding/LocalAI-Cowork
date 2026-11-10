@@ -1,0 +1,141 @@
+# Render ${COWORK_NAMESPACE}, ${COWORK_SITE}, ${COWORK_IMAGE} explicitly first.
+# Existing ingress controller + TLS secret cowork-tls + DB secret are operator inputs.
+apiVersion: v1
+kind: Namespace
+metadata: {name: "${COWORK_NAMESPACE}"}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: cowork-data, namespace: "${COWORK_NAMESPACE}"}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 20Gi}}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: cowork-postgres, namespace: "${COWORK_NAMESPACE}"}
+spec: {accessModes: [ReadWriteOnce], resources: {requests: {storage: 20Gi}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: cowork-postgres}}
+  template:
+    metadata: {labels: {app: cowork-postgres}}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-bookworm
+          env:
+            - {name: POSTGRES_USER, value: cowork}
+            - {name: POSTGRES_DB, value: cowork}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: cowork-database, key: postgres_password}}
+          ports: [{containerPort: 5432}]
+          volumeMounts: [{name: postgres, mountPath: /var/lib/postgresql/data}]
+          readinessProbe: {exec: {command: [pg_isready, -U, cowork, -d, cowork]}, initialDelaySeconds: 5, periodSeconds: 5}
+          resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "2", memory: 2Gi}}
+      volumes: [{name: postgres, persistentVolumeClaim: {claimName: cowork-postgres}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: "${COWORK_NAMESPACE}"}
+spec: {selector: {app: cowork-postgres}, ports: [{port: 5432, targetPort: 5432}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: cowork, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: cowork}}
+  template:
+    metadata: {labels: {app: cowork}}
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext: {runAsUser: 1000, runAsGroup: 1000}
+      initContainers:
+        - name: private-data-directory
+          image: busybox:1.37
+          command: [/bin/sh, -ec, "chown 1000:1000 /data; chmod 700 /data; mkdir -p /data/cowork; chown 1000:1000 /data/cowork; chmod 700 /data/cowork"]
+          securityContext: {runAsUser: 0, runAsGroup: 0, allowPrivilegeEscalation: false}
+          volumeMounts: [{name: data, mountPath: /data}]
+        - name: private-database-password
+          image: busybox:1.37
+          command: [/bin/sh, -ec, "umask 077; mkdir -p /private/keys; cp /projected/postgres_password /private/keys/postgres_password; chown 1000:1000 /private /private/keys /private/keys/postgres_password; chmod 700 /private /private/keys; chmod 600 /private/keys/postgres_password"]
+          securityContext: {runAsUser: 0, runAsGroup: 0, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL], add: [CHOWN, DAC_OVERRIDE, FOWNER]}}
+          volumeMounts:
+            - {name: projected-database-password, mountPath: /projected, readOnly: true}
+            - {name: private-database-password, mountPath: /private}
+      containers:
+        - name: api
+          image: "${COWORK_IMAGE}"
+          args: [--no-worker]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env: &cowork_environment
+            - {name: COWORK_DATA_DIR, value: /var/lib/cowork/cowork}
+            - {name: COWORK_BIND_ADDRESS, value: 0.0.0.0}
+            - {name: COWORK_WEB_DIR, value: /opt/cowork/web}
+            - {name: COWORK_PORT, value: "43821"}
+            - {name: COWORK_PUBLIC_ORIGIN, value: "https://${COWORK_SITE}"}
+            - {name: COWORK_DATABASE_HOST, value: postgres}
+            - {name: COWORK_DATABASE_PASSWORD_FILE, value: /run/private/keys/postgres_password}
+            - {name: COWORK_ENABLE_TENANT_IDENTITY, value: "1"}
+            - {name: COWORK_TEAM_MCP_ALLOWED_ORIGINS, value: ""}
+            - {name: COWORK_TEAM_LITELLM_HTTP_ORIGINS, value: ""}
+            - {name: COWORK_PASSKEY_ORIGIN, value: ""}
+            - {name: COWORK_PASSKEY_RP_ID, value: ""}
+            - {name: COWORK_FCM_SERVICE_ACCOUNT_FILE, value: ""}
+            - {name: COWORK_FLEET_KEY_FILE, value: ""}
+            - {name: COWORK_ORGANISATION_ID, value: ""}
+            - {name: COWORK_INSTANCE_ID, value: ""}
+          ports: [{containerPort: 43821}]
+          volumeMounts: &cowork_mounts
+            - {name: data, mountPath: /var/lib/cowork}
+            - {name: private-database-password, mountPath: /run/private, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+          readinessProbe: {httpGet: {path: /health, port: 43821}, initialDelaySeconds: 10, periodSeconds: 5}
+          startupProbe: {httpGet: {path: /health, port: 43821}, failureThreshold: 60, periodSeconds: 5}
+          resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "2", memory: 4Gi}}
+        - name: worker
+          image: "${COWORK_IMAGE}"
+          args: [--worker-only]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env: *cowork_environment
+          volumeMounts: *cowork_mounts
+          resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "2", memory: 4Gi}}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: cowork-data}}
+        - {name: projected-database-password, secret: {secretName: cowork-database, defaultMode: 0400}}
+        - {name: private-database-password, emptyDir: {medium: Memory, sizeLimit: 1Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 512Mi}}
+        - {name: shm, emptyDir: {medium: Memory, sizeLimit: 256Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: cowork, namespace: "${COWORK_NAMESPACE}"}
+spec: {selector: {app: cowork}, ports: [{port: 43821, targetPort: 43821}]}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: cowork, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  tls: [{hosts: ["${COWORK_SITE}"], secretName: cowork-tls}]
+  rules:
+    - host: "${COWORK_SITE}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: cowork, port: {number: 43821}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: postgres-private, namespace: "${COWORK_NAMESPACE}"}
+spec:
+  podSelector: {matchLabels: {app: cowork-postgres}}
+  policyTypes: [Ingress]
+  ingress: [{from: [{podSelector: {matchLabels: {app: cowork}}}], ports: [{port: 5432, protocol: TCP}]}]

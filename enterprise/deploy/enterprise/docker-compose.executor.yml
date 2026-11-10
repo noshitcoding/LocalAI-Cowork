@@ -1,0 +1,48 @@
+# Operator transport candidate: management is on a separate host. No local socket.
+# Read docs/SERVER_ISOLATION.md before qualification; this does not create a host.
+name: cowork-executor-operator
+services:
+  provisioner:
+    image: ${COWORK_PROVISIONER_IMAGE:?Set a qualified digest-pinned provisioner image}
+    entrypoint: [python3, provisioner.py]
+    command: [--config, /run/secrets/executor_configuration]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=256m,mode=1777]
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 256
+    volumes:
+      # Exact same path is required on the operator and executor daemon hosts.
+      # The provisioner verifies a nonce through a remote readonly bind mount.
+      - type: bind
+        source: /srv/cowork-executor
+        target: /srv/cowork-executor
+    secrets:
+      - executor_configuration
+      - executor_tls_ca
+      - executor_tls_certificate
+      - executor_tls_key
+      - provisioner_token
+      - database_admin_url
+      - backup_identity
+      - management_ca
+secrets:
+  executor_configuration:
+    file: ${COWORK_EXECUTOR_SECRETS:?Set the private operator secrets directory}/executor_configuration.json
+  executor_tls_ca:
+    file: ${COWORK_EXECUTOR_SECRETS}/executor_tls_ca
+  executor_tls_certificate:
+    file: ${COWORK_EXECUTOR_SECRETS}/executor_tls_certificate
+  executor_tls_key:
+    file: ${COWORK_EXECUTOR_SECRETS}/executor_tls_key
+  provisioner_token:
+    file: ${COWORK_EXECUTOR_SECRETS}/provisioner_token
+  database_admin_url:
+    file: ${COWORK_EXECUTOR_SECRETS}/database_admin_url
+  backup_identity:
+    file: ${COWORK_EXECUTOR_SECRETS}/backup_identity
+  management_ca:
+    file: ${COWORK_EXECUTOR_SECRETS}/management_ca

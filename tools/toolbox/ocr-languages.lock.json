@@ -1,0 +1,22 @@
+{
+  "format": "cowork-ocr-language-pack/1",
+  "engine": "tesseract-lstm",
+  "source_repository": "https://github.com/tesseract-ocr/tessdata_fast",
+  "source_commit": "87416418657359cb625c412a48b6e1d6d41c29bd",
+  "models": [
+    {
+      "language": "deu",
+      "path": "deu.traineddata",
+      "sha256": "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d",
+      "bytes": 1525436,
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/deu.traineddata"
+    },
+    {
+      "language": "eng",
+      "path": "eng.traineddata",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "bytes": 4113088,
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata"
+    }
+  ]
+}

@@ -1,0 +1,636 @@
+/*
+ * LocalAI Cowork flat design contract.
+ *
+ * This file is intentionally loaded after feature styles. It standardizes visual
+ * primitives without changing component markup, state, routes, actions, labels,
+ * accessibility attributes, or test identifiers.
+ */
+
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
+
+body :where(button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+:where(button, input, select, textarea) {
+  border-radius: var(--radius-control);
+  font: inherit;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition), opacity var(--transition);
+}
+
+:where(button) {
+  min-height: var(--control-height-sm);
+}
+
+:where(input:not([type='checkbox']):not([type='radio']), select) {
+  min-height: var(--control-height-md);
+}
+
+:where(textarea) {
+  border-radius: var(--radius-control);
+}
+
+:where(.ui-button, .btn-sm, .btn-send, .btn-stop, .crew-toolbar-btn, .crew-action-btn) {
+  border-radius: var(--radius-control);
+}
+
+:where(.ui-button--primary, .btn-send, .crew-toolbar-btn.run) {
+  border: 1px solid var(--accent-border);
+  background: var(--accent-fill);
+  color: var(--accent-foreground);
+}
+
+:where(.ui-button--secondary, .btn-sm, .crew-action-btn, .crew-toolbar-btn.secondary) {
+  border: 1px solid var(--border-color);
+  background: var(--bg-white);
+  color: var(--text-primary);
+}
+
+:where(.ui-button--ghost) {
+  border-color: transparent;
+  background: transparent;
+}
+
+:where(.ui-button--danger, .btn-stop, .danger, .crew-toolbar-btn.danger) {
+  border: 1px solid color-mix(in srgb, var(--danger) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  color: var(--danger);
+}
+
+:where(.ui-button--danger, .btn-stop, .danger, .crew-toolbar-btn.danger):hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.ui-button.ui-button--danger,
+.btn-stop,
+.crew-toolbar-btn.danger {
+  border: 1px solid color-mix(in srgb, var(--danger) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  color: var(--danger);
+}
+
+.ui-button.ui-button--danger:hover:not(:disabled),
+.btn-stop:hover:not(:disabled),
+.crew-toolbar-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+:where(
+  .ui-badge,
+  .badge,
+  .task-pill,
+  .task-status-badge,
+  .crew-badge,
+  .crew-inline-badge,
+  .crew-status-pill,
+  .crew-live-status,
+  .mobile-state,
+  .terminal-status,
+  .github-auth-status
+) {
+  min-height: 20px;
+  padding: 3px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-label);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.task-pill-runner {
+  border-color: color-mix(in srgb, var(--accent-border) 40%, var(--border-color));
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.task-pill-scheduled {
+  border-color: color-mix(in srgb, var(--info) 40%, var(--border-color));
+  background: color-mix(in srgb, var(--info) 10%, var(--bg-white));
+  color: var(--info);
+}
+
+.task-status {
+  border-color: var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.task-status-running,
+.task-status-badge.status-running {
+  border-color: color-mix(in srgb, var(--info) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--info) 10%, var(--bg-white));
+  color: var(--info);
+}
+
+.task-status-completed,
+.task-status-badge.status-completed {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-white));
+  color: var(--success);
+}
+
+.task-status-failed,
+.task-status-badge.status-failed {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--danger) 9%, var(--bg-white));
+  color: var(--danger);
+}
+
+.task-status-waiting_approval,
+.task-status-badge.status-waiting_approval {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-white));
+  color: var(--warning);
+}
+
+:where(
+  .task-status-running,
+  .task-status-badge.status-running,
+  .crew-status-pill.ready,
+  .crew-live-status.status-running,
+  .mobile-state.state-running
+) {
+  border-color: color-mix(in srgb, var(--info) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--info) 10%, var(--bg-white));
+  color: var(--info);
+}
+
+.task-list-item.active,
+.crew-card.active,
+.crew-choice-card.is-active,
+.crew-run-card.active,
+.sidebar-thread-row.active,
+.app-menu-route.active,
+.github-workbench-tabs button.active,
+.developer-browser-mode-toggle button.active {
+  border-color: transparent;
+  border-inline-start: 2px solid var(--accent-border);
+  border-bottom-color: var(--border-light);
+  background: var(--selection-bg);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+:where(
+  .task-status-completed,
+  .task-status-badge.status-completed,
+  .crew-live-status.status-completed,
+  .mobile-state.state-completed
+) {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-white));
+  color: var(--success);
+}
+
+:where(
+  .task-status-failed,
+  .task-status-badge.status-failed,
+  .crew-live-status.status-failed,
+  .mobile-state.state-failed
+) {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--danger) 9%, var(--bg-white));
+  color: var(--danger);
+}
+
+:where(
+  .task-status-waiting_approval,
+  .task-status-badge.status-waiting_approval,
+  .crew-status-pill.warning
+) {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border-color));
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-white));
+  color: var(--warning);
+}
+
+:where(
+  .task-list-item.active,
+  .crew-card.active,
+  .crew-choice-card.is-active,
+  .crew-run-card.active,
+  .project-thread-item.active,
+  .sidebar-thread-row.active,
+  .app-menu-route.active,
+  .github-workbench-tabs button.active,
+  .developer-browser-mode-toggle button.active
+) {
+  border-inline-start: 2px solid var(--accent-border);
+  background: var(--selection-bg);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+:where(
+  .panel,
+  .card,
+  .task-create-panel,
+  .task-list-pane,
+  .task-detail-pane,
+  .project-detail-header,
+  .project-panel,
+  .crew-section,
+  .crew-task-rail,
+  .crew-overview-card,
+  .crew-agent-card,
+  .github-connect-card,
+  .github-repository-summary,
+  .github-changes-panel,
+  .github-diff-panel,
+  .github-pull-list-panel,
+  .github-pull-detail,
+  .remote-login-card,
+  .remote-management-panel,
+  .remote-run-composer,
+  .remote-schedule-manager,
+  .remote-security-settings,
+  .remote-governance-panel
+) {
+  border-radius: var(--radius-surface);
+  box-shadow: none;
+}
+
+:where(.task-view-heading h1, .project-title-editor input, .crew-header-title, .feature-workbench h1, .settings-view h1, .github-workbench h1, .developer-browser-view h1, .remote-server-view h1, .remote-login-card h2, .remote-run-summary h2) {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+}
+
+:where(.panel h2, .task-list-pane-header h2, .task-create-heading h2, .project-panel h2, .crew-section-header, .github-panel-heading h2) {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+/* Flat sub-sections: one boundary per logical work area, then dividers. */
+.task-create-panel,
+.task-list-pane,
+.task-detail-pane {
+  background: var(--bg-white);
+  border-color: var(--border-color);
+}
+
+.task-detail-pane > :where(.task-context-strip, .work-task-card, .task-scheduler-panel, .task-output-preview) {
+  padding: var(--space-3) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.task-list-item {
+  border-color: transparent;
+  border-bottom-color: var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.task-list-item:hover {
+  border-inline-start: 2px solid var(--border-color);
+  border-block-start-color: transparent;
+  border-inline-end-color: transparent;
+  background: var(--bg-secondary);
+}
+
+.chat-input-toolbar-compact {
+  --chat-settings-field-width: 190px;
+}
+
+.chat-input-toolbar-compact > .chat-compact-select {
+  flex: 0 0 var(--chat-settings-field-width);
+  width: var(--chat-settings-field-width);
+  min-width: var(--chat-settings-field-width);
+  max-width: var(--chat-settings-field-width);
+  height: var(--control-height-lg);
+  min-height: var(--control-height-lg);
+}
+
+@media (max-width: 760px) {
+  .chat-input-toolbar-compact > .chat-compact-select {
+    flex-basis: 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: var(--control-height-touch);
+    min-height: var(--control-height-touch);
+  }
+}
+
+@media (min-width: 620px) and (max-width: 720px) {
+  .chat-input-toolbar-compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.task-advanced-toggle {
+  border-style: solid;
+  border-color: var(--border-light);
+  background: transparent;
+}
+
+.task-create-panel-toggle svg,
+.task-advanced-toggle > svg,
+.crew-section-chevron,
+.crew-agent-chevron,
+.llm-provider-section-toggle svg {
+  transform: none;
+}
+
+.project-detail {
+  background: var(--bg-primary);
+}
+
+.project-detail-header {
+  border: 0;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  background: transparent;
+}
+
+.project-panel,
+.project-brief-card {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.feature-workbench-body > :where(.mcp-view, .memory-panel, .skill-panel),
+.settings-content .settings-view > .panel {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-surface);
+  background: var(--bg-white);
+}
+
+.feature-workbench-body > :where(.mcp-view, .memory-panel, .skill-panel) > .panel {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-view .llm-provider-overview-card {
+  border: 0;
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-view .llm-provider-overview-card:hover {
+  border-inline-start: 2px solid var(--border-color);
+  border-bottom-color: var(--border-light);
+  background: var(--bg-secondary);
+}
+
+.settings-view .llm-provider-overview-card.active {
+  border-inline-start: 2px solid var(--accent-border);
+  border-bottom-color: var(--border-light);
+  background: var(--selection-bg);
+}
+
+.settings-view .llm-provider-section,
+.settings-view .llm-profile-card {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-view :where(.llm-provider-state, .llm-provider-free-badge, .llm-profile-default-badge) {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-label);
+}
+
+:where(.feature-workbench, .settings-view) :where(.card, .panel .panel) {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.crew-shell {
+  gap: var(--space-3);
+  background: transparent;
+}
+
+.crew-header {
+  padding: var(--space-4);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-surface);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-white));
+  color: var(--text-primary);
+}
+
+.crew-header :where(.crew-header-eyebrow, .crew-header-subtitle) {
+  color: var(--text-secondary);
+}
+
+.crew-header-badge {
+  border-color: color-mix(in srgb, var(--accent-border) 42%, var(--border-color));
+  background: var(--bg-white);
+}
+
+.crew-header-badge strong {
+  font-size: var(--font-size-xl);
+}
+
+.crew-toolbar,
+.crew-overview-card,
+.crew-members-hero,
+.crew-active-compact,
+.crew-task-rail {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-surface);
+  background: var(--bg-white);
+}
+
+.crew-overview-card > :where(.crew-stat-grid, .crew-stat-grid-compact, .crew-stack-list, .crew-choice-grid, .crew-history-grid) {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-light);
+}
+
+:where(.crew-stat-card, .crew-stack-card, .crew-choice-card, .crew-run-card, .crew-members-stat, .crew-agent-panel, .crew-agent-subpanel, .crew-tool-item) {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.crew-section {
+  background: var(--bg-white);
+}
+
+.crew-section-body {
+  border-top: 1px solid var(--border-light);
+}
+
+.crew-agent-card {
+  border: 0;
+  border-inline-start: 2px solid var(--accent-border);
+  border-bottom: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.crew-agent-avatar,
+.task-create-icon,
+.task-empty-icon,
+.project-empty-icon,
+.app-context-icon,
+.feature-workbench-icon {
+  border-radius: var(--radius-label);
+}
+
+.crew-card-dot,
+.context-rail-state-dot,
+.live-tool-call-dot,
+.typing-dot,
+.chat-input-settings-toggle.needs-attention::after,
+.sandbox-status-badge::before,
+.toggle-switch .slider::before,
+.spinner,
+.progress-ring {
+  border-radius: var(--radius-round);
+}
+
+.crew-card:hover,
+.crew-choice-card:hover,
+.crew-run-card:hover,
+.crew-agent-card:hover,
+.crew-starter-card:hover {
+  transform: none;
+}
+
+.github-workbench {
+  background: var(--bg-primary);
+}
+
+.github-repository-bar,
+.github-repository-summary,
+.github-workbench-tabs {
+  border-color: var(--border-light);
+  background: var(--bg-white);
+}
+
+.github-changes-panel,
+.github-diff-panel,
+.github-pull-list-panel,
+.github-pull-detail {
+  background: var(--bg-white);
+}
+
+:where(.github-commit-box, .github-review-box, .github-merge-box, .github-create-pull, .github-branch-summary) {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  border-radius: 0;
+  background: transparent;
+}
+
+.developer-browser-workspace,
+.remote-server-view {
+  background: var(--bg-primary);
+}
+
+:where(.modal-backdrop, .dialog-backdrop, .popover-backdrop, .backend-setup-backdrop, .app-drawer-backdrop, .context-rail-scrim) {
+  background: var(--overlay-bg);
+  backdrop-filter: none;
+}
+
+:where(.modal, .dialog, .popover, .tooltip, .command-palette, .backend-setup-dialog, .app-menu-drawer, .app-context-drawer, .cowork-context-rail) {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-surface);
+  background: var(--bg-white);
+  box-shadow: none;
+}
+
+.app-menu-drawer,
+.app-context-drawer {
+  animation: none;
+}
+
+body.compact-mode :where(button, .ui-button, .btn-sm) {
+  min-height: var(--control-height-sm);
+}
+
+body.compact-mode :where(input:not([type='checkbox']):not([type='radio']), select) {
+  min-height: var(--control-height-sm);
+}
+
+body.compact-mode :where(.panel, .task-create-panel, .task-list-pane, .task-detail-pane, .project-panel, .crew-section-body) {
+  padding: var(--space-3);
+}
+
+/* Shared mobile brand and theme. Remote pixels and terminal ANSI output stay untouched. */
+body:has(.mobile-shell),
+body:has(.mobile-lock-screen),
+body:has(.mobile-login-screen) {
+  font-size: 14px;
+}
+
+:where(.mobile-lock-screen, .mobile-login-screen) h1,
+.mobile-section-heading h1 {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+:where(.mobile-lock-screen, .mobile-login-screen, .mobile-shell) :where(button, input, select, textarea) {
+  min-height: var(--control-height-touch);
+  border-radius: var(--radius-control);
+  font-size: 14px;
+}
+
+.mobile-lock-screen :is(button, input, select, textarea),
+.mobile-login-screen :is(button, input, select, textarea),
+.mobile-shell :is(button, input, select, textarea) {
+  min-height: var(--control-height-touch);
+}
+
+.mobile-login-screen .mobile-auth-modes button {
+  min-height: var(--control-height-touch);
+  font-size: 12px;
+}
+
+.mobile-shell :where(
+  .remote-terminal-toolbar button,
+  .remote-terminal-keys button,
+  .run-intervention-actions button,
+  .remote-run-composer button,
+  .remote-schedule-manager button,
+  .remote-security-settings button,
+  .remote-governance-panel button,
+  .remote-management-panel button
+) {
+  min-height: var(--control-height-touch);
+}
+
+@media (max-width: 620px) {
+  :root {
+    --font-size-xs: 12px;
+    --font-size-sm: 12px;
+    --font-size-md: 14px;
+    --font-size-lg: 16px;
+    --font-size-xl: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Saved remote server connections. */
+.server-profiles { display: grid; gap: 10px; border: 1px solid var(--border-color, #555); padding: 12px; margin: 0; min-width: 0; }
+.server-profiles legend { padding: 0 6px; }
+.server-profiles select { width: 100%; min-width: 0; }
+.server-profile-actions { display: flex; flex-wrap: wrap; gap: 8px; }

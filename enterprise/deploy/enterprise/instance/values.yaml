@@ -1,0 +1,50 @@
+instanceId: ""
+organisationId: ""
+image: ""
+replicas: 1
+maintenanceMode: false
+runnerUrl: ""
+images: {}
+runnerCA: ""
+runnerTls: {}
+executionEpoch: ""
+storageGeneration: ""
+clusterUid: ""
+namespaceUid: ""
+executorHostId: ""
+runtimeClass: ""
+storageClass: ""
+nodeSelector: {}
+nodeNames: []
+nodeUids: {}
+desktopProfile: null
+workspaceClaimGiB: 1
+gatewayEnvironment: {}
+originalOperationId: ""
+egressConfiguration: ""
+s3Endpoint: ""
+s3Bucket: ""
+routingNamespace: cowork-management
+# Explicit source-bound configuration from the current management operation.
+organisationMfa: null
+fleetManagementUrl: ""
+serviceCidrs: []
+resources:
+  cpu_millis: 4000
+  memory_mib: 8192
+  storage_gib: 50
+  concurrent_runs: 2
+# Per-replica service caps; the native runner reserves the sandbox pool separately.
+serviceResources:
+  api: {cpu_millis: 1000, memory_mib: 512, pids: 256}
+  worker: {cpu_millis: 500, memory_mib: 512, pids: 256}
+  runner: {cpu_millis: 500, memory_mib: 256, pids: 128}
+  egress-proxy: {cpu_millis: 250, memory_mib: 128, pids: 64}
+secrets:
+  bootstrap_token: ""
+  database_url: ""
+  storage_master_key: ""
+  s3_access_key: ""
+  s3_secret_key: ""
+  runner_signing_key: ""
+  fleet_key: ""

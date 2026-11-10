@@ -1,0 +1,27 @@
+import { ArrowUpRight, Cpu, Database, Layers3, MemoryStick, Server, Users } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import type { InstanceAction, ManagedInstance } from '../runtime/managementClient'
+
+export default function EnterpriseInstanceCard({ instance, admin, busy, labels, environmentsEnabled, storageEnabled, onOpen, onAction, onMembers, onStorage, onBackups, onOperations, onEnvironments }: {
+  instance: ManagedInstance; admin: boolean; busy: boolean; labels: Record<InstanceAction, string>; environmentsEnabled: boolean; storageEnabled: boolean
+  onOpen: () => void; onAction: (action: InstanceAction) => void; onMembers: () => void; onStorage: () => void; onBackups: () => void; onOperations: () => void; onEnvironments: () => void
+}) {
+  const { i18n } = useTranslation(), t = (en: string, german: string) => i18n.language.startsWith('de') ? german : en
+  const stateNames: Record<string, string> = { pending: t('Awaiting setup', 'Bereitstellung ausstehend'), provisioning: t('Setting up', 'Wird bereitgestellt'), ready: t('Ready', 'Bereit'), stopped: t('Stopped', 'Gestoppt'), suspended: t('Suspended', 'Gesperrt'), failed: t('Needs attention', 'Prüfung erforderlich'), deleting: t('Deleting', 'Wird gelöscht'), deleted: t('Deleted', 'Gelöscht'), updating: t('Updating', 'Wird aktualisiert') }
+  const actions = (instance.available_actions ?? []).filter(action => admin || !['suspend', 'resume', 'enroll_execution'].includes(action))
+  const operationActions = actions.filter(action => ['provision', 'start', 'stop', 'resume'].includes(action))
+  const maintenanceActions = actions.filter(action => !operationActions.includes(action))
+  const actionButton = (action: InstanceAction) => <button type="button" key={action} className={action === 'delete' ? 'enterprise-danger' : action === 'provision' || action === 'start' ? 'enterprise-primary' : undefined} disabled={busy || !instance.can_manage} onClick={() => onAction(action)}>{labels[action]}</button>
+  return <article>
+    <div className="enterprise-instance-heading"><div className="enterprise-instance-name"><Server size={20} aria-hidden="true" /><div><h3>{instance.name}</h3><small>{instance.backend === 'compose' ? 'Docker Compose' : 'Kubernetes'} · {instance.policy.minimum_isolation === 'virtual_machine' ? t('VM isolation', 'VM-Isolation') : t('Container isolation', 'Container-Isolation')}</small></div></div><span className="enterprise-status" data-state={instance.state}>{stateNames[instance.state] ?? instance.state}</span></div>
+    <dl className="enterprise-instance-resources"><div><dt><Cpu size={12} aria-hidden="true" /> CPU</dt><dd>{instance.policy.limits.cpu_millis / 1000} {t('cores', 'Kerne')}</dd></div><div><dt><MemoryStick size={12} aria-hidden="true" /> RAM</dt><dd>{instance.policy.limits.memory_mib >= 1024 ? `${(instance.policy.limits.memory_mib / 1024).toFixed(1)} GiB` : `${instance.policy.limits.memory_mib} MiB`}</dd></div><div><dt><Database size={12} aria-hidden="true" />{t('Storage', 'Speicher')}</dt><dd>{instance.policy.limits.storage_gib} GiB</dd></div></dl>
+    <div className="enterprise-actions">{(instance.can_open || instance.can_open_support) && <button type="button" className="enterprise-primary" disabled={busy} onClick={onOpen}><ArrowUpRight size={14} aria-hidden="true" />{instance.can_open ? t('Open instance', 'Instanz öffnen') : t('Open support access', 'Support-Zugriff öffnen')}</button>}{operationActions.map(actionButton)}</div>
+    <div className="enterprise-instance-tools"><p>{t('Access & runtime', 'Zugang & Laufzeit')}</p><div className="enterprise-actions"><button type="button" disabled={busy} onClick={onMembers}><Users size={13} aria-hidden="true" />{t('Instance members', 'Instanzmitglieder')}</button>{environmentsEnabled && <button type="button" disabled={busy} onClick={onEnvironments}><Layers3 size={13} aria-hidden="true" />{t('Environments', 'Umgebungen')}</button>}{admin && storageEnabled && <button type="button" disabled={busy} onClick={onStorage}>{t('Storage limit', 'Speicherlimit')}</button>}</div></div>
+    <div className="enterprise-instance-tools"><p>{t('Maintenance', 'Wartung')}</p><div className="enterprise-actions"><button type="button" disabled={busy} onClick={onBackups}>{t('Backups', 'Sicherungen')}</button><button type="button" disabled={busy} onClick={onOperations}>{t('Operations', 'Vorgänge')}</button>{maintenanceActions.map(actionButton)}</div></div>
+    {instance.provisioning_release && <p>{t('Initial version', 'Anfangsversion')}: <code>{instance.provisioning_release.slice(0, 12)}</code></p>}
+    {instance.execution_required && <p className="enterprise-muted">{t('Uses central task admission when enabled by the platform.', 'Nutzt zentrale Aufgabenzulassung, sobald sie für die Plattform aktiviert ist.')}</p>}
+    {instance.rollout_id && <p className="enterprise-muted">{t('Reserved by a batch update.', 'Für ein Gruppenupdate reserviert.')}</p>}
+    {instance.state === 'pending' && !instance.available_actions?.length && <p className="enterprise-muted">{t('An execution backend is not yet available for this profile.', 'Für dieses Profil ist noch kein Ausführungsbackend verfügbar.')}</p>}
+    <details><summary>{t('Technical details', 'Technische Details')}</summary><p><small>{t('Instance ID', 'Instanz-ID')}: <code>{instance.id}</code><br />{t('Organisation ID', 'Organisations-ID')}: <code>{instance.organisation_id}</code></small></p></details>
+  </article>
+}

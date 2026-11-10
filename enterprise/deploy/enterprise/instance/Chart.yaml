@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cowork-instance
+description: Isolated Cowork API, workers and native Kubernetes execution with original UID authority
+type: application
+version: 0.2.0
+appVersion: "0.3.12"

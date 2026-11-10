@@ -1,0 +1,389 @@
+{
+  "prepare": {
+    "input": {
+      "manifest_sha256": "042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd",
+      "sha256": "1d1d5eb97aeb255a8cc981022e31a6b57735638342971d0884b702934352bc3a",
+      "snapshot_id": "05347d77-4ff6-4e56-b863-a177b3c2e595"
+    },
+    "request": {
+      "access_mode": "autonomous",
+      "base_revision": 1,
+      "environment": {
+        "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+        "environment_id": "0870bb9c-f2ac-48f8-98b2-4313e55cbf13",
+        "qualification_sha256": "2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b",
+        "version_id": "6cc0d560-cc1a-491a-b44e-9ef2653db4fd"
+      },
+      "folders": [
+        {
+          "id": "source",
+          "name": "Source",
+          "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+          "resource_id": "5a11544026f5487c53e4abeb50344c984f0706c11e8e813171bbccc9b8ea0607",
+          "revision": "df193874b50040451d22d31a604b4fdecaa6c64b7d9dad84637fa91dfe17d0a9",
+          "writable": true
+        }
+      ],
+      "idempotency_key": "confirmed",
+      "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+      "prompt": "Use a separate copy",
+      "provider_id": "fixture",
+      "provider_revision": 1
+    },
+    "target": {
+      "kind": "registered_runner"
+    }
+  },
+  "prepared": {
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":{\"definition_sha256\":\"eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8\",\"environment_id\":\"0870bb9c-f2ac-48f8-98b2-4313e55cbf13\",\"qualification_sha256\":\"2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b\",\"version_id\":\"6cc0d560-cc1a-491a-b44e-9ef2653db4fd\"},\"executor\":\"managed-input-fixture\",\"folders\":[{\"id\":\"source\",\"name\":\"Source\",\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"resource_id\":\"798b2fe5029f8ed634078120fc25e0710ceb85636f581a51b99ad6320811b01c\",\"revision\":\"25243c6fc8004ce3cb498b987510ad3d2081d198eece8f5a83134de3bf3cbbf7\",\"writable\":true},{\"id\":\"workspace:ca719368-33f5-4259-9d4c-a54917e78897\",\"name\":\"Workspace\",\"order_id\":\"ca719368-33f5-4259-9d4c-a54917e78897\",\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"resource_id\":\"b597811bda3b14c23e9b7c16e90509079446b932930d1df3140e2b0efcc78858\",\"revision\":\"de7dcb108dd5c9a6d051b30970e510a89a84e99c0e49ffc2d8f8bf86455d147b\",\"writable\":true}],\"input_snapshot_bound\":true,\"process_access\":\"qualified_environment\",\"process_network\":{\"kind\":\"denied\"}},\"created_at\":1793371798426,\"expires_at\":1793372098426,\"format_version\":2,\"id\":\"9409b291-d637-467c-a195-f2003dc174f2\",\"idempotency_key\":\"confirmed\",\"input\":{\"created_at\":1793371798383,\"format_version\":1,\"id\":\"05347d77-4ff6-4e56-b863-a177b3c2e595\",\"manifest\":{\"directories\":[\"input-0001\"],\"files\":[{\"chunks\":[{\"offset\":0,\"sha256\":\"0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5\",\"size\":8}],\"path\":\"input-0001/value.txt\",\"sha256\":\"0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5\",\"size\":8}],\"format_version\":1,\"sha256\":\"042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd\",\"total_bytes\":8},\"order_id\":\"ca719368-33f5-4259-9d4c-a54917e78897\",\"order_revision\":1,\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"request_sha256\":\"8bb357ff84fa5c9c5e0d395a902b662baefdf6bea7b64758356353669f1df4f2\",\"sources\":[{\"alias\":\"input-0001\",\"name\":\"Source\"}]},\"order_id\":\"ca719368-33f5-4259-9d4c-a54917e78897\",\"preflight\":{\"kind\":\"owner\",\"review\":{\"access_mode\":\"autonomous\",\"allowed_tools\":[\"create_artifact\",\"list_artifacts\",\"read_artifact\",\"request_input\",\"list_files\",\"read_text_file\",\"stat_file\",\"write_text_file\",\"create_directory\",\"rename_file\",\"remove_file\",\"restore_file\",\"execute_program\"],\"budgets\":{\"max_output_tokens\":4096,\"max_seconds\":1800,\"max_steps\":64},\"environment\":{\"definition_sha256\":\"eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8\",\"environment_id\":\"0870bb9c-f2ac-48f8-98b2-4313e55cbf13\",\"qualification_sha256\":\"2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b\",\"version_id\":\"6cc0d560-cc1a-491a-b44e-9ef2653db4fd\"},\"executor\":\"managed-input-fixture\",\"folders\":[{\"id\":\"source\",\"name\":\"Source\",\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"resource_id\":\"798b2fe5029f8ed634078120fc25e0710ceb85636f581a51b99ad6320811b01c\",\"revision\":\"25243c6fc8004ce3cb498b987510ad3d2081d198eece8f5a83134de3bf3cbbf7\",\"writable\":true},{\"id\":\"workspace:ca719368-33f5-4259-9d4c-a54917e78897\",\"name\":\"Workspace\",\"order_id\":\"ca719368-33f5-4259-9d4c-a54917e78897\",\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"resource_id\":\"b597811bda3b14c23e9b7c16e90509079446b932930d1df3140e2b0efcc78858\",\"revision\":\"de7dcb108dd5c9a6d051b30970e510a89a84e99c0e49ffc2d8f8bf86455d147b\",\"writable\":true}],\"policy_revision\":1,\"provider\":{\"context_tokens\":32768,\"credential_ready\":true,\"credential_required\":false,\"endpoint\":\"\",\"id\":\"fixture\",\"kind\":\"test\",\"model\":\"fixture\",\"name\":\"Fixture\",\"revision\":1},\"ready\":true}},\"project_id\":\"ba542fca-59ab-4e73-b894-46513fd613fe\",\"request_sha256\":\"00087bff85d32faa283b1965a4705765f9892ff9a91561bd62485e0e6afacdca\",\"spec_sha256\":\"fd3920275183e44ec22d27dc7b2e85f2763bc111affd10d7d9cce0572390fff9\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"5dde61b9-22bb-4268-8f08-e4485b099de6\"},\"kind\":\"managed_runner\",\"programs\":{\"probe\":\"bin/probe\"},\"runner\":{\"adapter_build_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"control_public_key\":[209,173,175,34,29,116,2,4,208,192,61,157,92,40,201,139,58,254,24,26,233,156,122,45,7,10,42,244,0,166,66,101],\"generation\":1,\"runner_id\":\"managed-input-fixture\",\"runner_public_key\":[154,239,222,167,203,103,154,81,205,198,212,80,37,34,222,128,231,212,7,50,171,249,192,246,115,145,44,68,37,80,103,8]},\"target\":{\"identity_sha256\":\"9ae38aebcd4ed21d2b3356e0f6e60a34a837072a10a3f4ca4aeb04dfd34eb2c2\",\"revision\":2,\"target_id\":\"d5ac63c7ebff1966299f9330920859baac6f3e5a5be0b2fc87f3d8ca46c09e6e\"}},\"workspace\":{\"id\":\"26485bf9-0631-4b4e-9ad3-5716da2f6ede\",\"input\":{\"manifest_sha256\":\"042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd\",\"sha256\":\"1d1d5eb97aeb255a8cc981022e31a6b57735638342971d0884b702934352bc3a\",\"snapshot_id\":\"05347d77-4ff6-4e56-b863-a177b3c2e595\"}}}",
+    "committed_run_id": null,
+    "plan": {
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "boundary": {
+        "connector_aliases": [],
+        "environment": {
+          "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+          "environment_id": "0870bb9c-f2ac-48f8-98b2-4313e55cbf13",
+          "qualification_sha256": "2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b",
+          "version_id": "6cc0d560-cc1a-491a-b44e-9ef2653db4fd"
+        },
+        "executor": "managed-input-fixture",
+        "folders": [
+          {
+            "id": "source",
+            "name": "Source",
+            "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+            "resource_id": "798b2fe5029f8ed634078120fc25e0710ceb85636f581a51b99ad6320811b01c",
+            "revision": "25243c6fc8004ce3cb498b987510ad3d2081d198eece8f5a83134de3bf3cbbf7",
+            "writable": true
+          },
+          {
+            "id": "workspace:ca719368-33f5-4259-9d4c-a54917e78897",
+            "name": "Workspace",
+            "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+            "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+            "resource_id": "b597811bda3b14c23e9b7c16e90509079446b932930d1df3140e2b0efcc78858",
+            "revision": "de7dcb108dd5c9a6d051b30970e510a89a84e99c0e49ffc2d8f8bf86455d147b",
+            "writable": true
+          }
+        ],
+        "input_snapshot_bound": true,
+        "process_access": "qualified_environment",
+        "process_network": {
+          "kind": "denied"
+        }
+      },
+      "created_at": 1793371798426,
+      "expires_at": 1793372098426,
+      "format_version": 2,
+      "id": "9409b291-d637-467c-a195-f2003dc174f2",
+      "idempotency_key": "confirmed",
+      "input": {
+        "created_at": 1793371798383,
+        "format_version": 1,
+        "id": "05347d77-4ff6-4e56-b863-a177b3c2e595",
+        "manifest": {
+          "directories": [
+            "input-0001"
+          ],
+          "files": [
+            {
+              "chunks": [
+                {
+                  "offset": 0,
+                  "sha256": "0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5",
+                  "size": 8
+                }
+              ],
+              "path": "input-0001/value.txt",
+              "sha256": "0682c5f2076f099c34cfdd15a9e063849ed437a49677e6fcc5b4198c76575be5",
+              "size": 8
+            }
+          ],
+          "format_version": 1,
+          "sha256": "042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd",
+          "total_bytes": 8
+        },
+        "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+        "order_revision": 1,
+        "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+        "request_sha256": "8bb357ff84fa5c9c5e0d395a902b662baefdf6bea7b64758356353669f1df4f2",
+        "sources": [
+          {
+            "alias": "input-0001",
+            "name": "Source"
+          }
+        ]
+      },
+      "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+      "preflight": {
+        "kind": "owner",
+        "review": {
+          "access_mode": "autonomous",
+          "allowed_tools": [
+            "create_artifact",
+            "list_artifacts",
+            "read_artifact",
+            "request_input",
+            "list_files",
+            "read_text_file",
+            "stat_file",
+            "write_text_file",
+            "create_directory",
+            "rename_file",
+            "remove_file",
+            "restore_file",
+            "execute_program"
+          ],
+          "budgets": {
+            "max_output_tokens": 4096,
+            "max_seconds": 1800,
+            "max_steps": 64
+          },
+          "environment": {
+            "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+            "environment_id": "0870bb9c-f2ac-48f8-98b2-4313e55cbf13",
+            "qualification_sha256": "2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b",
+            "version_id": "6cc0d560-cc1a-491a-b44e-9ef2653db4fd"
+          },
+          "executor": "managed-input-fixture",
+          "folders": [
+            {
+              "id": "source",
+              "name": "Source",
+              "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+              "resource_id": "798b2fe5029f8ed634078120fc25e0710ceb85636f581a51b99ad6320811b01c",
+              "revision": "25243c6fc8004ce3cb498b987510ad3d2081d198eece8f5a83134de3bf3cbbf7",
+              "writable": true
+            },
+            {
+              "id": "workspace:ca719368-33f5-4259-9d4c-a54917e78897",
+              "name": "Workspace",
+              "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+              "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+              "resource_id": "b597811bda3b14c23e9b7c16e90509079446b932930d1df3140e2b0efcc78858",
+              "revision": "de7dcb108dd5c9a6d051b30970e510a89a84e99c0e49ffc2d8f8bf86455d147b",
+              "writable": true
+            }
+          ],
+          "policy_revision": 1,
+          "provider": {
+            "context_tokens": 32768,
+            "credential_ready": true,
+            "credential_required": false,
+            "endpoint": "",
+            "id": "fixture",
+            "kind": "test",
+            "model": "fixture",
+            "name": "Fixture",
+            "revision": 1
+          },
+          "ready": true
+        }
+      },
+      "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+      "request_sha256": "00087bff85d32faa283b1965a4705765f9892ff9a91561bd62485e0e6afacdca",
+      "spec_sha256": "fd3920275183e44ec22d27dc7b2e85f2763bc111affd10d7d9cce0572390fff9",
+      "target": {
+        "controller": {
+          "generation": 1,
+          "id": "5dde61b9-22bb-4268-8f08-e4485b099de6"
+        },
+        "kind": "managed_runner",
+        "programs": {
+          "probe": "bin/probe"
+        },
+        "runner": {
+          "adapter_build_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "control_public_key": [
+            209,
+            173,
+            175,
+            34,
+            29,
+            116,
+            2,
+            4,
+            208,
+            192,
+            61,
+            157,
+            92,
+            40,
+            201,
+            139,
+            58,
+            254,
+            24,
+            26,
+            233,
+            156,
+            122,
+            45,
+            7,
+            10,
+            42,
+            244,
+            0,
+            166,
+            66,
+            101
+          ],
+          "generation": 1,
+          "runner_id": "managed-input-fixture",
+          "runner_public_key": [
+            154,
+            239,
+            222,
+            167,
+            203,
+            103,
+            154,
+            81,
+            205,
+            198,
+            212,
+            80,
+            37,
+            34,
+            222,
+            128,
+            231,
+            212,
+            7,
+            50,
+            171,
+            249,
+            192,
+            246,
+            115,
+            145,
+            44,
+            68,
+            37,
+            80,
+            103,
+            8
+          ]
+        },
+        "target": {
+          "identity_sha256": "9ae38aebcd4ed21d2b3356e0f6e60a34a837072a10a3f4ca4aeb04dfd34eb2c2",
+          "revision": 2,
+          "target_id": "d5ac63c7ebff1966299f9330920859baac6f3e5a5be0b2fc87f3d8ca46c09e6e"
+        }
+      },
+      "workspace": {
+        "id": "26485bf9-0631-4b4e-9ad3-5716da2f6ede",
+        "input": {
+          "manifest_sha256": "042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd",
+          "sha256": "1d1d5eb97aeb255a8cc981022e31a6b57735638342971d0884b702934352bc3a",
+          "snapshot_id": "05347d77-4ff6-4e56-b863-a177b3c2e595"
+        }
+      }
+    },
+    "retired": false,
+    "sha256": "d29c18b9bd6e17fc64bb191506e93ca4c6e9802ee52908f815efcb8b1c939535"
+  },
+  "run": {
+    "created_at": 1793371798501,
+    "error_code": null,
+    "id": "293a2388-ab55-4450-956e-b31fab33c4f0",
+    "last_sequence": 1,
+    "revision": 1,
+    "spec": {
+      "access_mode": "autonomous",
+      "agent_config": {
+        "behavior": {
+          "command_allow_groups": [],
+          "command_blacklist": [],
+          "fallback_to_human_on_repeated_failure": true,
+          "max_tool_calls_per_loop": 64
+        },
+        "execution_mode": "execute",
+        "generation": {},
+        "instructions": ""
+      },
+      "allowed_tools": [
+        "create_artifact",
+        "list_artifacts",
+        "read_artifact",
+        "request_input",
+        "list_files",
+        "read_text_file",
+        "stat_file",
+        "write_text_file",
+        "create_directory",
+        "rename_file",
+        "remove_file",
+        "restore_file",
+        "execute_program"
+      ],
+      "budgets": {
+        "max_output_tokens": 4096,
+        "max_seconds": 1800,
+        "max_steps": 64
+      },
+      "environment": {
+        "definition_sha256": "eebd23be08e805f1dd4421e09fd72c47d694f58a8c608568a6918fb57db6cad8",
+        "environment_id": "0870bb9c-f2ac-48f8-98b2-4313e55cbf13",
+        "qualification_sha256": "2555a4d39d5be7d44f478c56ac68f62349e625380c48999ed42a79674d16cc4b",
+        "version_id": "6cc0d560-cc1a-491a-b44e-9ef2653db4fd"
+      },
+      "executor": "managed-input-fixture",
+      "folders": [
+        {
+          "id": "source",
+          "name": "Source",
+          "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+          "resource_id": "798b2fe5029f8ed634078120fc25e0710ceb85636f581a51b99ad6320811b01c",
+          "revision": "25243c6fc8004ce3cb498b987510ad3d2081d198eece8f5a83134de3bf3cbbf7",
+          "writable": true
+        },
+        {
+          "id": "workspace:ca719368-33f5-4259-9d4c-a54917e78897",
+          "name": "Workspace",
+          "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+          "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+          "resource_id": "b597811bda3b14c23e9b7c16e90509079446b932930d1df3140e2b0efcc78858",
+          "revision": "de7dcb108dd5c9a6d051b30970e510a89a84e99c0e49ffc2d8f8bf86455d147b",
+          "writable": true
+        }
+      ],
+      "input_workspace": {
+        "id": "26485bf9-0631-4b4e-9ad3-5716da2f6ede",
+        "input": {
+          "manifest_sha256": "042d195d67d6c8cd8868a80abd9b37d24a1e1424390eefe771af45ade50dcccd",
+          "sha256": "1d1d5eb97aeb255a8cc981022e31a6b57735638342971d0884b702934352bc3a",
+          "snapshot_id": "05347d77-4ff6-4e56-b863-a177b3c2e595"
+        }
+      },
+      "order_id": "ca719368-33f5-4259-9d4c-a54917e78897",
+      "policy_revision": 1,
+      "project_id": "ba542fca-59ab-4e73-b894-46513fd613fe",
+      "prompt": "Use a separate copy",
+      "provider": {
+        "context_tokens": 32768,
+        "credential_ready": true,
+        "credential_required": false,
+        "endpoint": "",
+        "id": "fixture",
+        "kind": "test",
+        "model": "fixture",
+        "name": "Fixture",
+        "revision": 1
+      }
+    },
+    "started_at": null,
+    "state": "queued",
+    "steps": 0,
+    "updated_at": 1793371798501,
+    "usage": {
+      "cost": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "price_source_version": null
+    }
+  }
+}

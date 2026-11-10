@@ -1,0 +1,82 @@
+# Prepared domain/TLS gateway. No infrastructure or certificates are created by this profile.
+name: cowork-enterprise-production
+services:
+  management:
+    image: ${COWORK_SERVER_IMAGE:?Digest-pinned server image required}
+    restart: unless-stopped
+    cpus: 2
+    mem_limit: 1024m
+    pids_limit: 256
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      COWORK_MODE: management
+      COWORK_LISTEN_ADDR: 0.0.0.0:8080
+      DATABASE_URL_FILE: /run/secrets/management_database_url
+      COWORK_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      COWORK_MANAGEMENT_AUDIT_KEY_FILE: /run/secrets/audit_key
+      COWORK_AUTH_MASTER_KEY_FILE: /run/secrets/auth_master_key
+      COWORK_PROVISIONER_TOKEN_FILE: /run/secrets/provisioner_token
+      COWORK_MANAGEMENT_POLICY_CEILING_FILE: /etc/cowork/platform-policy.json
+      COWORK_PUBLIC_ORIGIN: ${COWORK_PUBLIC_ORIGIN:?Prepared management origin required}
+      COWORK_INSTANCE_GATEWAY_DOMAIN: ${COWORK_INSTANCE_GATEWAY_DOMAIN:?Prepared instance domain required}
+      COWORK_INSTANCE_URL_TEMPLATE: ${COWORK_INSTANCE_URL_TEMPLATE:?Prepared launch template required}
+      COWORK_WEB_PUSH_ENABLED: "false"
+    secrets: [management_database_url, bootstrap_token, audit_key, auth_master_key, provisioner_token]
+    configs:
+      - source: platform_policy
+        target: /etc/cowork/platform-policy.json
+    ports: ["127.0.0.1:${COWORK_MANAGEMENT_PORT:-8081}:8080"]
+    networks: [services, routing]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+  web:
+    image: ${COWORK_WEB_IMAGE:?Digest-pinned current enterprise web image required}
+    restart: unless-stopped
+    cpus: .5
+    mem_limit: 256m
+    pids_limit: 128
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["80:8080", "443:8443"]
+    networks: [routing]
+    secrets: [gateway_certificate, gateway_private_key]
+    configs:
+      - source: production_nginx
+        target: /etc/nginx/conf.d/default.conf
+    depends_on:
+      management: {condition: service_healthy}
+configs:
+  production_nginx:
+    file: ${COWORK_GATEWAY_NGINX:?Prepared nginx configuration required}
+  platform_policy:
+    file: ${COWORK_PLATFORM_POLICY_FILE:?Reviewed platform policy required}
+networks:
+  services:
+    name: ${COWORK_SERVICES_NETWORK:-cowork-services}
+    external: true
+  routing:
+    name: ${COWORK_ROUTING_NETWORK:-cowork-routing}
+    external: true
+secrets:
+  gateway_certificate:
+    file: ${COWORK_GATEWAY_CERTIFICATE:?Prepared certificate required}
+  gateway_private_key:
+    file: ${COWORK_GATEWAY_PRIVATE_KEY:?Prepared private key required}
+  management_database_url:
+    file: ${COWORK_MANAGEMENT_SECRETS:?Private management secrets directory required}/management_database_url
+  bootstrap_token:
+    file: ${COWORK_MANAGEMENT_SECRETS}/bootstrap_token
+  audit_key:
+    file: ${COWORK_MANAGEMENT_SECRETS}/audit_key
+  auth_master_key:
+    file: ${COWORK_MANAGEMENT_SECRETS}/auth_master_key
+  provisioner_token:
+    file: ${COWORK_MANAGEMENT_SECRETS}/provisioner_token

@@ -1,0 +1,254 @@
+{
+  "prepare": {
+    "input": {
+      "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+      "sha256": "0f68fa642b8cd7a584349d106acfaf5bdf8a95a5b720bd208a1d47f2635a2c7c",
+      "snapshot_id": "ccd2b2d8-264c-42bd-8460-11c27cf7f337"
+    },
+    "request": {
+      "access_mode": "confirm_mutations",
+      "base_revision": 1,
+      "budgets": {
+        "max_output_tokens": 1024,
+        "max_seconds": 180,
+        "max_steps": 32,
+        "max_total_tokens": 131072
+      },
+      "idempotency_key": "document-plan",
+      "kind": "workflow",
+      "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+      "prompt": "Use the selected frozen document workspace.",
+      "version_id": "769fa281-0cac-40b7-a6b9-6e56e70a0816",
+      "workflow_id": "e23ac60f-c3ba-4c7f-b001-b38bbb56535f"
+    },
+    "target": {
+      "kind": "document_engine"
+    }
+  },
+  "prepared": {
+    "canonical_json": "{\"actor\":{\"kind\":\"installation_owner\"},\"boundary\":{\"connector_aliases\":[],\"environment\":null,\"executor\":\"local-v2\",\"folders\":[{\"id\":\"workspace:00efb5fe-67b0-409c-962d-49fa7d86b31b\",\"name\":\"Workspace\",\"order_id\":\"00efb5fe-67b0-409c-962d-49fa7d86b31b\",\"project_id\":\"a7f0b5e7-f934-496c-bb9a-bb995da7867b\",\"resource_id\":\"612fac9f332bc4f5404b395875e6ad4dc35ea42e5ec24532ae37e3c27bf16129\",\"revision\":\"42a9ca15d558420f227672205fde37847b19d037bb9e0637a95c3927d4ed86c8\",\"writable\":true}],\"input_snapshot_bound\":true,\"process_access\":\"user_rights\",\"process_network\":{\"kind\":\"user_rights\"}},\"created_at\":1793372662733,\"expires_at\":1793372962733,\"format_version\":2,\"id\":\"bca74969-38fb-43e9-8d5c-701a5ea13f68\",\"idempotency_key\":\"document-plan\",\"input\":{\"created_at\":1793372662679,\"format_version\":1,\"id\":\"ccd2b2d8-264c-42bd-8460-11c27cf7f337\",\"manifest\":{\"directories\":[\"input-0001\"],\"files\":[],\"format_version\":1,\"sha256\":\"78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c\",\"total_bytes\":0},\"order_id\":\"00efb5fe-67b0-409c-962d-49fa7d86b31b\",\"order_revision\":1,\"project_id\":\"a7f0b5e7-f934-496c-bb9a-bb995da7867b\",\"request_sha256\":\"cefeebdb9dda1a1afa9c82bea543f33b1987d93f732a851b5cb4b9a56336ef37\",\"sources\":[{\"alias\":\"input-0001\",\"name\":\"Workspace\"}]},\"order_id\":\"00efb5fe-67b0-409c-962d-49fa7d86b31b\",\"preflight\":{\"kind\":\"owner\",\"review\":{\"access_mode\":\"confirm_mutations\",\"allowed_tools\":[\"create_artifact\",\"list_artifacts\",\"read_artifact\",\"request_input\",\"list_files\",\"read_text_file\",\"stat_file\",\"write_text_file\",\"create_directory\",\"rename_file\",\"remove_file\",\"restore_file\",\"document_read\",\"document_write\",\"image_edit\"],\"budgets\":{\"max_output_tokens\":1024,\"max_seconds\":180,\"max_steps\":32,\"max_total_tokens\":131072},\"executor\":\"local-v2\",\"max_parallel\":1,\"name\":\"Document workflow\",\"policy_revision\":1,\"ready\":true,\"roles\":[{\"provider\":{\"capabilities\":{\"image_input\":true},\"context_tokens\":32768,\"credential_ready\":true,\"credential_required\":false,\"endpoint\":\"http://127.0.0.1:60728\",\"id\":\"model\",\"kind\":\"openai_compatible\",\"model\":\"workflow-documents\",\"name\":\"Explicit local document fixture\",\"revision\":1},\"role_id\":\"worker\"}],\"version_revision\":1,\"workflow\":{\"definition_sha256\":\"29dd5d2108cdfcaa64ae98c40b4b0815d77957b710b096e77fa10a1c84fc940a\",\"plan_sha256\":\"7d2b6ab726f5a1e1c7bcd79b4471b47e7d7796140bda9bca67bab1ea586655c2\",\"version_id\":\"769fa281-0cac-40b7-a6b9-6e56e70a0816\",\"workflow_id\":\"e23ac60f-c3ba-4c7f-b001-b38bbb56535f\"}}},\"project_id\":\"a7f0b5e7-f934-496c-bb9a-bb995da7867b\",\"request_sha256\":\"e15d50c6c824ce1c6195a84289e790d61474dd15c999826b02043f87e4f5c053\",\"spec_sha256\":\"8e66e8c54bdb2f3bf3cbac70f17c483dd7b7135d288d13cc33db2f824c16a372\",\"target\":{\"controller\":{\"generation\":1,\"id\":\"02d60024-3b1d-4008-9e65-2714b085a856\"},\"engine_revision\":\"e448543a6f8b4d47fc37429cb9e47863500d565425ef01ec3bb2dc34e81352da\",\"kind\":\"document_engine\"},\"workspace\":{\"id\":\"f32e2f5d-c4d5-4c47-89dc-2dd688004782\",\"input\":{\"manifest_sha256\":\"78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c\",\"sha256\":\"0f68fa642b8cd7a584349d106acfaf5bdf8a95a5b720bd208a1d47f2635a2c7c\",\"snapshot_id\":\"ccd2b2d8-264c-42bd-8460-11c27cf7f337\"}}}",
+    "committed_run_id": null,
+    "plan": {
+      "actor": {
+        "kind": "installation_owner"
+      },
+      "boundary": {
+        "connector_aliases": [],
+        "environment": null,
+        "executor": "local-v2",
+        "folders": [
+          {
+            "id": "workspace:00efb5fe-67b0-409c-962d-49fa7d86b31b",
+            "name": "Workspace",
+            "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+            "project_id": "a7f0b5e7-f934-496c-bb9a-bb995da7867b",
+            "resource_id": "612fac9f332bc4f5404b395875e6ad4dc35ea42e5ec24532ae37e3c27bf16129",
+            "revision": "42a9ca15d558420f227672205fde37847b19d037bb9e0637a95c3927d4ed86c8",
+            "writable": true
+          }
+        ],
+        "input_snapshot_bound": true,
+        "process_access": "user_rights",
+        "process_network": {
+          "kind": "user_rights"
+        }
+      },
+      "created_at": 1793372662733,
+      "expires_at": 1793372962733,
+      "format_version": 2,
+      "id": "bca74969-38fb-43e9-8d5c-701a5ea13f68",
+      "idempotency_key": "document-plan",
+      "input": {
+        "created_at": 1793372662679,
+        "format_version": 1,
+        "id": "ccd2b2d8-264c-42bd-8460-11c27cf7f337",
+        "manifest": {
+          "directories": [
+            "input-0001"
+          ],
+          "files": [],
+          "format_version": 1,
+          "sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "total_bytes": 0
+        },
+        "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+        "order_revision": 1,
+        "project_id": "a7f0b5e7-f934-496c-bb9a-bb995da7867b",
+        "request_sha256": "cefeebdb9dda1a1afa9c82bea543f33b1987d93f732a851b5cb4b9a56336ef37",
+        "sources": [
+          {
+            "alias": "input-0001",
+            "name": "Workspace"
+          }
+        ]
+      },
+      "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+      "preflight": {
+        "kind": "owner",
+        "review": {
+          "access_mode": "confirm_mutations",
+          "allowed_tools": [
+            "create_artifact",
+            "list_artifacts",
+            "read_artifact",
+            "request_input",
+            "list_files",
+            "read_text_file",
+            "stat_file",
+            "write_text_file",
+            "create_directory",
+            "rename_file",
+            "remove_file",
+            "restore_file",
+            "document_read",
+            "document_write",
+            "image_edit"
+          ],
+          "budgets": {
+            "max_output_tokens": 1024,
+            "max_seconds": 180,
+            "max_steps": 32,
+            "max_total_tokens": 131072
+          },
+          "executor": "local-v2",
+          "max_parallel": 1,
+          "name": "Document workflow",
+          "policy_revision": 1,
+          "ready": true,
+          "roles": [
+            {
+              "provider": {
+                "capabilities": {
+                  "image_input": true
+                },
+                "context_tokens": 32768,
+                "credential_ready": true,
+                "credential_required": false,
+                "endpoint": "http://127.0.0.1:60728",
+                "id": "model",
+                "kind": "openai_compatible",
+                "model": "workflow-documents",
+                "name": "Explicit local document fixture",
+                "revision": 1
+              },
+              "role_id": "worker"
+            }
+          ],
+          "version_revision": 1,
+          "workflow": {
+            "definition_sha256": "29dd5d2108cdfcaa64ae98c40b4b0815d77957b710b096e77fa10a1c84fc940a",
+            "plan_sha256": "7d2b6ab726f5a1e1c7bcd79b4471b47e7d7796140bda9bca67bab1ea586655c2",
+            "version_id": "769fa281-0cac-40b7-a6b9-6e56e70a0816",
+            "workflow_id": "e23ac60f-c3ba-4c7f-b001-b38bbb56535f"
+          }
+        }
+      },
+      "project_id": "a7f0b5e7-f934-496c-bb9a-bb995da7867b",
+      "request_sha256": "e15d50c6c824ce1c6195a84289e790d61474dd15c999826b02043f87e4f5c053",
+      "spec_sha256": "8e66e8c54bdb2f3bf3cbac70f17c483dd7b7135d288d13cc33db2f824c16a372",
+      "target": {
+        "controller": {
+          "generation": 1,
+          "id": "02d60024-3b1d-4008-9e65-2714b085a856"
+        },
+        "engine_revision": "e448543a6f8b4d47fc37429cb9e47863500d565425ef01ec3bb2dc34e81352da",
+        "kind": "document_engine"
+      },
+      "workspace": {
+        "id": "f32e2f5d-c4d5-4c47-89dc-2dd688004782",
+        "input": {
+          "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "sha256": "0f68fa642b8cd7a584349d106acfaf5bdf8a95a5b720bd208a1d47f2635a2c7c",
+          "snapshot_id": "ccd2b2d8-264c-42bd-8460-11c27cf7f337"
+        }
+      }
+    },
+    "retired": false,
+    "sha256": "322b90901708831f88b029e90773d66599c30f538a75e96c1afb7e199b0033c0"
+  },
+  "run": {
+    "created_at": 1793372662856,
+    "error_code": null,
+    "id": "c3da22a6-7432-42af-85c5-c989deb97e88",
+    "last_sequence": 2,
+    "revision": 1,
+    "spec": {
+      "access_mode": "confirm_mutations",
+      "agent_config": {
+        "behavior": {
+          "command_allow_groups": [],
+          "command_blacklist": [],
+          "fallback_to_human_on_repeated_failure": true,
+          "max_tool_calls_per_loop": 64
+        },
+        "execution_mode": "execute",
+        "generation": {},
+        "instructions": ""
+      },
+      "allowed_tools": [
+        "create_artifact",
+        "list_artifacts",
+        "read_artifact",
+        "request_input",
+        "list_files",
+        "read_text_file",
+        "stat_file",
+        "write_text_file",
+        "create_directory",
+        "rename_file",
+        "remove_file",
+        "restore_file",
+        "document_read",
+        "document_write",
+        "image_edit"
+      ],
+      "budgets": {
+        "max_output_tokens": 1024,
+        "max_seconds": 180,
+        "max_steps": 32,
+        "max_total_tokens": 131072
+      },
+      "executor": "local-v2",
+      "folders": [
+        {
+          "id": "workspace:00efb5fe-67b0-409c-962d-49fa7d86b31b",
+          "name": "Workspace",
+          "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+          "project_id": "a7f0b5e7-f934-496c-bb9a-bb995da7867b",
+          "resource_id": "612fac9f332bc4f5404b395875e6ad4dc35ea42e5ec24532ae37e3c27bf16129",
+          "revision": "42a9ca15d558420f227672205fde37847b19d037bb9e0637a95c3927d4ed86c8",
+          "writable": true
+        }
+      ],
+      "input_workspace": {
+        "id": "f32e2f5d-c4d5-4c47-89dc-2dd688004782",
+        "input": {
+          "manifest_sha256": "78a9a6b0f9c8e1924adee7a083d30f6380d1f7153f866b26b74745d537eed70c",
+          "sha256": "0f68fa642b8cd7a584349d106acfaf5bdf8a95a5b720bd208a1d47f2635a2c7c",
+          "snapshot_id": "ccd2b2d8-264c-42bd-8460-11c27cf7f337"
+        }
+      },
+      "order_id": "00efb5fe-67b0-409c-962d-49fa7d86b31b",
+      "policy_revision": 1,
+      "project_id": "a7f0b5e7-f934-496c-bb9a-bb995da7867b",
+      "prompt": "Use the selected frozen document workspace.",
+      "provider": null,
+      "workflow": {
+        "definition_sha256": "29dd5d2108cdfcaa64ae98c40b4b0815d77957b710b096e77fa10a1c84fc940a",
+        "plan_sha256": "7d2b6ab726f5a1e1c7bcd79b4471b47e7d7796140bda9bca67bab1ea586655c2",
+        "version_id": "769fa281-0cac-40b7-a6b9-6e56e70a0816",
+        "workflow_id": "e23ac60f-c3ba-4c7f-b001-b38bbb56535f"
+      }
+    },
+    "started_at": null,
+    "state": "queued",
+    "steps": 0,
+    "updated_at": 1793372662856,
+    "usage": {
+      "cost": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "price_source_version": null
+    }
+  }
+}

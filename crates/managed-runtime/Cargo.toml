@@ -1,0 +1,56 @@
+[package]
+name = "cowork-managed-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+containerd = ["dep:containerd-client", "dep:hyper-util", "dep:tokio", "dep:tonic", "dep:tower", "dep:cowork-runner-protocol", "dep:cowork-contracts", "dep:cowork-domain", "dep:cowork-broker", "dep:prost", "dep:prost-types"]
+
+[dependencies]
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cowork-executor.workspace = true
+uuid.workspace = true
+containerd-client = { version = "=0.9.0", optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+tokio = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+cowork-runner-protocol = { workspace = true, optional = true }
+cowork-contracts = { workspace = true, optional = true }
+cowork-domain = { workspace = true, optional = true }
+cowork-broker = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { version = "0.14", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "cowork-runtime-fence"
+path = "src/bin/runtime_fence.rs"
+required-features = ["containerd"]
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+sqlx.workspace = true
+
+[[bin]]
+name = "cowork-runsc-driver"
+path = "src/bin/runsc_driver.rs"
+required-features = ["containerd"]
+

@@ -1,0 +1,165 @@
+{
+  "definition": {
+    "controls": {
+      "after": {
+        "name": "Nach der Wartezeit fortsetzen",
+        "dependencies": [
+          "wait"
+        ],
+        "operation": {
+          "kind": "compose"
+        }
+      },
+      "wait": {
+        "name": "Pause vor der Fortsetzung",
+        "dependencies": [],
+        "operation": {
+          "kind": "wait",
+          "seconds_input": "seconds"
+        }
+      }
+    },
+    "dataflow": {
+      "input": {
+        "type": "object",
+        "fields": {
+          "delay": {
+            "type": "integer"
+          }
+        }
+      },
+      "steps": {
+        "after": {
+          "inputs": {
+            "scheduled_at": {
+              "value_type": {
+                "type": "integer"
+              },
+              "value": {
+                "source": "step",
+                "step_id": "wait",
+                "pointer": "/wake_at"
+              }
+            }
+          },
+          "output": {
+            "type": "object",
+            "fields": {
+              "scheduled_at": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "wait": {
+          "inputs": {
+            "seconds": {
+              "value_type": {
+                "type": "integer"
+              },
+              "value": {
+                "source": "input",
+                "pointer": "/delay"
+              }
+            }
+          },
+          "output": {
+            "type": "object",
+            "fields": {
+              "wake_at": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
+    "format_version": 3,
+    "name": "Geplant fortsetzen",
+    "mode": {
+      "mode": "parallel",
+      "max_parallel": 2
+    },
+    "failure": "stop",
+    "rights": {
+      "tools": [],
+      "folders": []
+    },
+    "budgets": {
+      "max_steps": 32,
+      "max_seconds": 60,
+      "max_output_tokens": 512,
+      "max_total_tokens": 65536
+    },
+    "roles": [],
+    "steps": []
+  },
+  "scope": {
+    "rights": {
+      "tools": [
+        "list_artifacts",
+        "read_artifact",
+        "request_input"
+      ],
+      "folders": []
+    },
+    "budgets": {
+      "max_steps": 32,
+      "max_seconds": 60,
+      "max_output_tokens": 512,
+      "max_total_tokens": 65536
+    },
+    "max_parallel": 4
+  },
+  "profiles": [],
+  "source_sha256": "7e8898c1d1728ce313d0efc251fd1d3ac56113942ce91dfe21d0501e69758672",
+  "sha256": "843bb38c743928c7b5d24804bd53251114620784b7955fd275495cf95ef0a800",
+  "roles": {},
+  "nodes": {
+    "after": {
+      "id": "after",
+      "goal": "Nach der Wartezeit fortsetzen",
+      "dependencies": [
+        "wait"
+      ],
+      "rights": {
+        "tools": [],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 60,
+        "max_output_tokens": 512,
+        "max_total_tokens": 65536
+      },
+      "depth": 0,
+      "parent": null
+    },
+    "wait": {
+      "id": "wait",
+      "goal": "Pause vor der Fortsetzung",
+      "dependencies": [],
+      "rights": {
+        "tools": [],
+        "folders": []
+      },
+      "budgets": {
+        "max_steps": 32,
+        "max_seconds": 60,
+        "max_output_tokens": 512,
+        "max_total_tokens": 65536
+      },
+      "depth": 0,
+      "parent": null
+    }
+  },
+  "budgets": {
+    "max_steps": 32,
+    "max_seconds": 60,
+    "max_output_tokens": 512,
+    "max_total_tokens": 65536
+  },
+  "max_parallel": 2,
+  "max_depth": 0,
+  "max_delegations": 0
+}

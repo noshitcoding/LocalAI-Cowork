@@ -1,0 +1,28 @@
+[package]
+name = "cowork-audit-witness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+cowork-contracts.workspace = true
+cowork-identity.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[[bin]]
+name = "cowork-audit-witness"
+path = "src/main.rs"
