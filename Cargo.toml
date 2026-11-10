@@ -28,7 +28,7 @@ axum = { version = "0.8", features = ["ws"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 libc = "0.2"
-jsonschema = { version = "=0.58.6", default-features = false }
+jsonschema = { version = "=0.60.2", default-features = false }
 percent-encoding = "2.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 ring = "=0.17.14"
