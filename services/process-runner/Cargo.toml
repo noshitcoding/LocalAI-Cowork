@@ -10,7 +10,7 @@ managed-runtime-service = ["dep:cowork-managed-runtime"]
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 cowork-contracts.workspace = true
 cowork-domain.workspace = true
 cowork-executor.workspace = true

@@ -14,7 +14,7 @@ cowork-agent-sandbox = { path = "crates/agent-sandbox" }
 tonic = { version = "0.14", default-features = false, features = ["transport", "codegen"] }
 tonic-prost = "0.14"
 prost = "0.14"
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 chrono-tz = "0.10"
 cron = "=0.15.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }

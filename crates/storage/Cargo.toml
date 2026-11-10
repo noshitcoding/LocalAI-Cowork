@@ -22,7 +22,7 @@ jsonschema.workspace = true
 sha2.workspace = true
 futures-util.workspace = true
 tempfile.workspace = true
-base64 = "=0.22.1"
+base64 = "=0.23.1"
 sqlx.workspace = true
 percent-encoding.workspace = true
 uuid.workspace = true

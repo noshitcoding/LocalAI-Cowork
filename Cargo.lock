@@ -711,7 +711,7 @@ dependencies = [
 name = "cowork-browser-host"
 version = "2.0.0-alpha.8"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cowork-toolbox",
  "serde_json",
  "sha2",
@@ -746,7 +746,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "cowork-broker",
  "cowork-contracts",
@@ -852,7 +852,7 @@ name = "cowork-identity"
 version = "2.0.0-alpha.8"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "cowork-contracts",
  "cowork-secrets",
@@ -973,7 +973,7 @@ version = "2.0.0-alpha.8"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
  "cowork-agent-sandbox",
@@ -1027,7 +1027,7 @@ version = "2.0.0-alpha.8"
 dependencies = [
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cowork-broker",
  "cowork-contracts",
  "cowork-domain",
@@ -1062,7 +1062,7 @@ version = "2.0.0-alpha.8"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cowork-contracts",
  "cowork-runner-protocol",
  "futures-util",
@@ -1082,7 +1082,7 @@ dependencies = [
 name = "cowork-secrets"
 version = "2.0.0-alpha.8"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "keyring",
  "reqwest",
  "ring",
@@ -1101,7 +1101,7 @@ name = "cowork-storage"
 version = "2.0.0-alpha.8"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "cowork-broker",
@@ -1136,7 +1136,7 @@ dependencies = [
 name = "cowork-toolbox"
 version = "2.0.0-alpha.8"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "cowork-contracts",
  "cowork-executor",
  "libc",
@@ -3039,7 +3039,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.21.7",
  "chrono",
  "getrandom 0.2.17",
  "http",
