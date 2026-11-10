@@ -1133,7 +1133,9 @@ pub(crate) mod tests {
         #[cfg(windows)]
         // A terminal Enter is CR. CRLF also injects Ctrl+Enter through ConPTY,
         // which PSReadLine binds to editing the current command instead.
-        let command = "Write-Output ('PTY_'+'ECHO_CONFIRMED')\r";
+        // Use a CLR expression to keep this lifecycle probe independent of
+        // cmdlet modules.
+        let command = "[Console]::WriteLine('PTY_'+'ECHO_CONFIRMED')\r";
         #[cfg(unix)]
         let command = "printf 'PTY_%s\\n' 'ECHO_CONFIRMED'\n";
         let input = OwnerTerminalInput {
