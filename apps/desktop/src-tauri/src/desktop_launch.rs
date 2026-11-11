@@ -46,6 +46,37 @@ impl DataDirectory {
         })
     }
 }
+/// Bind explicit launch profiles before Tauri creates configured windows.
+pub fn configure_webviews(
+    config: &mut tauri::utils::config::Config,
+    directory: Option<&Path>,
+) -> Result<(), String> {
+    use tauri::utils::config::{AppDirectoriesOverride, AppDirectoryOverrides};
+    let Some(directory) = directory else {
+        return Ok(());
+    };
+    let webview = valid_path(directory.as_os_str())?.join("webview");
+    let mut directories = match config.app.app_directories_override.take() {
+        Some(AppDirectoriesOverride::Directories(directories)) => directories,
+        Some(AppDirectoriesOverride::Root(root)) => AppDirectoryOverrides {
+            config: Some(root.clone()),
+            data: Some(root.clone()),
+            local_data: None,
+            cache: Some(root.join("caches")),
+            log: Some(root.join("logs")),
+        },
+        None => AppDirectoryOverrides::default(),
+    };
+    directories.local_data = Some(webview);
+    config.app.app_directories_override = Some(AppDirectoriesOverride::Directories(directories));
+    // WindowConfig.data_directory is relative to the OS LocalAppData directory,
+    // not this override. Unset it so every configured WebView uses our absolute
+    // app-local override without invoking Tauri's KnownFolder default closure.
+    for window in &mut config.app.windows {
+        window.data_directory = None;
+    }
+    Ok(())
+}
 fn valid_path(value: &std::ffi::OsStr) -> Result<PathBuf, String> {
     let text = value.to_str().ok_or("invalid_desktop_data_path")?;
     let path = PathBuf::from(value);
@@ -110,6 +141,122 @@ mod tests {
         #[cfg(not(windows))]
         let root = "/home/test/LocalAI Cowork";
         Path::new(root).join(name).into_os_string()
+    }
+    fn webview_config() -> tauri::utils::config::Config {
+        serde_json::from_value(serde_json::json!({
+            "identifier": "dev.localai.cowork.v2.preview",
+            "app": { "windows": [
+                { "label": "main" },
+                { "label": "other", "dataDirectory": "old-relative-profile", "create": false }
+            ] }
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn default_launch_preserves_all_existing_webview_and_app_directory_configuration() {
+        let mut config = webview_config();
+        config.app.app_directories_override = Some(
+            tauri::utils::config::AppDirectoriesOverride::Root(PathBuf::from(path("existing"))),
+        );
+        let before = serde_json::to_value(&config).unwrap();
+        configure_webviews(&mut config, None).unwrap();
+        assert_eq!(serde_json::to_value(config).unwrap(), before);
+    }
+    #[test]
+    fn explicit_profile_routes_every_configured_window_to_its_private_webview_directory() {
+        use tauri::utils::config::{AppDirectoriesOverride, AppDirectoryOverrides};
+        let directory = PathBuf::from(path("Daten ä & spaces"));
+        let mut config = webview_config();
+        let original = config.app.windows.clone();
+        configure_webviews(&mut config, Some(&directory)).unwrap();
+        assert_eq!(
+            config.app.app_directories_override,
+            Some(AppDirectoriesOverride::Directories(AppDirectoryOverrides {
+                local_data: Some(directory.join("webview")),
+                ..Default::default()
+            }))
+        );
+        let mut expected = original;
+        for window in &mut expected {
+            window.data_directory = None;
+        }
+        assert_eq!(config.app.windows, expected);
+    }
+    #[test]
+    fn private_webview_override_preserves_other_individual_app_directory_overrides() {
+        use tauri::utils::config::{AppDirectoriesOverride, AppDirectoryOverrides};
+        let mut config = webview_config();
+        let mut expected = AppDirectoryOverrides {
+            config: Some("$CONFIG/keep-config".into()),
+            data: Some("$DATA/keep-data".into()),
+            local_data: Some("old-webview".into()),
+            cache: Some("$CACHE/keep-cache".into()),
+            log: Some("relative-logs".into()),
+        };
+        config.app.app_directories_override =
+            Some(AppDirectoriesOverride::Directories(expected.clone()));
+        let directory = PathBuf::from(path("private"));
+        configure_webviews(&mut config, Some(&directory)).unwrap();
+        expected.local_data = Some(directory.join("webview"));
+        assert_eq!(
+            config.app.app_directories_override,
+            Some(AppDirectoriesOverride::Directories(expected))
+        );
+    }
+    #[test]
+    fn private_webview_override_preserves_the_other_root_override_locations() {
+        use tauri::utils::config::{AppDirectoriesOverride, AppDirectoryOverrides};
+        let root = PathBuf::from(path("other-app-root"));
+        let directory = PathBuf::from(path("explicit-profile"));
+        let mut config = webview_config();
+        config.app.app_directories_override = Some(AppDirectoriesOverride::Root(root.clone()));
+        configure_webviews(&mut config, Some(&directory)).unwrap();
+        assert_eq!(
+            config.app.app_directories_override,
+            Some(AppDirectoriesOverride::Directories(AppDirectoryOverrides {
+                config: Some(root.clone()),
+                data: Some(root.clone()),
+                local_data: Some(directory.join("webview")),
+                cache: Some(root.join("caches")),
+                log: Some(root.join("logs")),
+            }))
+        );
+    }
+    #[test]
+    fn environment_and_startup_argument_select_the_same_isolated_webview_profile() {
+        let selected = path("private ä");
+        let environment = DataDirectory::parse([], Some(selected)).unwrap();
+        let startup = DataDirectory::parse(
+            environment.autostart_args().into_iter().map(OsString::from),
+            None,
+        )
+        .unwrap();
+        let mut first = webview_config();
+        let mut second = webview_config();
+        configure_webviews(&mut first, environment.path()).unwrap();
+        configure_webviews(&mut second, startup.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap()
+        );
+        let other = PathBuf::from(path("another-profile"));
+        configure_webviews(&mut second, Some(&other)).unwrap();
+        assert_ne!(
+            first.app.app_directories_override,
+            second.app.app_directories_override
+        );
+    }
+    #[test]
+    fn invalid_webview_profile_is_rejected_before_configuration_changes() {
+        for directory in [
+            PathBuf::from("relative"),
+            PathBuf::from(path("safe")).join(".."),
+        ] {
+            let mut config = webview_config();
+            let before = serde_json::to_value(&config).unwrap();
+            assert!(configure_webviews(&mut config, Some(&directory)).is_err());
+            assert_eq!(serde_json::to_value(config).unwrap(), before);
+        }
     }
     #[test]
     fn custom_environment_and_startup_argument_reopen_exact_same_profile_without_global_env() {

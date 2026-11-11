@@ -37,6 +37,10 @@ try {
     $listener = Get-NetTCPConnection -LocalPort 43821 -State Listen
     $daemonProcess = Get-Process -Id $listener.OwningProcess
     if ($daemonProcess.Path -ne $daemonExe) { throw 'Unexpected daemon executable; no external process will be stopped' }
+    $webview = Join-Path $data 'webview'
+    $webviewDirectory = Get-Item -LiteralPath $webview -Force -ErrorAction Stop
+    if (-not $webviewDirectory.PSIsContainer -or ($webviewDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'The private WebView directory is not an ordinary directory' }
+    if (@(Get-ChildItem -LiteralPath $webview -Force -ErrorAction Stop).Count -eq 0) { throw 'WebView did not create profile data in this test private directory' }
     $project = Api POST '/projects' @{name='Disposable desktop lifecycle test'}
     $order = Api POST '/orders' @{project_id=$project.id; title='Desktop process lifetime'}
     $provider = Api POST '/providers' @{name='Slow test provider';kind='test';endpoint='';model='slow-test';context_tokens=32768}
@@ -58,6 +62,7 @@ try {
     if (@($detail.artifacts).Count -ne 1) { throw 'Expected exactly one durable artifact' }
     Write-Output 'PASS: Native Windows executable booted its daemon; an accepted run completed after the desktop process was terminated.'
     Write-Output ('Evidence data directory: '+$data)
+    Write-Output ('Evidence WebView directory: '+$webview)
 } finally {
     if ($desktopProcess -and -not $desktopProcess.HasExited) { Stop-Process -Id $desktopProcess.Id }
     if ($daemonProcess -and -not $daemonProcess.HasExited -and $daemonProcess.Path -eq $daemonExe) { Stop-Process -Id $daemonProcess.Id }

@@ -201,12 +201,35 @@ fn main() {
             std::process::exit(2)
         }
     };
+    #[cfg(windows)]
+    let profile_root = data_directory::Root::default();
+    #[cfg(windows)]
+    let webview_root = if let Some(path) = launch.path() {
+        let guard = data_directory::Root::default();
+        // Validate and retain both namespaces before Tauri can create a WebView.
+        if profile_root
+            .prepare(path)
+            .and_then(|_| guard.prepare(&path.join("webview")))
+            .is_err()
+        {
+            eprintln!("Cannot prepare private V2 data and WebView directories");
+            std::process::exit(2);
+        }
+        Some(guard)
+    } else {
+        None
+    };
+    let mut context = tauri::generate_context!();
+    if let Err(error) = desktop_launch::configure_webviews(context.config_mut(), launch.path()) {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
     let autostart = tauri_plugin_autostart::Builder::new().args(launch.autostart_args());
     #[cfg(target_os = "macos")]
     let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
     let builder = tauri::Builder::default();
     #[cfg(windows)]
-    let builder = builder.manage(data_directory::Root::default());
+    let builder = builder.manage(profile_root).manage(webview_root);
     builder
         .manage(launch)
         .plugin(tauri_plugin_dialog::init())
@@ -323,7 +346,7 @@ fn main() {
             offline_mcp::offline_mcp_result,
             offline_mcp::offline_mcp_original_receipt
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("LocalAI Cowork V2 failed to start")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
