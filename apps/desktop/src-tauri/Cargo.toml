@@ -39,3 +39,6 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+
+[patch.crates-io]
+glib = { path = "vendor/glib" }

@@ -23,10 +23,11 @@ The migration also updates minisign-verify to 0.3.0, introduces typed-path and
 removes the unused arbitrary/derive_arbitrary pair. Existing desktop packages
 have permitted Windows/getrandom dependency-edge rebindings without version
 changes; this does not demonstrate a defect in the former lock. Core deflate
-now selects the upstream zlib-rs backend. Both complete `cargo metadata
---locked` graphs resolved successfully: 557 core packages and 581 desktop
-packages, with unchanged lock bytes during metadata inspection. Metadata
-resolution does not compile or typecheck the codec adaptation.
+now selects the upstream zlib-rs backend. At the ZIP-migration checkpoint, both complete `cargo metadata --locked`
+graphs resolved successfully: 557 core packages and 581 desktop packages,
+with unchanged lock bytes during that inspection. Those historical graphs
+do not establish the later OIDC or local-glib graph. Metadata resolution does
+not compile or typecheck the codec adaptation.
 
 ## OIDC migration and actual pinned RustSec results - 11 November 2026
 
@@ -48,7 +49,7 @@ and no yanked warning; a completed fresh yanked-status check is not claimed.
 | Lock and report | Vulnerabilities | Other reported findings | Audit exit |
 | --- | --- | --- | --- |
 | Updated core, 11 November | 1: rsa 0.9.10 | 4 unmaintained warnings | 1 |
-| Unchanged desktop, retained 10 November report | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
+| Historical pre-backport desktop, retained 10 November report | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
 
 The current core report has no crypto-bigint 0.5.5 finding. The earlier ZIP
 review's core report (two vulnerabilities) and desktop report remain retained;
@@ -63,13 +64,34 @@ now lists RSA **>=0.10.0** as patched. OpenID Connect 4.1.0 still requires
 range. The retained caller review below describes public-key verification;
 it does not waive the scanner finding or qualify the new dependency graph.
 
-Zero desktop vulnerabilities does not mean zero findings or Linux GUI
+## Local glib 0.18.5 VariantStrIter source backport
+
+The retained desktop audit above predates this local backport. Zero desktop
+vulnerabilities in that report does not mean zero findings or Linux GUI
 acceptance. [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
-remains for glib 0.18.5's unsound VariantStrIter. Its published fix is
-**>=0.20.0**, outside the existing Tauri/GTK dependency family's 0.18 range.
-The desktop lock is unchanged and has not been re-audited in this OIDC step.
-A compatible upstream resolution remains open. No ignore, vendored patch,
-security-clean claim or claim of unreachable transitive GUI code was added.
+lists **>=0.20.0** as patched, outside the existing Tauri/GTK family's 0.18
+range. Desktop selects a complete local `glib 0.18.5` source crate through
+`[patch.crates-io]`. The only production-code change is the two-line
+[out-pointer fix](https://github.com/gtk-rs/gtk-rs-core/commit/b5a4071e439bef2b5eea76c3aa25e5ae84839e34):
+a mutable pointer binding and mutable FFI argument. Version, public API,
+ownership, lifetime and iterator bounds are unchanged.
+
+The original MIT LICENSE and COPYRIGHT are retained. They and the
+[backport provenance](../apps/desktop/src-tauri/vendor/README.md) are selected
+as application resources under `licenses/glib/`. Four new real-GLib cases
+cover empty/single/Unicode arrays, forward and reverse operations, exact
+lengths/exhaustion and borrowed strings retained after iterator drop with
+the owning Variant alive. A separate harness uses the actual production
+crate/test source; opt-levels 0, 2 and 3 are separate regression checks, not
+full Desktop/GTK feature or platform qualification.
+
+Normal resolver output, actual path/feature/lock provenance and original
+execution/audit results require separate review. This documentation records
+no new metadata, test, package, installed or release PASS. Keeping version
+0.18.5 can leave the scanner's affected-range finding present despite the
+source fix; no advisory ignore, fake version, audit-exit relabeling or
+security-clean claim is introduced. The RSA 0.9 finding above is independent
+and unchanged. Earlier results do not qualify the new source/graph.
 
 The earlier GitHub snapshot of **63 open manifest alerts** (35 reference,
 21 Enterprise, seven active V2) is historical and uses a different catalogue.
