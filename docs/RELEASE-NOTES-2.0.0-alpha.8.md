@@ -31,6 +31,10 @@ bestandener Releasebeleg.
 - Gezielte Vite-/Vitest-/fast-uri-Aktualisierungen härten den V2-Frontendbau.
   Die getrennte V2-Abhängigkeitsprüfung meldet am eingefrorenen Stand keine
   bekannten npm-Auditfunde; Enterprise wird unabhängig geprüft.
+- OpenID Connect 4.1.0 ersetzt im Core-Lock crypto-bigint 0.5.5 durch
+  0.7.11. Der aktuelle RustSec-Lauf meldet weiterhin RSA 0.9.10 und vier
+  Unmaintained-Hinweise; glib bleibt im unveränderten Desktop-Lock offen.
+  Details und Prüfgrenzen: [Abhängigkeitssicherheit](DEPENDENCY-SECURITY.md).
 - Der Preview-Veröffentlichungsweg bindet Quellstand, Paketbelege,
   Signieridentitäten und originale Build-/Abnahmeartefakte an ihre Prüfsummen
   und Erzeugerläufe. Fehlende Signierung oder installierte Abnahme wird

@@ -28,32 +28,48 @@ now selects the upstream zlib-rs backend. Both complete `cargo metadata
 packages, with unchanged lock bytes during metadata inspection. Metadata
 resolution does not compile or typecheck the codec adaptation.
 
-## Actual pinned RustSec results and remaining findings
+## OIDC migration and actual pinned RustSec results - 11 November 2026
 
-The candidate locks were audited with cargo-audit 0.22.2 against the unchanged
-1,422-advisory RustSec database commit
-`7a40350e1b8ba5b656d909f88222a8059a83d88d`. The commands used `--no-fetch
---no-yanked`, with no advisory ignores or target filters. **Yanked status was
-not checked.** The original reports and nonzero core exit code are retained.
+Core now pins [openidconnect 4.1.0](https://github.com/ramosbugs/openidconnect-rs/releases/tag/4.1.0).
+The normally resolved core lock selects **crypto-bigint 0.7.11** and removes
+0.5.5. This is outside [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)'s
+affected range; its published patched range starts at 0.7.6. This does not
+resolve RSA or the independent desktop GTK findings.
 
-| Lock | Vulnerabilities | Other reported findings | Audit exit |
+On 11 November, that core lock was audited with **cargo-audit 0.22.2** against
+the unchanged 1,422-advisory RustSec database commit
+`7a40350e1b8ba5b656d909f88222a8059a83d88d` (tree
+`e206c84b629992c9f861e5336baed4136eda4216`). All 1,441 tracked database files
+matched before and after. The command used `--no-fetch --file Cargo.lock
+--json`, no advisory ignores or target filters, and neither `--no-yanked`
+nor an offline flag. The report has no explicit fresh-yanked-completion field
+and no yanked warning; a completed fresh yanked-status check is not claimed.
+
+| Lock and report | Vulnerabilities | Other reported findings | Audit exit |
 | --- | --- | --- | --- |
-| Core | 2: crypto-bigint 0.5.5 and rsa 0.9.10 | 4 unmaintained warnings | 1 |
-| Desktop | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
+| Updated core, 11 November | 1: rsa 0.9.10 | 4 unmaintained warnings | 1 |
+| Unchanged desktop, retained 10 November report | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
+
+The current core report has no crypto-bigint 0.5.5 finding. The earlier ZIP
+review's core report (two vulnerabilities) and desktop report remain retained;
+those commands used `--no-fetch --no-yanked`, so **yanked status was not checked**
+there. An outer evidence-path comparison error after the new audit is retained
+separately; a read-only comparison confirmed the database maps matched. No audit
+retry occurred and the actual audit exit remains 1.
+
+[RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html)
+now lists RSA **>=0.10.0** as patched. OpenID Connect 4.1.0 still requires
+`rsa ^0.9`, resolving to 0.9.10, so that upstream fix is outside its permitted
+range. The retained caller review below describes public-key verification;
+it does not waive the scanner finding or qualify the new dependency graph.
 
 Zero desktop vulnerabilities does not mean zero findings or Linux GUI
 acceptance. [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
-remains for glib's unsound VariantStrIter. Version 0.18.5 is the latest 0.18
-release checked for this migration; the existing Tauri/GTK family constrains
-glib to 0.18. A compatible upstream resolution remains open. No ignore,
-vendored patch or claim of unreachable transitive GUI code was added.
-
-The two core findings remain
-[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
-and [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html).
-The earlier caller review below bounds the existing OIDC path to public-key
-verification; it does not remove either scanner finding. Informational
-unmaintained notices also remain in both raw reports.
+remains for glib 0.18.5's unsound VariantStrIter. Its published fix is
+**>=0.20.0**, outside the existing Tauri/GTK dependency family's 0.18 range.
+The desktop lock is unchanged and has not been re-audited in this OIDC step.
+A compatible upstream resolution remains open. No ignore, vendored patch,
+security-clean claim or claim of unreachable transitive GUI code was added.
 
 The earlier GitHub snapshot of **63 open manifest alerts** (35 reference,
 21 Enterprise, seven active V2) is historical and uses a different catalogue.
@@ -62,14 +78,19 @@ or dismissal. The independent Enterprise workspace is unchanged; its
 [security status](../enterprise/docs/PREVIEW-SECURITY-STATUS.md) remains
 separate from V2.
 
-## Validation still required for the combined source
+## Validation limits for the OIDC candidate
 
-At this review, the ZIP migration has resolver, source and advisory checks;
-the combined candidate has not yet been compiled, tested, packaged or
-installed. The added archive regression tests must run with the complete
-local platform checks on the final source revision. Results recorded for
-the previous source do not qualify the changed dependency graph. Actual
-installed-package acceptance, signing and update-feed requirements remain
+The earlier Windows compatibility run passed `cargo check --locked --workspace
+--all-targets` and the existing `cowork-identity` tests: **34 passed, zero failed,
+four PostgreSQL cases ignored**. Subsequent Windows validation passed workspace
+fmt, strict Identity Clippy and the entire Identity suite: **39 passed, zero
+failed, four PostgreSQL cases ignored and zero filtered**. All five dedicated
+offline Android OIDC verifier cases passed, covering independent Ring
+ES256/ES384/EdDSA signatures, authorized-party validation and rejection of invalid
+signatures, `none` and HS256. These remain bounded compatibility/regression
+results, not full candidate or full-matrix qualification. Previous source results
+do not qualify this changed graph. Full platform checks, actual packages and
+installed acceptance remain separate, as do signing and update-feed requirements
 in [the release procedure](V2-PREVIEW-RELEASE.md).
 
 ## Historical review before the ZIP migration

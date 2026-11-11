@@ -152,3 +152,248 @@ pub(super) fn verify(
         groups,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CoreProviderMetadata, CoreTokenResponse, VerificationContext, VerifiedOidcSubject, verify,
+    };
+    use crate::{IdentityError, Result};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use openidconnect::core::CoreJsonWebKeySet;
+    use ring::{
+        rand::SystemRandom,
+        signature::{self, KeyPair},
+    };
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+
+    const ISSUER: &str = "https://offline-issuer.invalid/";
+    const CLIENT: &str = "offline-android-client";
+    const NONCE: &str = "offline-nonce-with-at-least-thirty-two-bytes";
+
+    enum SigningKey {
+        Ec(signature::EcdsaKeyPair),
+        Ed25519(signature::Ed25519KeyPair),
+    }
+
+    impl SigningKey {
+        fn public_key(&self) -> &[u8] {
+            match self {
+                Self::Ec(key) => key.public_key().as_ref(),
+                Self::Ed25519(key) => key.public_key().as_ref(),
+            }
+        }
+
+        fn sign(&self, input: &[u8]) -> Vec<u8> {
+            match self {
+                Self::Ec(key) => key
+                    .sign(&SystemRandom::new(), input)
+                    .unwrap()
+                    .as_ref()
+                    .to_vec(),
+                Self::Ed25519(key) => key.sign(input).as_ref().to_vec(),
+            }
+        }
+    }
+
+    struct Fixture {
+        algorithm: &'static str,
+        key: SigningKey,
+        metadata: CoreProviderMetadata,
+        now: i64,
+    }
+
+    impl Fixture {
+        fn new(algorithm: &'static str) -> Self {
+            // Independent Ring signing exercises the SDK's verification boundary.
+            // Generated private material stays in RAM; no HTTP, DB, or key files.
+            let rng = SystemRandom::new();
+            let key = if algorithm == "EdDSA" {
+                let pkcs8 = signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+                SigningKey::Ed25519(signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap())
+            } else {
+                let signing = match algorithm {
+                    "ES256" => &signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+                    "ES384" => &signature::ECDSA_P384_SHA384_FIXED_SIGNING,
+                    _ => panic!("unsupported offline fixture algorithm"),
+                };
+                let pkcs8 = signature::EcdsaKeyPair::generate_pkcs8(signing, &rng).unwrap();
+                SigningKey::Ec(
+                    signature::EcdsaKeyPair::from_pkcs8(signing, pkcs8.as_ref(), &rng).unwrap(),
+                )
+            };
+            let public = key.public_key();
+            let jwk = if algorithm == "EdDSA" {
+                json!({"kty":"OKP", "crv":"Ed25519", "x":URL_SAFE_NO_PAD.encode(public),
+                    "kid":"offline-key", "use":"sig", "alg":algorithm})
+            } else {
+                let (width, curve) = if algorithm == "ES256" {
+                    (32, "P-256")
+                } else {
+                    (48, "P-384")
+                };
+                assert_eq!(public.len(), 1 + 2 * width);
+                assert_eq!(public[0], 4);
+                json!({"kty":"EC", "crv":curve,
+                    "x":URL_SAFE_NO_PAD.encode(&public[1..1 + width]),
+                    "y":URL_SAFE_NO_PAD.encode(&public[1 + width..]),
+                    "kid":"offline-key", "use":"sig", "alg":algorithm})
+            };
+            let jwks: CoreJsonWebKeySet = serde_json::from_value(json!({"keys":[jwk]})).unwrap();
+            let metadata: CoreProviderMetadata = serde_json::from_value(json!({
+                "issuer":ISSUER,
+                "authorization_endpoint":"https://offline-issuer.invalid/authorize",
+                "token_endpoint":"https://offline-issuer.invalid/token",
+                "jwks_uri":"https://offline-issuer.invalid/keys",
+                "response_types_supported":["code"],
+                "subject_types_supported":["public"],
+                "id_token_signing_alg_values_supported":[algorithm]
+            }))
+            .unwrap();
+            Self {
+                algorithm,
+                key,
+                metadata: metadata.set_jwks(jwks),
+                now: chrono::Utc::now().timestamp() * 1000,
+            }
+        }
+
+        fn claims(&self) -> Value {
+            json!({"iss":ISSUER, "aud":CLIENT, "sub":"verified-offline-subject", "nonce":NONCE,
+                "iat":self.now / 1000, "exp":self.now / 1000 + 300,
+                "auth_time":self.now / 1000 - 1, "groups":["zeta", "alpha", "zeta"]})
+        }
+
+        fn input(&self, algorithm: &str, claims: &Value) -> String {
+            format!(
+                "{}.{}",
+                URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&json!({"alg":algorithm, "kid":"offline-key", "typ":"JWT"}))
+                        .unwrap()
+                ),
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap())
+            )
+        }
+
+        fn token(&self, claims: &Value) -> String {
+            let input = self.input(self.algorithm, claims);
+            format!(
+                "{input}.{}",
+                URL_SAFE_NO_PAD.encode(self.key.sign(input.as_bytes()))
+            )
+        }
+
+        fn verify(&self, token: &str) -> Result<VerifiedOidcSubject> {
+            let response: CoreTokenResponse = serde_json::from_value(json!({
+                "access_token":"offline-access-token", "token_type":"bearer", "id_token":token
+            }))
+            .unwrap();
+            verify(
+                VerificationContext {
+                    metadata: &self.metadata,
+                    issuer: ISSUER,
+                    client_id: CLIENT,
+                    nonce: NONCE,
+                    groups_claim: "groups",
+                    flow_started_at: self.now - 1000,
+                    current: self.now,
+                },
+                &response,
+            )
+        }
+
+        fn reject(&self, token: &str) {
+            assert!(matches!(
+                self.verify(token),
+                Err(IdentityError::Unauthenticated)
+            ));
+        }
+    }
+
+    #[test]
+    fn independently_signed_ec_and_eddsa_tokens_create_checked_subject_and_groups() {
+        for algorithm in ["ES256", "ES384", "EdDSA"] {
+            let fixture = Fixture::new(algorithm);
+            let claims = fixture.claims();
+            let subject = fixture.verify(&fixture.token(&claims)).unwrap();
+            assert_eq!(subject.issuer, ISSUER);
+            assert_eq!(subject.subject, "verified-offline-subject");
+            assert_eq!(subject.groups, vec!["alpha".to_owned(), "zeta".to_owned()]);
+            assert_eq!(subject.expires_at, fixture.now + 300_000);
+            assert_eq!(subject.authentication_time, Some(fixture.now - 1000));
+            assert_eq!(
+                subject.claims_sha256,
+                format!("{:x}", Sha256::digest(serde_json::to_vec(&claims).unwrap()))
+            );
+        }
+    }
+
+    #[test]
+    fn correctly_signed_wrong_issuer_audience_or_nonce_cannot_create_subject() {
+        let fixture = Fixture::new("ES256");
+        assert!(fixture.verify(&fixture.token(&fixture.claims())).is_ok());
+        for (claim, value) in [
+            ("iss", json!("https://another-issuer.invalid/")),
+            ("aud", json!("another-client")),
+            (
+                "nonce",
+                json!("different-nonce-with-at-least-thirty-two-bytes"),
+            ),
+        ] {
+            let mut claims = fixture.claims();
+            claims[claim] = value;
+            fixture.reject(&fixture.token(&claims));
+        }
+    }
+
+    #[test]
+    fn authorized_party_and_multiple_audiences_keep_product_policy() {
+        let fixture = Fixture::new("ES256");
+        let mut claims = fixture.claims();
+        claims["azp"] = json!(CLIENT);
+        assert!(fixture.verify(&fixture.token(&claims)).is_ok());
+        claims["azp"] = json!("another-client");
+        fixture.reject(&fixture.token(&claims));
+
+        // Duplicate client audiences avoid an unrelated untrusted-audience
+        // rejection and exercise our own requirement for an explicit azp.
+        claims["aud"] = json!([CLIENT, CLIENT]);
+        claims["azp"] = json!(CLIENT);
+        assert!(fixture.verify(&fixture.token(&claims)).is_ok());
+        claims.as_object_mut().unwrap().remove("azp");
+        fixture.reject(&fixture.token(&claims));
+
+        claims["aud"] = json!([CLIENT, "untrusted-client"]);
+        claims["azp"] = json!(CLIENT);
+        fixture.reject(&fixture.token(&claims));
+    }
+
+    #[test]
+    fn tampered_provider_signature_cannot_create_subject() {
+        let fixture = Fixture::new("ES256");
+        let token = fixture.token(&fixture.claims());
+        assert!(fixture.verify(&token).is_ok());
+        let (input, encoded_signature) = token.rsplit_once('.').unwrap();
+        let mut signature = URL_SAFE_NO_PAD.decode(encoded_signature).unwrap();
+        signature[0] ^= 1;
+        fixture.reject(&format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature)));
+    }
+
+    #[test]
+    fn unsigned_and_symmetric_algorithm_substitution_cannot_create_subject() {
+        let fixture = Fixture::new("ES256");
+        let claims = fixture.claims();
+        assert!(fixture.verify(&fixture.token(&claims)).is_ok());
+        fixture.reject(&format!("{}.", fixture.input("none", &claims)));
+
+        // A public provider key must not become an HMAC client secret.
+        let input = fixture.input("HS256", &claims);
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, fixture.key.public_key());
+        let signature = ring::hmac::sign(&key, input.as_bytes());
+        fixture.reject(&format!(
+            "{input}.{}",
+            URL_SAFE_NO_PAD.encode(signature.as_ref())
+        ));
+    }
+}

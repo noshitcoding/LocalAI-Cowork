@@ -17,7 +17,7 @@ uuid.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 ring.workspace = true
-openidconnect = { version = "=4.0.1", default-features = false, features = ["timing-resistant-secret-traits"] }
+openidconnect = { version = "=4.1.0", default-features = false, features = ["timing-resistant-secret-traits"] }
 reqwest.workspace = true
 tokio.workspace = true
 percent-encoding.workspace = true
