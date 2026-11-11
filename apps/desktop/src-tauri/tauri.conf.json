@@ -56,6 +56,11 @@
         ]
       }
     },
+    "resources": {
+      "vendor/glib/LICENSE": "licenses/glib/LICENSE",
+      "vendor/glib/COPYRIGHT": "licenses/glib/COPYRIGHT",
+      "vendor/README.md": "licenses/glib/README.md"
+    },
     "externalBin": [
       "binaries/cowork-daemon",
       "binaries/cowork-browser-host"

@@ -140,7 +140,7 @@ impl ProductivityArchive {
             return Err(archive_error());
         }
         let mut entry = zip.by_index(0).map_err(|_| archive_error())?;
-        if entry.name() != "manifest.json"
+        if entry.name().map_err(|_| archive_error())? != "manifest.json"
             || entry.size() > PRODUCTIVITY_ARCHIVE_MAX_BYTES as u64
             || entry.is_dir()
             || entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)

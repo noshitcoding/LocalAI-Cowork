@@ -1,5 +1,132 @@
 # Dependency security scope for alpha.8
 
+## ZIP migration review — 10 November 2026
+
+The release candidate pins **zip 9.0.5** in both active V2 locks and updates
+the desktop updater dependency to **tauri-plugin-updater 2.14.1**. Core keeps
+default ZIP features disabled and enables deflate. Its only codec API change
+maps the new fallible `entry.name()` result to the existing archive validation
+error; the one-entry, filename, size, directory and symlink checks remain.
+Desktop also disables ZIP default features through the updater dependency.
+
+Version 9.0.5 is outside the published affected ranges of
+[GHSA-8hxf-qr8p-62x4](https://github.com/zip-rs/zip2/security/advisories/GHSA-8hxf-qr8p-62x4),
+[GHSA-q7v9-x93c-xqv3](https://github.com/zip-rs/zip2/security/advisories/GHSA-q7v9-x93c-xqv3)
+and [GHSA-m665-v7pm-7grj](https://github.com/zip-rs/zip2/security/advisories/GHSA-m665-v7pm-7grj).
+The last advisory concerns central-directory/local-header inconsistencies and
+is first patched in 9.0.5; upgrading only to 9.0.0 would be insufficient.
+Updater 2.14.1 permits ZIP 9, but its release-tag lock used 9.0.3. This
+candidate therefore resolves the desktop lock explicitly to 9.0.5.
+
+These locks are normal Cargo resolver output, not manually repaired graphs.
+The migration also updates minisign-verify to 0.3.0, introduces typed-path and
+removes the unused arbitrary/derive_arbitrary pair. Existing desktop packages
+have permitted Windows/getrandom dependency-edge rebindings without version
+changes; this does not demonstrate a defect in the former lock. Core deflate
+now selects the upstream zlib-rs backend. At the ZIP-migration checkpoint, both complete `cargo metadata --locked`
+graphs resolved successfully: 557 core packages and 581 desktop packages,
+with unchanged lock bytes during that inspection. Those historical graphs
+do not establish the later OIDC or local-glib graph. Metadata resolution does
+not compile or typecheck the codec adaptation.
+
+## OIDC migration and actual pinned RustSec results - 11 November 2026
+
+Core now pins [openidconnect 4.1.0](https://github.com/ramosbugs/openidconnect-rs/releases/tag/4.1.0).
+The normally resolved core lock selects **crypto-bigint 0.7.11** and removes
+0.5.5. This is outside [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)'s
+affected range; its published patched range starts at 0.7.6. This does not
+resolve RSA or the independent desktop GTK findings.
+
+On 11 November, that core lock was audited with **cargo-audit 0.22.2** against
+the unchanged 1,422-advisory RustSec database commit
+`7a40350e1b8ba5b656d909f88222a8059a83d88d` (tree
+`e206c84b629992c9f861e5336baed4136eda4216`). All 1,441 tracked database files
+matched before and after. The command used `--no-fetch --file Cargo.lock
+--json`, no advisory ignores or target filters, and neither `--no-yanked`
+nor an offline flag. The report has no explicit fresh-yanked-completion field
+and no yanked warning; a completed fresh yanked-status check is not claimed.
+
+| Lock and report | Vulnerabilities | Other reported findings | Audit exit |
+| --- | --- | --- | --- |
+| Updated core, 11 November | 1: rsa 0.9.10 | 4 unmaintained warnings | 1 |
+| Historical pre-backport desktop, retained 10 November report | 0 in the vulnerability category | **Unsound glib 0.18.5**, plus 4 unmaintained warnings | 0 |
+
+The current core report has no crypto-bigint 0.5.5 finding. The earlier ZIP
+review's core report (two vulnerabilities) and desktop report remain retained;
+those commands used `--no-fetch --no-yanked`, so **yanked status was not checked**
+there. An outer evidence-path comparison error after the new audit is retained
+separately; a read-only comparison confirmed the database maps matched. No audit
+retry occurred and the actual audit exit remains 1.
+
+[RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html)
+now lists RSA **>=0.10.0** as patched. OpenID Connect 4.1.0 still requires
+`rsa ^0.9`, resolving to 0.9.10, so that upstream fix is outside its permitted
+range. The retained caller review below describes public-key verification;
+it does not waive the scanner finding or qualify the new dependency graph.
+
+## Local glib 0.18.5 VariantStrIter source backport
+
+The retained desktop audit above predates this local backport. Zero desktop
+vulnerabilities in that report does not mean zero findings or Linux GUI
+acceptance. [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html)
+lists **>=0.20.0** as patched, outside the existing Tauri/GTK family's 0.18
+range. Desktop selects a complete local `glib 0.18.5` source crate through
+`[patch.crates-io]`. The only production-code change is the two-line
+[out-pointer fix](https://github.com/gtk-rs/gtk-rs-core/commit/b5a4071e439bef2b5eea76c3aa25e5ae84839e34):
+a mutable pointer binding and mutable FFI argument. Version, public API,
+ownership, lifetime and iterator bounds are unchanged.
+
+The original MIT LICENSE and COPYRIGHT are retained. They and the
+[backport provenance](../apps/desktop/src-tauri/vendor/README.md) are selected
+as application resources under `licenses/glib/`. Four new real-GLib cases
+cover empty/single/Unicode arrays, forward and reverse operations, exact
+lengths/exhaustion and borrowed strings retained after iterator drop with
+the owning Variant alive. A separate harness uses the actual production
+crate/test source; opt-levels 0, 2 and 3 are separate regression checks, not
+full Desktop/GTK feature or platform qualification.
+
+Normal resolver output, actual path/feature/lock provenance and original
+execution/audit results require separate review. This documentation records
+no new metadata, test, package, installed or release PASS. Keeping version
+0.18.5 can leave the scanner's affected-range finding present despite the
+source fix; no advisory ignore, fake version, audit-exit relabeling or
+security-clean claim is introduced. The RSA 0.9 finding above is independent
+and unchanged. Earlier results do not qualify the new source/graph.
+
+The earlier GitHub snapshot of **63 open manifest alerts** (35 reference,
+21 Enterprise, seven active V2) is historical and uses a different catalogue.
+Checking these three ZIP version predicates is not a fresh remote alert scan
+or dismissal. The independent Enterprise workspace is unchanged; its
+[security status](../enterprise/docs/PREVIEW-SECURITY-STATUS.md) remains
+separate from V2.
+
+## Validation limits for the OIDC candidate
+
+The earlier Windows compatibility run passed `cargo check --locked --workspace
+--all-targets` and the existing `cowork-identity` tests: **34 passed, zero failed,
+four PostgreSQL cases ignored**. Subsequent Windows validation passed workspace
+fmt, strict Identity Clippy and the entire Identity suite: **39 passed, zero
+failed, four PostgreSQL cases ignored and zero filtered**. All five dedicated
+offline Android OIDC verifier cases passed, covering independent Ring
+ES256/ES384/EdDSA signatures, authorized-party validation and rejection of invalid
+signatures, `none` and HS256. These remain bounded compatibility/regression
+results, not full candidate or full-matrix qualification. Previous source results
+do not qualify this changed graph. Full platform checks, actual packages and
+installed acceptance remain separate, as do signing and update-feed requirements
+in [the release procedure](V2-PREVIEW-RELEASE.md).
+
+## Historical review before the ZIP migration
+
+The following retained review describes the earlier locks and caller analysis
+on 9–10 November 2026. Its six-core/four-desktop and 63-alert counts, old ZIP
+versions and statements about a future migration are historical, not the
+candidate status above.
+
+<details>
+<summary>Earlier alpha.8 dependency and caller review (original text)</summary>
+
+# Dependency security scope for alpha.8
+
 Reviewed on 9 November 2026 against RustSec database commit
 `7a40350e1b8ba5b656d909f88222a8059a83d88d` (1,422 advisories).
 The adopted core lock still reports **six vulnerabilities** and the desktop lock
@@ -119,3 +246,5 @@ graphs. Enterprise also has its own [security status](../enterprise/docs/PREVIEW
 including real WebPush secret-key arithmetic and an open production gate.
 Passing source checks does not establish installed-package acceptance, signing,
 update-feed configuration or release readiness for a platform.
+
+</details>

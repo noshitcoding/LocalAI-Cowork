@@ -31,6 +31,18 @@ bestandener Releasebeleg.
 - Gezielte Vite-/Vitest-/fast-uri-Aktualisierungen härten den V2-Frontendbau.
   Die getrennte V2-Abhängigkeitsprüfung meldet am eingefrorenen Stand keine
   bekannten npm-Auditfunde; Enterprise wird unabhängig geprüft.
+- OpenID Connect 4.1.0 ersetzt im Core-Lock crypto-bigint 0.5.5 durch
+  0.7.11. Der Core-RustSec-Lauf vom 11. November meldet weiterhin RSA 0.9.10
+  und vier Unmaintained-Hinweise; der frühere Desktopbericht bleibt historisch.
+  Details und Prüfgrenzen: [Abhängigkeitssicherheit](DEPENDENCY-SECURITY.md).
+- Für die Rust-Abhängigkeit glib 0.18.5 enthält der Desktop den lokalen
+  Zweizeilen-Backport des VariantStrIter-Out-Pointer-Fixes. Vier zusätzliche
+  Fälle prüfen echte GLib-Iteration und gültig gehaltene String-Borrows;
+  Resolver- und Testprofilnachweise sind gesondert zu prüfen. Version 0.18.5
+  bleibt im veröffentlichten Scannerbereich, ohne Advisory-Ignore oder
+  Sicherheitsfreigabe. Originale MIT-/COPYRIGHT-Hinweise und Quellprovenienz
+  sind in der Paketkonfiguration unter `licenses/glib/` gebunden; daraus folgt
+  kein tatsächlicher Paket-, Installations- oder Release-PASS.
 - Der Preview-Veröffentlichungsweg bindet Quellstand, Paketbelege,
   Signieridentitäten und originale Build-/Abnahmeartefakte an ihre Prüfsummen
   und Erzeugerläufe. Fehlende Signierung oder installierte Abnahme wird
