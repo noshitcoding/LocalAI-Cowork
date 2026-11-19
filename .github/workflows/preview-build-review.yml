@@ -25,7 +25,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       verification: ${{ steps.check.outputs.verification }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -73,7 +73,7 @@ jobs:
       receipt_sha256: ${{ steps.build.outputs.receipt_sha256 }}
       source_sha256: ${{ steps.build.outputs.source_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -154,7 +154,7 @@ jobs:
       NATIVE_HOST: ${{ matrix.host }}
       NATIVE_BUNDLES: ${{ matrix.bundles }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Reclaim unused Android SDK only on the hosted Linux VM
