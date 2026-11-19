@@ -48,12 +48,12 @@ jobs:
       source_sha256: ${{ steps.bind.outputs.source_sha256 }}
       frontend_receipt_sha256: ${{ steps.bind.outputs.frontend_receipt_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: trusted
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_commit }}
           path: source-material
@@ -108,12 +108,12 @@ jobs:
       EXPECTED_SOURCE_SHA256: ${{ needs.policy.outputs.source_sha256 }}
       EXPECTED_FRONTEND_RECEIPT_SHA256: ${{ needs.policy.outputs.frontend_receipt_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: trusted
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_commit }}
           path: source-material

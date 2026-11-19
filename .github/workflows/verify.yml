@@ -18,7 +18,7 @@ jobs:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -41,7 +41,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -61,7 +61,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -86,7 +86,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -114,7 +114,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Reclaim unused Android SDK space on the hosted Linux runner
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         shell: bash
@@ -198,7 +198,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       COWORK_TEST_POSTGRES: postgresql://cowork_test:disposable-ci-only@localhost:5432/cowork_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo test --locked -p cowork-storage --test ${{ matrix.suite }} ${{ matrix.case }} -- --ignored
   device-actor-postgres:
     runs-on: ubuntu-24.04
@@ -226,7 +226,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       COWORK_DEVICE_ACTOR_PG_DATABASE_URL: postgresql://cowork_test:disposable-ci-only@localhost:5432/cowork_device_actor_ci_fresh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo test --locked -p cowork-storage --test device_actor_authority_postgres -- --ignored --exact ${{ matrix.case }} --test-threads=1
   desktop:
     strategy:
@@ -239,7 +239,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Reclaim unused Android SDK space on the hosted Linux runner
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         shell: bash
