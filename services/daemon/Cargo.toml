@@ -23,7 +23,7 @@ cowork-identity.workspace = true
 cowork-toolbox.workspace = true
 ring.workspace = true
 base64 = "=0.22.1"
-webauthn-rs = { version = "=0.5.5", default-features = false, features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "=0.6.2", default-features = false, features = ["danger-allow-state-serialisation"] }
 reqwest.workspace = true
 sha2.workspace = true
 chrono.workspace = true
